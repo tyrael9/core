@@ -734,7 +734,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         return;
 
     // Healers must support the group even when they have not personally entered combat.
-    bool const partyInCombat = IsPartyInCombat();
+    bool const partyInCombat = IsHealerClass(me->GetClass()) && IsPartyInCombat();
     bool const healerSupportingPartyCombat = GetRole() == ROLE_HEALER && partyInCombat;
     if (partyInCombat && !me->IsInCombat() && IsHealerClass(me->GetClass()) &&
         GetRole() != ROLE_HEALER)

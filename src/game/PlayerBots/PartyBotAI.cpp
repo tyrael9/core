@@ -119,10 +119,21 @@ Player* PartyBotAI::GetPartyLeader() const
             if (pGroup != originalLeader->GetGroup())
                 return nullptr;
 
-            // In case the current leader is the bot itself and it's not inside a Battleground.
+            // If the original owner has returned, restore their leadership when a
+            // PartyBot was promoted during the disconnect.
             ObjectGuid currentLeaderGuid = pGroup->GetLeaderGuid();
             if (currentLeaderGuid == me->GetObjectGuid() && !me->InBattleGround())
+            {
+                if (originalLeader->IsInWorld())
+                {
+                    pGroup->ChangeLeader(originalLeader->GetObjectGuid());
+                    return originalLeader;
+                }
+
+                // The owner is still loading/reconnecting; let the offline grace
+                // handling below retain the bots until the owner is in the world.
                 return nullptr;
+            }
         }
 
         return originalLeader;
@@ -731,9 +742,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         // Keep the PartyBots in the instance during a bounded reconnect window.
         Group* pGroup = me->GetGroup();
         bool const ownerStillInGroup = pGroup && pGroup->IsMember(m_leaderGuid);
-        bool const ownerObjectMissing = !ObjectAccessor::FindPlayerNotInWorld(m_leaderGuid);
+        Player* pOwner = ObjectAccessor::FindPlayerNotInWorld(m_leaderGuid);
+        bool const ownerOffline = !pOwner || !pOwner->IsInWorld();
 
-        if (ownerStillInGroup && ownerObjectMissing)
+        if (ownerStillInGroup && ownerOffline)
         {
             int32 const configuredGraceMs = sConfig.GetIntDefault("PlayerBot.OwnerOfflineGraceMs", 600000);
             uint32 const graceMs = configuredGraceMs > 0 ? static_cast<uint32>(configuredGraceMs) : 0;

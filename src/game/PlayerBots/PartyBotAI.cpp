@@ -765,8 +765,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
             if (m_ownerOfflineTimer < graceMs)
             {
-                TraceDecision("owner_offline", me, nullptr, "waiting_for_owner_reconnect",
-                              graceMs - m_ownerOfflineTimer);
+                // Log at disconnect detection and then at most once per minute.
+                if (m_ownerOfflineTimer == PB_UPDATE_INTERVAL || m_ownerOfflineTimer % 60000 == 0)
+                    TraceDecision("owner_offline", me, nullptr, "waiting_for_owner_reconnect",
+                                  graceMs - m_ownerOfflineTimer);
                 return;
             }
 

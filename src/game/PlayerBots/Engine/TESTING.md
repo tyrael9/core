@@ -2,85 +2,57 @@
 
 ## Automated compile CI
 
-The workflow at `.github/workflows/partybot-core-build.yml` builds this
-branch on a GitHub-hosted Linux ARM64 runner. ARM64 is intentional: it matches
-the architecture of the Oracle A1 deployment.
+The workflow at .github/workflows/partybot-core-build.yml builds this branch on a GitHub-hosted Linux ARM64 runner, matching the Oracle A1 deployment architecture.
 
-The workflow is triggered by:
+It configures and compiles the Vanilla 1.12.1 / 5875 C++14 Core default targets, including game, mangosd and realmd. It uses bundled third-party sources, disables optional cpptrace/PCH for deterministic resource use, and uses ccache.
 
-- pushes to `work/partybot-engine-foundation`;
-- pull requests targeting `validation/partybot-engine-base-0e3ff01`;
-- manual `workflow_dispatch`.
-
-It configures the project for the Vanilla 1.12.1 / 5875 client and C++14,
-then builds all default targets, including `game`, `mangosd` and `realmd`.
-The build uses the repository's bundled third-party sources and disables
-optional cpptrace and PCH to keep the CI path deterministic and reduce
-resource use. Compiler warnings are not promoted to errors because this
-legacy codebase has existing warnings unrelated to the PartyBot changes.
-
-A successful run proves that the checked-out source configures, compiles and
-links on the CI ARM64 Linux environment. It does not prove runtime behavior,
-database compatibility beyond compilation, or successful operation in an
-existing deployment. It is not permission to deploy.
-
-The workflow uses GitHub Actions cache for ccache. The cache key is scoped by
-runner architecture and branch, with fallback keys for reuse across commits.
+A successful run proves configure/compile/link on that CI environment. It does not prove runtime behavior, instance persistence, database compatibility beyond compilation, or successful operation in the production deployment. It is not permission to deploy.
 
 ## Required in-game regression checks
 
-Run these only on a disposable/test realm, not against the live deployment
-without explicit approval.
+Run only on a disposable/test realm unless the user explicitly approves otherwise.
 
 ### Owner disconnect and reconnect
 
-1. Form a party with the owner and PartyBots, then enter an instance.
-2. Disconnect the owner while the PartyBots remain in the instance.
-3. Confirm the bots remain in the original group and do not trigger immediate
-   cleanup or instance reset.
-4. Wait through the normal group-leader offline handling and confirm the bots
-   continue to exist if a bot is promoted to leader.
-5. Reconnect the owner before the configured grace period expires.
-6. Confirm the owner is restored as group leader and the existing bots remain
-   in the same instance/group.
-7. Repeat with a disconnect longer than the configured grace period and
-   confirm cleanup occurs only after expiry.
-8. Separately verify that intentional owner group-leave/disband and explicit
-   bot removal still clean up normally.
+1. Form a party with owner and PartyBots; enter an instance.
+2. Disconnect owner while bots remain in the instance.
+3. Confirm bots remain in the original group and do not trigger immediate cleanup/reset.
+4. Wait through normal group-leader offline handling; confirm bots remain.
+5. Reconnect before grace expiry; confirm owner returns as leader and bots remain in same group/instance.
+6. Repeat beyond grace expiry; confirm cleanup occurs only after expiry.
+7. Verify intentional owner leave/disband and explicit bot removal still clean up.
 
-### Healer lifecycle
+### Healer lifecycle and pre-heal
 
-The pre-heal path must report success only when a heal cast is accepted. A
-selected target or a failed/unsuitable pre-heal must not suppress the normal
-no-action diagnostics or make the caller believe a cast occurred.
-
-1. Test Druid, Shaman and Priest PartyBots with a party member in combat while
-   the healer itself is initially out of combat.
-2. Confirm the healer enters its existing class combat routine.
-3. Confirm it heals eligible injured party members when it has sufficient mana.
-4. Enable `PlayerBot.DecisionTrace = 1` on the test realm if it does not act;
-   capture the rejection reason rather than guessing at the cause.
-5. Confirm out-of-combat food/drink and buff behavior is not started merely
-   because a party member is fighting.
+1. Test Druid, Shaman and Priest bots while another same-map party member is fighting.
+2. Confirm healer enters its class combat routine and does not start food/drink or out-of-combat buffs.
+3. Confirm it heals eligible injured members when it has sufficient mana.
+4. Confirm pre-heal reports success only if the cast is accepted.
+5. Enable PlayerBot.DecisionTrace = 1 on the test realm if it does not act; capture rejection reasons.
 
 ### Warrior and Mage diagnostics
 
-1. Confirm the Warrior assists a party member's attacker and uses a valid
-   taunt when appropriate.
-2. Confirm the trace explains cases where no assist target or usable taunt is
-   found.
-3. Confirm Mage Arcane Explosion is skipped when fewer than two enemies are
-   near the caster, and that the trace reports the skip.
+1. Confirm Warrior assists a party member's attacker and uses a valid taunt when appropriate.
+2. Confirm trace explains missing assist targets or unusable taunts.
+3. Confirm Mage Arcane Explosion is skipped when too few enemies are near the caster.
 
-## Validation status vocabulary
+## New engine tests (planned)
 
-Keep these states distinct in PR updates:
+- Snapshot consistency and GUID resolution within an update epoch.
+- Trigger cadence and cached value invalidation.
+- Action IsPossible/IsUseful/Execute result distinctions.
+- Deterministic candidate priority and hard safety vetoes.
+- Heal/CC/interrupt reservation ownership, expiry and invalidation.
+- No duplicate GCD execution between Legacy and Strategy modes.
+- Shadow mode never invokes the action executor.
+- Encounter strategy activation/deactivation and safe movement arbitration.
 
-- **Committed:** source and documentation are present in the branch.
-- **CI configured:** workflow exists; no successful run is implied.
-- **CI passed:** the latest relevant workflow run completed successfully.
-- **In-game tested:** the scenario above was exercised on a test realm.
-- **Deployed:** the user explicitly approved and the intended server was
-  updated.
+## Validation vocabulary
+
+- Committed: source and documentation are present in the branch.
+- CI configured: workflow exists; no successful run implied.
+- CI passed: latest relevant workflow run completed successfully.
+- In-game tested: scenario was exercised on a test realm.
+- Deployed: user explicitly approved the intended server update.
 
 A CI pass must never be described as an in-game test.

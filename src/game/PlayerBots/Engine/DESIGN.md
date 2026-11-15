@@ -152,6 +152,8 @@ in the bot's current group:
 - do not set `requestRemoval` immediately;
 - if the owner reconnects to the same group, reset the timer and resume normal
   control without respawning the bots;
+- if the group promoted a PartyBot to leader while the owner was away, restore
+  the original owner's leadership when they return;
 - if the owner explicitly leaves/disbands the group, remove the bot membership
   as normal;
 - after the configured grace period expires without a reconnect, allow normal

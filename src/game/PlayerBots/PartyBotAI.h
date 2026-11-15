@@ -110,6 +110,7 @@ public:
     float m_z = 0.0f;
     float m_o = 0.0f;
     bool m_resetSpellData = false;
+    uint32 m_ownerOfflineTimer = 0;
 };
 
 #endif

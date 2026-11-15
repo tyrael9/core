@@ -23,7 +23,15 @@ The first implementation adds an opt-in `DecisionTrace` seam. It records:
   threat-safety guard;
 - why a party member was excluded from heal-target consideration (health
   threshold, friendly-target validation, line of sight, or scan range);
-- the result returned by the core spell-casting path.
+- the result returned by the core spell-casting path;
+- when a healer-class bot is assigned a non-healer role;
+- when a same-map party member is in combat while the healer itself is not.
+
+The healer lifecycle now enters the existing class-specific combat routine when
+another member in the same map/instance is fighting. In that state it does not
+start another food/drink cycle or run out-of-combat buff logic, but it retains
+the existing follow/teleport behaviour. This is a targeted behaviour fix; it
+does not replace the per-class rotations.
 
 Tracing is disabled by default. Add this line to the `mangosd.conf` used by a
 test server to enable it:

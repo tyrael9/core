@@ -54,6 +54,7 @@ public:
     void TraceDecision(char const* event, Unit const* pTarget, SpellEntry const* pSpellEntry,
                        char const* reason, uint32 detail = 0) const final;
     Player* GetPartyLeader() const;
+    bool IsPartyInCombat() const;
     bool AttackStart(Unit* pVictim);
     Unit* SelectAttackTarget(Player* pLeader) const;
     Unit* SelectPartyAttackTarget() const;

@@ -2,14 +2,14 @@
 
 ## 1. Goal
 
-Implement a new, party-coordinated decision engine for the deployed Vanilla 1.12.1 (5875) vMaNGOS server. Preserve the existing PlayerBots runtime and execution APIs. Borrow the Strategy/Trigger/Action/Value/Multiplier decision model from CMaNGOS PlayerBots and encounter design from the active AzerothCore mod-playerbots project, but reimplement both against vMaNGOS.
+Implement a new, party-coordinated decision engine for the deployed Vanilla 1.12.1 (5875) vMaNGOS server. Preserve the existing PlayerBots runtime and execution APIs. Borrow the Strategy/Trigger/Action/Value/Multiplier decision model from CMaNGOS PlayerBots and encounter design from active AzerothCore mod-playerbots, but reimplement both against vMaNGOS.
 
 Research:
 - RESEARCH-CMANGOS.md
 - RESEARCH-AZEROTHCORE.md
 - VMANGOS-API-AUDIT.md
 
-The current PartyBotAI class-specific routines remain the Legacy implementation and fallback. The new engine is a separate decision authority, not a gradual renaming of the old rotations.
+The current PartyBotAI class-specific routines remain the Legacy implementation and fallback. The new engine is a separate decision authority, not a gradual renaming of old rotations.
 
 ## 2. Layered architecture
 
@@ -37,33 +37,24 @@ Legacy PartyBotAI remains available beside this path until each behavior is vali
 
 PartyBotAI::UpdateAI remains responsible for initialization, owner/group lifecycle, resurrection, follow/teleport, food/drink, battleground and other non-combat lifecycle behavior.
 
-The narrow combat seam is PartyBotAI::UpdateInCombatAI(), called by UpdateAI after lifecycle and target/follow work when the bot is in combat or a healer is supporting same-map party combat. Existing UpdateInCombatAI performs tank assist/taunt, CC and dispels before the per-class combat switch. Each migrated domain must explicitly replace or retain its Legacy behavior so two decision authorities never issue competing GCD actions.
+The narrow combat seam is PartyBotAI::UpdateInCombatAI(), called after lifecycle and target/follow work when the bot is in combat or a healer is supporting same-map party combat. Existing UpdateInCombatAI performs tank assist/taunt, CC and dispels before the per-class combat switch. Each migrated domain must explicitly replace or retain its Legacy behavior so two decision authorities never issue competing GCD actions.
 
 Do not replace the entire PartyBotAI update lifecycle.
 
-### 2.2 PartyCoordinator shards
+### 2.2 Coordinator identity and ownership
 
-Coordinator state is scoped by both group identity and map/instance identity, not by group alone. MapManager schedules different instance Map objects as separate DoUpdate tasks; same-map PartyBots execute within the same map update task, while different maps may update in parallel.
+Coordinator shards are keyed by group ID, map ID and instance ID. Normal Group::Create assigns a runtime/database ID through ObjectMgr::GenerateGroupId(); battleground groups use group ID 0 and should remain on Legacy behavior unless a separate BG coordinator is designed.
 
-A same-map shard owns short-lived GUID-based state:
-- primary target and optional secondary/add targets;
-- main-tank and assist-tank assignments;
-- CC reservations (target, CC type, owner bot, expiry);
-- healing reservations (target, estimated amount, healer, expiry);
-- interrupt reservations (target, cast/spell, interrupter, expiry);
-- dispel and resurrection assignments;
-- encounter identity/phase and recovery state.
+The planned registry is process-local and weakly indexed: PartyBotAI instances hold shared ownership of their current shard; the registry maps the scalar key to a weak_ptr under a short registry mutex. The shard itself is mutated only in its owning map update context. Expired weak entries can be pruned without retaining Group, Map, Player or Unit pointers.
 
-Reservations are advisory and expire quickly. Invalidate them when owner bot is dead, offline, on another map, unable to act, or when target is invalid. Explicit player commands and encounter safety rules take precedence.
-
-Do not store raw Unit/Player/GroupReference pointers across updates. Resolve GUIDs on the current map immediately before execution. PartyBotAI timers are independent; snapshot epoch/expiry must be explicit rather than assuming all bots tick together.
+This ownership plan is provisional until Group roster concurrency is resolved. Group::GetFirstMember()/GroupReference iteration is not protected by a mutex in Group.h. A map-scoped shard does not by itself make the Group member list safe if roster mutation occurs from another map's session/update thread. Before using a shared roster snapshot, either prove roster mutation serialization, add a roster snapshot API synchronized with every relevant mutator, or suspend Strategy evaluation during cross-map membership transitions. Never lock only the reader.
 
 ### 2.3 PartySnapshot
 
 Build a read-only snapshot for a same-map coordinator shard and expose a bot-specific view to each engine evaluation.
 
 Initial fields:
-- group identity and membership generation;
+- group ID and membership generation;
 - bot GUID, class, level, role, alive/online state, health/mana, form, current cast and GCD/cooldown facts;
 - member GUID, map/instance, alive/online state, health/mana, position/distance, role and current cast;
 - hostile GUIDs attacking party members, current victim, health, distance, aura/control state and available threat facts;
@@ -71,9 +62,9 @@ Initial fields:
 - encounter identity/phase and relevant mechanic facts;
 - CC marks and existing reservations.
 
-Verified vMaNGOS APIs include Group::GetFirstMember()/GroupReference::getSource(), Group::IsMember(), Group::GetLeaderGuid(), Group::GetTargetWithIcon(), Map::GetUnit(), Unit::GetAttackers(), Unit::GetVictim(), Unit::GetThreatManager() and ThreatManager::getThreatList(). See VMANGOS-API-AUDIT.md.
+Verified APIs include Group::GetId, GetFirstMember()/GroupReference::getSource, IsMember, GetLeaderGuid, GetTargetWithIcon, Map::GetUnit, Unit::GetAttackers, GetVictim, GetThreatManager and ThreatManager::getThreatList. See VMANGOS-API-AUDIT.md.
 
-Do not eagerly scan all nearby creatures or all auras. Snapshot fields are demand-driven by active strategy needs and cached for a bounded epoch. Published snapshots contain value data and GUIDs, not raw pointers. Re-resolve GUIDs immediately before execution.
+Snapshots contain GUIDs and scalar facts, not pointers retained across updates. Resolve GUIDs on the current map immediately before execution. Do not eagerly scan all nearby creatures or auras; fields are demand-driven and cached for a bounded epoch.
 
 ### 2.4 PartyBotEngine
 
@@ -92,7 +83,7 @@ Strategies propose candidate actions with target GUID, parameters and priority. 
 - Multiplier: contextual priority adjustment or veto. Hard safety constraints remain explicit checks.
 - DecisionTrace: bounded explanation of candidates, rejection reasons, priorities, reservations and execution results.
 
-CMaNGOS prerequisite/alternative/continuer relationships are optional. Add them only when a concrete Vanilla behavior needs them; keep the first engine small.
+CMaNGOS prerequisite/alternative/continuer relationships are optional. Add them only when a concrete Vanilla behavior needs them.
 
 ## 3. Decision and execution rules
 
@@ -109,60 +100,56 @@ CMaNGOS prerequisite/alternative/continuer relationships are optional. Add them 
 
 A normal decision cycle executes at most one primary GCD action. Movement and target/facing operations use separate, explicitly arbitrated channels. A failed cast is never reported as successful merely because a target was found.
 
-## 4. Party strategy composition
+## 4. Strategy composition
 
-Every bot evaluates a composition rather than a monolithic rotation:
-- Generic safety: stop attack/cast when required, avoid protected CC, escape dangerous mechanics.
-- Class: abilities and class-specific constraints.
+Every bot evaluates a composition:
+- Generic safety.
+- Class abilities and class constraints.
 - Role: tank, healer, ranged DPS, melee DPS, support.
 - Party: target assignment, healing/CC/interrupt reservations, pull and recovery state.
 - Encounter: mechanic-specific constraints and phase behavior.
 
-Encounter strategies can veto class actions or propose mechanic actions. The actual Vanilla mechanic and spell data must be independently verified before implementation.
+Encounter strategies can veto class actions or propose mechanic actions. Actual Vanilla mechanics and spell data must be independently verified.
 
 ## 5. First vertical slice
 
 1. Bounded same-map PartySnapshot with group member state and hostile attackers.
 2. PartyCoordinator shard with expiring target and heal reservations.
 3. PartyBotEngine with Strategy, Trigger, Action, Value and Multiplier interfaces.
-4. Read-only Shadow mode that evaluates and traces decisions without executing them.
-5. One real behavior migrated behind explicit Strategy mode, initially healing triage/reservation or Warrior tank target/threat assignment, selected after the remaining API audit.
-6. Legacy fallback when new engine is disabled, unavailable or rejects the feature.
+4. Read-only Shadow mode; no action executor calls.
+5. One real behavior migrated behind Strategy mode, initially healing triage/reservation or Warrior target/threat assignment, selected after the remaining audit.
+6. Legacy fallback when new engine is disabled or unavailable.
 
 The first slice must prove the architecture, not attempt every class.
 
 ## 6. Rollout modes
 
 - Legacy: current class routines execute; default during development.
-- Shadow: new engine evaluates and traces candidates; Legacy remains the only executor.
+- Shadow: new engine evaluates/traces candidates; Legacy remains the only executor.
 - Strategy: new engine owns a migrated decision domain; Legacy cannot issue competing actions for that domain.
 
-Avoid two independent decision authorities issuing GCD spells in one update. Mode selection defaults to Legacy until in-game validation. Configuration key and granularity will be selected during implementation.
-
-Migration is per decision domain. For example, healer triage can move to Strategy mode while non-combat buffs remain Legacy, provided action domains do not overlap.
+Migration is per decision domain. No Strategy mode becomes default before in-game validation.
 
 ## 7. Threading, lifetime and performance
 
-The exact update path is audited: MapManager schedules instance maps as separate DoUpdate tasks; Map::UpdatePlayers calls WorldObject::UpdateHelper; Player::Update calls Unit::Update and then m_AI->UpdateAI(p_time). Same-map bots therefore execute in their owning map's update context, while different maps may update in parallel.
+MapManager schedules instance maps as separate DoUpdate tasks; Map::UpdatePlayers calls WorldObject::UpdateHelper; Player::Update calls Unit::Update and then m_AI->UpdateAI(p_time). Same-map bots execute within the owning map update context, while different maps may update in parallel.
 
-Coordinator state must be map/instance-scoped. Keep all shard mutation inside the owning map update context. The independent one-second PartyBotAI timers mean snapshot cache epoch and reservation expiry cannot assume synchronized bot ticks.
+A same-map shard is therefore a reasonable ownership boundary for coordinator mutations, but Group roster iteration remains a separate concurrency concern: Group::GetFirstMember has no mutex, and cross-map roster changes may race. Resolve this before shared snapshot collection. Keep all shard mutation in the owning map context; never share mutable shard state across map shards.
 
-No synchronous database operations belong in combat decision evaluation. No network or inference calls belong in the AI tick. Triggers must be cheap; group and nearby-unit scans should be centralized and cached. Snapshot and trace storage must be bounded.
+PartyBotAI timers are independent. Snapshot cache epoch and reservation expiry cannot assume synchronized bot ticks. No synchronous DB work, network calls or inference calls belong in the AI tick. Triggers must be cheap; scans should be centralized and cached; storage must be bounded.
 
 ## 8. Compatibility constraints
 
 - Client/data: Vanilla 1.12.1, build 5875.
 - Core base: 0e3ff01e76d4758e8a7c3108b2717cc785ed56fa.
 - Language: C++14.
-- Target deployment: Linux ARM64, Oracle A1, 1 OCPU / 6 GB.
+- Target: Linux ARM64, Oracle A1, 1 OCPU / 6 GB.
 - No external inference service.
 - No DB schema changes for first engine milestones.
 - No production changes without explicit user approval.
-
-Do not use C++17/20-only facilities from modern AzerothCore. Prefer explicit ownership and C++14-compatible value types.
 
 ## 9. Acceptance criteria
 
 A milestone is complete only when source/docs are committed together; pinned Core builds on Linux ARM64 and supported CI targets; Legacy behavior remains unchanged; Shadow mode is bounded and explainable; Strategy mode has no duplicate GCD decisions with Legacy; positive/negative paths are tested; owner reconnect/instance persistence remains intact; and in-game testing is recorded separately from CI.
 
-A CI pass is not an in-game test and is not deployment authorization.
+A CI pass is not an in-game test or deployment authorization.

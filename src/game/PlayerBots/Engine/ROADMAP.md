@@ -1,6 +1,6 @@
 # PartyBotEngine roadmap
 
-This roadmap tracks the new decision engine. Legacy PartyBot fixes are maintenance work and do not count as engine milestones.
+Legacy PartyBot fixes are maintenance work and do not count as new-engine milestones.
 
 ## Status key
 
@@ -12,8 +12,7 @@ This roadmap tracks the new decision engine. Legacy PartyBot fixes are maintenan
 ## Phase 0 — baseline, lifecycle safety and observability
 
 - [x] Pin development to exact deployed vMaNGOS baseline.
-- [x] Add bounded opt-in DecisionTrace.
-- [x] Add diagnostics for spell checks, healer selection, Warrior assist/taunt and Mage AoE.
+- [x] Add bounded opt-in DecisionTrace and initial class decision diagnostics.
 - [x] Fix healer lifecycle entry when same-map party members are fighting.
 - [x] Add configurable owner-disconnect grace period.
 - [x] Add ARM64 full-Core build workflow and manual regression checklist.
@@ -23,7 +22,7 @@ This roadmap tracks the new decision engine. Legacy PartyBot fixes are maintenan
 
 ## Phase 1 — source research and architecture
 
-- [x] Inspect current CMaNGOS PlayerBots strategy engine.
+- [x] Inspect CMaNGOS PlayerBots strategy engine.
 - [x] Inspect active AzerothCore mod-playerbots and raid strategy structure.
 - [x] Document upstream source revisions, findings and compatibility limits.
 - [x] Define PartyCoordinator, PartySnapshot, PartyBotEngine and Legacy/Shadow/Strategy modes.
@@ -31,14 +30,15 @@ This roadmap tracks the new decision engine. Legacy PartyBot fixes are maintenan
 - [x] Verify same-map vs cross-map update ownership.
 - [x] Map group, target icon, attacker, threat, spell, cast and movement APIs.
 - [x] Identify CMake source registration.
-- [ ] Audit remaining action-specific target validation and threat-list resolution.
-- [ ] Decide coordinator creation/destruction and snapshot cache invalidation.
+- [~] Resolve Group roster concurrency for same-map snapshots.
+- [ ] Audit action-specific target validation and threat-list resolution.
+- [ ] Decide coordinator destruction and snapshot cache invalidation.
 
 ## Phase 2 — independent engine foundation
 
 - [ ] Add C++14 Strategy, Trigger, Action, Value and Multiplier interfaces.
 - [ ] Add bounded same-map snapshot with GUID-based references.
-- [ ] Add map/instance-scoped PartyCoordinator with expiring target/heal/CC/interrupt reservations.
+- [ ] Add map/instance-scoped PartyCoordinator with expiring reservations.
 - [ ] Add deterministic candidate evaluation and explicit action result states.
 - [ ] Add Shadow mode; Legacy remains the only executor.
 - [ ] Add focused deterministic tests for eligibility, priorities, expiry and arbitration.
@@ -79,9 +79,9 @@ This roadmap tracks the new decision engine. Legacy PartyBot fixes are maintenan
 - [ ] Zul'Gurub.
 - [ ] Blackwing Lair.
 - [ ] AQ20.
-- [ ] Validate Vanilla creature/spell data, vMaNGOS scripts and group-size assumptions for every encounter.
+- [ ] Validate Vanilla creature/spell data, vMaNGOS scripts and group-size assumptions.
 - [ ] Consider AQ40/Naxx only after earlier raid support is stable; no commitment implied.
 
 ## Current gate
 
-The source research and map/update/API audit are committed. Remaining gates are action-specific validation, coordinator lifecycle and snapshot cache expiry. Then implement the smallest C++14 engine foundation in Shadow mode. No real Strategy-mode action should execute before those gates are complete.
+The source research and map/update/API audit are committed. The important remaining blocker is safe Group roster snapshotting across map update threads, followed by action-specific validation and coordinator lifetime/cache design. Resolve these before implementing shared roster-dependent Strategy evaluation.

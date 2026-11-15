@@ -129,6 +129,27 @@ Player* PartyBotAI::GetPartyLeader() const
     return nullptr;
 }
 
+bool PartyBotAI::IsPartyInCombat() const
+{
+    if (!me)
+        return false;
+
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            if (Player* pMember = itr->getSource())
+            {
+                // Only coordinate with members in this map/instance.
+                if (pMember->GetMap() == me->GetMap() && pMember->IsInCombat())
+                    return true;
+            }
+        }
+    }
+
+    return me->IsInCombat();
+}
+
 bool PartyBotAI::IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy)
 {
     if (pTarget->IsInWorld() && pTarget->IsAlive() &&
@@ -712,6 +733,20 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (!pLeader->IsInWorld())
         return;
 
+    // Healers must support the group even when they have not personally entered combat.
+    bool const healerSupportingPartyCombat = GetRole() == ROLE_HEALER && IsPartyInCombat();
+    if (healerSupportingPartyCombat && !me->IsInCombat())
+    {
+        if (Spell* pCurrentSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        {
+            if (pCurrentSpell->m_spellInfo->Id == PB_SPELL_FOOD ||
+                pCurrentSpell->m_spellInfo->Id == PB_SPELL_DRINK)
+                me->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+        }
+
+        TraceDecision("healer_party_combat", me, nullptr, "supporting_same_map_party_combat", 0);
+    }
+
     if (pLeader->InBattleGround() &&
         !me->InBattleGround())
     {
@@ -808,7 +843,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (me->GetTargetGuid() == me->GetObjectGuid())
         me->ClearTarget();
 
-    if (!me->IsInCombat())
+    if (!me->IsInCombat() && !healerSupportingPartyCombat)
     {
         if (DrinkAndEat())
         {
@@ -843,7 +878,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (me->GetSheath() == SHEATH_STATE_UNARMED && !me->IsMounted())
         me->SetSheath(SHEATH_STATE_MELEE);
 
-    if (!me->IsInCombat() && !me->IsMounted())
+    if (!me->IsInCombat() && !healerSupportingPartyCombat && !me->IsMounted())
     {
         UpdateOutOfCombatAI();
 
@@ -926,7 +961,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         }
     }
 
-    if (me->IsInCombat())
+    if (me->IsInCombat() || healerSupportingPartyCombat)
         UpdateInCombatAI();
 }
 

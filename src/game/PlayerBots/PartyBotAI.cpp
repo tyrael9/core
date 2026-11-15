@@ -15,6 +15,7 @@
 */
 
 #include "PartyBotAI.h"
+#include "Config/Config.h"
 #include "Player.h"
 #include "CreatureAI.h"
 #include "MotionMaster.h"
@@ -726,9 +727,39 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     Player* pLeader = GetPartyLeader();
     if (!pLeader)
     {
+        // A disconnected owner remains a member slot in the persisted group.
+        // Keep the PartyBots in the instance during a bounded reconnect window.
+        Group* pGroup = me->GetGroup();
+        bool const ownerStillInGroup = pGroup && pGroup->IsMember(m_leaderGuid);
+        bool const ownerObjectMissing = !ObjectAccessor::FindPlayerNotInWorld(m_leaderGuid);
+
+        if (ownerStillInGroup && ownerObjectMissing)
+        {
+            int32 const configuredGraceMs = sConfig.GetIntDefault("PlayerBot.OwnerOfflineGraceMs", 600000);
+            uint32 const graceMs = configuredGraceMs > 0 ? static_cast<uint32>(configuredGraceMs) : 0;
+
+            if (m_ownerOfflineTimer < graceMs)
+            {
+                uint32 const remainingMs = graceMs - m_ownerOfflineTimer;
+                m_ownerOfflineTimer += std::min<uint32>(diff, remainingMs);
+            }
+
+            if (m_ownerOfflineTimer < graceMs)
+            {
+                TraceDecision("owner_offline", me, nullptr, "waiting_for_owner_reconnect",
+                              graceMs - m_ownerOfflineTimer);
+                return;
+            }
+
+            TraceDecision("owner_offline_expired", me, nullptr, "reconnect_grace_elapsed", graceMs);
+        }
+
         botEntry->requestRemoval = true;
         return;
     }
+
+    // A returning owner resumes control of the existing PartyBot group.
+    m_ownerOfflineTimer = 0;
 
     if (!pLeader->IsInWorld())
         return;

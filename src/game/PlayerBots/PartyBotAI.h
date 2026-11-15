@@ -20,6 +20,7 @@
 #include "CombatBotBaseAI.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
+#include "Engine/DecisionTrace.h"
 
 class PartyBotAI : public CombatBotBaseAI
 {
@@ -50,6 +51,8 @@ public:
     void AddToPlayerGroup();
 
     bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const final;
+    void TraceDecision(char const* event, Unit const* pTarget, SpellEntry const* pSpellEntry,
+                       char const* reason, uint32 detail = 0) const final;
     Player* GetPartyLeader() const;
     bool AttackStart(Unit* pVictim);
     Unit* SelectAttackTarget(Player* pLeader) const;
@@ -93,6 +96,7 @@ public:
     std::vector<RaidTargetIcon> m_marksToCC;
     std::vector<RaidTargetIcon> m_marksToFocus;
     ShortTimeTracker m_updateTimer;
+    mutable PartyBotEngine::DecisionTrace m_decisionTrace;
     ObjectGuid m_leaderGuid;
     ObjectGuid m_cloneGuid;
     uint8 m_race = 0;

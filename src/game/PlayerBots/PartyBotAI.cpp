@@ -273,7 +273,11 @@ bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpell
     if (pSpellEntry->IsAreaOfEffectSpell() && !pSpellEntry->IsPositiveSpell() && !IsInDuel())
     {
         if (!m_marksToCC.empty())
+        {
+            TraceDecision("spell_rejected", pTarget, pSpellEntry, "crowd_control_marks_active",
+                          static_cast<uint32>(m_marksToCC.size()));
             return false;
+        }
 
         // do not cast aoe if it will pull aggro
         if (m_role != ROLE_TANK)
@@ -303,13 +307,25 @@ bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpell
                     float const victimThreat = pEnemy->GetThreatManager().getThreat(pEnemy->GetVictim());
 
                     if (victimThreat < (myThreat + me->GetMaxHealth()))
+                    {
+                        TraceDecision("spell_rejected", pTarget, pSpellEntry, "aoe_threat_safety_gate", 0);
                         return false;
+                    }
                 }
             }
         }
     }
 
     return true;
+}
+
+void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntry const* pSpellEntry,
+                               char const* reason, uint32 detail) const
+{
+    if (!me)
+        return;
+
+    m_decisionTrace.Record(me, event, pTarget, pSpellEntry, reason, detail);
 }
 
 bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const
@@ -605,7 +621,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 {
     m_updateTimer.Update(diff);
     if (m_updateTimer.Passed())
+    {
         m_updateTimer.Reset(PB_UPDATE_INTERVAL);
+        m_decisionTrace.BeginTick();
+    }
     else
         return;
 

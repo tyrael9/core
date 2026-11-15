@@ -26,7 +26,9 @@ The first implementation adds an opt-in `DecisionTrace` seam. It records:
   periodic heal, or the legacy duplicate-target filter);
 - the result returned by the core spell-casting path;
 - when a healer-class bot is assigned a non-healer role;
-- when a same-map party member is in combat while the healer itself is not.
+- when a same-map party member is in combat while the healer itself is not;
+- when a Warrior tank has no party attacker to assist, or cannot use a taunt;
+- when a Mage skips Arcane Explosion because too few enemies are near the caster.
 
 The healer lifecycle now enters the existing class-specific combat routine when
 another member in the same map/instance is fighting. In that state it does not

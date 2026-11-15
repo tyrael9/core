@@ -843,9 +843,9 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (me->GetTargetGuid() == me->GetObjectGuid())
         me->ClearTarget();
 
-    if (!me->IsInCombat() && !healerSupportingPartyCombat)
+    if (!me->IsInCombat())
     {
-        if (DrinkAndEat())
+        if (!healerSupportingPartyCombat && DrinkAndEat())
         {
             if (!me->IsWithinDistInMap(pLeader, 100.0f))
             {

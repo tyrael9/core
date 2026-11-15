@@ -3185,6 +3185,12 @@ AHBot.itemcount = 50
 #        Default: 0 - off
 #                 1 - on
 #
+#    PlayerBot.OwnerOfflineGraceMs
+#        How long PartyBots stay in their owner's group after an unexpected disconnect.
+#        The bots are removed only if the owner does not return before this timeout.
+#        Set to 0 to disable the reconnect grace period.
+#        Default: 600000 (10 minutes)
+#
 #    PlayerBot.UpdateMs
 #        How often the AI of bots will be updated. A bigger delay will make them less responsive.
 #        Default: 1000 (1 second)
@@ -3235,6 +3241,7 @@ RandomBot.Refresh = 60000
 PlayerBot.AllowSaving = 0
 PlayerBot.Debug = 0
 PlayerBot.DecisionTrace = 0
+PlayerBot.OwnerOfflineGraceMs = 600000
 PlayerBot.UpdateMs = 1000
 PlayerBot.ShowInWhoList = 0
 

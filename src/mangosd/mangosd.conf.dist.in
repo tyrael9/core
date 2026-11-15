@@ -3180,6 +3180,11 @@ AHBot.itemcount = 50
 #        Default: 0 - off
 #                 1 - on
 #
+#    PlayerBot.DecisionTrace
+#        Logs bounded PartyBot spell and healing decision diagnostics.
+#        Default: 0 - off
+#                 1 - on
+#
 #    PlayerBot.UpdateMs
 #        How often the AI of bots will be updated. A bigger delay will make them less responsive.
 #        Default: 1000 (1 second)
@@ -3229,6 +3234,7 @@ RandomBot.Refresh = 60000
 
 PlayerBot.AllowSaving = 0
 PlayerBot.Debug = 0
+PlayerBot.DecisionTrace = 0
 PlayerBot.UpdateMs = 1000
 PlayerBot.ShowInWhoList = 0
 

@@ -8,6 +8,7 @@ the architecture of the Oracle A1 deployment.
 
 The workflow is triggered by:
 
+- pushes to `work/partybot-engine-foundation`;
 - pull requests targeting `validation/partybot-engine-base-0e3ff01`;
 - manual `workflow_dispatch`.
 

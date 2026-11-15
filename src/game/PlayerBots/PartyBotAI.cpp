@@ -3117,6 +3117,16 @@ void PartyBotAI::UpdateInCombatAI_Druid()
 {
     ShapeshiftForm const form = me->GetShapeshiftForm();
 
+    // Healers must leave combat forms before trying to heal the party.
+    if (GetRole() == ROLE_HEALER && form != FORM_NONE &&
+        me->HasAuraType(SPELL_AURA_MOD_SHAPESHIFT))
+    {
+        TraceDecision("healing_skipped", me, nullptr, "druid_healer_leaving_shapeshift_form",
+                      static_cast<uint32>(form));
+        me->RemoveSpellsCausingAura(SPELL_AURA_MOD_SHAPESHIFT);
+        return;
+    }
+
     if (m_spells.druid.pBarkskin &&
         (form == FORM_NONE || form == FORM_MOONKIN) &&
         (me->GetHealthPercent() < 50.0f) &&

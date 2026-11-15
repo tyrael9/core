@@ -1521,9 +1521,20 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
 
         if (FindAndPreHealTarget())
             return;
+
+        TraceDecision("healer_cycle_no_action", me, nullptr, "no_eligible_heal_spell_or_target",
+                      static_cast<uint32>(me->GetPowerPercent(POWER_MANA) * 100.0f));
     }
-    else if (me->GetHealthPercent() < 20.0f)
-        HealInjuredTarget(me);
+    else
+    {
+        if (me->GetHealthPercent() < 20.0f)
+        {
+            if (!HealInjuredTarget(me))
+                TraceDecision("healing_skipped", me, nullptr, "self_heal_spell_unavailable", 0);
+        }
+        else
+            TraceDecision("healing_skipped", me, nullptr, "role_not_healer", static_cast<uint32>(GetRole()));
+    }
 }
 
 void PartyBotAI::UpdateOutOfCombatAI_Hunter()
@@ -2086,9 +2097,16 @@ void PartyBotAI::UpdateInCombatAI_Priest()
 
         if (GetRole() == ROLE_HEALER && FindAndPreHealTarget())
             return;
+
+        if (GetRole() == ROLE_HEALER)
+            TraceDecision("healer_cycle_no_action", me, nullptr, "no_eligible_heal_spell_or_target",
+                          static_cast<uint32>(me->GetPowerPercent(POWER_MANA) * 100.0f));
     }
     else if (Unit* pVictim = me->GetVictim())
     {
+        if (GetRole() != ROLE_HEALER)
+            TraceDecision("healing_skipped", me, nullptr, "role_not_healer", static_cast<uint32>(GetRole()));
+
         if (m_spells.priest.pShadowform &&
             CanTryToCastSpell(me, m_spells.priest.pShadowform))
         {
@@ -3105,9 +3123,17 @@ void PartyBotAI::UpdateInCombatAI_Druid()
         if (GetRole() == ROLE_HEALER && FindAndPreHealTarget())
             return;
 
+        if (GetRole() == ROLE_HEALER)
+            TraceDecision("healer_cycle_no_action", me, nullptr, "no_eligible_heal_spell_or_target",
+                          static_cast<uint32>(me->GetPowerPercent(POWER_MANA) * 100.0f));
+
         if (EnterCombatDruidForm())
             return;
     }
+
+    if (form != FORM_NONE && GetRole() == ROLE_HEALER)
+        TraceDecision("healing_skipped", me, nullptr, "druid_form_prevents_healing",
+                      static_cast<uint32>(form));
 
     Unit* pVictim = me->GetVictim();
     if (!pVictim)

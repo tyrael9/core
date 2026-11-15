@@ -11,7 +11,7 @@ This roadmap tracks the new decision engine. Legacy PartyBot fixes are maintenan
 
 ## Phase 0 — baseline, lifecycle safety and observability
 
-- [x] Pin development to the exact deployed vMaNGOS baseline.
+- [x] Pin development to exact deployed vMaNGOS baseline.
 - [x] Add bounded opt-in DecisionTrace.
 - [x] Add diagnostics for spell checks, healer selection, Warrior assist/taunt and Mage AoE.
 - [x] Fix healer lifecycle entry when same-map party members are fighting.
@@ -23,14 +23,16 @@ This roadmap tracks the new decision engine. Legacy PartyBot fixes are maintenan
 
 ## Phase 1 — source research and architecture
 
-- [x] Identify and inspect the current CMaNGOS PlayerBots strategy engine.
-- [x] Identify and inspect active AzerothCore mod-playerbots and its raid strategy structure.
+- [x] Inspect current CMaNGOS PlayerBots strategy engine.
+- [x] Inspect active AzerothCore mod-playerbots and raid strategy structure.
 - [x] Document upstream source revisions, findings and compatibility limits.
 - [x] Define PartyCoordinator, PartySnapshot, PartyBotEngine and Legacy/Shadow/Strategy modes.
-- [~] Audit vMaNGOS update, map threading, group, threat, spell and movement APIs.
-- [ ] Trace the exact PlayerAI update call chain and confirm intra-map ownership/order.
-- [ ] Complete coordinator lifetime/creation/destruction design.
-- [ ] Record CMake source registration and test harness options.
+- [x] Trace MapManager -> Map -> Player::Update -> PlayerAI::UpdateAI update path.
+- [x] Verify same-map vs cross-map update ownership.
+- [x] Map group, target icon, attacker, threat, spell, cast and movement APIs.
+- [x] Identify CMake source registration.
+- [ ] Audit remaining action-specific target validation and threat-list resolution.
+- [ ] Decide coordinator creation/destruction and snapshot cache invalidation.
 
 ## Phase 2 — independent engine foundation
 
@@ -44,13 +46,13 @@ This roadmap tracks the new decision engine. Legacy PartyBot fixes are maintenan
 
 ## Phase 3 — first role vertical slice
 
-- [ ] Select healing-triage-first or tank-threat-first after API audit.
+- [ ] Select healing-triage-first or tank-threat-first after remaining API audit.
 - [ ] Implement the chosen class/role strategy and shared reservations.
 - [ ] Implement the matching vMaNGOS action adapter.
 - [ ] Implement Strategy-mode execution for only that decision domain.
 - [ ] Prove Legacy does not issue competing GCD actions.
 - [ ] Validate in-game with a real five-player party composition.
-- [ ] Migrate the complementary healer/tank domain.
+- [ ] Migrate complementary healer/tank domain.
 
 ## Phase 4 — five-player group behavior
 
@@ -78,16 +80,8 @@ This roadmap tracks the new decision engine. Legacy PartyBot fixes are maintenan
 - [ ] Blackwing Lair.
 - [ ] AQ20.
 - [ ] Validate Vanilla creature/spell data, vMaNGOS scripts and group-size assumptions for every encounter.
-- [ ] Consider AQ40/Naxx only after earlier raid support is stable; no commitment is implied.
-
-## Explicit non-goals for early phases
-
-- Replacing the vMaNGOS Player/session/group runtime.
-- Rewriting all class AI in one change.
-- Porting AzerothCore WotLK spell/encounter code.
-- Adding external services, ML inference or a scripting runtime.
-- Changing production databases or deploying without explicit approval.
+- [ ] Consider AQ40/Naxx only after earlier raid support is stable; no commitment implied.
 
 ## Current gate
 
-The source research and first API audit are committed. The next gate is to finish the exact PlayerAI update call chain and coordinator ownership/lifetime audit, then implement the smallest C++14 engine foundation in Shadow mode. No real Strategy-mode action should execute before that gate is complete.
+The source research and map/update/API audit are committed. Remaining gates are action-specific validation, coordinator lifecycle and snapshot cache expiry. Then implement the smallest C++14 engine foundation in Shadow mode. No real Strategy-mode action should execute before those gates are complete.

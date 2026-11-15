@@ -254,7 +254,26 @@ For each behavior change:
 A code review or successful CI build is not an in-game behavior test. Do not
 deploy to the live server until the user explicitly approves it.
 
-## 9. Current implementation status
+## 9. Build and regression CI
+
+The repository workflow `.github/workflows/partybot-core-build.yml` performs a
+full default-target build on a GitHub-hosted Linux ARM64 runner. This matches
+the deployment CPU architecture and checks the 5875/C++14 source tree.
+
+The workflow runs for pushes to the implementation branch, pull requests
+targeting the pinned validation branch, and manual dispatch. It uses the
+bundled third-party sources, disables optional cpptrace and PCH for a more
+predictable and resource-efficient CI build, and caches compiler outputs with
+ccache. It builds the default targets, including the game library, `mangosd`
+and `realmd`.
+
+The workflow definition being committed means CI is configured, not that a
+build has passed. Record the first actual Actions result separately. The
+manual owner reconnect, healer, Warrior and Mage checks are documented in
+[TESTING.md](TESTING.md). CI cannot validate instance persistence or combat
+behavior.
+
+## 10. Current implementation status
 
 This document is maintained with the code. Update this section whenever a
 phase changes.
@@ -266,7 +285,8 @@ phase changes.
 - [x] Warrior tank assist/taunt and Mage Arcane Explosion no-action paths
       instrumented.
 - [x] Owner disconnect grace period added, with a 10-minute default.
-- [ ] Reproducible ARM64 build and CI validation.
+- [x] ARM64 GitHub Actions compile workflow and regression checklist added.
+- [ ] First successful ARM64 CI build recorded.
 - [ ] In-game verification of healer behavior and owner reconnect/instance
       persistence.
 - [ ] Party snapshot and coordinator implementation.

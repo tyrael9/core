@@ -1,0 +1,71 @@
+name: PartyBot Core build
+
+on:
+  push:
+    branches:
+      - work/partybot-engine-foundation
+  pull_request:
+    branches:
+      - validation/partybot-engine-base-0e3ff01
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: partybot-core-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-arm64:
+    name: Linux ARM64 / Vanilla 5875
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            cmake \
+            ccache \
+            libmariadb-dev \
+            libssl-dev \
+            zlib1g-dev
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-${{ runner.arch }}-ccache-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-ccache-${{ github.ref }}-
+            ${{ runner.os }}-${{ runner.arch }}-ccache-
+
+      - name: Configure
+        run: |
+          ccache --zero-stats
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=14 \
+            -DBUILD_FOR_HOST_CPU=OFF \
+            -DBUILD_WARNINGS_AS_ERROR=OFF \
+            -DUSE_PCH=OFF \
+            -DENABLE_CPPTRACE=OFF \
+            -DUSE_SCRIPTS=ON \
+            -DBUILD_EXTRACTORS=OFF \
+            -DBUILD_REALMMERGE=OFF \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build server and realm daemon
+        run: cmake --build build --parallel 2
+
+      - name: Show compiler cache statistics
+        if: always()
+        run: ccache --show-stats

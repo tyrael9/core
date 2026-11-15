@@ -12,7 +12,7 @@
 
 class Player;
 class Unit;
-struct SpellEntry;
+class SpellEntry;
 
 namespace PartyBotEngine
 {

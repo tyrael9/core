@@ -43,8 +43,10 @@ does not replace the per-class rotations.
 PartyBots now remain in their existing group while the original owner is
 temporarily disconnected and their GUID is still a member of that group. The
 default reconnect grace period is 10 minutes; configure it with
-`PlayerBot.OwnerOfflineGraceMs`. A returning owner resets the timer. Explicit
-group removal is still handled as a removal, rather than an owner disconnect.
+`PlayerBot.OwnerOfflineGraceMs`. A returning owner resets the timer and is
+restored as group leader if a PartyBot was promoted while they were away.
+Explicit group removal is still handled as a removal, rather than an owner
+disconnect.
 
 Tracing is disabled by default. Add this line to the `mangosd.conf` used by a
 test server to enable it:

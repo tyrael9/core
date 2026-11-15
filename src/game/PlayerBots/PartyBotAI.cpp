@@ -1033,9 +1033,14 @@ void PartyBotAI::UpdateInCombatAI()
             {
                 if (pVictim = SelectPartyAttackTarget())
                 {
+                    TraceDecision("tank_assist_target", pVictim, nullptr,
+                                  "party_member_attacker_selected", 0);
                     me->AttackStop(true);
                     AttackStart(pVictim);
                 }
+                else
+                    TraceDecision("tank_assist_skipped", me, nullptr,
+                                  "no_party_member_attacker_found", 0);
             }
 
             // Taunt target if its attacking someone else.
@@ -1049,6 +1054,10 @@ void PartyBotAI::UpdateInCombatAI()
                             return;
                     }
                 }
+
+                TraceDecision("tank_taunt_no_action", pVictim, nullptr,
+                              m_spellListTaunt.empty() ? "no_taunt_spell_known" : "no_usable_taunt_spell",
+                              static_cast<uint32>(m_spellListTaunt.size()));
             }
         }
         else if (CrowdControlMarkedTargets())
@@ -1884,7 +1893,8 @@ void PartyBotAI::UpdateInCombatAI_Mage()
             }
         }
 
-        if (me->GetEnemyCountInRadiusAround(me, 10.0f) > 1)
+        uint32 const enemiesNearCaster = me->GetEnemyCountInRadiusAround(me, 10.0f);
+        if (enemiesNearCaster > 1)
         {
             if (m_spells.mage.pConeofCold && !me->IsMoving() &&
                 CanTryToCastSpell(me, m_spells.mage.pConeofCold))
@@ -1906,6 +1916,11 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 if (DoCastSpell(me, m_spells.mage.pArcaneExplosion) == SPELL_CAST_OK)
                     return;
             }
+        }
+        else if (m_spells.mage.pArcaneExplosion)
+        {
+            TraceDecision("aoe_skipped", me, m_spells.mage.pArcaneExplosion,
+                          "insufficient_enemies_near_caster", enemiesNearCaster);
         }
 
         if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)

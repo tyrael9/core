@@ -2038,9 +2038,16 @@ Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPe
                 if (pMember == me)
                     continue;
 
-                // Avoid all healers picking same target.
-                if (pTarget && !IsTankClass(pMember->GetClass()) && AreOthersOnSameTarget(pMember->GetObjectGuid(), false, true))
+                // Avoid duplicate healing decisions when another group member is
+                // already casting at this player. Keep the legacy rule for now, but
+                // expose it in the decision trace because it does not inspect spell intent.
+                if (pTarget && !IsTankClass(pMember->GetClass()) &&
+                    AreOthersOnSameTarget(pMember->GetObjectGuid(), false, true))
+                {
+                    TraceDecision("heal_target_rejected", pMember, nullptr,
+                                  "another_group_member_targeting_and_casting", 0);
                     continue;
+                }
 
                 // Check if we should heal party member.
                 if ((IsValidHealTarget(pMember, groupHealPercent) &&

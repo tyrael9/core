@@ -286,7 +286,12 @@ phase changes.
       instrumented.
 - [x] Owner disconnect grace period added, with a 10-minute default.
 - [x] ARM64 GitHub Actions compile workflow and regression checklist added.
-- [ ] First successful ARM64 CI build recorded.
+- [x] ARM64 full Core build passed on the implementation head.
+- [x] Existing Ubuntu GCC/Clang, macOS and Windows CI matrix passed on the
+      implementation head.
+- [x] Fixed the pre-heal helper's success return: it now reports success only
+      when a cast is accepted, rather than treating a non-null target as a
+      successful action.
 - [ ] In-game verification of healer behavior and owner reconnect/instance
       persistence.
 - [ ] Party snapshot and coordinator implementation.

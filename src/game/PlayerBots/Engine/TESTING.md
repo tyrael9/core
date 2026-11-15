@@ -50,6 +50,10 @@ without explicit approval.
 
 ### Healer lifecycle
 
+The pre-heal path must report success only when a heal cast is accepted. A
+selected target or a failed/unsuitable pre-heal must not suppress the normal
+no-action diagnostics or make the caller believe a cast occurred.
+
 1. Test Druid, Shaman and Priest PartyBots with a party member in combat while
    the healer itself is initially out of combat.
 2. Confirm the healer enters its existing class combat routine.

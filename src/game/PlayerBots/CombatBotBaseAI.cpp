@@ -2158,14 +2158,18 @@ bool CombatBotBaseAI::FindAndPreHealTarget()
 
     if (SpellEntry const* pHealSpell = SelectMostEfficientHealingSpell(pTarget, maxIncomingDamage, m_spellListDirectHeal))
     {
-        if (pHealSpell->GetCastTime(me) > 1000 && CanTryToCastSpell(pTarget, pHealSpell))
+        uint32 const castTime = pHealSpell->GetCastTime(me);
+        if (castTime > 1000 && CanTryToCastSpell(pTarget, pHealSpell))
         {
             if (DoCastSpell(pTarget, pHealSpell) == SPELL_CAST_OK)
                 return true;
         }
+        else if (castTime <= 1000)
+            TraceDecision("preheal_skipped", pTarget, pHealSpell, "cast_time_not_over_one_second", castTime);
     }
 
-    return pTarget;
+    TraceDecision("preheal_no_action", pTarget, nullptr, "no_eligible_long_cast_heal", maxIncomingDamage);
+    return false;
 }
 
 bool CombatBotBaseAI::IsValidHostileTarget(Unit const* pTarget) const

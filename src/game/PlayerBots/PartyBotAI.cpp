@@ -752,11 +752,15 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
             if (m_ownerOfflineTimer < graceMs)
             {
+                // UpdateAI reaches this branch once per PB_UPDATE_INTERVAL;
+                // the current call's diff is only the final sub-tick, not the
+                // elapsed time since the previous PartyBot decision tick.
+                uint32 const elapsedMs = PB_UPDATE_INTERVAL;
                 uint32 const remainingMs = graceMs - m_ownerOfflineTimer;
-                if (diff >= remainingMs)
+                if (elapsedMs >= remainingMs)
                     m_ownerOfflineTimer = graceMs;
                 else
-                    m_ownerOfflineTimer += diff;
+                    m_ownerOfflineTimer += elapsedMs;
             }
 
             if (m_ownerOfflineTimer < graceMs)

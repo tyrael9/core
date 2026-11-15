@@ -65,8 +65,7 @@ the database.
 
 `.github/workflows/partybot-core-build.yml` configures and compiles the full
 default server targets on a GitHub-hosted Linux ARM64 runner. It is triggered
-by pushes to the development branch, PRs targeting the pinned validation
-branch, and manual dispatch. The job builds the Vanilla 5875 / C++14 code and
+by PRs targeting the pinned validation branch and manual dispatch. The job builds the Vanilla 5875 / C++14 code and
 uses ccache. See [TESTING.md](TESTING.md) for exact scope and limitations.
 
 The workflow has been added, but that alone is not a successful build. Check

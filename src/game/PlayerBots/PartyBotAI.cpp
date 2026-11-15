@@ -734,7 +734,12 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         return;
 
     // Healers must support the group even when they have not personally entered combat.
-    bool const healerSupportingPartyCombat = GetRole() == ROLE_HEALER && IsPartyInCombat();
+    bool const partyInCombat = IsPartyInCombat();
+    bool const healerSupportingPartyCombat = GetRole() == ROLE_HEALER && partyInCombat;
+    if (partyInCombat && !me->IsInCombat() && IsHealerClass(me->GetClass()) &&
+        GetRole() != ROLE_HEALER)
+        TraceDecision("healing_skipped", me, nullptr, "healer_class_assigned_non_healer_role",
+                      static_cast<uint32>(GetRole()));
     if (healerSupportingPartyCombat && !me->IsInCombat())
     {
         if (Spell* pCurrentSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))

@@ -260,8 +260,8 @@ The repository workflow `.github/workflows/partybot-core-build.yml` performs a
 full default-target build on a GitHub-hosted Linux ARM64 runner. This matches
 the deployment CPU architecture and checks the 5875/C++14 source tree.
 
-The workflow runs for pull requests targeting the pinned validation
-branch and manual dispatch. It uses the
+The workflow runs for pushes to the implementation branch, pull requests
+targeting the pinned validation branch, and manual dispatch. It uses the
 bundled third-party sources, disables optional cpptrace and PCH for a more
 predictable and resource-efficient CI build, and caches compiler outputs with
 ccache. It builds the default targets, including the game library, `mangosd`

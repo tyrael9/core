@@ -736,9 +736,9 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     }
 
     Player* pLeader = GetPartyLeader();
-    if (!pLeader)
+    if (!pLeader || !pLeader->IsInWorld())
     {
-        // A disconnected owner remains a member slot in the persisted group.
+        // A disconnected or still-loading owner remains a member slot in the persisted group.
         // Keep the PartyBots in the instance during a bounded reconnect window.
         Group* pGroup = me->GetGroup();
         bool const ownerStillInGroup = pGroup && pGroup->IsMember(m_leaderGuid);
@@ -775,9 +775,6 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     // A returning owner resumes control of the existing PartyBot group.
     m_ownerOfflineTimer = 0;
-
-    if (!pLeader->IsInWorld())
-        return;
 
     // Healers must support the group even when they have not personally entered combat.
     bool const partyInCombat = IsHealerClass(me->GetClass()) && IsPartyInCombat();

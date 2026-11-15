@@ -1,5 +1,7 @@
 # PartyBot Engine migration
 
+The architecture, lifecycle policy, rollout phases and validation requirements are maintained in [DESIGN.md](DESIGN.md). Update that document in the same change whenever implementation decisions or phase status change.
+
 ## Baseline
 
 This work starts from the exact Core revision used by the reference deployment:
@@ -28,13 +30,21 @@ The first implementation adds an opt-in `DecisionTrace` seam. It records:
 - when a healer-class bot is assigned a non-healer role;
 - when a same-map party member is in combat while the healer itself is not;
 - when a Warrior tank has no party attacker to assist, or cannot use a taunt;
-- when a Mage skips Arcane Explosion because too few enemies are near the caster.
+- when a Mage skips Arcane Explosion because too few enemies are near the caster;
+- when the original owner disconnects and PartyBots enter their reconnect grace
+  period, or when that grace period expires.
 
 The healer lifecycle now enters the existing class-specific combat routine when
 another member in the same map/instance is fighting. In that state it does not
 start another food/drink cycle or run out-of-combat buff logic, but it retains
 the existing follow/teleport behaviour. This is a targeted behaviour fix; it
 does not replace the per-class rotations.
+
+PartyBots now remain in their existing group while the original owner is
+temporarily disconnected and their GUID is still a member of that group. The
+default reconnect grace period is 10 minutes; configure it with
+`PlayerBot.OwnerOfflineGraceMs`. A returning owner resets the timer. Explicit
+group removal is still handled as a removal, rather than an owner disconnect.
 
 Tracing is disabled by default. Add this line to the `mangosd.conf` used by a
 test server to enable it:

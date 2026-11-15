@@ -22,7 +22,8 @@ The first implementation adds an opt-in `DecisionTrace` seam. It records:
 - why a PartyBot AoE spell was rejected by the existing crowd-control or
   threat-safety guard;
 - why a party member was excluded from heal-target consideration (health
-  threshold, friendly-target validation, line of sight, or scan range);
+  threshold, friendly-target validation, line of sight, scan range, an existing
+  periodic heal, or the legacy duplicate-target filter);
 - the result returned by the core spell-casting path;
 - when a healer-class bot is assigned a non-healer role;
 - when a same-map party member is in combat while the healer itself is not.

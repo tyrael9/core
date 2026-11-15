@@ -741,7 +741,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             if (m_ownerOfflineTimer < graceMs)
             {
                 uint32 const remainingMs = graceMs - m_ownerOfflineTimer;
-                m_ownerOfflineTimer += std::min<uint32>(diff, remainingMs);
+                if (diff >= remainingMs)
+                    m_ownerOfflineTimer = graceMs;
+                else
+                    m_ownerOfflineTimer += diff;
             }
 
             if (m_ownerOfflineTimer < graceMs)

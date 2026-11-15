@@ -1,6 +1,6 @@
 # PartyBot Engine migration
 
-The target architecture and adapter constraints are maintained in [ARCHITECTURE.md](ARCHITECTURE.md). Source research is recorded in [RESEARCH-CMANGOS.md](RESEARCH-CMANGOS.md) and [RESEARCH-AZEROTHCORE.md](RESEARCH-AZEROTHCORE.md). The milestone plan is in [ROADMAP.md](ROADMAP.md), and the build/manual regression procedure is in [TESTING.md](TESTING.md). Update the relevant documents in the same commit as every implementation change.
+The target architecture and API boundaries are maintained in [ARCHITECTURE.md](ARCHITECTURE.md) and [VMANGOS-API-AUDIT.md](VMANGOS-API-AUDIT.md). Source research is recorded in [RESEARCH-CMANGOS.md](RESEARCH-CMANGOS.md) and [RESEARCH-AZEROTHCORE.md](RESEARCH-AZEROTHCORE.md). The milestone plan is in [ROADMAP.md](ROADMAP.md), and build/manual regression procedures are in [TESTING.md](TESTING.md). Update the relevant documents in the same commit as every implementation change.
 
 ## Baseline
 
@@ -12,10 +12,8 @@ The target architecture and adapter constraints are maintained in [ARCHITECTURE.
 
 The fork branch is pinned to the deployed Core revision. Do not rebase it onto a moving upstream branch without reviewing PartyBot and database changes.
 
-## Current implementation status
+## Current status
 
-Phase 0 is committed as lifecycle/diagnostic groundwork. It is not the new decision engine. The current DecisionTrace and legacy healer/owner fixes remain useful, but the old class-specific combat routines are not the architecture target.
+Phase 0 lifecycle/diagnostic groundwork is committed; it is not the new decision engine. CMaNGOS and AzerothCore source research and the first vMaNGOS API audit are documented. The remaining API call-chain/lifetime audit precedes the independent PartyBotEngine implementation.
 
-The next work is source research (documented), then an exact vMaNGOS API/thread/lifetime audit, then an independent PartyBotEngine. Legacy remains the default executor until a migrated decision domain passes in-game validation.
-
-See ROADMAP.md for checked milestones and current gates.
+Legacy remains the default executor until each migrated decision domain passes in-game validation. See ROADMAP.md for the current gate.

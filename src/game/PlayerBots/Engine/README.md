@@ -1,6 +1,6 @@
 # PartyBot Engine migration
 
-The architecture, lifecycle policy, rollout phases and validation requirements are maintained in [DESIGN.md](DESIGN.md). Update that document in the same change whenever implementation decisions or phase status change.
+The architecture, lifecycle policy, rollout phases and validation requirements are maintained in [DESIGN.md](DESIGN.md). Update that document in the same change whenever implementation decisions or phase status change. The build and manual regression procedure is in [TESTING.md](TESTING.md).
 
 ## Baseline
 
@@ -10,6 +10,7 @@ This work starts from the exact Core revision used by the reference deployment:
 - Deploy wrapper: `ebaa560951459419c35140e20d787ec5db2905b8`
 - Client variant: `5875` (Vanilla 1.12.1)
 - Build language level: C++14
+- CI target: Linux ARM64, matching the Oracle A1 deployment architecture
 
 The fork branch is intentionally based on that Core commit rather than the moving
 upstream `development` head. Do not rebase the work onto a newer upstream commit
@@ -59,6 +60,17 @@ Each PartyBot emits at most 12 trace records per one-second AI update. The
 final slot reports that further records were suppressed. Normal bot behaviour
 is unchanged while tracing is disabled, and the trace code does not write to
 the database.
+
+## Build CI
+
+`.github/workflows/partybot-core-build.yml` configures and compiles the full
+default server targets on a GitHub-hosted Linux ARM64 runner. It is triggered
+by pushes to the development branch, PRs targeting the pinned validation
+branch, and manual dispatch. The job builds the Vanilla 5875 / C++14 code and
+uses ccache. See [TESTING.md](TESTING.md) for exact scope and limitations.
+
+The workflow has been added, but that alone is not a successful build. Check
+the Actions result before treating the branch as compile-validated.
 
 ## Next phases
 

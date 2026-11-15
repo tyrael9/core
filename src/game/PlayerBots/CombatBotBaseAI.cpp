@@ -2071,9 +2071,13 @@ Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPe
 
 Unit* CombatBotBaseAI::SelectPeriodicHealTarget(float selfHealPercent, float groupHealPercent) const
 {
-    if (me->GetHealthPercent() < selfHealPercent &&
-       !me->HasAuraType(SPELL_AURA_PERIODIC_HEAL))
-        return me;
+    if (me->GetHealthPercent() < selfHealPercent)
+    {
+        if (!me->HasAuraType(SPELL_AURA_PERIODIC_HEAL))
+            return me;
+
+        TraceDecision("periodic_heal_target_rejected", me, nullptr, "self_already_has_periodic_heal", 0);
+    }
 
     if (IsInDuel())
         return nullptr;
@@ -2089,9 +2093,17 @@ Unit* CombatBotBaseAI::SelectPeriodicHealTarget(float selfHealPercent, float gro
                     continue;
 
                 // Check if we should heal party member.
-                if (IsValidHealTarget(pMember, groupHealPercent) &&
-                   !pMember->HasAuraType(SPELL_AURA_PERIODIC_HEAL))
+                if (IsValidHealTarget(pMember, groupHealPercent))
+                {
+                    if (pMember->HasAuraType(SPELL_AURA_PERIODIC_HEAL))
+                    {
+                        TraceDecision("periodic_heal_target_rejected", pMember, nullptr,
+                                      "target_already_has_periodic_heal", 0);
+                        continue;
+                    }
+
                     return pMember;
+                }
             }
         }
     }

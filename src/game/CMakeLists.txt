@@ -445,6 +445,7 @@ set (game_SRCS
     PacketBroadcast/PlayerBroadcaster.h
     PlayerBots/CombatBotBaseAI.h
     PlayerBots/PartyBotAI.h
+    PlayerBots/Engine/DecisionTrace.h
     PlayerBots/BattleBotAI.h
     PlayerBots/BattleBotWaypoints.h
     PlayerBots/PlayerBotAI.h

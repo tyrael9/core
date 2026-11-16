@@ -121,3 +121,10 @@ Not yet implemented:
 - encounter strategies.
 
 Do not describe current code as a completed new engine. Update this section and ROADMAP.md with every implementation milestone.
+
+
+## 13. Independent engine foundation status
+
+The pure C++14 foundation is now committed: value-only PartySnapshot types, PartyCoordinator reservation primitives, Strategy/Trigger/Action/Value/Multiplier interfaces, candidate evaluation and channel arbitration, plus standalone deterministic tests. Evaluate is read-only; ExecuteSelected is a separate explicit method.
+
+No PartyBotAI runtime integration exists yet. The current code does not build a live snapshot, create map-scoped coordinator shards or execute vMaNGOS actions. The packet-processing audit confirms Group reads are safe in map context; the builder will use GetMemberSlots() GUIDs and current-map resolution.

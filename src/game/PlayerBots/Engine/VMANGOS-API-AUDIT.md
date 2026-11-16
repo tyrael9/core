@@ -109,22 +109,32 @@ Consequences:
 - Map::UpdatePlayers runs twice per Map::Update; PartyBotAI's independent one-second timer means bots may tick at different offsets.
 - Snapshot cache epoch/expiry and reservation expiry must be explicit.
 
-### Important unresolved Group concurrency risk
+### Group roster read/write safety verified
 
-Group::GetFirstMember()/GroupReference iteration is not protected by a mutex in Group.h. Group::Create assigns a stable runtime/database group ID, but the group object itself can be observed from more than one map update context if members are on different maps. Group membership changes may therefore race with a snapshot that walks the group member list unless the call path proves those operations are serialized or a safe roster snapshot API is added.
+The pinned Core explicitly documents the packet-thread contract in src/game/PacketProcessing.h:
 
-Do not treat the map-scoped coordinator key as proof that Group roster iteration is thread-safe. Before implementing shared roster snapshots, choose and document one of:
-1. prove from the actual group/session mutation call paths that roster mutation cannot overlap the PartyBot snapshot read;
-2. add a narrowly scoped synchronized Group roster snapshot API and ensure all relevant mutations use the same synchronization;
-3. restrict the engine to a proven stable same-map roster and explicitly suspend it during cross-map membership transitions.
+- PACKET_PROCESS_MAP is safe to read and iterate Groups, but unsafe to write Groups.
+- PACKET_PROCESS_GROUP is an alias of PACKET_PROCESS_WORLD and is allowed to read/modify/add/remove Groups.
+- Group opcodes such as CMSG_GROUP_INVITE and CMSG_GROUP_ACCEPT are registered with PACKET_PROCESS_GROUP in src/game/Server/Protocol/Opcodes.cpp.
+- Map::ProcessSessionPackets uses MapSessionFilter for map/spell/movement processing; group mutation handlers are not assigned to those map packet classes.
+- World::UpdateSessions processes world packets before sMapMgr.Update schedules the map tasks.
 
-Do not add a lock around only the new read path; it would not synchronize with existing mutators that do not take that lock.
+This resolves the earlier concern for the normal group packet path: Group roster writes are serialized in the World packet phase, while map tasks may safely read/iterate Groups. PACKET_PROCESS_ASYNC can overlap map updates, but group mutation opcodes are classified as PACKET_PROCESS_GROUP, not ASYNC.
+
+For the live PartySnapshot builder:
+1. Read the public Group::GetMemberSlots() list and copy only each MemberSlot GUID.
+2. Resolve each GUID through the current Map::GetUnit(guid).
+3. Include only units that resolve on this same map/instance.
+4. Do not dereference GroupReference::getSource() for players on other maps; no cross-map Player* reads are needed.
+5. Do not retain the Group, MemberSlot reference or Unit pointer after the current snapshot build.
+
+This conclusion relies on preserving the Core packet-processing classifications. If a future change reclassifies group mutation handlers as MAP or ASYNC, the snapshot safety contract must be revisited.
 
 ## 7. Build integration and tests
 
 New game source files are registered in src/game/CMakeLists.txt. Every new Engine .cpp must be added there.
 
-The repository tree contains no obvious dedicated unit-test directory or existing game unit-test target. Audit top-level CMake options and CI build conventions before adding a test target. The first decision layer should be designed so its pure candidate/priority/reservation logic can be tested without live Map/Player objects.
+The repository has no dedicated game unit-test target. A standalone C++14 test harness now exists under Engine/tests and is run by the PartyBot Core build workflow. It tests the pure decision layer without live Map/Player objects.
 
 ## 8. Current reusable seams
 

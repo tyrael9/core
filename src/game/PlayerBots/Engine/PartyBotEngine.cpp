@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <utility>
 namespace PartyBotEngine {
 void PartyBotEngine::AddStrategy(std::shared_ptr<Strategy> strategy) {
     if (strategy) m_strategies.push_back(std::move(strategy));

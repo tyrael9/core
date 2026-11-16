@@ -134,7 +134,7 @@ Migration is per decision domain. No Strategy mode becomes default before in-gam
 
 MapManager schedules instance maps as separate DoUpdate tasks; Map::UpdatePlayers calls WorldObject::UpdateHelper; Player::Update calls Unit::Update and then m_AI->UpdateAI(p_time). Same-map bots execute within the owning map update context, while different maps may update in parallel.
 
-A same-map shard is therefore a reasonable ownership boundary for coordinator mutations, but Group roster iteration remains a separate concurrency concern: Group::GetFirstMember has no mutex, and cross-map roster changes may race. Resolve this before shared snapshot collection. Keep all shard mutation in the owning map context; never share mutable shard state across map shards.
+A same-map shard is therefore a reasonable ownership boundary for coordinator mutations, but Group roster iteration remains a separate concurrency concern: PacketProcessing.h explicitly permits Group reads/iteration in PACKET_PROCESS_MAP and classifies group writes as PACKET_PROCESS_GROUP = PACKET_PROCESS_WORLD. Group opcodes are processed before map tasks. Build snapshots from GetMemberSlots() GUIDs and resolve through the current Map; never dereference cross-map Player pointers. Keep all shard mutation in the owning map context; never share mutable shard state across map shards.
 
 PartyBotAI timers are independent. Snapshot cache epoch and reservation expiry cannot assume synchronized bot ticks. No synchronous DB work, network calls or inference calls belong in the AI tick. Triggers must be cheap; scans should be centralized and cached; storage must be bounded.
 
@@ -164,4 +164,11 @@ The first independent, Core-agnostic decision foundation is committed:
 - ExecuteSelected is a separate explicit call; Evaluate itself never executes anything.
 - A standalone deterministic test harness covers channel arbitration, eligibility rejection, reservation expiry and multiplier veto.
 
-This is a pure engine foundation, not yet connected to PartyBotAI. There is no live snapshot builder, coordinator registry, Shadow-mode runtime hook or vMaNGOS Action adapter yet. The Group roster concurrency issue remains a gate before shared party snapshot collection.
+This is a pure engine foundation, not yet connected to PartyBotAI. There is no live snapshot builder, coordinator registry, Shadow-mode runtime hook or vMaNGOS Action adapter yet. The packet-processing audit confirms Group roster reads are safe in map context; the live builder must copy GUIDs from Group::GetMemberSlots() and resolve them only through the current Map.
+
+
+## 10. Current engine foundation status
+
+The first independent, Core-agnostic decision foundation is committed: value-only PartySnapshot data types; PartyCoordinator reservation storage; Strategy/Trigger/Action/Value/Multiplier interfaces; deterministic candidate evaluation, multiplier veto and one selected action per channel; plus standalone C++14 tests.
+
+Evaluate is read-only. ExecuteSelected is a separate explicit call. This foundation is not yet connected to PartyBotAI: there is no live snapshot builder, coordinator registry, Shadow-mode runtime hook or vMaNGOS action adapter yet. The packet-processing audit now provides a safe group-read contract for the next adapter step.

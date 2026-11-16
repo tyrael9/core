@@ -30,7 +30,7 @@ Legacy PartyBot fixes are maintenance work and do not count as new-engine milest
 - [x] Verify same-map vs cross-map update ownership.
 - [x] Map group, target icon, attacker, threat, spell, cast and movement APIs.
 - [x] Identify CMake source registration.
-- [~] Resolve Group roster concurrency for same-map snapshots.
+- [x] Verify Group roster reads are safe in map context via PACKET_PROCESS_MAP / PACKET_PROCESS_GROUP classification.
 - [ ] Audit action-specific target validation and threat-list resolution.
 - [ ] Decide coordinator destruction and snapshot cache invalidation.
 
@@ -39,7 +39,8 @@ Legacy PartyBot fixes are maintenance work and do not count as new-engine milest
 - [x] Add C++14 Strategy, Trigger, Action, Value and Multiplier interfaces.
 - [x] Add value-only PartySnapshot data types with GUID-based references.
 - [ ] Implement the live same-map snapshot builder after resolving Group roster concurrency.
-- [ ] Add map/instance-scoped PartyCoordinator with expiring reservations.
+- [x] Add pure PartyCoordinator reservation storage with expiry/conflict/release behavior.
+- [ ] Add the map/instance shard registry and lifecycle ownership.
 - [x] Add deterministic candidate evaluation, channel arbitration and explicit action result states.
 - [~] Evaluation is read-only and can support Shadow mode; runtime integration is not wired yet.
 - [x] Add standalone deterministic tests for eligibility, priorities, expiry and arbitration.
@@ -85,4 +86,4 @@ Legacy PartyBot fixes are maintenance work and do not count as new-engine milest
 
 ## Current gate
 
-The source research and map/update/API audit are committed. The important remaining blocker is safe Group roster snapshotting across map update threads, followed by action-specific validation and coordinator lifetime/cache design. Resolve these before implementing shared roster-dependent Strategy evaluation.
+The source research and map/update/API audit are committed. The remaining gates are the live snapshot builder, map/instance coordinator registry lifetime, action-specific validation and cache expiry. The packet-processing contract allows safe Group roster reads in map context; the builder will copy GUIDs from Group::GetMemberSlots() and resolve only on the current Map.

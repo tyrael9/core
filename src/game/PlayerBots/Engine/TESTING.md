@@ -131,6 +131,31 @@ Shadow mode is opt-in and must be enabled only on a test realm:
 
 Battleground groups (group ID zero), missing group state and unavailable snapshots are skipped. Cross-map party members are intentionally not resolved into the current map snapshot.
 
+## Automated live diagnostics
+
+The deployment fork now provides a read-only collector:
+`tyrael9/vmangos-deploy/scripts/partybot-diagnostics.sh`.
+
+Run it on the Oracle host from the `vmangos-deploy` checkout:
+
+```sh
+bash scripts/partybot-diagnostics.sh
+```
+
+It reads the effective `mangosd`/`realmd` image references and container
+status through `partybot-deploy.sh`, reads only the two relevant PartyBot
+configuration flags, and parses timestamped `[PartyBotShadow]` summaries.
+It writes `.partybot/diagnostics/latest.json` and reports heartbeat freshness,
+observed bot/group/map/instance identities, member/hostile counts and candidate
+totals. It is read-only: no restart, SQL, DB/volume access or config changes.
+
+The report deliberately labels absent heartbeats as WARN because that can mean
+Shadow is disabled, no eligible party bot is active, the log window is too
+short, or snapshot construction did not complete. It does not claim to detect
+internal coordinator leaks or prove lifecycle correctness; those still need
+dedicated instrumentation/tests. Zero candidates/selected is expected until
+runtime strategies/actions are registered.
+
 ## New engine tests (planned)
 
 - Trigger cadence and cached Value invalidation.

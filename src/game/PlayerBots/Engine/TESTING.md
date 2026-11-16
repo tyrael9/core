@@ -6,7 +6,7 @@ The workflow at .github/workflows/partybot-core-build.yml builds this branch on 
 
 It configures and compiles the Vanilla 1.12.1 / 5875 C++14 Core default targets, including game, mangosd and realmd. It uses bundled third-party sources, disables optional cpptrace/PCH for deterministic resource use, and uses ccache.
 
-A successful run proves configure/compile/link on that CI environment. It does not prove runtime behavior, instance persistence, database compatibility beyond compilation, or successful operation in the production deployment. It is not permission to deploy.
+A successful run proves configure/compile/link on that CI environment. The first post-reactivation run (head `f3179084158804429f47f7a55f7cbbbf04f83ea9`, run #38) passed: standalone tests, CMake configure, and full `mangosd` / `realmd` build. It does not prove runtime behavior, instance persistence, database compatibility beyond compilation, or successful operation in the production deployment. It is not permission to deploy.
 
 ## Required in-game regression checks
 

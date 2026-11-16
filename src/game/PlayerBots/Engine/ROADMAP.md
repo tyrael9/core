@@ -44,7 +44,7 @@ Legacy PartyBot fixes are maintenance work and do not count as new-engine milest
 - [x] Add deterministic candidate evaluation, channel arbitration and explicit action result states.
 - [~] Evaluation is read-only and can support Shadow mode; runtime integration is not wired yet.
 - [x] Add standalone deterministic tests for eligibility, priorities, expiry and arbitration.
-- [ ] Build on Linux ARM64 and supported CI targets.
+- [x] Build on Linux ARM64 / Vanilla 5875 (full Core configure, compile and link passed; standalone tests passed).
 
 ## Phase 3 — first role vertical slice
 
@@ -89,4 +89,4 @@ Legacy PartyBot fixes are maintenance work and do not count as new-engine milest
 The source research and map/update/API audit are committed. The remaining gates are the live snapshot builder, map/instance coordinator registry lifetime, action-specific validation and cache expiry. The packet-processing contract allows safe Group roster reads in map context; the builder will copy GUIDs from Group::GetMemberSlots() and resolve only on the current Map.
 
 
-The live snapshot builder and coordinator registry are now compiled primitives. The next step is to attach a shard to each PartyBotAI, call GetOrBuild only from its map update context, and expose the read-only evaluation report in opt-in Shadow mode.
+The live snapshot builder and coordinator registry are now compiled primitives. The first focused CI run passed on Linux ARM64 / Vanilla 5875, including standalone tests and full Core configure/compile/link. The next step is to attach a shard to each PartyBotAI, call GetOrBuild only from its map update context, and expose read-only evaluation in opt-in Shadow mode.

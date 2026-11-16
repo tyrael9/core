@@ -27,19 +27,39 @@ GHCR may initially create the package as private. If Oracle cannot pull it anony
 
 ## Deploying the image on the Oracle test instance
 
-Do not replace the database image or touch database volumes. The server image contains the Core binaries; it does not contain the extracted client map data or the database.
+Do not replace the database image or touch database volumes. The server image
+contains the Core binaries; it does not contain the extracted client map data
+or the database.
 
-First inspect the actual Compose configuration on the target instance and make a backup of the database. Keep a copy of the current Compose file and current image reference so rollback is straightforward. Then pull:
+The deployment fork provides a repeatable helper:
 
-```bash
-docker pull ghcr.io/tyrael9/vmangos-server:partybot-daba395
+- Script: `tyrael9/vmangos-deploy/scripts/partybot-deploy.sh`
+- Guide: [PartyBot test deployment](https://github.com/tyrael9/vmangos-deploy/blob/master/docs/partybot-testing.md)
+
+After installing the helper on the Oracle host, deploy the tag published by the
+successful image workflow:
+
+```sh
+./scripts/partybot-deploy.sh deploy partybot-daba395
 ```
 
-For the `mangosd` and `realmd` services, override only the server image to the tag above (or set the corresponding image environment variable if the Compose file uses one). Leave the database service, database-backup service, named volumes, ports, configuration mounts, and extracted-data bind mount unchanged. Recreate only the game-server services after checking the rendered configuration with `docker compose config`.
+The helper verifies the image architecture, saves the previous `mangosd` and
+`realmd` image references, recreates only those two services with
+`--no-deps`, and waits for their health checks. It does not restart or recreate
+database services, make a database dump, or modify database backups, volumes,
+configuration files, or extracted client data. Continue using the configured
+database-backup service for routine backups.
 
-The exact override depends on the instance's current Compose file; do not blindly copy a generic service definition. Verify that both `mangosd` and `realmd` use the same new image if both services exist. Capture logs and verify startup before connecting.
+Use the helper's `status` and `logs` commands to inspect the effective
+configuration and service output. Use `rollback` to restore the recorded
+previous server images. Once its private `.partybot/active.override.yaml` is
+active, use the helper for further server-image changes: a plain
+`docker compose up -d` does not include that override and can recreate the
+server containers with the image references in the base Compose file.
 
-Rollback: restore the previous server image reference and recreate only the game-server services. Do not restore or recreate database volumes as part of an image rollback unless a separately diagnosed database migration requires it.
+Players should log out before deploying because replacing `mangosd`
+disconnects active clients. A successful health check proves startup only;
+in-game behavior must still be validated separately.
 
 ## Required in-game regression checks
 
@@ -55,7 +75,27 @@ Run only on a disposable/test realm unless the user explicitly approves otherwis
 6. Repeat beyond grace expiry; confirm cleanup occurs only after expiry.
 7. Verify intentional owner leave/disband and explicit bot removal still clean up.
 
-### Healer lifecycle and pre-heal
+#### Confirmed Oracle owner-disconnect test (2026-11-15)
+
+<badge>Runtime-tested</badge> The ARM64 image
+`ghcr.io/tyrael9/vmangos-server:partybot-daba395`, built from Core revision
+`daba3955d67a40d84915c45537a3bed9445953ba`, was deployed to the Oracle A1
+test realm. The operator interrupted the owner's connection and reconnected
+within the configured grace period. On reconnect, the operator confirmed:
+
+- the PartyBots remained in the original party;
+- all PartyBots remained in the same instance at their previous locations;
+- the instance had not reset;
+- PartyBots were still present and able to act normally; and
+- the owner was again the party leader.
+
+This validates the owner reconnect path during a short disconnect. It does not
+yet validate grace-period expiry, intentional owner leave/disband, explicit
+bot removal, or reconnect after the configured grace period. The code default
+for `PlayerBot.OwnerOfflineGraceMs` is 600000 ms (10 minutes), but the effective
+value can be overridden in the server configuration.
+
+## Healer lifecycle and pre-heal
 
 1. Test Druid, Shaman and Priest bots while another same-map party member is fighting.
 2. Confirm healer enters its class combat routine and does not start food/drink or out-of-combat buffs.

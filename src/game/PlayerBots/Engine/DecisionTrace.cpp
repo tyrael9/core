@@ -66,6 +66,18 @@ void DecisionTrace::Record(Player const* bot, char const* event, Unit const* tar
              detail);
 }
 
+void DecisionTrace::RecordShadowStatus(Player const* bot, char const* status,
+                                      uint32 groupId, uint32 mapId, uint32 instanceId) const
+{
+    if (!m_enabled || !bot || m_recordsThisTick >= MAX_RECORDS_PER_TICK)
+        return;
+
+    ++m_recordsThisTick;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotShadowStatus] bot=%u group=%u map=%u instance=%u status=%s",
+             bot->GetGUIDLow(), groupId, mapId, instanceId, status ? status : "unknown");
+}
+
 void DecisionTrace::RecordShadowSummary(Player const* bot, uint32 groupId, uint32 mapId,
                                        uint32 instanceId, uint32 snapshotEpoch,
                                        uint32 memberCount, uint32 hostileCount,

@@ -28,6 +28,8 @@
 #include "SpellAuras.h"
 #include "Chat.h"
 #include "Utilities/Random.h"
+#include "Engine/PartySnapshotBuilder.h"
+#include "Timer.h"
 
 #include <random>
 
@@ -775,12 +777,21 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             TraceDecision("owner_offline_expired", me, nullptr, "reconnect_grace_elapsed", graceMs);
         }
 
+        if (m_partyCoordinator && m_partyCoordinatorMapId == me->GetMapId() &&
+            m_partyCoordinatorInstanceId == me->GetInstanceId())
+            m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+        m_partyCoordinator.reset();
+        m_partyCoordinatorMapId = 0;
+        m_partyCoordinatorInstanceId = 0;
         botEntry->requestRemoval = true;
         return;
     }
 
     // A returning owner resumes control of the existing PartyBot group.
     m_ownerOfflineTimer = 0;
+
+    // Opt-in read-only evaluation; Legacy remains the only action executor.
+    UpdatePartyBotEngineShadow();
 
     // Healers must support the group even when they have not personally entered combat.
     bool const partyInCombat = IsHealerClass(me->GetClass()) && IsPartyInCombat();
@@ -1019,6 +1030,87 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         UpdateInCombatAI();
 }
 
+
+void PartyBotAI::UpdatePartyBotEngineShadow()
+{
+    if (!me || !me->IsInWorld())
+        return;
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    bool const enabled = sConfig.GetBoolDefault("PlayerBot.EngineShadow", false);
+
+    if (!enabled)
+    {
+        // A bot can change maps before its next AI tick. Never mutate a shard owned by another map thread.
+        if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
+            m_partyCoordinatorInstanceId == instanceId)
+            m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+        m_partyCoordinator.reset();
+        m_partyCoordinatorMapId = 0;
+        m_partyCoordinatorInstanceId = 0;
+        m_engineShadowTraceMs = 0;
+        return;
+    }
+
+    Group* group = me->GetGroup();
+    if (!group || group->isBGGroup() || group->GetId() == 0)
+    {
+        if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
+            m_partyCoordinatorInstanceId == instanceId)
+            m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+        m_partyCoordinator.reset();
+        m_partyCoordinatorMapId = 0;
+        m_partyCoordinatorInstanceId = 0;
+        return;
+    }
+
+    std::shared_ptr<PartyBotEngine::PartyCoordinator> coordinator =
+        PartyBotEngine::PartyCoordinatorRegistry::GetOrCreate(group->GetId(), mapId, instanceId);
+    if (!coordinator)
+        return;
+
+    if (m_partyCoordinator != coordinator)
+    {
+        // Release only when the old shard belongs to this same map update thread.
+        if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
+            m_partyCoordinatorInstanceId == instanceId)
+            m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+
+        m_partyCoordinator = coordinator;
+        m_partyCoordinatorMapId = mapId;
+        m_partyCoordinatorInstanceId = instanceId;
+    }
+
+    uint32 const nowMs = WorldTimer::getMSTime();
+    m_partyCoordinator->PruneExpired(nowMs);
+    PartyBotEngine::PartySnapshot const* snapshot =
+        PartyBotEngine::PartySnapshotBuilder::GetOrBuild(me, *m_partyCoordinator, nowMs, 250);
+    if (!snapshot)
+        return;
+
+    PartyBotEngine::Guid const botGuid = me->GetObjectGuid().GetRawValue();
+    PartyBotEngine::PartyMemberSnapshot const* botSnapshot = snapshot->FindMember(botGuid);
+    if (!botSnapshot)
+        return;
+
+    PartyBotEngine::DecisionContext context(*snapshot, *botSnapshot, *m_partyCoordinator, nowMs);
+    PartyBotEngine::DecisionReport const report = m_partyBotEngine.Evaluate(context);
+
+    // Keep diagnostics sparse: one summary per bot every ten seconds.
+    if (m_engineShadowTraceMs <= PB_UPDATE_INTERVAL)
+    {
+        m_decisionTrace.RecordShadowSummary(
+            me, snapshot->groupId, snapshot->mapId, snapshot->instanceId, snapshot->epoch,
+            static_cast<uint32>(snapshot->members.size()),
+            static_cast<uint32>(snapshot->hostiles.size()),
+            static_cast<uint32>(report.candidates.size()),
+            static_cast<uint32>(report.selectedIndices.size()));
+        m_engineShadowTraceMs = 10000;
+    }
+    else
+        m_engineShadowTraceMs -= PB_UPDATE_INTERVAL;
+}
 
 void PartyBotAI::UpdateOutOfCombatAI()
 {

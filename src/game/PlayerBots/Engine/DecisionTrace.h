@@ -29,6 +29,11 @@ public:
     void Record(Player const* bot, char const* event, Unit const* target,
                 SpellEntry const* spell, char const* reason, uint32 detail = 0) const;
 
+    // Record a bounded summary of read-only PartyBotEngine Shadow evaluation.
+    void RecordShadowSummary(Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
+                             uint32 snapshotEpoch, uint32 memberCount, uint32 hostileCount,
+                             uint32 candidateCount, uint32 selectedCount) const;
+
 private:
     mutable uint32 m_recordsThisTick;
     mutable bool m_enabled;

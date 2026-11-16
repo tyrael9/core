@@ -4,6 +4,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 using namespace PartyBotEngine;
 namespace {
@@ -127,10 +128,69 @@ void TestInvalidPriorityAndMultiplierVeto() {
     assert(report.candidates[1].status == CandidateStatus::RejectedMultiplier);
     assert(report.candidates[1].reason == "encounter_veto");
 }
+void TestSnapshotCacheFreshnessAndEpoch() {
+    PartyCoordinator coordinator;
+    assert(coordinator.GetSnapshotIfFresh(1000, 250) == nullptr);
+
+    std::uint32_t const firstEpoch = coordinator.NextSnapshotEpoch();
+    PartySnapshot snapshot;
+    snapshot.groupId = 101;
+    snapshot.capturedAtMs = 1000;
+    snapshot.epoch = firstEpoch;
+    coordinator.SetSnapshot(snapshot);
+
+    PartySnapshot const* fresh = coordinator.GetSnapshotIfFresh(1250, 250);
+    assert(fresh && fresh->groupId == 101 && fresh->epoch == firstEpoch);
+    assert(coordinator.GetSnapshotIfFresh(1251, 250) == nullptr);
+    assert(coordinator.NextSnapshotEpoch() == firstEpoch + 1);
+
+    PartySnapshot wrapped;
+    wrapped.capturedAtMs = 0xfffffff0u;
+    coordinator.SetSnapshot(wrapped);
+    assert(coordinator.GetSnapshotIfFresh(10u, 26u) != nullptr);
+    assert(coordinator.GetSnapshotIfFresh(11u, 26u) == nullptr);
+
+    coordinator.InvalidateSnapshot();
+    assert(coordinator.GetSnapshotIfFresh(10u, 100u) == nullptr);
+}
+
+void TestCoordinatorRegistryIdentityAndBattlegroundBypass() {
+    assert(!PartyCoordinatorRegistry::GetOrCreate(0, 1, 1));
+
+    std::shared_ptr<PartyCoordinator> const first =
+        PartyCoordinatorRegistry::GetOrCreate(700001, 1, 10);
+    std::shared_ptr<PartyCoordinator> const same =
+        PartyCoordinatorRegistry::GetOrCreate(700001, 1, 10);
+    std::shared_ptr<PartyCoordinator> const otherMap =
+        PartyCoordinatorRegistry::GetOrCreate(700001, 2, 10);
+    std::shared_ptr<PartyCoordinator> const otherInstance =
+        PartyCoordinatorRegistry::GetOrCreate(700001, 1, 11);
+
+    assert(first && same && first == same);
+    assert(otherMap && first != otherMap);
+    assert(otherInstance && first != otherInstance);
+
+    std::vector<std::shared_ptr<PartyCoordinator>> concurrent(8);
+    std::vector<std::thread> workers;
+    for (std::size_t i = 0; i < concurrent.size(); ++i) {
+        workers.emplace_back([&concurrent, i]() {
+            concurrent[i] = PartyCoordinatorRegistry::GetOrCreate(700002, 571, 42);
+        });
+    }
+    for (auto& worker : workers)
+        worker.join();
+
+    for (auto const& shard : concurrent)
+        assert(shard && shard == concurrent.front());
+
+    PartyCoordinatorRegistry::PruneExpired();
+}
 }
 int main() {
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();
     TestReservationOwnershipAndExpiry(); TestInvalidPriorityAndMultiplierVeto();
+    TestSnapshotCacheFreshnessAndEpoch();
+    TestCoordinatorRegistryIdentityAndBattlegroundBypass();
     std::cout << "PartyBotEngine tests passed\n";
     return 0;
 }

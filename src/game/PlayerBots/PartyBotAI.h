@@ -21,6 +21,8 @@
 #include "Group.h"
 #include "ObjectAccessor.h"
 #include "Engine/DecisionTrace.h"
+#include "Engine/PartyBotEngine.h"
+#include "Engine/PartyCoordinator.h"
 
 class PartyBotAI : public CombatBotBaseAI
 {
@@ -111,6 +113,15 @@ public:
     float m_o = 0.0f;
     bool m_resetSpellData = false;
     uint32 m_ownerOfflineTimer = 0;
+
+    // Party/map/instance shard and per-bot decision engine; shard mutation stays map-thread confined.
+    std::shared_ptr<PartyBotEngine::PartyCoordinator> m_partyCoordinator;
+    PartyBotEngine::PartyBotEngine m_partyBotEngine;
+    uint32 m_partyCoordinatorMapId = 0;
+    uint32 m_partyCoordinatorInstanceId = 0;
+    uint32 m_engineShadowTraceMs = 0;
+
+    void UpdatePartyBotEngineShadow();
 };
 
 #endif

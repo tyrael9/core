@@ -66,4 +66,27 @@ void DecisionTrace::Record(Player const* bot, char const* event, Unit const* tar
              detail);
 }
 
+void DecisionTrace::RecordShadowSummary(Player const* bot, uint32 groupId, uint32 mapId,
+                                       uint32 instanceId, uint32 snapshotEpoch,
+                                       uint32 memberCount, uint32 hostileCount,
+                                       uint32 candidateCount, uint32 selectedCount) const
+{
+    if (!m_enabled || !bot || m_recordsThisTick >= MAX_RECORDS_PER_TICK)
+        return;
+
+    ++m_recordsThisTick;
+    if (m_recordsThisTick == MAX_RECORDS_PER_TICK)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotDecision] bot=%u trace_limit=%u further_records_suppressed=1",
+                 bot->GetGUIDLow(), MAX_RECORDS_PER_TICK);
+        return;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotShadow] bot=%u group=%u map=%u instance=%u epoch=%u members=%u hostiles=%u candidates=%u selected=%u",
+             bot->GetGUIDLow(), groupId, mapId, instanceId, snapshotEpoch,
+             memberCount, hostileCount, candidateCount, selectedCount);
+}
+
 } // namespace PartyBotEngine

@@ -3181,7 +3181,14 @@ AHBot.itemcount = 50
 #                 1 - on
 #
 #    PlayerBot.DecisionTrace
-#        Logs bounded PartyBot spell and healing decision diagnostics.
+#        Logs bounded PartyBot spell/healing diagnostics and PartyBotEngine Shadow summaries.
+#        Default: 0 - off
+#                 1 - on
+#
+#    PlayerBot.EngineShadow
+#        Builds a same-map party snapshot and evaluates PartyBotEngine without executing actions.
+#        Legacy PartyBot AI remains the only executor while this is enabled.
+#        Enable PlayerBot.DecisionTrace as well to log [PartyBotShadow] summaries.
 #        Default: 0 - off
 #                 1 - on
 #
@@ -3241,6 +3248,7 @@ RandomBot.Refresh = 60000
 PlayerBot.AllowSaving = 0
 PlayerBot.Debug = 0
 PlayerBot.DecisionTrace = 0
+PlayerBot.EngineShadow = 0
 PlayerBot.OwnerOfflineGraceMs = 600000
 PlayerBot.UpdateMs = 1000
 PlayerBot.ShowInWhoList = 0

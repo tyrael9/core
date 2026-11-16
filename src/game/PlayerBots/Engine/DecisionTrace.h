@@ -29,6 +29,10 @@ public:
     void Record(Player const* bot, char const* event, Unit const* target,
                 SpellEntry const* spell, char const* reason, uint32 detail = 0) const;
 
+    // Record a bounded status when Shadow cannot produce an evaluation.
+    void RecordShadowStatus(Player const* bot, char const* status,
+                            uint32 groupId, uint32 mapId, uint32 instanceId) const;
+
     // Record a bounded summary of read-only PartyBotEngine Shadow evaluation.
     void RecordShadowSummary(Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
                              uint32 snapshotEpoch, uint32 memberCount, uint32 hostileCount,

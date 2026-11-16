@@ -146,8 +146,11 @@ It reads the effective `mangosd`/`realmd` image references and container
 status through `partybot-deploy.sh`, reads only the two relevant PartyBot
 configuration flags, and parses timestamped `[PartyBotShadow]` summaries.
 It writes `.partybot/diagnostics/latest.json` and reports heartbeat freshness,
-observed bot/group/map/instance identities, member/hostile counts and candidate
-totals. It is read-only: no restart, SQL, DB/volume access or config changes.
+observed bot/group/map/instance identities, member/hostile counts, candidate
+totals, and rate-limited `[PartyBotShadowStatus]` counts for
+`no_supported_group`, `coordinator_unavailable`, `snapshot_unavailable`,
+and `bot_missing_from_snapshot`. It is read-only: no restart, SQL, DB/volume
+access or config changes.
 
 The report deliberately labels absent heartbeats as WARN because that can mean
 Shadow is disabled, no eligible party bot is active, the log window is too

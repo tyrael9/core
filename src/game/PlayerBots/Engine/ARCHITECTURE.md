@@ -153,3 +153,15 @@ PartyBotAI timers are independent. Snapshot cache epoch and reservation expiry c
 A milestone is complete only when source/docs are committed together; pinned Core builds on Linux ARM64 and supported CI targets; Legacy behavior remains unchanged; Shadow mode is bounded and explainable; Strategy mode has no duplicate GCD decisions with Legacy; positive/negative paths are tested; owner reconnect/instance persistence remains intact; and in-game testing is recorded separately from CI.
 
 A CI pass is not an in-game test or deployment authorization.
+
+## 10. Current engine foundation status
+
+The first independent, Core-agnostic decision foundation is committed:
+- C++14 value-only PartySnapshot data types using raw GUID values, not live Core pointers.
+- PartyCoordinator reservation storage with owner conflict, expiry, pruning and release operations.
+- Strategy, Trigger, Action, Value and Multiplier interfaces.
+- PartyBotEngine candidate generation, possible/useful checks, multiplier veto, deterministic priority ordering and one selected action per channel.
+- ExecuteSelected is a separate explicit call; Evaluate itself never executes anything.
+- A standalone deterministic test harness covers channel arbitration, eligibility rejection, reservation expiry and multiplier veto.
+
+This is a pure engine foundation, not yet connected to PartyBotAI. There is no live snapshot builder, coordinator registry, Shadow-mode runtime hook or vMaNGOS Action adapter yet. The Group roster concurrency issue remains a gate before shared party snapshot collection.

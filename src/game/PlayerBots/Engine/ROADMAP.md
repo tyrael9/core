@@ -36,12 +36,13 @@ Legacy PartyBot fixes are maintenance work and do not count as new-engine milest
 
 ## Phase 2 — independent engine foundation
 
-- [ ] Add C++14 Strategy, Trigger, Action, Value and Multiplier interfaces.
-- [ ] Add bounded same-map snapshot with GUID-based references.
+- [x] Add C++14 Strategy, Trigger, Action, Value and Multiplier interfaces.
+- [x] Add value-only PartySnapshot data types with GUID-based references.
+- [ ] Implement the live same-map snapshot builder after resolving Group roster concurrency.
 - [ ] Add map/instance-scoped PartyCoordinator with expiring reservations.
-- [ ] Add deterministic candidate evaluation and explicit action result states.
-- [ ] Add Shadow mode; Legacy remains the only executor.
-- [ ] Add focused deterministic tests for eligibility, priorities, expiry and arbitration.
+- [x] Add deterministic candidate evaluation, channel arbitration and explicit action result states.
+- [~] Evaluation is read-only and can support Shadow mode; runtime integration is not wired yet.
+- [x] Add standalone deterministic tests for eligibility, priorities, expiry and arbitration.
 - [ ] Build on Linux ARM64 and supported CI targets.
 
 ## Phase 3 — first role vertical slice

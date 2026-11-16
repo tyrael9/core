@@ -39,6 +39,9 @@ jobs:
             libssl-dev \
             zlib1g-dev
 
+      - name: Run pure PartyBotEngine tests
+        run: bash src/game/PlayerBots/Engine/tests/run_tests.sh
+
       - name: Restore compiler cache
         uses: actions/cache@v4
         with:

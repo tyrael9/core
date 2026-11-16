@@ -191,6 +191,8 @@ set (game_SRCS
     PacketBroadcast/PlayerBroadcaster.cpp
     PlayerBots/PartyBotAI.cpp
     PlayerBots/Engine/DecisionTrace.cpp
+    PlayerBots/Engine/PartyCoordinator.cpp
+    PlayerBots/Engine/PartyBotEngine.cpp
     PlayerBots/CombatBotBaseAI.cpp
     PlayerBots/BattleBotAI.cpp
     PlayerBots/BattleBotWaypoints.cpp

@@ -56,3 +56,17 @@ Run only on a disposable/test realm unless the user explicitly approves otherwis
 - Deployed: user explicitly approved the intended server update.
 
 A CI pass must never be described as an in-game test.
+
+## Pure decision-engine tests
+
+Run the standalone C++14 harness from the repository root:
+
+    bash src/game/PlayerBots/Engine/tests/run_tests.sh
+
+The harness has no live Map/Player dependency. It currently covers:
+- deterministic priority ordering and one action selected per channel;
+- possible/useful rejection and missing action registration;
+- reservation owner conflict and expiry;
+- non-finite priority rejection and multiplier veto.
+
+These tests validate the pure decision layer only. They do not test PartyBotAI integration, map-thread ownership, vMaNGOS spell execution or in-game behavior.

@@ -62,7 +62,7 @@ ActionCandidate Candidate(std::string name, float priority, ActionChannel channe
     c.basePriority = priority; c.channel = channel; return c;
 }
 void TestPriorityAndChannelArbitration() {
-    Fixture f; PartyBotEngine engine;
+    Fixture f; PartyBotEngine::PartyBotEngine engine;
     auto heal = std::make_shared<TestAction>("heal");
     auto shield = std::make_shared<TestAction>("shield");
     auto move = std::make_shared<TestAction>("move");
@@ -84,7 +84,7 @@ void TestPriorityAndChannelArbitration() {
     assert(report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed);
 }
 void TestEligibilityRejections() {
-    Fixture f; PartyBotEngine engine;
+    Fixture f; PartyBotEngine::PartyBotEngine engine;
     auto impossible = std::make_shared<TestAction>("impossible"); impossible->possible = false;
     auto useless = std::make_shared<TestAction>("useless"); useless->useful = false;
     assert(engine.RegisterAction(impossible) && engine.RegisterAction(useless));
@@ -114,7 +114,7 @@ void TestReservationOwnershipAndExpiry() {
     assert(coordinator.GetReservations().empty());
 }
 void TestInvalidPriorityAndMultiplierVeto() {
-    Fixture f; PartyBotEngine engine;
+    Fixture f; PartyBotEngine::PartyBotEngine engine;
     auto action = std::make_shared<TestAction>("damage"); assert(engine.RegisterAction(action));
     auto trigger = std::make_shared<TestTrigger>("invalid");
     trigger->generated.push_back(Candidate("damage", std::nanf(""), ActionChannel::GlobalCooldown));

@@ -90,12 +90,14 @@ within the configured grace period. On reconnect, the operator confirmed:
 - the owner was again the party leader.
 
 The operator also tested an intentional owner leave. The PartyBots disappeared
-from the owner's vicinity as expected, confirming that the grace protection
-does not retain them after an intentional leave.
+from the owner's vicinity as expected, confirming that the grace protection does
+not retain them after an intentional leave. The operator then waited beyond ten
+minutes after an unexpected disconnect and confirmed that the PartyBots were
+cleaned up as expected.
 
-This validates the short-disconnect reconnect path and intentional owner-leave
-cleanup. It does not yet validate grace-period expiry, explicit bot removal,
-or reconnect after the configured grace period. The code default for
+This validates the short-disconnect reconnect path, intentional owner-leave
+cleanup and post-grace cleanup. It does not yet validate explicit per-bot removal
+commands or reconnect after the grace period has already expired. The code default for
 `PlayerBot.OwnerOfflineGraceMs` is 600000 ms (10 minutes), but the effective
 value can be overridden in the server configuration.
 
@@ -113,15 +115,26 @@ value can be overridden in the server configuration.
 2. Confirm trace explains missing assist targets or unusable taunts.
 3. Confirm Mage Arcane Explosion is skipped when too few enemies are near the caster.
 
+## Shadow runtime smoke test
+
+Shadow mode is opt-in and must be enabled only on a test realm:
+
+1. Set `PlayerBot.EngineShadow = 1`.
+2. Set `PlayerBot.DecisionTrace = 1` to emit bounded summary records.
+3. Restart only the game server through the deployment helper after publishing and deploying the intended test image.
+4. Form a normal party and keep PartyBots on the same map/instance.
+5. Inspect `[PartyBotShadow]` records. Group/map/instance IDs should match the game session, member count should include the bot and same-map group members, and snapshot epoch should advance when the cache refreshes.
+6. Candidate and selected counts are expected to be zero until a runtime Strategy and its Actions are registered.
+7. Verify Legacy behavior is unchanged. Shadow mode must never call `ExecuteSelected`.
+
+Battleground groups (group ID zero), missing group state and unavailable snapshots are skipped. Cross-map party members are intentionally not resolved into the current map snapshot.
+
 ## New engine tests (planned)
 
-- Snapshot consistency and GUID resolution within an update epoch.
-- Trigger cadence and cached value invalidation.
-- Action IsPossible/IsUseful/Execute result distinctions.
-- Deterministic candidate priority and hard safety vetoes.
-- Heal/CC/interrupt reservation ownership, expiry and invalidation.
-- No duplicate GCD execution between Legacy and Strategy modes.
-- Shadow mode never invokes the action executor.
+- Trigger cadence and cached Value invalidation.
+- Action-specific spell/target/range/line-of-sight validation.
+- Heal/CC/interrupt reservation ownership, expiry and invalidation under real role strategies.
+- No duplicate GCD execution when a domain transitions from Shadow to Strategy mode.
 - Encounter strategy activation/deactivation and safe movement arbitration.
 
 ## Validation vocabulary

@@ -45,9 +45,9 @@ Do not replace the entire PartyBotAI update lifecycle.
 
 Coordinator shards are keyed by group ID, map ID and instance ID. Normal Group::Create assigns a runtime/database ID through ObjectMgr::GenerateGroupId(); battleground groups use group ID 0 and should remain on Legacy behavior unless a separate BG coordinator is designed.
 
-The planned registry is process-local and weakly indexed: PartyBotAI instances hold shared ownership of their current shard; the registry maps the scalar key to a weak_ptr under a short registry mutex. The shard itself is mutated only in its owning map update context. Expired weak entries can be pruned without retaining Group, Map, Player or Unit pointers.
+The registry is process-local and weakly indexed: PartyBotAI instances retain shared ownership of their current shard, while the registry maps the scalar key to a weak_ptr under a short mutex. The shard is mutated only in its owning map update context. Expired weak entries can be pruned without retaining Group, Map, Player or Unit pointers.
 
-This ownership plan is provisional until Group roster concurrency is resolved. Group::GetFirstMember()/GroupReference iteration is not protected by a mutex in Group.h. A map-scoped shard does not by itself make the Group member list safe if roster mutation occurs from another map's session/update thread. Before using a shared roster snapshot, either prove roster mutation serialization, add a roster snapshot API synchronized with every relevant mutator, or suspend Strategy evaluation during cross-map membership transitions. Never lock only the reader.
+The packet-processing audit confirms Group roster reads are permitted in map context; group roster writes are serialized in world packet processing before map tasks. The live builder copies member GUIDs from Group::GetMemberSlots() and resolves them only through the current Map. It does not iterate cross-map GroupReference Player pointers.
 
 ### 2.3 PartySnapshot
 
@@ -134,7 +134,7 @@ Migration is per decision domain. No Strategy mode becomes default before in-gam
 
 MapManager schedules instance maps as separate DoUpdate tasks; Map::UpdatePlayers calls WorldObject::UpdateHelper; Player::Update calls Unit::Update and then m_AI->UpdateAI(p_time). Same-map bots execute within the owning map update context, while different maps may update in parallel.
 
-A same-map shard is therefore a reasonable ownership boundary for coordinator mutations, but Group roster iteration remains a separate concurrency concern: PacketProcessing.h explicitly permits Group reads/iteration in PACKET_PROCESS_MAP and classifies group writes as PACKET_PROCESS_GROUP = PACKET_PROCESS_WORLD. Group opcodes are processed before map tasks. Build snapshots from GetMemberSlots() GUIDs and resolve through the current Map; never dereference cross-map Player pointers. Keep all shard mutation in the owning map context; never share mutable shard state across map shards.
+A same-map shard is the ownership boundary for coordinator mutations. PacketProcessing.h permits Group roster reads in PACKET_PROCESS_MAP and classifies group writes as PACKET_PROCESS_WORLD; group opcodes are processed before map tasks. Build snapshots from GetMemberSlots() GUIDs and resolve through the current Map; never dereference cross-map Player pointers. Keep all shard mutation in the owning map context; never share mutable shard state across map shards.
 
 PartyBotAI timers are independent. Snapshot cache epoch and reservation expiry cannot assume synchronized bot ticks. No synchronous DB work, network calls or inference calls belong in the AI tick. Triggers must be cheap; scans should be centralized and cached; storage must be bounded.
 
@@ -154,30 +154,24 @@ A milestone is complete only when source/docs are committed together; pinned Cor
 
 A CI pass is not an in-game test or deployment authorization.
 
-## 10. Current engine foundation status
+## 10. Current runtime integration
 
-The first independent, Core-agnostic decision foundation is committed:
-- C++14 value-only PartySnapshot data types using raw GUID values, not live Core pointers.
-- PartyCoordinator reservation storage with owner conflict, expiry, pruning and release operations.
-- Strategy, Trigger, Action, Value and Multiplier interfaces.
-- PartyBotEngine candidate generation, possible/useful checks, multiplier veto, deterministic priority ordering and one selected action per channel.
-- ExecuteSelected is a separate explicit call; Evaluate itself never executes anything.
-- A standalone deterministic test harness covers channel arbitration, eligibility rejection, reservation expiry and multiplier veto.
+The Core-agnostic decision layer and live data adapter are now connected to PartyBotAI behind an opt-in Shadow flag:
 
-This is a pure engine foundation, not yet connected to PartyBotAI. There is no live snapshot builder, coordinator registry, Shadow-mode runtime hook or vMaNGOS Action adapter yet. The packet-processing audit confirms Group roster reads are safe in map context; the live builder must copy GUIDs from Group::GetMemberSlots() and resolve them only through the current Map.
+- PartyCoordinatorRegistry is weakly indexed by (groupId, mapId, instanceId), uses a short registry mutex, and returns shared shard ownership.
+- Each PartyBotAI retains its current coordinator shard and releases reservations when it changes shard, leaves a supported group, or disables Shadow mode. Cleanup mutates a shard only when it belongs to the current map update thread; stale reservations on an old map shard expire naturally rather than being mutated from another map's thread.
+- PartySnapshotBuilder copies same-map member GUIDs and scalar state, plus hostile/attacker/threat facts. It resolves units only through the current Map and retains no Core object pointers.
+- PartyCoordinator provides snapshot epoch progression, bounded-age cache lookup, explicit invalidation and reservation expiry/release.
+- PartyBotAI calls GetOrBuild and PartyBotEngine::Evaluate from its map update context only.
 
+`PlayerBot.EngineShadow` defaults to 0. When set to 1, the runtime builds/reuses the snapshot and calls the read-only Evaluate path. `ExecuteSelected` is never called from Shadow mode; Legacy remains the sole action executor. The hook skips battleground groups (group ID zero) and unavailable snapshots.
 
-## 10. Current engine foundation status
+`PlayerBot.DecisionTrace=1` additionally emits a rate-limited `[PartyBotShadow]` summary (one per bot every ten seconds) with group/map/instance, snapshot epoch, member/hostile counts and candidate/selected counts. No runtime strategy or vMaNGOS action adapter is registered yet, so candidates=0 is expected until the first strategy is implemented.
 
-The first independent, Core-agnostic decision foundation is committed: value-only PartySnapshot data types; PartyCoordinator reservation storage; Strategy/Trigger/Action/Value/Multiplier interfaces; deterministic candidate evaluation, multiplier veto and one selected action per channel; plus standalone C++14 tests.
+## 11. Validation and next milestone
 
-Evaluate is read-only. ExecuteSelected is a separate explicit call. This foundation is not yet connected to PartyBotAI: the live snapshot builder and weakly indexed map/instance coordinator registry are now implemented as adapter primitives. They are not yet called from PartyBotAI; Shadow-mode runtime hook and vMaNGOS action adapters remain future work. The packet-processing audit now provides a safe group-read contract for the next adapter step.
+The standalone C++14 tests now cover decision arbitration and rejection states, reservation ownership/expiry, snapshot cache freshness including millisecond-counter wraparound, coordinator key identity, battleground bypass and concurrent registry lookup.
 
+The dedicated Linux ARM64 / Vanilla 5875 workflow validates these tests plus a full Core configure/build/link. It does not prove live snapshot correctness or in-game behavior.
 
-## 11. Live snapshot and shard primitives
-
-PartyCoordinatorRegistry keys shards by (groupId, mapId, instanceId), stores weak references, and uses a short mutex only for registry lookup/creation. The owning PartyBotAI must retain a shared_ptr while it is in that shard. The shard itself is map-thread confined and is not internally locked.
-
-PartySnapshotBuilder copies GUIDs from Group::GetMemberSlots(), resolves each member through the current Map::GetUnit(), and only includes players on that map/instance. It records member resources/health/position/victim, current attackers and the attackers' threat-list facts. It never stores live Core pointers in PartySnapshot. The coordinator caches the resulting value snapshot for a caller-specified bounded age and increments a snapshot epoch on refresh.
-
-The builder and registry are compiled into the Core but are not yet wired into PartyBotAI. A caller must use them from the owning map update context and must retain the shard shared_ptr for as long as it uses the snapshot or reservation state.
+The first role vertical slice should start with healing triage: use the new same-map snapshot and shared reservation model to propose healer actions in Shadow mode, compare the proposals with Legacy behavior, and only later add an execution adapter behind a domain-specific Strategy gate. No Strategy-mode execution becomes active before separate in-game validation.

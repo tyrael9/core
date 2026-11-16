@@ -23,9 +23,9 @@ Legacy remains the default executor until each migrated decision domain passes i
 
 The first independent C++14 decision layer is committed: value-only snapshots, reservation storage, Strategy/Trigger/Action/Value/Multiplier interfaces, deterministic candidate evaluation and standalone tests. Evaluation is read-only; execution is a separate explicit call.
 
-This is not yet wired into PartyBotAI. The live snapshot builder, map/instance coordinator registry, Shadow runtime hook and vMaNGOS action adapters are next. See ARCHITECTURE.md, VMANGOS-API-AUDIT.md and ROADMAP.md.
+The live same-map snapshot builder, weakly indexed coordinator registry and opt-in read-only Shadow hook are now wired into PartyBotAI. Shadow is disabled by default; when enabled, Legacy remains the only executor and the engine currently has no registered runtime strategies/actions. The next milestone is a healing-triage strategy evaluated in Shadow mode. See ARCHITECTURE.md, VMANGOS-API-AUDIT.md and ROADMAP.md.
 
 
 ## Live snapshot/coordinator primitives
 
-The same-map snapshot builder and weakly indexed (group,map,instance) coordinator registry are now implemented. The builder reads Group member GUIDs, resolves only through the current Map, and stores value-only facts. These primitives are compiled but are not yet called from PartyBotAI; the next integration step is attaching a shard to each bot and adding read-only Shadow evaluation.
+The same-map snapshot builder and weakly indexed (group,map,instance) coordinator registry are connected to PartyBotAI. Each bot retains its shard only while on that map/instance, and Shadow evaluation runs from the map update. The runtime flag defaults off; no new Strategy or Action adapters are registered yet.

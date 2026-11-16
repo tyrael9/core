@@ -40,7 +40,7 @@ Legacy PartyBot fixes are maintenance work and do not count as new-engine milest
 - [x] Add value-only PartySnapshot data types with GUID-based references.
 - [ ] Implement the live same-map snapshot builder after resolving Group roster concurrency.
 - [x] Add pure PartyCoordinator reservation storage with expiry/conflict/release behavior.
-- [ ] Add the map/instance shard registry and lifecycle ownership.
+- [x] Add weakly indexed map/instance coordinator registry; PartyBotAI shared ownership hook remains pending.
 - [x] Add deterministic candidate evaluation, channel arbitration and explicit action result states.
 - [~] Evaluation is read-only and can support Shadow mode; runtime integration is not wired yet.
 - [x] Add standalone deterministic tests for eligibility, priorities, expiry and arbitration.
@@ -87,3 +87,6 @@ Legacy PartyBot fixes are maintenance work and do not count as new-engine milest
 ## Current gate
 
 The source research and map/update/API audit are committed. The remaining gates are the live snapshot builder, map/instance coordinator registry lifetime, action-specific validation and cache expiry. The packet-processing contract allows safe Group roster reads in map context; the builder will copy GUIDs from Group::GetMemberSlots() and resolve only on the current Map.
+
+
+The live snapshot builder and coordinator registry are now compiled primitives. The next step is to attach a shard to each PartyBotAI, call GetOrBuild only from its map update context, and expose the read-only evaluation report in opt-in Shadow mode.

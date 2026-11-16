@@ -121,12 +121,7 @@ The pinned Core explicitly documents the packet-thread contract in src/game/Pack
 
 This resolves the earlier concern for the normal group packet path: Group roster writes are serialized in the World packet phase, while map tasks may safely read/iterate Groups. PACKET_PROCESS_ASYNC can overlap map updates, but group mutation opcodes are classified as PACKET_PROCESS_GROUP, not ASYNC.
 
-For the live PartySnapshot builder:
-1. Read the public Group::GetMemberSlots() list and copy only each MemberSlot GUID.
-2. Resolve each GUID through the current Map::GetUnit(guid).
-3. Include only units that resolve on this same map/instance.
-4. Do not dereference GroupReference::getSource() for players on other maps; no cross-map Player* reads are needed.
-5. Do not retain the Group, MemberSlot reference or Unit pointer after the current snapshot build.
+The implemented PartySnapshotBuilder follows this contract: it copies GUIDs from Group::GetMemberSlots(), resolves them through the current Map::GetUnit(), includes only current-map/current-instance players, and never stores Group, MemberSlot, Unit or Player pointers in the resulting snapshot. It also captures each member's current attackers and their threat-list entries. The builder is compiled but not yet called by PartyBotAI.
 
 This conclusion relies on preserving the Core packet-processing classifications. If a future change reclassifies group mutation handlers as MAP or ASYNC, the snapshot safety contract must be revisited.
 
@@ -134,7 +129,7 @@ This conclusion relies on preserving the Core packet-processing classifications.
 
 New game source files are registered in src/game/CMakeLists.txt. Every new Engine .cpp must be added there.
 
-The repository has no dedicated game unit-test target. A standalone C++14 test harness now exists under Engine/tests and is run by the PartyBot Core build workflow. It tests the pure decision layer without live Map/Player objects.
+The repository has no dedicated game unit-test target. A standalone C++14 test harness exists under Engine/tests and is run by the PartyBot Core build workflow. It tests the pure decision layer, reservation amounts/expiry, snapshot cache age and coordinator shard identity without live Map/Player objects. The live snapshot builder is compile-tested by the full Core build.
 
 ## 8. Current reusable seams
 

@@ -171,4 +171,13 @@ This is a pure engine foundation, not yet connected to PartyBotAI. There is no l
 
 The first independent, Core-agnostic decision foundation is committed: value-only PartySnapshot data types; PartyCoordinator reservation storage; Strategy/Trigger/Action/Value/Multiplier interfaces; deterministic candidate evaluation, multiplier veto and one selected action per channel; plus standalone C++14 tests.
 
-Evaluate is read-only. ExecuteSelected is a separate explicit call. This foundation is not yet connected to PartyBotAI: there is no live snapshot builder, coordinator registry, Shadow-mode runtime hook or vMaNGOS action adapter yet. The packet-processing audit now provides a safe group-read contract for the next adapter step.
+Evaluate is read-only. ExecuteSelected is a separate explicit call. This foundation is not yet connected to PartyBotAI: the live snapshot builder and weakly indexed map/instance coordinator registry are now implemented as adapter primitives. They are not yet called from PartyBotAI; Shadow-mode runtime hook and vMaNGOS action adapters remain future work. The packet-processing audit now provides a safe group-read contract for the next adapter step.
+
+
+## 11. Live snapshot and shard primitives
+
+PartyCoordinatorRegistry keys shards by (groupId, mapId, instanceId), stores weak references, and uses a short mutex only for registry lookup/creation. The owning PartyBotAI must retain a shared_ptr while it is in that shard. The shard itself is map-thread confined and is not internally locked.
+
+PartySnapshotBuilder copies GUIDs from Group::GetMemberSlots(), resolves each member through the current Map::GetUnit(), and only includes players on that map/instance. It records member resources/health/position/victim, current attackers and the attackers' threat-list facts. It never stores live Core pointers in PartySnapshot. The coordinator caches the resulting value snapshot for a caller-specified bounded age and increments a snapshot epoch on refresh.
+
+The builder and registry are compiled into the Core but are not yet wired into PartyBotAI. A caller must use them from the owning map update context and must retain the shard shared_ptr for as long as it uses the snapshot or reservation state.

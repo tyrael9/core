@@ -4,7 +4,7 @@
 namespace PartyBotEngine {
 struct PartyMemberSnapshot {
     Guid guid = 0;
-    std::uint8_t classId = 0, roleId = 0, level = 0;
+    std::uint8_t classId = 0, roleId = 0, level = 0, powerType = 0;
     std::uint32_t mapId = 0, instanceId = 0;
     std::uint32_t health = 0, maxHealth = 0, power = 0, maxPower = 0;
     Guid victimGuid = 0;
@@ -22,6 +22,7 @@ struct HostileSnapshot {
     bool alive = false, crowdControlProtected = false;
     std::vector<ThreatEntrySnapshot> threat;
 };
+// Immutable-by-convention value data. Never store live Core object pointers here.
 struct PartySnapshot {
     std::uint32_t groupId = 0, mapId = 0, instanceId = 0, epoch = 0, capturedAtMs = 0;
     std::vector<PartyMemberSnapshot> members;

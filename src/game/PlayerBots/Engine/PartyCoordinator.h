@@ -1,6 +1,8 @@
 #ifndef MANGOS_PARTYBOT_PARTY_COORDINATOR_H
 #define MANGOS_PARTYBOT_PARTY_COORDINATOR_H
-#include "DecisionTypes.h"
+#include "PartySnapshot.h"
+#include <memory>
+#include <vector>
 namespace PartyBotEngine {
 struct Reservation {
     ReservationType type = ReservationType::Target;
@@ -15,9 +17,28 @@ public:
     void ReleaseOwner(Guid ownerGuid);
     void PruneExpired(std::uint32_t nowMs);
     std::vector<Reservation> const& GetReservations() const { return m_reservations; }
+
+    std::uint32_t NextSnapshotEpoch();
+    void SetSnapshot(PartySnapshot snapshot);
+    void InvalidateSnapshot() { m_hasSnapshot = false; }
+    PartySnapshot const* GetSnapshotIfFresh(std::uint32_t nowMs, std::uint32_t maxAgeMs) const;
+
 private:
     static bool IsExpired(std::uint32_t nowMs, std::uint32_t expiresAtMs);
     std::vector<Reservation> m_reservations;
+    PartySnapshot m_snapshot;
+    std::uint32_t m_nextSnapshotEpoch = 0;
+    bool m_hasSnapshot = false;
+};
+
+// Registry holds weak references only. PartyBotAI instances must retain a shared_ptr
+// for the lifetime of their current (group,map,instance) shard.
+class PartyCoordinatorRegistry {
+public:
+    static std::shared_ptr<PartyCoordinator> GetOrCreate(std::uint32_t groupId,
+                                                          std::uint32_t mapId,
+                                                          std::uint32_t instanceId);
+    static void PruneExpired();
 };
 }
 #endif

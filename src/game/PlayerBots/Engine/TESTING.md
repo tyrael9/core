@@ -70,3 +70,14 @@ The harness has no live Map/Player dependency. It currently covers:
 - non-finite priority rejection and multiplier veto.
 
 These tests validate the pure decision layer only. They do not test PartyBotAI integration, map-thread ownership, vMaNGOS spell execution or in-game behavior.
+
+
+## Snapshot/coordinator tests
+
+The standalone harness additionally checks:
+- heal reservations can be split across multiple owners and summed;
+- snapshot cache freshness and epoch progression;
+- coordinator registry reuses a shard for the same group/map/instance key and separates different instances;
+- group ID zero does not create a coordinator (battleground path remains Legacy).
+
+The full Core compile includes PartySnapshotBuilder.cpp. This validates adapter API compatibility at compile time, not live thread safety or runtime data correctness.

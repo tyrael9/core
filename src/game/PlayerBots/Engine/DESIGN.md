@@ -128,3 +128,17 @@ Do not describe current code as a completed new engine. Update this section and 
 The pure C++14 foundation is now committed: value-only PartySnapshot types, PartyCoordinator reservation primitives, Strategy/Trigger/Action/Value/Multiplier interfaces, candidate evaluation and channel arbitration, plus standalone deterministic tests. Evaluate is read-only; ExecuteSelected is a separate explicit method.
 
 No PartyBotAI runtime integration exists yet. The current code does not build a live snapshot, create map-scoped coordinator shards or execute vMaNGOS actions. The packet-processing audit confirms Group reads are safe in map context; the builder will use GetMemberSlots() GUIDs and current-map resolution.
+
+
+## 14. Live snapshot/coordinator primitives
+
+The current foundation now includes:
+- value-only PartySnapshot data structures;
+- a live builder that copies Group::GetMemberSlots() GUIDs and resolves only through the current Map;
+- member health/resources/position/victim facts, hostile attackers and threat-list snapshots;
+- weakly indexed coordinator shards keyed by group/map/instance, with per-bot shared ownership intended;
+- bounded snapshot caching and monotonically advancing snapshot epochs;
+- reservation expiry, conflict handling and additive multi-healer reservations;
+- deterministic tests for registry identity and cache age.
+
+The builder/registry are compiled but are not yet wired into PartyBotAI. No runtime Shadow hook or vMaNGOS action adapter is active yet.

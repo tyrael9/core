@@ -1053,6 +1053,19 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         return;
     }
 
+    // Share the same per-bot ten-second rate limit between successful summaries
+    // and failure statuses so missing snapshots are visible without log spam.
+    auto traceStatus = [this, mapId, instanceId](char const* status, uint32 groupId)
+    {
+        if (m_engineShadowTraceMs <= PB_UPDATE_INTERVAL)
+        {
+            m_decisionTrace.RecordShadowStatus(me, status, groupId, mapId, instanceId);
+            m_engineShadowTraceMs = 10000;
+        }
+        else
+            m_engineShadowTraceMs -= PB_UPDATE_INTERVAL;
+    };
+
     Group* group = me->GetGroup();
     if (!group || group->isBGGroup() || group->GetId() == 0)
     {
@@ -1062,13 +1075,17 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         m_partyCoordinator.reset();
         m_partyCoordinatorMapId = 0;
         m_partyCoordinatorInstanceId = 0;
+        traceStatus("no_supported_group", 0);
         return;
     }
 
     std::shared_ptr<PartyBotEngine::PartyCoordinator> coordinator =
         PartyBotEngine::PartyCoordinatorRegistry::GetOrCreate(group->GetId(), mapId, instanceId);
     if (!coordinator)
+    {
+        traceStatus("coordinator_unavailable", group->GetId());
         return;
+    }
 
     if (m_partyCoordinator != coordinator)
     {
@@ -1087,17 +1104,22 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     PartyBotEngine::PartySnapshot const* snapshot =
         PartyBotEngine::PartySnapshotBuilder::GetOrBuild(me, *m_partyCoordinator, nowMs, 250);
     if (!snapshot)
+    {
+        traceStatus("snapshot_unavailable", group->GetId());
         return;
+    }
 
     PartyBotEngine::Guid const botGuid = me->GetObjectGuid().GetRawValue();
     PartyBotEngine::PartyMemberSnapshot const* botSnapshot = snapshot->FindMember(botGuid);
     if (!botSnapshot)
+    {
+        traceStatus("bot_missing_from_snapshot", group->GetId());
         return;
+    }
 
     PartyBotEngine::DecisionContext context(*snapshot, *botSnapshot, *m_partyCoordinator, nowMs);
     PartyBotEngine::DecisionReport const report = m_partyBotEngine.Evaluate(context);
 
-    // Keep diagnostics sparse: one summary per bot every ten seconds.
     if (m_engineShadowTraceMs <= PB_UPDATE_INTERVAL)
     {
         m_decisionTrace.RecordShadowSummary(

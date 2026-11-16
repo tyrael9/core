@@ -1,9 +1,6 @@
 name: Publish PartyBot ARM64 container
 
 on:
-  push:
-    branches:
-      - work/partybot-engine-foundation
   workflow_dispatch:
 
 permissions:

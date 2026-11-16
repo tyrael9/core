@@ -1,12 +1,45 @@
 # PartyBot Core build and regression testing
 
 ## Automated compile CI
-
 The workflow at .github/workflows/partybot-core-build.yml builds this branch on a GitHub-hosted Linux ARM64 runner, matching the Oracle A1 deployment architecture.
 
 It configures and compiles the Vanilla 1.12.1 / 5875 C++14 Core default targets, including game, mangosd and realmd. It uses bundled third-party sources, disables optional cpptrace/PCH for deterministic resource use, and uses ccache.
 
 A successful run proves configure/compile/link on that CI environment. The first post-reactivation run (head `f3179084158804429f47f7a55f7cbbbf04f83ea9`, run #38) passed: standalone tests, CMake configure, and full `mangosd` / `realmd` build. It does not prove runtime behavior, instance persistence, database compatibility beyond compilation, or successful operation in the production deployment. It is not permission to deploy.
+
+## Publish a test container to GHCR
+
+The manual workflow `.github/workflows/publish-partybot-image.yml` builds a native `linux/arm64` image on GitHub's ARM64 runner and pushes it to GHCR. It is deliberately `workflow_dispatch` only: normal pushes and PR updates do not publish images.
+
+The workflow pins both inputs:
+- Core: `daba3955d67a40d84915c45537a3bed9445953ba`
+- Deployment wrapper: `tyrael9/vmangos-deploy@ebaa560951459419c35140e20d787ec5db2905b8`
+
+Before publishing it runs the standalone PartyBot engine tests. The Docker build then compiles the pinned Core with the pinned deployment wrapper and its Docker patches. The image tag is:
+
+```text
+ghcr.io/tyrael9/vmangos-server:partybot-daba395
+```
+
+To publish: open the repository Actions tab, select **Publish PartyBot ARM64 container**, choose **Run workflow**, and run it on the working branch. A successful run means the image was pushed; it does not deploy anything to an Oracle instance and does not prove in-game behavior.
+
+GHCR may initially create the package as private. If Oracle cannot pull it anonymously, change the package visibility to Public in the package settings, or authenticate on Oracle with a GitHub token that has `read:packages`.
+
+## Deploying the image on the Oracle test instance
+
+Do not replace the database image or touch database volumes. The server image contains the Core binaries; it does not contain the extracted client map data or the database.
+
+First inspect the actual Compose configuration on the target instance and make a backup of the database. Keep a copy of the current Compose file and current image reference so rollback is straightforward. Then pull:
+
+```bash
+docker pull ghcr.io/tyrael9/vmangos-server:partybot-daba395
+```
+
+For the `mangosd` and `realmd` services, override only the server image to the tag above (or set the corresponding image environment variable if the Compose file uses one). Leave the database service, database-backup service, named volumes, ports, configuration mounts, and extracted-data bind mount unchanged. Recreate only the game-server services after checking the rendered configuration with `docker compose config`.
+
+The exact override depends on the instance's current Compose file; do not blindly copy a generic service definition. Verify that both `mangosd` and `realmd` use the same new image if both services exist. Capture logs and verify startup before connecting.
+
+Rollback: restore the previous server image reference and recreate only the game-server services. Do not restore or recreate database volumes as part of an image rollback unless a separately diagnosed database migration requires it.
 
 ## Required in-game regression checks
 
@@ -70,7 +103,6 @@ The harness has no live Map/Player dependency. It currently covers:
 - non-finite priority rejection and multiplier veto.
 
 These tests validate the pure decision layer only. They do not test PartyBotAI integration, map-thread ownership, vMaNGOS spell execution or in-game behavior.
-
 
 ## Snapshot/coordinator tests
 

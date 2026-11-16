@@ -11,19 +11,21 @@ A successful run proves configure/compile/link on that CI environment. The first
 
 The manual workflow `.github/workflows/publish-partybot-image.yml` builds a native `linux/arm64` image on GitHub's ARM64 runner and pushes it to GHCR. It is deliberately `workflow_dispatch` only: normal pushes and PR updates do not publish images.
 
-The workflow pins both inputs:
-- Core: `daba3955d67a40d84915c45537a3bed9445953ba`
+For the current Shadow integration, the workflow pins:
+- Core: `9af09a71cc8d2f37211acc4b7fd1ac64ba487492`
 - Deployment wrapper: `tyrael9/vmangos-deploy@ebaa560951459419c35140e20d787ec5db2905b8`
 
 Before publishing it runs the standalone PartyBot engine tests. The Docker build then compiles the pinned Core with the pinned deployment wrapper and its Docker patches. The image tag is:
 
 ```text
-ghcr.io/tyrael9/vmangos-server:partybot-daba395
+ghcr.io/tyrael9/vmangos-server:partybot-shadow-9af09a7
 ```
 
 To publish: open the repository Actions tab, select **Publish PartyBot ARM64 container**, choose **Run workflow**, and run it on the working branch. A successful run means the image was pushed; it does not deploy anything to an Oracle instance and does not prove in-game behavior.
 
 GHCR may initially create the package as private. If Oracle cannot pull it anonymously, change the package visibility to Public in the package settings, or authenticate on Oracle with a GitHub token that has `read:packages`.
+
+When the publish workflow is deliberately retargeted to another Core SHA, update this section's SHA and image tag in the same commit.
 
 ## Deploying the image on the Oracle test instance
 

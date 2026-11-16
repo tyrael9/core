@@ -13,11 +13,11 @@ concurrency:
 
 env:
   CORE_REPOSITORY: tyrael9/core
-  CORE_REVISION: daba3955d67a40d84915c45537a3bed9445953ba
+  CORE_REVISION: 9af09a71cc8d2f37211acc4b7fd1ac64ba487492
   DEPLOY_REPOSITORY: tyrael9/vmangos-deploy
   DEPLOY_REVISION: ebaa560951459419c35140e20d787ec5db2905b8
   IMAGE_NAME: ghcr.io/tyrael9/vmangos-server
-  IMAGE_TAG: partybot-daba395
+  IMAGE_TAG: partybot-shadow-9af09a7
 
 jobs:
   build-and-publish:
@@ -71,4 +71,4 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ env.CORE_REPOSITORY }}
             org.opencontainers.image.revision=${{ env.CORE_REVISION }}
-            org.opencontainers.image.description=vMaNGOS Vanilla 5875 PartyBot test image
+            org.opencontainers.image.description=vMaNGOS Vanilla 5875 PartyBot read-only Shadow runtime test image

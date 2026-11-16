@@ -76,4 +76,4 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ env.CORE_REPOSITORY }}
             org.opencontainers.image.revision=${{ env.CORE_REVISION }}
-            org.opencontainers.image.description=vMaNGOS Vanilla 5875 PartyBot read-only Shadow runtime test image
+            org.opencontainers.image.description=vMaNGOS Vanilla 5875 PartyBot Shadow runtime diagnostics test image

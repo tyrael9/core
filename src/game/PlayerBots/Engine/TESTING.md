@@ -77,7 +77,7 @@ Run only on a disposable/test realm unless the user explicitly approves otherwis
 
 #### Confirmed Oracle owner-disconnect test (2026-11-15)
 
-<badge>Runtime-tested</badge> The ARM64 image
+**Runtime-tested.** The ARM64 image
 `ghcr.io/tyrael9/vmangos-server:partybot-daba395`, built from Core revision
 `daba3955d67a40d84915c45537a3bed9445953ba`, was deployed to the Oracle A1
 test realm. The operator interrupted the owner's connection and reconnected
@@ -89,10 +89,14 @@ within the configured grace period. On reconnect, the operator confirmed:
 - PartyBots were still present and able to act normally; and
 - the owner was again the party leader.
 
-This validates the owner reconnect path during a short disconnect. It does not
-yet validate grace-period expiry, intentional owner leave/disband, explicit
-bot removal, or reconnect after the configured grace period. The code default
-for `PlayerBot.OwnerOfflineGraceMs` is 600000 ms (10 minutes), but the effective
+The operator also tested an intentional owner leave. The PartyBots disappeared
+from the owner's vicinity as expected, confirming that the grace protection
+does not retain them after an intentional leave.
+
+This validates the short-disconnect reconnect path and intentional owner-leave
+cleanup. It does not yet validate grace-period expiry, explicit bot removal,
+or reconnect after the configured grace period. The code default for
+`PlayerBot.OwnerOfflineGraceMs` is 600000 ms (10 minutes), but the effective
 value can be overridden in the server configuration.
 
 ## Healer lifecycle and pre-heal

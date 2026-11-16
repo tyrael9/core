@@ -1,6 +1,11 @@
 name: Publish PartyBot ARM64 container
 
 on:
+  push:
+    branches:
+      - work/partybot-engine-foundation
+    paths:
+      - .github/workflows/publish-partybot-image.yml
   workflow_dispatch:
 
 permissions:
@@ -13,11 +18,11 @@ concurrency:
 
 env:
   CORE_REPOSITORY: tyrael9/core
-  CORE_REVISION: 9af09a71cc8d2f37211acc4b7fd1ac64ba487492
+  CORE_REVISION: ${{ github.sha }}
   DEPLOY_REPOSITORY: tyrael9/vmangos-deploy
   DEPLOY_REVISION: ebaa560951459419c35140e20d787ec5db2905b8
   IMAGE_NAME: ghcr.io/tyrael9/vmangos-server
-  IMAGE_TAG: partybot-shadow-9af09a7
+  IMAGE_TAG: partybot-shadow-${{ github.sha }}
 
 jobs:
   build-and-publish:

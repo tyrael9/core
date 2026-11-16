@@ -1,9 +1,6 @@
 name: PartyBot Core build
 
 on:
-  push:
-    branches:
-      - work/partybot-engine-foundation
   pull_request:
     branches:
       - validation/partybot-engine-base-0e3ff01

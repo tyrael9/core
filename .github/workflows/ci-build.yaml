@@ -29,8 +29,14 @@ on:
       - 'README.md'
       - 'sql/**'
 
+concurrency:
+  group: ci-build-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    # This branch has a dedicated Vanilla 5875 Linux ARM64 validation workflow.
+    if: github.head_ref != 'work/partybot-engine-foundation' && github.ref_name != 'work/partybot-engine-foundation'
     name: Build on ${{ matrix.config.job_name }} (client build ${{ matrix.client_build }})
     runs-on: ${{ matrix.config.os }}
     permissions:

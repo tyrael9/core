@@ -81,3 +81,19 @@ The standalone harness additionally checks:
 - group ID zero does not create a coordinator (battleground path remains Legacy).
 
 The full Core compile includes PartySnapshotBuilder.cpp. This validates adapter API compatibility at compile time, not live thread safety or runtime data correctness.
+
+## CI scope for the PartyBot validation branch
+
+The `work/partybot-engine-foundation` branch intentionally uses the dedicated
+`.github/workflows/partybot-core-build.yml` workflow only. That workflow runs
+the pure decision-engine tests and a full Vanilla 5875 Linux ARM64 Core build,
+matching the target Oracle A1 architecture.
+
+The general `CI Build` workflow retains its full supported-client/compiler/
+platform matrix for other branches, but skips this focused validation branch.
+Both workflows use concurrency controls, and the dedicated workflow is triggered
+by PR updates (not both branch pushes and PR updates). This avoids duplicate
+matrix spending while still validating the deployment-relevant target.
+
+A successful focused run is compile/test evidence only; it is not an in-game
+test and does not authorize deployment.

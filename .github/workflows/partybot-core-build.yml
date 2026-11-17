@@ -72,8 +72,8 @@ jobs:
       - name: Validate simulator runtime harness syntax
         run: bash -n tools/partybot-simulator/run-ci.sh
 
-      # Runtime uses only disposable schemas and a private DBC fixture. It is
-      # push-only and remains a no-op until the two repository secrets exist.
+      # Runtime uses only disposable schemas and an extracted-data fixture shared
+      # through Google Drive. It is push-only and remains a no-op until both secrets exist.
       - name: Run optional Core-backed simulator runtime test
         if: github.event_name == 'push'
         env:

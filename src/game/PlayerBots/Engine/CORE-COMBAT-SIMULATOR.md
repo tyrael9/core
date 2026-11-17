@@ -135,10 +135,10 @@ Initial scenarios:
 
 ## Current status and next gate
 
-**Status: feasibility audit complete for the initial API pass; no simulator runtime code has been added yet.**
+**Status: Stage A smoke-test code committed; not yet runtime-tested.** The entry point is opt-in through `PartyBot.Simulator.Enable`. It requires all four DB schema names to begin with `PartyBot.Simulator.DatabaseNamePrefix` (default `partybot_sim_`) and runs after Core initialization, before the world loop/listeners. It creates a real dungeon/raid test map with `CreateTestMap`, verifies the instance is registered, deletes it with `DeleteTestMap`, and verifies the registry entry is gone. It then exits through the normal WorldRunnable shutdown path. Default map ID is 33. No Creature actors, combat, threat, or tick simulation are implemented in Stage A.
 
 Confirmed: the pinned Core has a purpose-built test-map creation/deletion API, public map add/update APIs, native Creature creation, real Unit damage/attack methods and a real ThreatManager API.
 
-Not yet confirmed: a safe headless startup point, clean actor insertion/removal, whether map ticks can be driven manually without world-loop side effects, complete RNG control and zero-write operation against an isolated test database.
+Not yet confirmed: runtime behavior of the Stage A path with a disposable full DB copy, clean insertion/removal of temporary Creature actors, whether map ticks can be driven manually without world-loop side effects, complete RNG control and absence of writes outside the prefixed test schemas.
 
-**Next gate:** implement an isolated test-mode branch in `Master::Run` / `WorldRunnable` with clean shutdown and a dedicated test DB, then run a test-map create/update/delete smoke test. After that, add real temporary Creature actors and Stage B damage/threat assertions. Do not begin five-player or dungeon simulation until real damage, threat, target-reselection and cleanup assertions pass in CI.
+**Next gate:** run Stage A once with a disposable DB copy and normal 5875 data; confirm the prefix guard, no-listener behavior and clean exit. Then implement real temporary Creature creation and Stage B damage/threat assertions. Do not begin five-player or dungeon simulation until real damage, threat, target-reselection and cleanup assertions pass in CI.

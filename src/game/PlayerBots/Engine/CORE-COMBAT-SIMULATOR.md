@@ -107,8 +107,8 @@ This remains a simulator fixture, not a production-authenticated PlayerBot or fi
 
 - [x] First Core point-movement primitive: PartyBotEngine derives a formation destination from the Main Tank snapshot, the adapter calls `MotionMaster::MovePoint`, and runtime CI verifies the real position reaches the destination.
 - [x] Player movement-interrupt fixture: the Engine selects the formation destination, and the simulator models the inbound mover-relocation operation by calling `Player::SetPosition`. This enters the native `Player::SetPosition` → `Unit::HandleInterruptsOnMovement` path; the simulator does not inspect spell flags or cancel spells itself. Runtime CI run `#44145923142` proves `castCancelled=1`, patient health `50000>50000`, movement completion and cleanup.
-- [~] Add continuous follow/formation tracking and defensive actions against real Core movement generators and unit state. A Core `FollowMovementGenerator` action and a moving-leader runtime scenario are now implemented; pending the next configured-fixture CI run.
-- [ ] Extend follow coverage to retargeting/recovery edge cases, target/range/LOS revalidation and cleanup; add defensive-action scenarios against real Core movement generators and unit state.
+- [x] Add continuous follow/formation tracking on native Core movement generators, Player cast pause/resume, Main Tank handoff and recovery after target removal. Runtime CI `#44159191502` and `#44163805016` pass these distinct Player/Creature slices.
+- [~] Extend action-time revalidation: Stage F6 tests that Core rejects stale out-of-range and late no-mana Player heals; LOS-blocker coverage, broader target/map/instance rejection and defensive-action scenarios remain open.
 
 ### Stage G — dungeon encounter simulation
 
@@ -234,7 +234,7 @@ The archive listing should start with paths such as `maps/`, `mmaps/`, `vmaps/` 
 
 Upload the archive to Google Drive and set General access to “Anyone with the link” with Viewer permission. Put the share URL in `PARTYBOT_SIMULATOR_DATA_URL` and the checksum in `PARTYBOT_SIMULATOR_DATA_SHA256` under the repository's Actions secrets. The runner uses the pinned `gdown` downloader to handle Drive's large-file confirmation flow, then verifies SHA-256 before extraction. Each trusted push to this branch runs the simulator after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
 
-**Runtime update (2026-11-17):** Stage F4 passed on push CI `#44159191502` (`5d3c9c5`): the Core Player FollowMovementGenerator remained paused during five no-movement-cast gate ticks, the ordinary Lesser Heal completed with mana cost, and following resumed to a final separation of `2.00` with cleanup. The next gate is Stage F5 follow target handoff/recovery, followed by defensive actions and explicit range/LOS/resource rejection tests; then integrate a real Core Group fixture. Do not jump directly to five-player dungeon scenarios.
+**Runtime update (2026-11-17):** Stage F4 passed on push CI `#44159191502` (`5d3c9c5`): the Core Player FollowMovementGenerator remained paused during five no-movement-cast gate ticks, the ordinary Lesser Heal completed with mana cost, and following resumed to a final separation of `2.00` with cleanup. Stage F5 then passed on CI `#44163805016` (`cfdda0c`): target handoff to a new Main Tank, tracking the new leader instead of the old one, removal of the active target and recovery to the remaining Main Tank all succeeded; final separation was `4.55`, with Follow state and cleanup intact. The next gate is Stage F6 action-time spell range/resource rejection, followed by a real LOS-blocker fixture and defensive-action scenarios; then integrate a real Core Group fixture. Do not jump directly to five-player dungeon scenarios.
 
 
 ## Stage C — PartyBotEngine-to-Core executor vertical slice
@@ -344,4 +344,17 @@ The runtime fixture creates one follower and two friendly leader Creatures. It f
 Next, the fixture removes B while it is the active follow target, advances normal Core map updates, promotes the still-present A back to Main Tank, and requires the same Engine action to recover by installing a new Core FollowMovementGenerator for A. A moves again through Core \`MovePoint\`; the follower must track A, retain FOLLOW state and clean up all actors.
 
 The simulator does not move the follower, rewrite positions, or synthesize target tracking. It only updates the scalar PartySnapshot, evaluates the Engine, and invokes Core movement APIs. Runtime acceptance also requires both leader movement generators, handoff and recovery decisions, followed-target removal, final formation range, and complete actor cleanup.
+
+### Stage F6 — Player heal execution-time range and resource rejection
+
+This fixture deliberately exercises the difference between a value snapshot and authoritative Core state. It first constructs an injured target 60 yards from a real Core Player healer, while the PartySnapshot still contains a stale nearby position for that target. PartyBotEngine is expected to select the heal candidate from the value snapshot; the Engine action then calls ordinary non-triggered Player::CastSpell, and the pinned Core Spell::CheckCast must return SPELL_FAILED_OUT_OF_RANGE. The action result must be ExecutionFailed/Failed, with no health change, mana consumption, pending cast, or GCD.
+
+The second case evaluates a heal candidate while the Player has normal mana, then sets the Player's real mana to zero immediately before ExecuteSelected. The same action must reach Core Spell::CheckPower, which returns SPELL_FAILED_NO_POWER; again, the result must not be reported as success and there must be no health change, cast, GCD or resource consumption.
+
+This is intentionally an execution-boundary proof, not a simulator implementation of spell range or mana-cost formulae. The fixture does not calculate range, LOS, or mana cost itself; it requires the pinned Core Spell pipeline to reject the action and reports that authoritative result separately from the Engine decision.
+
+Runtime acceptance: both candidates are selected from their scalar snapshots, both execution attempts fail with the exact expected Core SpellCastResult, health remains unchanged, no cast/GCD starts, the first case consumes no mana, the second case remains at zero mana, and Player/session plus both Creature fixtures are cleaned up. LOS remains a separate open case until a deterministic blocked VMap line can be identified in the headless test map.
+
+
+Runtime CI `#44163805016` on commit `cfdda0c` passed: `aiReady=1`, `registered=1`, `initialSelected=1`, `initialFollow=1`, `initialCaughtUp=1`, `handoffSelected=1`, `handoffExecuted=1`, `handoffTargetChanged=1`, both leader movement generators started and reached destination, `followerTrackedNewLeader=1`, `oldLeaderRemoved=1`, `recoverySelected=1`, `recoveryExecuted=1`, `recoveryTargetRestored=1`, `recoveredToAvailableLeader=1`, final separation `4.55`, `followGenerator=1`, `cleanup=1`.
 

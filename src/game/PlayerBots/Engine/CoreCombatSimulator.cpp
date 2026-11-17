@@ -1924,6 +1924,187 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
 }
 
 
+
+bool RunEngineCorePlayerHealRevalidationSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor outOfRangePatient;
+    SimulatorActor noPowerPatient;
+    bool const patientsCreated =
+        CreateSimulatorActor(map, *info, partyFaction, 60.0f, 6.0f, outOfRangePatient) &&
+        CreateSimulatorActor(map, *info, partyFaction, 8.0f, 6.0f, noPowerPatient);
+    if (!patientsCreated)
+    {
+        bool cleaned = DestroySimulatorActor(map, noPowerPatient);
+        cleaned = DestroySimulatorActor(map, outOfRangePatient) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Heal revalidation patient creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    WorldSession healerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* healer = nullptr;
+    bool const healerCreated = CreateSimulatorPlayer(map, partyFaction, healerSession,
+                                                       healer, 0.0f, 6.0f, 0.0f);
+    if (!healerCreated)
+    {
+        if (healerSession.GetPlayer())
+            healerSession.LogoutPlayer(false);
+        else if (healer)
+            delete healer;
+        bool cleaned = DestroySimulatorActor(map, noPowerPatient);
+        cleaned = DestroySimulatorActor(map, outOfRangePatient) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Heal revalidation Player creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    outOfRangePatient.creature->SetHealth(outOfRangePatient.creature->GetMaxHealth() / 2);
+    noPowerPatient.creature->SetHealth(noPowerPatient.creature->GetMaxHealth() / 2);
+
+    PartyCoordinator coordinator;
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
+    bool const registered = engine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_player_heal_execution_revalidation"));
+    strategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
+    engine.AddStrategy(strategy);
+
+    auto makeSnapshot = [&](uint64 epoch, Creature* patient, bool staleNearPosition)
+    {
+        PartySnapshot snapshot;
+        snapshot.groupId = 10;
+        snapshot.mapId = map.GetId();
+        snapshot.instanceId = map.GetInstanceId();
+        snapshot.epoch = epoch;
+        snapshot.capturedAtMs = epoch * 1000;
+
+        PartyMemberSnapshot healerMember;
+        healerMember.guid = healer->GetObjectGuid().GetRawValue();
+        healerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+        healerMember.mapId = map.GetId();
+        healerMember.instanceId = map.GetInstanceId();
+        healerMember.health = healer->GetHealth();
+        healerMember.maxHealth = healer->GetMaxHealth();
+        healerMember.online = true;
+        healerMember.alive = healer->IsAlive();
+        healerMember.x = healer->GetPositionX();
+        healerMember.y = healer->GetPositionY();
+        healerMember.z = healer->GetPositionZ();
+        snapshot.members.push_back(healerMember);
+
+        PartyMemberSnapshot patientMember;
+        patientMember.guid = patient->GetObjectGuid().GetRawValue();
+        patientMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+        patientMember.mapId = map.GetId();
+        patientMember.instanceId = map.GetInstanceId();
+        patientMember.health = patient->GetHealth();
+        patientMember.maxHealth = patient->GetMaxHealth();
+        patientMember.online = true;
+        patientMember.alive = patient->IsAlive();
+        patientMember.isMainTank = true;
+        patientMember.x = staleNearPosition ? healer->GetPositionX() + 5.0f : patient->GetPositionX();
+        patientMember.y = healer->GetPositionY();
+        patientMember.z = healer->GetPositionZ();
+        snapshot.members.push_back(patientMember);
+        return snapshot;
+    };
+
+    // The value snapshot intentionally says the first injured target was
+    // nearby, but the authoritative Core Unit is 60 yards away. The action
+    // must not trust stale snapshot coordinates: normal CastSpell/CheckCast
+    // owns the final range decision.
+    uint32 const rangeHealthBefore = outOfRangePatient.creature->GetHealth();
+    PartySnapshot rangeSnapshot = makeSnapshot(10, outOfRangePatient.creature, true);
+    DecisionContext rangeContext(rangeSnapshot, rangeSnapshot.members[0], coordinator, 10000);
+    DecisionReport rangeReport = engine.Evaluate(rangeContext);
+    bool const rangeSelected = rangeReport.selectedIndices.size() == 1 &&
+        rangeReport.candidates[rangeReport.selectedIndices[0]].candidate.targetGuid ==
+            outOfRangePatient.creature->GetObjectGuid().GetRawValue() &&
+        rangeReport.candidates[rangeReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (rangeSelected)
+        engine.ExecuteSelected(rangeContext, rangeReport);
+    bool const rangeExecutionFailed = rangeSelected &&
+        rangeReport.candidates[rangeReport.selectedIndices[0]].status == CandidateStatus::ExecutionFailed &&
+        rangeReport.candidates[rangeReport.selectedIndices[0]].actionResult == ActionResult::Failed;
+    SpellCastResult const rangeCastResult = healAction->GetLastCastResult();
+    uint32 const rangeHealthAfter = outOfRangePatient.creature->GetHealth();
+    uint32 const rangeManaBefore = healAction->GetManaBefore();
+    uint32 const rangeManaAfter = healAction->GetManaAfterAccept();
+    bool const rangeNoPending = !healAction->WasCastPendingAfterAccept();
+    bool const rangeNoGcd = !healAction->HadGcdAfterAccept();
+    bool const rangeRejected = rangeExecutionFailed &&
+        rangeCastResult == SPELL_FAILED_OUT_OF_RANGE &&
+        rangeHealthAfter == rangeHealthBefore &&
+        rangeManaAfter == rangeManaBefore &&
+        healer->GetPower(POWER_MANA) == rangeManaBefore &&
+        rangeNoPending && rangeNoGcd;
+
+    // Evaluate against a fresh healthy-resource snapshot, then exhaust the
+    // real Player's mana before the selected action is executed. The adapter
+    // must surface the Core Spell::CheckPower failure without claiming success.
+    uint32 const noPowerHealthBefore = noPowerPatient.creature->GetHealth();
+    PartySnapshot noPowerSnapshot = makeSnapshot(11, noPowerPatient.creature, false);
+    DecisionContext noPowerContext(noPowerSnapshot, noPowerSnapshot.members[0], coordinator, 11000);
+    DecisionReport noPowerReport = engine.Evaluate(noPowerContext);
+    bool const noPowerSelected = noPowerReport.selectedIndices.size() == 1 &&
+        noPowerReport.candidates[noPowerReport.selectedIndices[0]].candidate.targetGuid ==
+            noPowerPatient.creature->GetObjectGuid().GetRawValue() &&
+        noPowerReport.candidates[noPowerReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    healer->SetPower(POWER_MANA, 0);
+    if (noPowerSelected)
+        engine.ExecuteSelected(noPowerContext, noPowerReport);
+    bool const noPowerExecutionFailed = noPowerSelected &&
+        noPowerReport.candidates[noPowerReport.selectedIndices[0]].status == CandidateStatus::ExecutionFailed &&
+        noPowerReport.candidates[noPowerReport.selectedIndices[0]].actionResult == ActionResult::Failed;
+    SpellCastResult const noPowerCastResult = healAction->GetLastCastResult();
+    uint32 const noPowerHealthAfter = noPowerPatient.creature->GetHealth();
+    uint32 const noPowerManaAfter = healer->GetPower(POWER_MANA);
+    bool const noPowerNoPending = !healAction->WasCastPendingAfterAccept();
+    bool const noPowerNoGcd = !healAction->HadGcdAfterAccept();
+    bool const noPowerRejected = noPowerExecutionFailed &&
+        noPowerCastResult == SPELL_FAILED_NO_POWER &&
+        noPowerHealthAfter == noPowerHealthBefore &&
+        noPowerManaAfter == 0 &&
+        healAction->GetManaBefore() == 0 && healAction->GetManaAfterAccept() == 0 &&
+        noPowerNoPending && noPowerNoGcd;
+
+    healerSession.LogoutPlayer(false);
+    bool const playerCleaned = healerSession.GetPlayer() == nullptr;
+    healer = nullptr;
+    bool cleaned = DestroySimulatorActor(map, noPowerPatient);
+    cleaned = DestroySimulatorActor(map, outOfRangePatient) && cleaned;
+    cleaned = playerCleaned && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Player heal execution revalidation: registered=%u rangeSelected=%u rangeExecutionFailed=%u rangeResult=%u rangeHealth=%u>%u rangeMana=%u>%u rangeNoPending=%u rangeNoGcd=%u noPowerSelected=%u noPowerExecutionFailed=%u noPowerResult=%u noPowerHealth=%u>%u noPowerMana=%u noPowerNoPending=%u noPowerNoGcd=%u cleanup=%u.",
+             registered ? 1u : 0u, rangeSelected ? 1u : 0u,
+             rangeExecutionFailed ? 1u : 0u, static_cast<uint32>(rangeCastResult),
+             rangeHealthBefore, rangeHealthAfter, rangeManaBefore, rangeManaAfter,
+             rangeNoPending ? 1u : 0u, rangeNoGcd ? 1u : 0u,
+             noPowerSelected ? 1u : 0u, noPowerExecutionFailed ? 1u : 0u,
+             static_cast<uint32>(noPowerCastResult),
+             noPowerHealthBefore, noPowerHealthAfter, noPowerManaAfter,
+             noPowerNoPending ? 1u : 0u, noPowerNoGcd ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!registered || !rangeRejected || !noPowerRejected || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Player heal execution-time range/resource revalidation failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Core Player CastSpell rejected a stale out-of-range heal and a late no-mana heal without applying effects, consuming mana, starting a cast or setting GCD.");
+    return true;
+}
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -2339,13 +2520,14 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
     bool const playerFollowCastSafetyPassed = RunEngineCorePlayerFollowCastSafetySmokeTest(*map);
     bool const followRetargetPassed = RunEngineCoreFollowRetargetSmokeTest(*map);
+    bool const playerHealRevalidationPassed = RunEngineCorePlayerHealRevalidationSmokeTest(*map);
     bool const movementInterruptPassed = RunEngineCoreMovementInterruptSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
-                              movementInterruptPassed;
+                              playerHealRevalidationPassed && movementInterruptPassed;
 
     sMapMgr.DeleteTestMap(map);
 

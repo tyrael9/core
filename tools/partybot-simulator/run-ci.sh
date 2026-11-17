@@ -209,6 +209,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine retargeted native Core F
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: Core Player CastSpell rejected a stale out-of-range heal and a late no-mana heal without applying effects, consuming mana, starting a cast or setting GCD." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The Player heal range/resource revalidation PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: Engine-selected Player movement interrupted a pending Core Lesser Heal cast without applying the heal." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Player movement-cast-interruption PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
@@ -219,4 +224,4 @@ if ! grep -Fq "[PartyBotSimulator] PASS: created, ran a bounded Core Creature co
     exit 1
 fi
 
-echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, damage, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, damage, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal execution-time range/resource rejection, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"

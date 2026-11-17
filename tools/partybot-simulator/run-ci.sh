@@ -214,13 +214,8 @@ if ! grep -Fq "[PartyBotSimulator] PASS: Core Player Spell::CheckCast rejected a
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: a real five-Player Group exposed two Core hostile adds, Core assist-threat made both switch from Main Tank to healer, and PartySnapshotBuilder copied both real threat lists and victims." "$LOG_FILE"; then
-    echo "[PartyBotSimulator] The real Group multi-add/healer-threat PASS marker was not found." | tee -a "$LOG_FILE"
-    exit 1
-fi
-
-if ! grep -Fq "[PartyBotSimulator] PASS: five real Core Players joined a real Group and production PartySnapshotBuilder copied the same-map roster into value snapshots; group/session cleanup succeeded." "$LOG_FILE"; then
-    echo "[PartyBotSimulator] The real Core Group/PartySnapshotBuilder PASS marker was not found." | tee -a "$LOG_FILE"
+if ! grep -Fq "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat snapshots matched Core and all Group/session cleanup succeeded." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The combined five-Player Group and multi-add/healer-threat PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 
@@ -244,4 +239,4 @@ if ! grep -Fq "[PartyBotSimulator] PASS: created, ran a bounded Core Creature co
     exit 1
 fi
 
-echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, damage, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, real five-Player Core Group snapshot building, multi-add healer-threat and Core threat snapshot projection, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, damage, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"

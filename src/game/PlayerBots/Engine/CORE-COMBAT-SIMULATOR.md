@@ -187,6 +187,8 @@ The repository now contains `tools/partybot-simulator/run-ci.sh`, wired into the
 - `PARTYBOT_SIMULATOR_DATA_URL`: HTTPS read-only download URL for a `.tar.gz` archive of the complete extracted-data directory, preserving `5875/dbc/`, `maps/`, `vmaps/` and `mmaps/` at the archive root.
 - `PARTYBOT_SIMULATOR_DATA_SHA256`: SHA-256 checksum of that archive.
 
+The database readiness check deliberately requires a TCP connection to `127.0.0.1:3306`, not the container's local socket: the deployment image starts a temporary socket-only MariaDB during seed import before bringing up the normal TCP listener. This avoids launching `mangosd` while the database is still initializing.
+
 The runner extracts the full archive into its isolated `DataDir` and checks that the required DBC files and all three world-data directories are present and nonempty. This supports later terrain, collision, navigation and map-content scenarios without uploading another fixture. It starts the same public vMangos database image used by the pinned deployment wrapper, clones its `mangos`, `characters`, `realmd` and `logs` schemas to `partybot_sim_*`, and points all four Core connections exclusively at those disposable copies. It then runs the one-shot `mangosd` simulator and uploads both console and file logs as a 14-day Actions artifact. It never reads or connects to the Oracle realm.
 
 From the deployment directory, create a single archive while preserving the extracted-data directory structure:

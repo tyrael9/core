@@ -54,7 +54,11 @@ Preferred first implementation: add a test-only command-line mode to existing `m
 
 This reuses real Core initialization and avoids maintaining a second incomplete bootstrap.
 
-**Open implementation question:** locate the safe point in `mangosd` startup after DBC/ObjectMgr/SpellMgr/MapManager/ScriptMgr initialization but before normal network service and world-loop startup. Confirm test mode can avoid character/realm DB writes. If not, use a dedicated disposable DB schema and credentials. Never silently point it at production.
+**Startup hook found:** `Master::Run()` calls `sWorld.SetInitialWorldSettings()` before it launches `WorldRunnable` and before `sWorldSocketMgr.StartWorldNetworking()`. This is the first practical hook: required world data/managers have been initialized, and the world listener has not yet been opened. A test-mode branch can therefore skip the listener and normal world loop while reusing the real startup path.
+
+**Important caveat:** `SetInitialWorldSettings()` is not read-only. It writes startup/maintenance data (including the `uptime` record), starts background workers (character DB, async packets, anticheat and possibly LFG), and the Master has already started IO-context runner threads. Simulator mode must use a dedicated disposable database/configuration and reuse the normal shutdown/cleanup path. Simply returning from `Master::Run()` after a test would leak threads and leave services uncleanly stopped.
+
+The map-level `Map::Update(diff)` accepts an explicit diff, but internally still reads wall-clock values and global services (including the movement broadcaster); it also updates sessions, cells, weather, scripts and instance data. A fixed diff alone does not make full-map ticks deterministic. Stage B must determine whether an instance-map tick can be driven safely or whether a test-only clock seam is required. Do not alter production tick semantics to simplify tests.
 
 ### Stage B — first real combat proof
 
@@ -137,4 +141,4 @@ Confirmed: the pinned Core has a purpose-built test-map creation/deletion API, p
 
 Not yet confirmed: a safe headless startup point, clean actor insertion/removal, whether map ticks can be driven manually without world-loop side effects, complete RNG control and zero-write operation against an isolated test database.
 
-**Next gate:** implement Stage A bootstrap discovery and the smallest Stage B executable proof. Do not begin five-player or dungeon simulation until real damage, threat, target-reselection and cleanup assertions pass in CI.
+**Next gate:** implement an isolated test-mode branch in `Master::Run` / `WorldRunnable` with clean shutdown and a dedicated test DB, then run a test-map create/update/delete smoke test. After that, add real temporary Creature actors and Stage B damage/threat assertions. Do not begin five-player or dungeon simulation until real damage, threat, target-reselection and cleanup assertions pass in CI.

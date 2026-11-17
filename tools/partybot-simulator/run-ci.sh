@@ -41,7 +41,7 @@ DATA_ARCHIVE="$PWD/partybot-simulator-extracted-data.tar.gz"
 GDOWN_VENV="$PWD/.partybot-gdown-venv"
 echo "[PartyBotSimulator] Downloading the complete Google Drive 5875 extracted-data fixture." | tee -a "$LOG_FILE"
 python3 -m venv "$GDOWN_VENV"
-"$GDOWN_VENV/bin/python" -m pip install --disable-pip-version-check --quiet "gdown==6.4.2"
+"$GDOWN_VENV/bin/python" -m pip install --disable-pip-version-check --quiet "gdown==6.5.1"
 "$GDOWN_VENV/bin/gdown" --continue --retries 3 --timeout 60 "$PARTYBOT_SIMULATOR_DATA_URL" --output "$DATA_ARCHIVE"
 printf '%s  %s\n' "$(printf '%s' "$PARTYBOT_SIMULATOR_DATA_SHA256" | tr '[:upper:]' '[:lower:]')" "$DATA_ARCHIVE" | sha256sum --check
 

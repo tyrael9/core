@@ -16,6 +16,8 @@ concurrency:
   group: partybot-image-publish
   cancel-in-progress: false
 
+# This workflow-file update is the explicit publish trigger. Build the exact
+# branch tree at the triggering commit and tag the image with that full SHA.
 env:
   CORE_REPOSITORY: tyrael9/core
   CORE_REVISION: ${{ github.sha }}
@@ -76,4 +78,4 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ env.CORE_REPOSITORY }}
             org.opencontainers.image.revision=${{ env.CORE_REVISION }}
-            org.opencontainers.image.description=vMaNGOS Vanilla 5875 PartyBot Shadow runtime diagnostics test image
+            org.opencontainers.image.description=vMaNGOS Vanilla 5875 PartyBot role-aware Shadow strategy test image

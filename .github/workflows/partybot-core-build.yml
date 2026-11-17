@@ -77,8 +77,8 @@ jobs:
       - name: Run optional Core-backed simulator runtime test
         if: github.event_name == 'push'
         env:
-          PARTYBOT_SIMULATOR_DBC_URL: ${{ secrets.PARTYBOT_SIMULATOR_DBC_URL }}
-          PARTYBOT_SIMULATOR_DBC_SHA256: ${{ secrets.PARTYBOT_SIMULATOR_DBC_SHA256 }}
+          PARTYBOT_SIMULATOR_DATA_URL: ${{ secrets.PARTYBOT_SIMULATOR_DATA_URL }}
+          PARTYBOT_SIMULATOR_DATA_SHA256: ${{ secrets.PARTYBOT_SIMULATOR_DATA_SHA256 }}
         run: bash tools/partybot-simulator/run-ci.sh
 
       - name: Upload simulator runtime logs

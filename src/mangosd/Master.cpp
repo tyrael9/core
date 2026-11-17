@@ -186,7 +186,7 @@ int Master::Run()
 
     // worldd PID file creation
     std::string pidFilePath = sConfig.GetStringDefault("PidFile", "");
-    if (!pidFilePath.empty())
+    if (!partyBotSimulator && !pidFilePath.empty())
     {
         uint32 pid = CreatePIDFile(pidFilePath);
         if (!pid)
@@ -414,13 +414,16 @@ int Master::Run()
     for (std::thread& thread : ioCtxRunners)
         thread.join();
 
-    // Clean account database before leaving
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Cleaning character database...");
-    clearOnlineAccounts();
+    // Normal server cleanup is unnecessary in simulator mode (there were no sessions).
+    if (!partyBotSimulator)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Cleaning character database...");
+        clearOnlineAccounts();
 
-    // send all still queued mass mails (before DB connections shutdown)
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Sending queued mail...");
-    sMassMailMgr.Update(true);
+        // send all still queued mass mails (before DB connections shutdown)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Sending queued mail...");
+        sMassMailMgr.Update(true);
+    }
 
     // Wait for DB delay threads to end
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Closing database connections...");

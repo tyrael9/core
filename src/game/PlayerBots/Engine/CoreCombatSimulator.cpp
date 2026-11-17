@@ -109,12 +109,19 @@ bool CreateSimulatorActor(Map& map, CreatureInfo const& info, uint32 factionId,
     map.Add(creature);
 
     actor.creature = creature;
-    if (!creature->IsInWorld() || map.GetCreature(creature->GetObjectGuid()) != creature)
+    ObjectGuid const guid = creature->GetObjectGuid();
+    if (!creature->IsInWorld() || map.GetCreature(guid) != creature)
     {
         if (creature->IsInWorld())
             map.Remove(creature, false);
-        delete creature;
-        actor.creature = nullptr;
+
+        // Never destroy an object while the map might still hold its pointer.
+        bool const detached = !creature->IsInWorld() && map.GetCreature(guid) == nullptr;
+        if (detached)
+        {
+            delete creature;
+            actor.creature = nullptr;
+        }
         return false;
     }
 
@@ -134,9 +141,17 @@ bool DestroySimulatorActor(Map& map, SimulatorActor& actor)
         map.Remove(actor.creature, false);
 
     bool const detached = !actor.creature->IsInWorld() && map.GetCreature(guid) == nullptr;
+    if (!detached)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Refusing to destroy Creature GUID %u because Map::Remove(false) did not detach it.",
+                 actor.creature->GetGUIDLow());
+        return false;
+    }
+
     delete actor.creature;
     actor.creature = nullptr;
-    return detached;
+    return true;
 }
 
 bool RunCoreCombatThreatSmokeTest(Map& map)

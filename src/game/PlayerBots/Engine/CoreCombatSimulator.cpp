@@ -2816,8 +2816,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     uint32 const groupId = group->GetId();
     bool const registeredBeforeCleanup = groupRegistered &&
         sObjectMgr.GetGroupById(groupId) == group.get();
-    auto snapshotMeleeReachabilityMatchesCore = [](HostileSnapshot const* hostileSnapshot,
-                                                    Unit* hostileUnit, ObjectGuid memberGuid)
+    uint32 meleeReachabilityChecks = 0;
+    auto snapshotMeleeReachabilityMatchesCore = [&meleeReachabilityChecks](
+        HostileSnapshot const* hostileSnapshot, Unit* hostileUnit, ObjectGuid memberGuid)
     {
         if (!hostileSnapshot || !hostileUnit)
             return false;
@@ -2826,8 +2827,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             if (entry.unitGuid != memberGuid.GetRawValue())
                 continue;
             Unit* member = hostileUnit->GetMap()->GetUnit(memberGuid);
-            return member && entry.meleeReachable ==
+            bool const matches = member && entry.meleeReachable ==
                 hostileUnit->CanReachWithMeleeAutoAttack(member);
+            if (matches)
+                ++meleeReachabilityChecks;
+            return matches;
         }
         return false;
     };
@@ -2845,7 +2849,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         snapshotValid && rosterRoleStateValid && bothAddsResolved && threatValuesCopied && coreReachabilityCopied;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u.",
+             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u meleeReachability=%u/4.",
              hostileAIReady ? 1u : 0u, membersAdded ? 1u : 0u,
              mainTankAssigned ? 1u : 0u, allPlayersOnSameMap ? 1u : 0u,
              initialSnapshotValid ? 1u : 0u, initialRosterResolved ? 1u : 0u,
@@ -2861,7 +2865,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
              selectedAfterAssist0 == healer ? 1u : 0u,
              selectedAfterAssist1 == healer ? 1u : 0u,
              snapshotValid ? 1u : 0u, rosterRoleStateValid ? 1u : 0u,
-             bothAddsResolved ? 1u : 0u, threatValuesCopied ? 1u : 0u);
+             bothAddsResolved ? 1u : 0u, threatValuesCopied ? 1u : 0u,
+             meleeReachabilityChecks);
 
     if (f9ChecksPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,

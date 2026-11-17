@@ -224,6 +224,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: one real five-Player Core Group passed 
     exit 1
 fi
 
+if ! grep -Fq "meleeReachability=4/4" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The four per-reference melee-reachability parity checks did not all pass." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine refused Core MovePoint while the mover had CAN_NOT_MOVE or POSSESSED state." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The MovePoint control-safety PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

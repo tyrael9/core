@@ -56,7 +56,8 @@ The current role-aware Shadow slice is a proof of the data-to-candidate path onl
 - [x] Prove real Core damage, damage-generated threat, threat ordering and victim reselection with runtime Core-state assertions.
 - [~] Bound map tick progression and document wall-clock cadence; deterministic RNG/replay control remains.
 - [x] Add a Stage B push-only CI runtime job with strict timeout and no deployment/image-publish side effects.
-- [ ] Only after the Core proof passes, connect PartyBotEngine's real executor and party coordination.
+- [~] Connect PartyBotEngine to a fixture-backed five-member party snapshot and a real Core Unit::Attack executor; first tank-assist vertical slice is under runtime CI validation.
+- [ ] Extend the executor from attack/targeting to spell casts, healing, movement and defensive actions.
 - [ ] Add scripted aggro, healer-threat, tank-death, healer-death and multi-add scenarios.
 - [ ] Evaluate full dungeon/instance scripts as a later tier.
 

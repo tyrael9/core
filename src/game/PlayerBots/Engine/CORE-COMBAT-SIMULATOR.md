@@ -213,3 +213,17 @@ The archive listing should start with paths such as `maps/`, `mmaps/`, `vmaps/` 
 Upload the archive to Google Drive and set General access to “Anyone with the link” with Viewer permission. Put the share URL in `PARTYBOT_SIMULATOR_DATA_URL` and the checksum in `PARTYBOT_SIMULATOR_DATA_SHA256` under the repository's Actions secrets. The runner uses the pinned `gdown` downloader to handle Drive's large-file confirmation flow, then verifies SHA-256 before extraction. Each trusted push to this branch runs the simulator after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
 
 **Next gate:** rerun the corrected harness and require a green end-to-end CI result. The current fixture and both Actions secrets are already configured; no user action is required. After that, extend coverage in layers (Player-backed actors, actual spell casts/healing, movement, then PartyBotEngine execution). Do not jump directly to five-player/dungeon scenarios.
+
+
+## Stage C — PartyBotEngine-to-Core executor vertical slice
+
+The next integration step keeps the simulator on the same isolated test map and reuses the real template-backed Core Creature lifecycle. It creates five party-role actors (tank, healer, melee DPS, ranged DPS and support) plus one mutually hostile target. The roster and hostile are projected into GUID/scalar-only \`PartySnapshot\` values; no live Core pointers are stored in the decision model.
+
+A simulator Trigger emits a tank-assist candidate. \`PartyBotEngine::Evaluate\` performs the normal action lookup, eligibility checks and channel arbitration. The selected action adapter resolves the bot and target GUIDs back through the current \`Map\`, revalidates life/hostility, then calls the pinned Core \`Unit::Attack\`. The test requires the report to say \`Executed\`, the action result to be \`Success\`, and the tank's actual Core victim pointer to equal the hostile Creature. All six actors are detached and destroyed before map deletion.
+
+This is deliberately a narrow proof:
+- It validates the real Engine evaluation/execution boundary and one real Core action adapter.
+- The five roster entries are simulator Creature actors, not authenticated \`Player\` objects or a Core \`Group\`.
+- It does not yet prove player spell casting, healing, movement generators, class rotations, or a full dungeon AI.
+- The next vertical slices should add spell-result-aware casts and healing, then movement/formation, with each action revalidating its Core preconditions immediately before execution.
+

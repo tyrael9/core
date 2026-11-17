@@ -6,6 +6,12 @@
 #include "Log.h"
 #include "Map.h"
 #include "MapManager.h"
+#include "PlayerBots/Engine/Action.h"
+#include "PlayerBots/Engine/PartyBotEngine.h"
+#include "PlayerBots/Engine/PartyCoordinator.h"
+#include "PlayerBots/Engine/PartySnapshot.h"
+#include "PlayerBots/Engine/Strategy.h"
+#include "PlayerBots/Engine/Trigger.h"
 #include "ObjectMgr.h"
 
 #include <algorithm>
@@ -168,6 +174,188 @@ bool DestroySimulatorActor(Map& map, SimulatorActor& actor)
 
     delete actor.creature;
     actor.creature = nullptr;
+    return true;
+}
+
+
+class SimulatorCoreAttackAction final : public Action
+{
+public:
+    explicit SimulatorCoreAttackAction(Map& map) : m_map(map) {}
+    std::string const& GetName() const override { return m_name; }
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        HostileSnapshot const* hostile = context.snapshot.FindHostile(candidate.targetGuid);
+        Unit* attacker = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* target = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!hostile || !hostile->alive || !attacker || !target ||
+            !attacker->IsAlive() || !target->IsAlive() || !attacker->IsHostileTo(target))
+        {
+            reason = "core_attack_target_unavailable_or_not_hostile";
+            return false;
+        }
+        return true;
+    }
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        Unit* attacker = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* target = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!attacker || !target || attacker->GetVictim() == target)
+        {
+            reason = "core_attack_already_active_or_actor_missing";
+            return false;
+        }
+        return true;
+    }
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    {
+        Unit* attacker = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* target = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!attacker || !target || !attacker->Attack(target, true))
+            return ActionResult::Failed;
+        return attacker->GetVictim() == target ? ActionResult::Success : ActionResult::Failed;
+    }
+private:
+    Map& m_map;
+    std::string m_name = "core_attack";
+};
+
+class SimulatorTankAssistTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive &&
+               context.bot.roleId == static_cast<std::uint8_t>(PartyRole::Tank);
+    }
+    void CollectCandidates(DecisionContext const& context,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        for (HostileSnapshot const& hostile : context.snapshot.hostiles)
+        {
+            if (!hostile.alive || hostile.crowdControlProtected)
+                continue;
+            ActionCandidate candidate;
+            candidate.actionName = "core_attack";
+            candidate.targetGuid = hostile.guid;
+            candidate.basePriority = 100.0f;
+            candidate.channel = ActionChannel::Targeting;
+            candidates.push_back(candidate);
+        }
+    }
+private:
+    std::string m_name = "simulator_tank_assist";
+};
+
+bool RunEngineCoreExecutorSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor party[5];
+    SimulatorActor enemy;
+    bool created = true;
+    for (uint32 i = 0; i < 5 && created; ++i)
+        created = CreateSimulatorActor(map, *info, partyFaction,
+                                       static_cast<float>(i), 2.0f, party[i]);
+    if (created)
+        created = CreateSimulatorActor(map, *info, hostileFaction, 5.0f, 2.0f, enemy);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, enemy);
+        for (uint32 i = 0; i < 5; ++i)
+            cleaned = DestroySimulatorActor(map, party[i]) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine executor fixture creation failed (cleanup=%u).", cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120; ++tick)
+    {
+        bool ready = enemy.updateCount != 0;
+        for (uint32 i = 0; i < 5; ++i)
+            ready = ready && party[i].updateCount != 0;
+        if (ready)
+            break;
+        map.Update(50);
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 1;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 1;
+    snapshot.capturedAtMs = 1000;
+    for (uint32 i = 0; i < 5; ++i)
+    {
+        PartyMemberSnapshot member;
+        member.guid = party[i].creature->GetObjectGuid().GetRawValue();
+        member.roleId = static_cast<std::uint8_t>(
+            i == 0 ? PartyRole::Tank :
+            i == 1 ? PartyRole::Healer :
+            i == 2 ? PartyRole::MeleeDamage :
+            i == 3 ? PartyRole::RangedDamage : PartyRole::Support);
+        member.mapId = map.GetId();
+        member.instanceId = map.GetInstanceId();
+        member.health = party[i].creature->GetHealth();
+        member.maxHealth = party[i].creature->GetMaxHealth();
+        member.online = true;
+        member.alive = party[i].creature->IsAlive();
+        member.isMainTank = i == 0;
+        snapshot.members.push_back(member);
+    }
+
+    HostileSnapshot hostile;
+    hostile.guid = enemy.creature->GetObjectGuid().GetRawValue();
+    hostile.health = enemy.creature->GetHealth();
+    hostile.maxHealth = enemy.creature->GetMaxHealth();
+    hostile.alive = enemy.creature->IsAlive();
+    snapshot.hostiles.push_back(hostile);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 1000);
+    PartyBotEngine engine;
+    bool const registered = engine.RegisterAction(std::make_shared<SimulatorCoreAttackAction>(map));
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_tank_assist"));
+    strategy->AddTrigger(std::make_shared<SimulatorTankAssistTrigger>());
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == hostile.guid &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(context, report);
+    bool const executed = !report.selectedIndices.empty() &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Success &&
+        party[0].creature->GetVictim() == enemy.creature;
+
+    party[0].creature->AttackStop();
+    bool cleaned = DestroySimulatorActor(map, enemy);
+    for (uint32 i = 0; i < 5; ++i)
+        cleaned = DestroySimulatorActor(map, party[i]) && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine executor: party=5 hostile=1 aiReady=%u registered=%u candidates=%u selected=%u executed=%u cleanup=%u.",
+             (enemy.updateCount != 0 && party[0].updateCount != 0 && party[1].updateCount != 0 &&
+              party[2].updateCount != 0 && party[3].updateCount != 0 && party[4].updateCount != 0) ? 1u : 0u,
+             registered ? 1u : 0u, static_cast<uint32>(report.candidates.size()),
+             selected ? 1u : 0u, executed ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!registered || !selected || !executed || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine-to-Core executor smoke test failed.");
+        return false;
+    }
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine selected a tank-assist action and executed real Unit::Attack against a hostile Core Creature.");
     return true;
 }
 
@@ -339,7 +527,9 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     // the normal Creature::AIM_Initialize lifecycle above.
     bool const mapRetained = sMapMgr.FindMap(mapId, instanceId) == map;
 
-    bool const combatPassed = registered && mapRetained && RunCoreCombatThreatSmokeTest(*map);
+    bool const combatPassed = registered && mapRetained &&
+                             RunCoreCombatThreatSmokeTest(*map) &&
+                             RunEngineCoreExecutorSmokeTest(*map);
 
     sMapMgr.DeleteTestMap(map);
 

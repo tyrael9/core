@@ -41,6 +41,7 @@
 #include "remote/soap/MaNGOSsoap.h"
 #include "Util.h"
 #include "MassMailMgr.h"
+#include "PlayerBots/Engine/CoreCombatSimulator.h"
 #include "DBCStores.h"
 #include "WorldSocketMgr.h"
 #include "IO/Context/IoContext.h"
@@ -130,9 +131,59 @@ Master::~Master()
 {
 }
 
+namespace
+{
+bool ValidatePartyBotSimulatorDatabases()
+{
+    std::string const prefix = sConfig.GetStringDefault("PartyBot.Simulator.DatabaseNamePrefix", "partybot_sim_");
+    if (prefix.empty())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[PartyBotSimulator] Database name prefix must not be empty.");
+        return false;
+    }
+
+    char const* settings[] =
+    {
+        "WorldDatabase.Info",
+        "CharacterDatabase.Info",
+        "LoginDatabase.Info",
+        "LogsDatabase.Info"
+    };
+
+    for (char const* setting : settings)
+    {
+        std::string const info = sConfig.GetStringDefault(setting, "");
+        std::size_t const separator = info.find_last_of(';');
+        if (separator == std::string::npos)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[PartyBotSimulator] Cannot validate %s; expected a semicolon-separated DB connection string.", setting);
+            return false;
+        }
+
+        std::string databaseName = info.substr(separator + 1);
+        while (!databaseName.empty() && (databaseName.front() == ' ' || databaseName.front() == '\\t'))
+            databaseName.erase(databaseName.begin());
+        while (!databaseName.empty() && (databaseName.back() == ' ' || databaseName.back() == '\\t'))
+            databaseName.pop_back();
+
+        if (databaseName.compare(0, prefix.size(), prefix) != 0)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[PartyBotSimulator] Refusing to start: %s database '%s' does not begin with required isolated prefix '%s'.", setting, databaseName.c_str(), prefix.c_str());
+            return false;
+        }
+    }
+
+    return true;
+}
+}
+
 // Main function
 int Master::Run()
 {
+    bool const partyBotSimulator = sConfig.GetBoolDefault("PartyBot.Simulator.Enable", false);
+    if (partyBotSimulator && !ValidatePartyBotSimulatorDatabases())
+        return EXIT_FAILURE;
+
     // worldd PID file creation
     std::string pidFilePath = sConfig.GetStringDefault("PidFile", "");
     if (!pidFilePath.empty())
@@ -190,8 +241,18 @@ int Master::Run()
     // Initialize the World
     sWorld.SetInitialWorldSettings();
 
+    // Run the opt-in Core-backed smoke test after normal Core initialization,
+    // before starting the world loop or opening any client-facing listener.
+    if (partyBotSimulator)
+    {
+        uint32 const mapId = sConfig.GetIntDefault("PartyBot.Simulator.MapId", 33);
+        bool const passed = PartyBotEngine::RunCoreMapLifecycleSmokeTest(mapId);
+        World::StopNow(passed ? SHUTDOWN_EXIT_CODE : ERROR_EXIT_CODE);
+    }
+
 #ifndef WIN32
-    detachDaemon();
+    if (!partyBotSimulator)
+        detachDaemon();
 #endif
     // server loaded successfully => enable async DB requests
     // this is done to forbid any async transactions during server startup!
@@ -218,9 +279,9 @@ int Master::Run()
     std::unique_ptr<std::thread> cliThread = nullptr;
 
 #ifdef WIN32
-    if (sConfig.GetBoolDefault("Console.Enable", true) && (m_ServiceStatus == -1)/* need disable console in service mode*/)
+    if (!partyBotSimulator && sConfig.GetBoolDefault("Console.Enable", true) && (m_ServiceStatus == -1)/* need disable console in service mode*/)
 #else
-    if (sConfig.GetBoolDefault("Console.Enable", true))
+    if (!partyBotSimulator && sConfig.GetBoolDefault("Console.Enable", true))
 #endif
     {
         // Launch CliRunnable thread
@@ -228,7 +289,7 @@ int Master::Run()
     }
 
     std::unique_ptr<IO::Networking::AsyncSocketAcceptor> remoteAccessServer = nullptr;
-    if (sConfig.GetBoolDefault("Ra.Enable", false))
+    if (!partyBotSimulator && sConfig.GetBoolDefault("Ra.Enable", false))
         remoteAccessServer = SetupRemoteAccessServer(ioCtx);
 
     // Handle affinity for multiple processors and process priority on Windows
@@ -280,7 +341,7 @@ int Master::Run()
     // Start soap serving thread
     std::unique_ptr<std::thread> soap_thread = nullptr;
 
-    if (sConfig.GetBoolDefault("SOAP.Enabled", false))
+    if (!partyBotSimulator && sConfig.GetBoolDefault("SOAP.Enabled", false))
     {
         std::string soapBindIp = sConfig.GetStringDefault("SOAP.IP", "127.0.0.1");
         uint16 soapBindPort = sConfig.GetIntDefault("SOAP.Port", 7878);
@@ -289,12 +350,14 @@ int Master::Run()
 
     // Start up freeze catcher thread
     std::unique_ptr<std::thread> freeze_thread = nullptr;
-    if (uint32 freeze_delay = sConfig.GetIntDefault("MaxCoreStuckTime", 0))
+    if (!partyBotSimulator && sConfig.GetIntDefault("MaxCoreStuckTime", 0))
     {
         freeze_thread = IO::Multithreading::CreateThreadPtr("FreezeDetector", std::bind(&freezeDetector, freeze_delay * 1000));
     }
 
-    // Launch the world listener socket
+    // Launch the world listener socket only in normal server mode.
+    if (!partyBotSimulator)
+    {
     std::string bindIp = sConfig.GetStringDefault("BindIP", "0.0.0.0");
     uint16 bindPort = sWorld.getConfig(CONFIG_UINT32_PORT_WORLD);
     int socketOutByteBufferSize = sConfig.GetIntDefault("Network.SystemSendBuffer", -1);
@@ -315,6 +378,7 @@ int Master::Run()
         Log::WaitBeforeContinueIfNeed();
         World::StopNow(ERROR_EXIT_CODE);
     }
+    }
 
     world_thread.join(); // <-- This will block until the world stops
 
@@ -326,10 +390,12 @@ int Master::Run()
     if (soap_thread)
         soap_thread->join();
 
-    // Set server offline in realmlist
-    LoginDatabase.DirectPExecute("UPDATE realmlist SET realmflags = realmflags | %u WHERE id = '%u'", REALM_FLAG_OFFLINE, realmID);
-
-    sWorldSocketMgr.StopWorldNetworking();
+    // Normal mode updates realm visibility; simulator mode never touched it.
+    if (!partyBotSimulator)
+    {
+        LoginDatabase.DirectPExecute("UPDATE realmlist SET realmflags = realmflags | %u WHERE id = '%u'", REALM_FLAG_OFFLINE, realmID);
+        sWorldSocketMgr.StopWorldNetworking();
+    }
 
     if (remoteAccessServer)
     {

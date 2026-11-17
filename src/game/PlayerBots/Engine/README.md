@@ -1,41 +1,66 @@
-# PartyBot Engine migration
+# PartyBotEngine
 
-The target architecture and API boundaries are maintained in [ARCHITECTURE.md](ARCHITECTURE.md) and [VMANGOS-API-AUDIT.md](VMANGOS-API-AUDIT.md). Source research is recorded in [RESEARCH-CMANGOS.md](RESEARCH-CMANGOS.md) and [RESEARCH-AZEROTHCORE.md](RESEARCH-AZEROTHCORE.md). The milestone plan is in [ROADMAP.md](ROADMAP.md), and build/manual regression procedures are in [TESTING.md](TESTING.md). Update the relevant documents in the same commit as every implementation change.
+The target is a complete independent PartyBot AI for Vanilla 1.12.1 / client build 5875 on the pinned vMaNGOS Core. This is a new decision system, not a per-role rewrite that delegates unfinished behavior to the old PartyBot AI.
 
-## Baseline
+## Design documents
+
+- ARCHITECTURE.md: runtime authority, strategy composition, decision loop and executor boundary.
+- ROADMAP.md: development phases and acceptance criteria.
+- DECISION-TRACE.md: structured encounter logs and post-fight analysis contract.
+- VMANGOS-API-AUDIT.md: audited Core APIs and outstanding adapter work.
+- RESEARCH-CMANGOS.md: Strategy/Trigger/Action/Value/Multiplier and ActionNode research.
+- RESEARCH-AZEROTHCORE.md: class/role/encounter strategy research.
+- TESTING.md: CI, in-game validation and log collection.
+
+Update relevant source and design/testing documents in the same change.
+
+## Pinned baseline
 
 - Core: 0e3ff01e76d4758e8a7c3108b2717cc785ed56fa
 - Deploy wrapper: ebaa560951459419c35140e20d787ec5db2905b8
-- Client: Vanilla 1.12.1 / build 5875
+- Client/data: Vanilla 1.12.1 / build 5875
 - Language: C++14
-- Target: Linux ARM64, Oracle A1
+- Target: Linux ARM64, Oracle A1 (1 OCPU / 6 GB)
 
-The fork branch is pinned to the deployed Core revision. Do not rebase it onto a moving upstream branch without reviewing PartyBot and database changes.
+Do not rebase onto a moving upstream branch without reviewing PartyBot, lifecycle and database changes.
 
-## Current status
+## Current implementation status
 
-Phase 0 lifecycle/diagnostic groundwork is committed; it is not the new decision engine. CMaNGOS and AzerothCore source research and the first vMaNGOS API audit are documented. The remaining API call-chain/lifetime audit precedes the independent PartyBotEngine implementation.
+The repository currently contains:
+- Strategy, Trigger, Action, Value and Multiplier interfaces;
+- GUID/scalar-only party snapshots and same-map snapshot collection;
+- PartyCoordinator reservations and (group,map,instance) shard registry;
+- deterministic candidate evaluation and basic channel arbitration;
+- an opt-in read-only Shadow hook;
+- coarse candidate-only healer triage, tank peel and DPS assist strategies;
+- bounded Shadow diagnostics and standalone tests.
 
-Legacy remains the default executor until each migrated decision domain passes in-game validation. See ROADMAP.md for the current gate.
+The current Shadow hook is observational only: PartyBotAI still runs Legacy combat routines afterward. The candidate actions do not cast, switch targets or mutate reservations. This is a foundation smoke test, not a usable New Engine runtime.
 
+## Target runtime contract
 
-## Independent engine foundation
+- Legacy mode runs the old AI as a complete, explicit rollback/baseline mode.
+- New Engine mode gives PartyBotEngine exclusive authority across its supported AI behavior.
+- New Engine mode never falls back to Legacy class, role or per-domain policy when an action is missing or unusable.
+- Observe-only Shadow remains a diagnostic tool, not a mixed execution architecture.
+- PartyBotAI remains the Core lifecycle/map-thread host; the Engine owns bot behavior decisions.
 
-The first independent C++14 decision layer is committed: value-only snapshots, reservation storage, Strategy/Trigger/Action/Value/Multiplier interfaces, deterministic candidate evaluation and standalone tests. Evaluation is read-only; execution is a separate explicit call.
+The current implementation does not yet provide New Engine mode. See ROADMAP.md for the next implementation milestones.
 
-The live same-map snapshot builder, weakly indexed coordinator registry and opt-in read-only Shadow hook are wired into PartyBotAI. Shadow is disabled by default; when enabled, Legacy remains the only executor. Candidate-only healing-triage, tank-peel and DPS-assist strategies run on copied role/party/hostile data. Their selected candidates are diagnostic proposals only; no Strategy action is executed. See ARCHITECTURE.md, VMANGOS-API-AUDIT.md and ROADMAP.md.
+## Logging is a required feature
 
+The current ten-second / three-candidate Shadow trace is not enough for post-fight analysis. Before meaningful New Engine combat testing, implement encounter IDs, ordered structured events, action attempt/result records, target/threat/health/death events and a bounded report collector.
 
-## Live snapshot/coordinator primitives
+A player should be able to run one read-only diagnostic command after a fight and attach the resulting report plus raw matching log lines. See DECISION-TRACE.md.
 
-The same-map snapshot builder and weakly indexed (group,map,instance) coordinator registry are connected to PartyBotAI. Each bot retains its shard only while on that map/instance, and Shadow evaluation runs from the map update. The runtime flag defaults off; no new Strategy or Action adapters are registered yet.
+## Build and test
 
+Run the standalone C++14 decision-engine harness:
 
-## Role-aware Shadow strategies
+    bash src/game/PlayerBots/Engine/tests/run_tests.sh
 
-Candidate-only strategies register on demand when Shadow is enabled:
-- healer: health-based party triage;
-- tank/main tank: pick-up proposals for hostiles attacking non-tank party members;
-- melee/ranged damage: assist-target proposals weighted toward the Main Tank's current target.
+The focused GitHub Actions workflow performs the pure tests and full Linux ARM64 / Vanilla 5875 Core build. CI success proves build/test evidence only; it does not prove in-game behavior and does not authorize deployment.
 
-The snapshot copies same-map bot roles, the Group Main Tank flag, party members' current victims, attackers and threat entries. Shadow logs up to three detailed candidate decisions after each summary. No action adapter performs a cast, target switch or reservation mutation.
+## Operational boundaries
+
+No Oracle deployment, server restart, configuration change or database modification is performed as part of repository development. Deployment is a separately authorized user-operated step.

@@ -139,7 +139,7 @@ Initial scenarios:
 The pinned source audit now confirms the following exact lifecycle:
 
 - Construct a temporary actor with `Creature::Create(guidLow, CreatureCreatePos(map, x, y, z, o), creatureInfo, firstCreatureId)`. The template must come from the loaded `sObjectMgr.GetCreatureTemplate(entry)`; reject a missing template and do not fabricate a `CreatureInfo`.
-- Install a simulator-owned `CreatureAI` with `Creature::SetAI` **before** calling `Map::Add(creature)`. `Creature::AddToWorld` invokes `AIM_Initialize()` when no AI is installed, which would otherwise select normal script/factory AI. The creature destructor owns and deletes the installed AI.
+- Call `Creature::AIM_Initialize()` before installing the simulator-owned AI. This Core lifecycle method initializes the `MotionMaster` and creates the template-selected AI. `Creature::SetAI` is a raw pointer setter; explicitly delete the template AI before replacing it with the probe AI. Do this before `Map::Add(creature)` so `Creature::AddToWorld` does not replace the probe with a factory AI. The Creature destructor owns and deletes the currently installed AI.
 - `Map::Add(Creature*)` sets the map, creates/loads the grid as required, inserts the creature into the grid, calls `AddToWorld`, adds active objects, registers the viewpoint and visibility, and invokes `CastSpawnSpell()`. Test templates must therefore be checked for spawn spells and other template-driven side effects; a custom AI alone does not suppress those.
 - `Creature::AddToWorld` registers a normal unit GUID with the map before `Unit::AddToWorld`, then initializes AI only if none was supplied. Avoid database-spawn GUIDs and creature-group/linking behavior for simulator actors.
 
@@ -158,13 +158,13 @@ A further tick-path constraint was confirmed in `Map::UpdateCells`: it visits ce
 
 The first Stage B proof should be deliberately split into independently reported assertions: (1) template-backed actors can be created, inserted and found on the map; (2) real `DealDamage` changes health and creates the expected threat reference; (3) the real threat selector chooses and switches victims at the Core thresholds; (4) custom AI receives bounded updates; and (5) all actors are removed without respawn persistence before the test map is deleted. A passing direct-damage/threat proof must not be described as a full autonomous combat simulation.
 
-### Stage B implementation now present (runtime validation pending)
+### Stage B implementation now present (Core scenario runtime assertions passed; CI wrapper correction pending)
 
 The simulator now contains a bounded first Core-backed Creature/threat scenario:
 
 - Select a normal-rank creature template deterministically from loaded templates, requiring a display and excluding NPCs, civilians, racial leaders, pets, immune templates, and templates with spawn spells, totem spells, default auras, spell lists, scripts, named AI, invisibility or the no-threat-list flag.
 - Select a mutually hostile faction-template pair from the loaded Core faction data, rather than hard-coding Vanilla faction IDs.
-- Create one threat-owning Creature and two hostile Creature actors from that real template. Each is inserted with a Core-generated map-local GUID, assigned a small probe AI before insertion, marked active before `Map::Add`, and verified through both `IsInWorld()` and `Map::GetCreature(guid)`.
+- Create one threat-owning Creature and two hostile Creature actors from that real template. Each is inserted with a Core-generated map-local GUID, first runs `AIM_Initialize()`, then has its template AI explicitly replaced with a small probe AI before insertion, is marked active before `Map::Add`, and is verified through both `IsInWorld()` and `Map::GetCreature(guid)`.
 - Drive bounded real `Map::Update(50)` calls, paced with short wall-clock sleeps, and require all three probe AIs to receive `UpdateAI`.
 - Emit exact health progression, applied damage, tank/DPS threat values, selected target GUIDs at each threshold step, AI update counts and per-actor cleanup results in the simulator log.
 - Deal real direct damage to the threat owner from the two hostile actors (100, 105, then +10), verify health loss and damage-generated threat references, and check that the Core threat selector retains the first target below the 110% melee threshold and switches above it.
@@ -174,11 +174,11 @@ This is deliberately a **Core Creature damage/threat smoke test**, not yet an au
 
 ## Current status and next gate
 
-**Status: Stage A and Stage B both pass ARM64 compile/link CI; neither has been runtime-tested against a disposable DB/data installation.** The Stage B code and current docs were built at commit `7225a3f2b95ff914b6c404e4b2a35bfd2c98ff1f` by [PartyBot Core build #114](https://github.com/tyrael9/core/actions/runs/44011441992), including the pure PartyBotEngine tests, CMake configure and full `mangosd` + `realmd` build/link. The entry point remains opt-in through `PartyBot.Simulator.Enable`; it requires all four DB schema names to begin with `PartyBot.Simulator.DatabaseNamePrefix` (default `partybot_sim_`) and runs after Core initialization, before the world loop/listeners. It first retains the Stage A empty-map lifecycle assertion, then runs the Stage B three-Creature damage/threat scenario described above, deletes the test map and exits through normal WorldRunnable shutdown. Default map ID is 33.
+**Runtime evidence (2026-11-17):** the configured Google Drive fixture downloaded successfully (1.21 GiB; SHA-256 verified), the disposable DB schemas initialized, and `mangosd` completed the full Stage A/B path and exited successfully. The log showed three AI update callbacks (`1/1/1`), mutual hostility, health `100000>99900>99795>99785`, generated threat `100/115`, target retention below and switching above the 110% melee threshold, successful cleanup of all actors, and test-map deletion. The workflow was nevertheless marked failed because `run-ci.sh` still searched for an obsolete final PASS string containing `ticked`; the current Core PASS line intentionally omits that phrase. The runner's final-marker checks are being corrected and the full CI job must pass once more before this gate is marked green. The entry point remains opt-in through `PartyBot.Simulator.Enable`, checks all four DB schema names against the `partybot_sim_` prefix, and runs after Core initialization before world listeners.
 
 Confirmed: the pinned Core has a purpose-built test-map creation/deletion API, public map add/update APIs, native Creature creation, real Unit damage/attack methods and a real ThreatManager API.
 
-Not yet confirmed: runtime behavior of either stage with disposable DB copies and normal 5875 data; template/faction selection on the actual database; active-Creature update delivery; real damage/threat/target switching; actor/map cleanup; complete RNG control; or absence of writes outside the prefixed test schemas.
+Not yet confirmed: complete RNG control, deterministic replay, spell/heal/movement behavior, PartyBotEngine decisions/execution, and absence of writes beyond the four prefixed disposable schemas. The first Creature damage/threat path has now been observed at runtime.
 
 ### Optional GitHub Actions runtime runner
 
@@ -210,6 +210,6 @@ tar.exe -tzf .\extracted-data-5875.tar.gz | Select-Object -First 12
 
 The archive listing should start with paths such as `maps/`, `mmaps/`, `vmaps/` and `5875/dbc/`. This is the extracted server data, not the original WoW client `Data` directory.
 
-Upload the archive to Google Drive and set General access to “Anyone with the link” with Viewer permission. Put the share URL in `PARTYBOT_SIMULATOR_DATA_URL` and the checksum in `PARTYBOT_SIMULATOR_DATA_SHA256` under the repository's Actions secrets. The runner uses the pinned `gdown` downloader to handle Drive's large-file confirmation flow, then verifies SHA-256 before extraction. The next push to this branch will run the simulator after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
+Upload the archive to Google Drive and set General access to “Anyone with the link” with Viewer permission. Put the share URL in `PARTYBOT_SIMULATOR_DATA_URL` and the checksum in `PARTYBOT_SIMULATOR_DATA_SHA256` under the repository's Actions secrets. The runner uses the pinned `gdown` downloader to handle Drive's large-file confirmation flow, then verifies SHA-256 before extraction. Each trusted push to this branch runs the simulator after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
 
-**Next gate:** upload the complete extracted-data archive and configure those two secrets, then inspect the first runtime artifact for all three AI counters, health/damage/threat values, selected target GUIDs and cleanup results. Do not connect the PartyBotEngine executor or begin five-player/dungeon scenarios until this scenario passes runtime validation.
+**Next gate:** rerun the corrected harness and require a green end-to-end CI result. The current fixture and both Actions secrets are already configured; no user action is required. After that, extend coverage in layers (Player-backed actors, actual spell casts/healing, movement, then PartyBotEngine execution). Do not jump directly to five-player/dungeon scenarios.

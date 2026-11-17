@@ -160,13 +160,18 @@ if [[ "$simulator_status" != "0" ]]; then
     exit "$simulator_status"
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: created, ticked, ran a bounded Core Creature combat/threat scenario" "$LOG_FILE"; then
-    echo "[PartyBotSimulator] mangosd exited successfully but the Stage A/B PASS marker was not found." | tee -a "$LOG_FILE"
+if ! grep -Fq "[PartyBotSimulator] PASS: real Creature updates, direct damage, damage-generated threat and 110% melee target switching." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The Core Creature update/damage/threat assertion marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 
 if ! grep -Fq "[PartyBotSimulator] Actor cleanup: boss=1 tank=1 damageDealer=1." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The actor cleanup PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+if ! grep -Fq "[PartyBotSimulator] PASS: created, ran a bounded Core Creature combat/threat scenario and deleted map" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The map/combat lifecycle PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 

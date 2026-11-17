@@ -51,11 +51,11 @@ The current role-aware Shadow slice is a proof of the data-to-candidate path onl
 - [x] Locate the hook: `Master::Run` after `SetInitialWorldSettings` and before `WorldRunnable` / world-listener startup.
 - [x] Add opt-in `mangosd` simulator mode after Core initialization; skip world/RA/SOAP listeners, realm-online updates and daemon/PID-file behavior, then reuse normal WorldRunnable shutdown.
 - [x] Refuse simulator startup unless all four configured DB schema names use the explicit `partybot_sim_` prefix (configurable).
-- [x] Add a real `CreateTestMap` / `DeleteTestMap` smoke test with registry/cleanup assertions and one fixed-diff `Map::Update(50)` tick.
-- [ ] Execute Stage A against a disposable DB copy and verify clean process exit.
-- [ ] Prove real Core `Unit::DealDamage`, `Unit::AddThreat`, threat ordering and victim reselection with Core-state assertions.
-- [ ] Control tick progression and RNG seed; document residual nondeterminism.
-- [ ] Add a Stage B CI job with strict timeout and no deployment/image-publish side effects.
+- [x] Add a real `CreateTestMap` / `DeleteTestMap` lifecycle check with registry/cleanup assertions (map ticking is exercised after Stage B actors are fully initialized).
+- [x] Execute Stage A/Stage B against disposable DB copies and real 5875 data; observe clean Core shutdown.
+- [x] Prove real Core damage, damage-generated threat, threat ordering and victim reselection with runtime Core-state assertions.
+- [~] Bound map tick progression and document wall-clock cadence; deterministic RNG/replay control remains.
+- [x] Add a Stage B push-only CI runtime job with strict timeout and no deployment/image-publish side effects.
 - [ ] Only after the Core proof passes, connect PartyBotEngine's real executor and party coordination.
 - [ ] Add scripted aggro, healer-threat, tank-death, healer-death and multi-add scenarios.
 - [ ] Evaluate full dungeon/instance scripts as a later tier.

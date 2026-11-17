@@ -4,6 +4,9 @@ on:
   pull_request:
     branches:
       - validation/partybot-engine-base-0e3ff01
+  push:
+    branches:
+      - work/partybot-engine-foundation
   workflow_dispatch:
 
 permissions:

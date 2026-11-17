@@ -199,11 +199,11 @@ sha256sum extracted-data-5875.tar.gz
 On Windows PowerShell (run from the `vmangos-deploy` repository root):
 
 ```powershell
-$source = ".\\storage\\mangosd\\extracted-data"
-tar.exe -czf .\\extracted-data-5875.tar.gz -C $source maps mmaps vmaps dbc
+$source = ".\storage\mangosd\extracted-data"
+tar.exe -czf .\extracted-data-5875.tar.gz -C $source maps mmaps vmaps dbc
 if ($LASTEXITCODE -ne 0) { throw "tar failed" }
-(Get-FileHash .\\extracted-data-5875.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
-tar.exe -tzf .\\extracted-data-5875.tar.gz | Select-Object -First 12
+(Get-FileHash .\extracted-data-5875.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+tar.exe -tzf .\extracted-data-5875.tar.gz | Select-Object -First 12
 ```
 
 The archive listing should start with paths such as `maps/`, `mmaps/`, `vmaps/` and `dbc/5875/`. This is the extracted server data, not the original WoW client `Data` directory.

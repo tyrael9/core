@@ -95,3 +95,18 @@ These tests cover pure decision logic only. They do not validate live PartyBotAI
 - Deployed: the user explicitly approved and performed the intended server update.
 
 A CI pass is never an in-game test and never authorizes deployment.
+
+
+## Core-backed headless combat simulator (in development)
+
+The simulator design and pinned-Core API audit are in CORE-COMBAT-SIMULATOR.md. This is intended as a third test layer:
+
+1. pure decision-engine tests (fast, isolated policy logic);
+2. Core-backed headless scenarios (real vMaNGOS damage/threat/target/death behavior, no client);
+3. live realm tests (networking, client, lifecycle and long-duration behavior).
+
+The initial audit confirmed a useful seam: `MapManager::CreateTestMap` / `DeleteTestMap`, public `Map::Add` / `Map::Update`, `Creature::Create`, `Unit::Attack`, `Unit::DealDamage`, `Unit::AddThreat` and `ThreatManager`. However, test-map construction depends on initialized global Core services (DBC/ObjectMgr, terrain, persistent state, world configuration and related managers). A standalone object-only test is insufficient.
+
+**No Core simulator executable or runtime test exists yet.** The next gate is a test-only headless mode in existing `mangosd` after required Core initialization and before normal world-loop/network startup. It must use an isolated disposable configuration/database and must never access the Oracle realm. First prove real damage, threat ordering, victim reselection and actor/map cleanup; only then connect the PartyBotEngine executor.
+
+Do not treat the existing pure tests as Core combat coverage. Do not use mocked damage/threat or direct state mutation as proof of Core behavior. The simulator must be bounded, seedable and explicit about remaining nondeterminism. It must not publish or deploy images.

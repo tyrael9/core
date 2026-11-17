@@ -1,193 +1,278 @@
 # PartyBotEngine architecture
 
-## 1. Goal
+## 1. Goal and design authority
 
-Implement a new, party-coordinated decision engine for the deployed Vanilla 1.12.1 (5875) vMaNGOS server. Preserve the existing PlayerBots runtime and execution APIs. Borrow the Strategy/Trigger/Action/Value/Multiplier decision model from CMaNGOS PlayerBots and encounter design from active AzerothCore mod-playerbots, but reimplement both against vMaNGOS.
+Build a complete, independent, party-coordinated AI for the deployed Vanilla 1.12.1 (client build 5875) vMaNGOS Core. Reimplement the decision architecture researched from CMaNGOS PlayerBots and the encounter-strategy ideas researched from active AzerothCore mod-playerbots against the actual vMaNGOS C++14 APIs.
 
-Research:
+The goal is not to incrementally patch or rename the existing class rotations. In the target runtime, PartyBotEngine is the sole authority for every AI decision it owns. It composes generic, class, role, party and encounter strategies into one decision loop.
+
+Research and API boundaries:
 - RESEARCH-CMANGOS.md
 - RESEARCH-AZEROTHCORE.md
 - VMANGOS-API-AUDIT.md
+- DECISION-TRACE.md
 
-The current PartyBotAI class-specific routines remain the Legacy implementation and fallback. The new engine is a separate decision authority, not a gradual renaming of old rotations.
+## 2. Runtime authority: no hybrid AI
 
-## 2. Layered architecture
+The supported runtime authority model has two modes.
 
-    Existing PartyBot lifecycle / update host
+### Legacy mode
+
+The existing PartyBot implementation runs as it does today. This is retained for explicit rollback and controlled baseline comparison. It is not the target architecture.
+
+### New Engine mode
+
+PartyBotEngine owns all AI policy and action selection for the bot. No legacy class rotation, legacy healer routine, legacy tank/assist decision, legacy CC/dispell policy or legacy target selection may run as a fallback when the new engine has no candidate or cannot execute an action.
+
+If a behavior is not implemented, the new engine may wait, defend through an implemented generic safety action, or report a deliberate no-op. It must not silently delegate to Legacy. This is an intentional development trade-off: incomplete behavior and poor combat performance are acceptable on the test realm; memory corruption, unsafe cross-thread access, unbounded work, server crashes and database/lifecycle corruption are not.
+
+### Observe-only diagnostics
+
+The current Shadow hook is a temporary development instrument. It may remain available to evaluate snapshots and policies without execution, or to compare a proposed decision against a live encounter. It is not a third mixed-execution mode and is not the end-state. Observe-only evaluation must never be mistaken for New Engine execution.
+
+A future mode selector may expose Legacy and New Engine explicitly. Do not add per-role or per-domain automatic fallback. If New Engine is selected, its authority covers every supported decision domain for that bot.
+
+## 3. Responsibility boundaries
+
+### 3.1 PartyBotAI as the Core lifecycle host
+
+PartyBotAI remains the vMaNGOS integration and lifetime host. It may handle:
+- bot creation/removal and owner/group lifecycle;
+- owner disconnect grace and reconnect persistence;
+- safe map-thread update entry and map/instance transitions;
+- initialization and cleanup of Core-owned resources;
+- dispatching the current tick to the selected AI runtime.
+
+It must not retain class-specific combat policy in the New Engine path. In particular, New Engine mode must not fall through to UpdateInCombatAI_*, old heal selection, old tank assist/taunt, old CC selection or old class-specific out-of-combat rotations.
+
+The engine's eventual full behavior scope includes combat and non-combat decisions: following/formation, idle, pull/engage, class buffs, food/drink/rest, target selection, healing, threat, crowd control, interrupts, dispels, resurrection, recovery/regroup and encounter responses. Lifecycle mechanics such as preserving a bot across owner disconnect remain host responsibilities; deciding what the bot should do while following, resting or fighting belongs to the engine.
+
+### 3.2 Shared Core primitives are allowed
+
+New Engine may reuse audited vMaNGOS data and execution primitives: Player/Unit/Group/Map access, SpellStore, spell cast APIs, MotionMaster, threat manager, target validation, map relocation and existing low-level packet/core operations.
+
+Reusing a low-level API or a safe utility is not reusing Legacy AI policy. Do not call a legacy method merely because it combines a useful Core operation with an old policy decision; extract or wrap the low-level operation behind an Engine-owned adapter after auditing its side effects.
+
+## 4. Layered architecture
+
+    PartyBotAI lifecycle / map-thread host
                   |
-           PartyCoordinator shard
-          /       |        \
-    PartySnapshot |   Shared reservations
-          \       |        /
+       PartyCoordinatorRegistry
+                  |
+       PartyCoordinator shard
+          /       |         \
+    PartySnapshot |   Reservations
+          \       |         /
            PartyBotEngine (per bot)
                   |
-       Strategies / Triggers / Values
+       State + Strategy Composition
                   |
-        Candidate Actions + Multipliers
+       Cached Values / Trigger Scheduler
                   |
-          Decision / Arbitration
+       Trigger Events -> Action Queue
                   |
-        vMaNGOS Action Executor
+    Prerequisites / Alternatives / Continuers
                   |
-       Existing Core spell/move APIs
+     Possible / Useful / Multipliers / Arbitration
+                  |
+       New vMaNGOS Action Executor
+                  |
+       Authoritative execution result
+                  |
+       State/value invalidation + decision trace
 
-Legacy PartyBotAI remains available beside this path until each behavior is validated.
+One party snapshot/coordinator shard is shared by same-map bots. Each bot owns its active strategy composition and decision queue. Cross-map members are not dereferenced through retained Core pointers.
 
-### 2.1 Lifecycle host
+## 5. Strategy composition
 
-PartyBotAI::UpdateAI remains responsible for initialization, owner/group lifecycle, resurrection, follow/teleport, food/drink, battleground and other non-combat lifecycle behavior.
+A bot's active strategy set is composed from independent dimensions rather than selecting one AI implementation by role:
 
-The narrow combat seam is PartyBotAI::UpdateInCombatAI(), called after lifecycle and target/follow work when the bot is in combat or a healer is supporting same-map party combat. Existing UpdateInCombatAI performs tank assist/taunt, CC and dispels before the per-class combat switch. Each migrated domain must explicitly replace or retain its Legacy behavior so two decision authorities never issue competing GCD actions.
+1. State strategies: dead, idle, follow, preparing, resting, pulling, combat, recovery and regroup.
+2. Generic strategies: self-preservation, target validity, range, line of sight, resource safety and movement constraints.
+3. Class strategies: class spell book, class resources, forms/stances, damage/healing/utility actions and class-specific constraints.
+4. Role strategies: tank, healer, ranged DPS, melee DPS and support priorities.
+5. Party strategies: shared target assignment, threat recovery, healing/CC/interrupt/dispel/resurrection reservations and formation.
+6. Encounter strategies: boss/add identity, phases, abilities, debuffs, positioning and encounter-specific vetoes/actions.
 
-Do not replace the entire PartyBotAI update lifecycle.
+Strategies may add, modify or veto candidates. A role is context and policy composition, not a separate executor or a migration boundary. A Priest Healer still has one queue and one final arbitration step for its generic, Priest, healer, party and encounter actions.
 
-### 2.2 Coordinator identity and ownership
+## 6. Decision cycle
 
-Coordinator shards are keyed by group ID, map ID and instance ID. Normal Group::Create assigns a runtime/database ID through ObjectMgr::GenerateGroupId(); battleground groups use group ID 0 and should remain on Legacy behavior unless a separate BG coordinator is designed.
+The target decision loop follows the CMaNGOS Strategy/Trigger/Action/Value/Multiplier model, with vMaNGOS-owned value types and execution adapters.
 
-The registry is process-local and weakly indexed: PartyBotAI instances retain shared ownership of their current shard, while the registry maps the scalar key to a weak_ptr under a short mutex. The shard is mutated only in its owning map update context. Expired weak entries can be pruned without retaining Group, Map, Player or Unit pointers.
+1. Update context: obtain the current PartySnapshot, bot state and encounter state; refresh only invalidated or expired cached values.
+2. Select state and strategies: determine the bot's state and active state/class/role/party/encounter strategies.
+3. Evaluate triggers: run due triggers according to their check cadence; triggers should consume cached values and remain cheap.
+4. Create events and actions: active triggers enqueue named actions with relevance, target and parameters.
+5. Expand action nodes: prerequisites, alternatives and continuers express dependencies and fallback behavior explicitly.
+6. Check Possible: spell known, target valid, alive/attackable, range, LOS, form/stance, cooldown, GCD, mana/resource, movement and Core restrictions.
+7. Check Useful: evaluate whether the action advances the current goal; account for missing health, incoming heals/HoTs, threat risk, CC, interrupt windows, encounter mechanics and resource cost.
+8. Apply multipliers and vetoes: adjust relevance for context; hard safety constraints remain explicit eligibility checks, not soft scores.
+9. Coordinate and arbitrate: acquire/check reservations and select compatible actions across GCD, targeting, movement and utility channels. Party-wide actions must not be decided from isolated per-bot assumptions.
+10. Revalidate and execute: resolve GUIDs on the current map and revalidate immediately before calling the vMaNGOS executor.
+11. Consume result: distinguish accepted, failed, impossible, interrupted, cancelled and skipped results. Invalidate affected cached values and schedule next actions when appropriate.
+12. Trace: record why the decision was made and what the Core actually did.
 
-The packet-processing audit confirms Group roster reads are permitted in map context; group roster writes are serialized in world packet processing before map tasks. The live builder copies member GUIDs from Group::GetMemberSlots() and resolves them only through the current Map. It does not iterate cross-map GroupReference Player pointers.
+A candidate selection is not an execution. A successful target lookup is not a successful cast. Every action result must have an explicit outcome.
 
-### 2.3 PartySnapshot
+## 7. Action queue and ActionNode semantics
 
-Build a read-only snapshot for a same-map coordinator shard and expose a bot-specific view to each engine evaluation.
+The current candidate vector and one-winner-per-channel arbitration are only the first skeleton. The complete engine should support:
+- named actions with parameters and stable identity;
+- relevance/priority and deterministic tie breaking;
+- per-action Possible and Useful checks;
+- prerequisites that must run before the requested action;
+- alternatives when the original action cannot run;
+- continuers after an action succeeds;
+- action result listeners and event/result overrides where needed;
+- duplicate/loop suppression and bounded queue processing;
+- independent arbitration for GCD, targeting, movement and utility actions.
 
-Initial fields:
-- group ID and membership generation;
-- bot GUID, class, level, role, alive/online state, health/mana, form, current cast and GCD/cooldown facts;
-- member GUID, map/instance, alive/online state, health/mana, position/distance, role and current cast;
-- hostile GUIDs attacking party members, current victim, health, distance, aura/control state and available threat facts;
-- target validity, line of sight and spell/range facts required by active strategies;
-- encounter identity/phase and relevant mechanic facts;
-- CC marks and existing reservations.
+Do not implement the full CMaNGOS surface mechanically. Add a semantic only when a concrete Vanilla behavior needs it, while preserving the same clear decision lifecycle.
 
-Verified APIs include Group::GetId, GetFirstMember()/GroupReference::getSource, IsMember, GetLeaderGuid, GetTargetWithIcon, Map::GetUnit, Unit::GetAttackers, GetVictim, GetThreatManager and ThreatManager::getThreatList. See VMANGOS-API-AUDIT.md.
+## 8. Values and trigger scheduling
 
-Snapshots contain GUIDs and scalar facts, not pointers retained across updates. Resolve GUIDs on the current map immediately before execution. Do not eagerly scan all nearby creatures or auras; fields are demand-driven and cached for a bounded epoch.
+Value is the shared, named interface to decision facts. Values should be typed and cached for a bounded epoch or duration. Values must read from PartySnapshot/coordinator/Core adapters; they must not retain unsafe Core pointers across updates.
 
-### 2.4 PartyBotEngine
+Trigger definitions include name, cadence/check interval, active predicate and action/event handlers. Triggers that depend on the same party facts must reuse the same cached value/snapshot rather than rescan the group or hostile set for each bot/trigger. State transitions and explicit invalidation can force refresh before the normal interval.
 
-Each bot has an engine instance that evaluates candidate actions against the shared same-map snapshot and coordinator state.
+The current Value interface and direct trigger evaluation are not yet a complete value/cache/scheduler implementation.
 
-The engine owns active strategies for class, role, combat state and encounter; trigger evaluation/cadence; named values backed by the snapshot; action factories/registry; candidate list and priority multipliers; decision trace and selected action result.
+## 9. PartySnapshot and coordinator
 
-Strategies propose candidate actions with target GUID, parameters and priority. The executor performs final validation and invokes vMaNGOS.
+### 9.1 Snapshot contents
 
-### 2.5 Decision vocabulary
+Build a read-only same-map snapshot containing, on demand:
+- group/map/instance identity, roster generation and snapshot epoch;
+- bot and party-member GUID, class, role, level, online/alive/combat state, health/mana, form/stance, position, target and cast state;
+- hostile GUIDs attacking party members or currently engaged by them, current victim, health, threat references and relevant aura/control state;
+- spell facts needed by active actions: known spell, GCD/cooldown, resource, range and LOS checks where audited;
+- party assignments, CC marks, encounter identity/phase and active reservations.
 
-- Strategy: composable behavior source (generic combat, class, role, party coordination, encounter).
-- Trigger: cached condition that proposes one or more actions.
-- Action: one operation with explicit IsPossible, IsUseful and Execute/result phases.
-- Value: named, cached query over PartySnapshot/coordinator facts.
-- Multiplier: contextual priority adjustment or veto. Hard safety constraints remain explicit checks.
-- DecisionTrace: bounded explanation of candidates, rejection reasons, priorities, reservations and execution results.
+Snapshots contain GUIDs and scalar facts, not live Player/Unit pointers. Resolve GUIDs on the current map immediately before execution. Unknown facts remain explicitly unknown; do not guess role, threat, distance, spell state or encounter phase.
 
-CMaNGOS prerequisite/alternative/continuer relationships are optional. Add them only when a concrete Vanilla behavior needs them.
+### 9.2 Coordinator ownership
 
-## 3. Decision and execution rules
+Coordinator shards are keyed by (groupId, mapId, instanceId). The registry is weakly indexed; PartyBotAI instances retain shared ownership of their current shard. Shard mutation is confined to its owning map update context. Cross-map transitions do not mutate a shard from the wrong map thread; old reservations expire naturally.
 
-1. Build or reuse the current same-map party snapshot.
-2. Determine role, combat state and active encounter context.
-3. Evaluate active triggers using cached facts.
-4. Generate candidate actions.
-5. Check IsPossible: spell known, cooldown/GCD, resources, form/stance, target validity, range, line of sight and Core cast restrictions.
-6. Check IsUseful: meaningful heal deficit, threat to recover, interrupt window, CC requirement or encounter mechanic.
-7. Apply party reservations and encounter safety constraints.
-8. Calculate deterministic priority and select the best candidate.
-9. Revalidate immediately before execution and call vMaNGOS.
-10. Record result and rejected alternatives in bounded DecisionTrace.
+The existing audits of Group roster reads, packet processing, Map resolution, attackers and threat APIs remain the source of truth. Extend VMANGOS-API-AUDIT.md for each new adapter before relying on it.
 
-A normal decision cycle executes at most one primary GCD action. Movement and target/facing operations use separate, explicitly arbitrated channels. A failed cast is never reported as successful merely because a target was found.
+## 10. New vMaNGOS Action Executor
 
-## 4. Strategy composition
+The executor is the only boundary allowed to produce in-game side effects for New Engine decisions. It owns audited adapters for:
+- cast spell / item / pet action;
+- select target / assist / stop attack;
+- attack start / taunt / threat recovery;
+- movement / follow / formation / disengage;
+- crowd control / interrupt / dispel / heal / resurrection;
+- food, drink, rest, buff and non-combat utility.
 
-Every bot evaluates a composition:
-- Generic safety.
-- Class abilities and class constraints.
-- Role: tank, healer, ranged DPS, melee DPS, support.
-- Party: target assignment, healing/CC/interrupt reservations, pull and recovery state.
-- Encounter: mechanic-specific constraints and phase behavior.
+Each adapter must return a structured result with the Core result code and a stable reason. It re-resolves target GUIDs, validates map/instance, alive/hostile/friendly state, range/LOS, spell state and resource conditions immediately before execution. It must not report success when a cast was only queued or a target was only found.
 
-Encounter strategies can veto class actions or propose mechanic actions. Actual Vanilla mechanics and spell data must be independently verified.
+Executor operations must remain map-thread safe. No synchronous SQL, networking or external inference belongs on the AI update path.
 
-## 5. First vertical slice
+## 11. Full behavior state model
 
-1. Bounded same-map PartySnapshot with group member state and hostile attackers.
-2. PartyCoordinator shard with expiring target and heal reservations.
-3. PartyBotEngine with Strategy, Trigger, Action, Value and Multiplier interfaces.
-4. Read-only Shadow mode; no action executor calls.
-5. One real behavior migrated behind Strategy mode, initially healing triage/reservation or Warrior target/threat assignment, selected after the remaining audit.
-6. Legacy fallback when new engine is disabled or unavailable.
+The engine must eventually own behavior across the full bot session, not only combat rotations:
+- Idle / follow / formation.
+- Party preparation, class buffs and group utility.
+- Food, drink, rest and resource recovery.
+- Pull/engage, target acquisition and assist policies.
+- Generic self-preservation, threat response and movement safety.
+- Active combat and role/class actions.
+- CC, interrupt, dispel, resurrection and emergency response.
+- Combat end, recovery, regroup and wipe handling.
+- Death/release/resurrection integration with existing lifecycle facilities.
+- Owner disconnect and reconnect are lifecycle-host behavior, not a combat strategy.
 
-The first slice must prove the architecture, not attempt every class.
+The state machine must have explicit transition conditions, timeouts and trace events. Existing lifecycle persistence code remains separately tested; New Engine behavior must not weaken it.
 
-## 6. Rollout modes
+## 12. Encounter strategies
 
-- Legacy: current class routines execute; default during development.
-- Shadow: new engine evaluates/traces candidates; Legacy remains the only executor.
-- Strategy: new engine owns a migrated decision domain; Legacy cannot issue competing actions for that domain.
+Encounter behavior is a composable strategy layer, not hard-coded exceptions inside class rotations. Each supported encounter should document:
+- Vanilla creature entries and spell IDs;
+- phases and transition conditions;
+- tank/add assignments and target priorities;
+- auras/debuffs and response windows;
+- movement/position constraints;
+- interrupts, dispels, CC and immunities;
+- recovery and wipe conditions;
+- vMaNGOS script deviations verified in this exact build.
 
-Migration is per decision domain. No Strategy mode becomes default before in-game validation.
+AzerothCore WotLK spell/encounter data is design reference only. Every behavior must be validated against Vanilla 1.12.1 data and the deployed Core.
 
-## 7. Threading, lifetime and performance
+## 13. Decision and encounter trace
 
-MapManager schedules instance maps as separate DoUpdate tasks; Map::UpdatePlayers calls WorldObject::UpdateHelper; Player::Update calls Unit::Update and then m_AI->UpdateAI(p_time). Same-map bots execute within the owning map update context, while different maps may update in parallel.
+Post-fight logs are a required development capability. Each encounter gets an ID and ordered event sequence. The trace records party/bot state, trigger evaluation, candidate eligibility and rejection, arbitration, selected action, actual Core execution result, target changes, threat samples, reservations, health/death events and encounter boundaries.
 
-A same-map shard is the ownership boundary for coordinator mutations. PacketProcessing.h permits Group roster reads in PACKET_PROCESS_MAP and classifies group writes as PACKET_PROCESS_WORLD; group opcodes are processed before map tasks. Build snapshots from GetMemberSlots() GUIDs and resolve through the current Map; never dereference cross-map Player pointers. Keep all shard mutation in the owning map context; never share mutable shard state across map shards.
+The trace must distinguish proposed, selected, attempted and accepted actions. It must be bounded and rate-limited without silently dropping action results, deaths or encounter-end summaries. Use structured single-line key/value events so the deployment diagnostics collector can produce an attachable post-fight report.
 
-PartyBotAI timers are independent. Snapshot cache epoch and reservation expiry cannot assume synchronized bot ticks. No synchronous DB work, network calls or inference calls belong in the AI tick. Triggers must be cheap; scans should be centralized and cached; storage must be bounded.
+See DECISION-TRACE.md for the event contract, sampling levels and collection expectations. The current Shadow summary/candidate trace does not yet meet this requirement.
 
-## 8. Compatibility constraints
+## 14. Threading, lifetime and performance
 
-- Client/data: Vanilla 1.12.1, build 5875.
+MapManager schedules instance maps as separate update tasks; Player::Update invokes its AI within map update context. Same-map bots can share a coordinator shard, while different maps may update in parallel.
+
+- Keep shard mutation inside its owning map update context.
+- Never retain Core object pointers in snapshots or cross-map state.
+- Resolve GUIDs against the current Map just before execution.
+- Avoid repeated group/hostile scans inside triggers.
+- Keep trigger evaluation O(1) where possible by consuming cached values.
+- Bound queues, caches, event buffers and logs.
+- No database/network/inference work on map threads.
+- Measure update cost on the 1 OCPU / 6 GB ARM64 target before enabling expensive trace levels.
+
+## 15. Compatibility and operational constraints
+
+- Client/data: Vanilla 1.12.1 / build 5875.
 - Core base: 0e3ff01e76d4758e8a7c3108b2717cc785ed56fa.
 - Language: C++14.
-- Target: Linux ARM64, Oracle A1, 1 OCPU / 6 GB.
+- Target: Linux ARM64, Oracle A1 (1 OCPU / 6 GB).
 - No external inference service.
-- No DB schema changes for first engine milestones.
-- No production changes without explicit user approval.
+- No database schema changes unless separately justified and approved.
+- No production deployment or server-side changes without explicit user approval.
 
-## 9. Acceptance criteria
+## 16. Acceptance criteria
 
-A milestone is complete only when source/docs are committed together; pinned Core builds on Linux ARM64 and supported CI targets; Legacy behavior remains unchanged; Shadow mode is bounded and explainable; Strategy mode has no duplicate GCD decisions with Legacy; positive/negative paths are tested; owner reconnect/instance persistence remains intact; and in-game testing is recorded separately from CI.
+A New Engine milestone is complete when:
+- source and design/testing documents are committed together;
+- standalone tests cover positive, negative, stale-data and failure paths;
+- the pinned Linux ARM64 / Vanilla 5875 full Core build passes;
+- New Engine mode has one decision authority and no legacy policy fallback;
+- the executor reports authoritative Core outcomes;
+- trace records can reconstruct why an action was chosen and what actually happened;
+- party/map threading and resource bounds are tested;
+- owner reconnect/instance persistence regression remains intact;
+- in-game failures are recorded and diagnosed separately from CI.
 
-A CI pass is not an in-game test or deployment authorization.
+Experimental combat quality may be poor while features are being built. Runtime safety, thread safety, bounded work and lifecycle/data integrity remain hard requirements. A CI pass is not an in-game test or deployment authorization.
 
-## 10. Current runtime integration
+## 17. Current implementation status
 
-The Core-agnostic decision layer and live data adapter are now connected to PartyBotAI behind an opt-in Shadow flag:
+Implemented today:
+- C++14 Strategy, Trigger, Action, Value and Multiplier interfaces;
+- value-only snapshot data types and live same-map snapshot builder;
+- PartyCoordinator reservation storage and weakly indexed (group,map,instance) registry;
+- deterministic candidate evaluation and basic channel arbitration;
+- opt-in Shadow hook connected to PartyBotAI;
+- candidate-only healer triage, tank peel and DPS assist;
+- bounded legacy/Shadow decision diagnostics and standalone tests.
 
-- PartyCoordinatorRegistry is weakly indexed by (groupId, mapId, instanceId), uses a short registry mutex, and returns shared shard ownership.
-- Each PartyBotAI retains its current coordinator shard and releases reservations when it changes shard, leaves a supported group, or disables Shadow mode. Cleanup mutates a shard only when it belongs to the current map update thread; stale reservations on an old map shard expire naturally rather than being mutated from another map's thread.
-- PartySnapshotBuilder copies same-map member GUIDs and scalar state, plus hostile/attacker/threat facts. It resolves units only through the current Map and retains no Core object pointers.
-- PartyCoordinator provides snapshot epoch progression, bounded-age cache lookup, explicit invalidation and reservation expiry/release.
-- PartyBotAI calls GetOrBuild and PartyBotEngine::Evaluate from its map update context only.
+Not implemented yet:
+- full Value cache and Trigger scheduler;
+- ActionNode prerequisites/alternatives/continuers and robust queue lifecycle;
+- full strategy composition/state machine;
+- complete vMaNGOS action executor;
+- New Engine exclusive runtime mode and no-fallback enforcement;
+- full combat and non-combat strategy coverage;
+- encounter correlation and post-fight trace contract.
 
-`PlayerBot.EngineShadow` defaults to 0. When set to 1, the runtime builds/reuses the snapshot and calls the read-only Evaluate path. `ExecuteSelected` is never called from Shadow mode; Legacy remains the sole action executor. The hook skips battleground groups (group ID zero) and unavailable snapshots.
+Current Shadow evaluation is read-only. PartyBotAI continues into Legacy combat routines afterward. It proves only that a first snapshot-to-candidate path is wired; it does not constitute a usable new AI.
 
-`PlayerBot.DecisionTrace=1` additionally emits a rate-limited `[PartyBotShadow]` summary and up to three `[PartyBotShadowDecision]` details per bot every ten seconds. Details identify role, strategy, target GUID, priority, selection status and reason. Candidate-only healer triage, tank peel and DPS assist strategies are registered; zero candidates may still be normal when no strategy trigger has an eligible live target.
+## 18. Immediate next implementation sequence
 
-## 11. Validation and next milestone
-
-The standalone C++14 tests now cover decision arbitration and rejection states, reservation ownership/expiry, snapshot cache freshness including millisecond-counter wraparound, coordinator key identity, battleground bypass and concurrent registry lookup.
-
-The dedicated Linux ARM64 / Vanilla 5875 workflow validates these tests plus a full Core configure/build/link. It does not prove live snapshot correctness or in-game behavior.
-
-The first role vertical slice should start with healing triage: use the new same-map snapshot and shared reservation model to propose healer actions in Shadow mode, compare the proposals with Legacy behavior, and only later add an execution adapter behind a domain-specific Strategy gate. No Strategy-mode execution becomes active before separate in-game validation.
-
-
-## Role-aware Shadow strategy slice
-
-The live snapshot records each same-map PartyBot's actual `CombatBotBaseAI::GetRole()` as Tank, Healer, RangedDamage or MeleeDamage. A separate `isMainTank` flag comes from the Group main-tank GUID, so a human player can be recognized as Main Tank even when their combat role remains Unknown. Other non-PartyBot players remain Unknown rather than having their roles guessed.
-
-The hostile set contains the union of (a) units currently attacking a same-map party member and (b) units currently targeted by a same-map party member. Each hostile record retains its current victim and copied threat references. Party references are resolved only through the snapshot; current victim is preferred, with the highest online/accessibile threat entry used as a fallback when the victim is absent.
-
-Three candidate-only strategies are registered on each PartyBot's Shadow engine:
-- `healing_triage`: proposes same-map living members below 90% health, ranking lower health first with emergency and tank weighting.
-- `tank_target`: proposes living hostiles currently attacking a non-tank party member, prioritizing healers.
-- `dps_target`: proposes current party targets, favoring the Main Tank's target, and also considers hostiles attacking party members.
-
-These are coarse target/triage intents, not spell-level actions. They do not validate spell availability, line of sight, range, healing-over-time effects, incoming heals, threat thresholds, class-specific rotations or encounter mechanics. Candidate Actions return `Skipped` if ever executed; Shadow integration calls `Evaluate` only and continues to leave Legacy as the sole executor.
-
-For each rate-limited summary, up to three `[PartyBotShadowDecision]` lines report role, strategy, action, target GUID, priority, selected status and arbitration reason. This provides candidate detail for live comparison without changing gameplay.
+1. Implement structured encounter trace and a post-fight collector path before enabling real New Engine actions.
+2. Complete the decision loop primitives: cached Values, scheduled Triggers, ActionNode relationships, bounded queue and explicit results.
+3. Implement audited vMaNGOS action adapters and runtime authority switch. In New Engine mode, all old policy paths are bypassed; missing behavior is a traceable no-op, never a Legacy fallback.
+4. Add generic safety and full state-machine behaviors, then compose class/role/party strategies into the same engine.
+5. Add encounter strategies only after the generic party foundation can execute, observe and explain its decisions.

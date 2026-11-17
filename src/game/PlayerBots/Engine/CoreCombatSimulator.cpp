@@ -2,6 +2,7 @@
 
 #include "AI/CreatureAI.h"
 #include "Creature.h"
+#include "GameObject.h"
 #include "DBCStores.h"
 #include "Log.h"
 #include "Map.h"
@@ -820,7 +821,7 @@ public:
             !leader->IsAlive() || !mover->IsFriendlyTo(leader) ||
             mover->GetMapId() != leader->GetMapId() ||
             mover->GetInstanceId() != leader->GetInstanceId() ||
-            mover->HasUnitState(UNIT_STATE_LOST_CONTROL))
+            mover->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE | UNIT_STATE_POSSESSED))
         {
             reason = "core_move_point_destination_or_actor_invalid";
             return false;
@@ -858,7 +859,7 @@ public:
             !mover->IsFriendlyTo(leader) ||
             mover->GetMapId() != leader->GetMapId() ||
             mover->GetInstanceId() != leader->GetInstanceId() ||
-            mover->HasUnitState(UNIT_STATE_LOST_CONTROL))
+            mover->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE | UNIT_STATE_POSSESSED))
             return ActionResult::Impossible;
 
         if (m_simulateClientRelocation)
@@ -2105,6 +2106,385 @@ bool RunEngineCorePlayerHealRevalidationSmokeTest(Map& map)
     return true;
 }
 
+
+bool RunEngineCorePlayerHealLosSmokeTest(Map& map)
+{
+    CreatureInfo const* creatureInfo = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!creatureInfo || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor patient;
+    if (!CreateSimulatorActor(map, *creatureInfo, partyFaction, 20.0f, 6.0f, patient))
+    {
+        DestroySimulatorActor(map, patient);
+        return false;
+    }
+    patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
+
+    WorldSession healerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* healer = nullptr;
+    bool const healerCreated = CreateSimulatorPlayer(map, partyFaction, healerSession,
+                                                       healer, 0.0f, 6.0f, 0.0f);
+    if (!healerCreated)
+    {
+        if (healerSession.GetPlayer())
+            healerSession.LogoutPlayer(false);
+        else if (healer)
+            delete healer;
+        bool const cleaned = DestroySimulatorActor(map, patient);
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] LOS Player fixture creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    bool const baseLineOfSight = healer->IsWithinLOSInMap(patient.creature);
+    if (!baseLineOfSight)
+    {
+        healerSession.LogoutPlayer(false);
+        healer = nullptr;
+        bool const cleaned = DestroySimulatorActor(map, patient);
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] LOS fixture has no clear baseline ray before obstacle placement (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 12;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 12;
+    snapshot.capturedAtMs = 12000;
+
+    PartyMemberSnapshot healerMember;
+    healerMember.guid = healer->GetObjectGuid().GetRawValue();
+    healerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    healerMember.mapId = map.GetId();
+    healerMember.instanceId = map.GetInstanceId();
+    healerMember.health = healer->GetHealth();
+    healerMember.maxHealth = healer->GetMaxHealth();
+    healerMember.online = true;
+    healerMember.alive = healer->IsAlive();
+    healerMember.x = healer->GetPositionX();
+    healerMember.y = healer->GetPositionY();
+    healerMember.z = healer->GetPositionZ();
+    snapshot.members.push_back(healerMember);
+
+    PartyMemberSnapshot patientMember;
+    patientMember.guid = patient.creature->GetObjectGuid().GetRawValue();
+    patientMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    patientMember.mapId = map.GetId();
+    patientMember.instanceId = map.GetInstanceId();
+    patientMember.health = patient.creature->GetHealth();
+    patientMember.maxHealth = patient.creature->GetMaxHealth();
+    patientMember.online = true;
+    patientMember.alive = patient.creature->IsAlive();
+    patientMember.isMainTank = true;
+    patientMember.x = patient.creature->GetPositionX();
+    patientMember.y = patient.creature->GetPositionY();
+    patientMember.z = patient.creature->GetPositionZ();
+    snapshot.members.push_back(patientMember);
+
+    PartyCoordinator coordinator;
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
+    bool const registered = engine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_player_heal_los_rejection"));
+    strategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
+    engine.AddStrategy(strategy);
+
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 12000);
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+
+    // Discover a real collision model from the loaded Vanilla gameobject
+    // templates. Closed doors and solid generic models are inserted into the
+    // Core dynamic collision tree; the fixture never substitutes a LOS flag.
+    std::vector<GameObjectInfo const*> blockerTemplates;
+    for (auto const& item : sObjectMgr.GetGameObjectInfoMap())
+    {
+        GameObjectInfo const* info = item.second.get();
+        if (!info || !info->displayId || info->id != item.first)
+            continue;
+
+        bool const isDoor = info->type == GAMEOBJECT_TYPE_DOOR;
+        bool const isNamedSolidGeneric = info->type == GAMEOBJECT_TYPE_GENERIC &&
+            (info->name.find("wall") != std::string::npos ||
+             info->name.find("Wall") != std::string::npos ||
+             info->name.find("barrier") != std::string::npos ||
+             info->name.find("Barrier") != std::string::npos ||
+             info->name.find("gate") != std::string::npos ||
+             info->name.find("Gate") != std::string::npos ||
+             info->name.find("fence") != std::string::npos ||
+             info->name.find("Fence") != std::string::npos);
+        if (isDoor || isNamedSolidGeneric)
+            blockerTemplates.push_back(info);
+    }
+    std::sort(blockerTemplates.begin(), blockerTemplates.end(),
+        [](GameObjectInfo const* left, GameObjectInfo const* right)
+        {
+            return left->id < right->id;
+        });
+
+    GameObject* blocker = nullptr;
+    uint32 blockerEntry = 0;
+    uint32 testedModels = 0;
+    float const blockerAngles[] = {0.0f, 1.57079632679f, 0.78539816339f, 2.35619449019f};
+    bool blockerCleanupFailure = false;
+    for (GameObjectInfo const* info : blockerTemplates)
+    {
+        if (testedModels >= 48 || blocker)
+            break;
+
+        for (float angle : blockerAngles)
+        {
+            if (testedModels >= 48)
+                break;
+            ++testedModels;
+            GameObject* candidate = new GameObject();
+            bool const created = candidate->Create(
+                map.GenerateLocalLowGuid(HIGHGUID_GAMEOBJECT), info->id, &map,
+                10.0f, 6.0f, 0.0f, angle, 0.0f, 0.0f, 0.0f, 1.0f,
+                GO_ANIMPROGRESS_DEFAULT, GO_STATE_READY);
+            if (!created)
+            {
+                delete candidate;
+                continue;
+            }
+
+            map.Add(candidate);
+            ObjectGuid const candidateGuid = candidate->GetObjectGuid();
+            bool const added = candidate->IsInWorld() &&
+                map.GetGameObject(candidateGuid) == candidate;
+            if (!added)
+            {
+                if (candidate->IsInWorld())
+                    map.Remove(candidate, false);
+                bool const detached = !candidate->IsInWorld() &&
+                    map.GetGameObject(candidateGuid) == nullptr;
+                if (detached)
+                    delete candidate;
+                else
+                    blockerCleanupFailure = true;
+                if (blockerCleanupFailure)
+                    break;
+                continue;
+            }
+
+            if (!healer->IsWithinLOSInMap(patient.creature))
+            {
+                blocker = candidate;
+                blockerEntry = info->id;
+                break;
+            }
+
+            map.Remove(candidate, false);
+            bool const detached = !candidate->IsInWorld() &&
+                map.GetGameObject(candidateGuid) == nullptr;
+            if (detached)
+                delete candidate;
+            else
+            {
+                blockerCleanupFailure = true;
+                break;
+            }
+        }
+
+        if (blocker || blockerCleanupFailure)
+            break;
+    }
+
+    bool const blockerFound = blocker != nullptr;
+    bool const blockedLineOfSight = blockerFound &&
+        !healer->IsWithinLOSInMap(patient.creature);
+    uint32 const healthBefore = patient.creature->GetHealth();
+    uint32 const manaBefore = healer->GetPower(POWER_MANA);
+    if (selected && blockedLineOfSight)
+        engine.ExecuteSelected(context, report);
+
+    bool const executionFailed = selected &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::ExecutionFailed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Failed;
+    SpellCastResult const castResult = healAction->GetLastCastResult();
+    uint32 const healthAfter = patient.creature->GetHealth();
+    uint32 const manaAfter = healer->GetPower(POWER_MANA);
+    bool const noPending = !healAction->WasCastPendingAfterAccept();
+    bool const noGcd = !healAction->HadGcdAfterAccept();
+
+    if (blocker && blocker->IsInWorld())
+        map.Remove(blocker, false);
+    ObjectGuid const blockerGuid = blocker ? blocker->GetObjectGuid() : ObjectGuid();
+    bool const blockerDetached = blocker &&
+        !blocker->IsInWorld() && map.GetGameObject(blockerGuid) == nullptr;
+    if (blockerDetached)
+        delete blocker;
+    else if (blocker)
+        blockerCleanupFailure = true;
+
+    bool const lineOfSightRestored = blockerDetached &&
+        healer->IsWithinLOSInMap(patient.creature);
+    healerSession.LogoutPlayer(false);
+    bool const playerCleaned = healerSession.GetPlayer() == nullptr;
+    healer = nullptr;
+    bool const patientCleaned = DestroySimulatorActor(map, patient);
+    bool const cleaned = blockerFound && !blockerCleanupFailure && blockerDetached &&
+        playerCleaned && patientCleaned;
+
+    bool const rejected = registered && selected && blockerFound && blockedLineOfSight &&
+        executionFailed && castResult == SPELL_FAILED_LINE_OF_SIGHT &&
+        healthAfter == healthBefore && manaAfter == manaBefore &&
+        noPending && noGcd && lineOfSightRestored && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Player heal LOS revalidation: registered=%u selected=%u baseLOS=%u blockerTemplates=%u testedModels=%u blockerFound=%u blockerEntry=%u blockedLOS=%u executionFailed=%u castResult=%u health=%u>%u mana=%u>%u noPending=%u noGcd=%u losRestored=%u cleanup=%u.",
+             registered ? 1u : 0u, selected ? 1u : 0u, baseLineOfSight ? 1u : 0u,
+             static_cast<uint32>(blockerTemplates.size()), testedModels,
+             blockerFound ? 1u : 0u, blockerEntry, blockedLineOfSight ? 1u : 0u,
+             executionFailed ? 1u : 0u, static_cast<uint32>(castResult),
+             healthBefore, healthAfter, manaBefore, manaAfter,
+             noPending ? 1u : 0u, noGcd ? 1u : 0u,
+             lineOfSightRestored ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!rejected)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Player heal Core LOS rejection smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Core Player Spell::CheckCast rejected a heal through a real closed GameObject collision model without applying healing, spending mana or starting a cast.");
+    return true;
+}
+
+
+bool RunEngineCoreMovePointControlSafetySmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor leader;
+    SimulatorActor mover;
+    bool const created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 6.0f, leader) &&
+        CreateSimulatorActor(map, *info, partyFaction, 10.0f, 6.0f, mover);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, mover);
+        cleaned = DestroySimulatorActor(map, leader) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] MovePoint control-safety fixture creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    PartySnapshot initialSnapshot;
+    initialSnapshot.groupId = 13;
+    initialSnapshot.mapId = map.GetId();
+    initialSnapshot.instanceId = map.GetInstanceId();
+    initialSnapshot.epoch = 13;
+    initialSnapshot.capturedAtMs = 13000;
+
+    PartyMemberSnapshot moverMember;
+    moverMember.guid = mover.creature->GetObjectGuid().GetRawValue();
+    moverMember.roleId = static_cast<std::uint8_t>(PartyRole::MeleeDamage);
+    moverMember.mapId = map.GetId();
+    moverMember.instanceId = map.GetInstanceId();
+    moverMember.health = mover.creature->GetHealth();
+    moverMember.maxHealth = mover.creature->GetMaxHealth();
+    moverMember.online = true;
+    moverMember.alive = mover.creature->IsAlive();
+    moverMember.x = mover.creature->GetPositionX();
+    moverMember.y = mover.creature->GetPositionY();
+    moverMember.z = mover.creature->GetPositionZ();
+    initialSnapshot.members.push_back(moverMember);
+
+    PartyMemberSnapshot leaderMember;
+    leaderMember.guid = leader.creature->GetObjectGuid().GetRawValue();
+    leaderMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    leaderMember.mapId = map.GetId();
+    leaderMember.instanceId = map.GetInstanceId();
+    leaderMember.health = leader.creature->GetHealth();
+    leaderMember.maxHealth = leader.creature->GetMaxHealth();
+    leaderMember.online = true;
+    leaderMember.alive = leader.creature->IsAlive();
+    leaderMember.isMainTank = true;
+    leaderMember.x = leader.creature->GetPositionX();
+    leaderMember.y = leader.creature->GetPositionY();
+    leaderMember.z = leader.creature->GetPositionZ();
+    initialSnapshot.members.push_back(leaderMember);
+
+    PartyCoordinator coordinator;
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCoreMovePointAction> moveAction(new SimulatorCoreMovePointAction(map));
+    bool const registered = engine.RegisterAction(moveAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_move_control_safety"));
+    strategy->AddTrigger(std::make_shared<SimulatorFormationTrigger>());
+    engine.AddStrategy(strategy);
+
+    float const initialX = mover.creature->GetPositionX();
+    float const initialY = mover.creature->GetPositionY();
+    float const initialZ = mover.creature->GetPositionZ();
+
+    mover.creature->AddUnitState(UNIT_STATE_CAN_NOT_MOVE);
+    PartySnapshot rootedSnapshot = initialSnapshot;
+    rootedSnapshot.epoch = 13;
+    rootedSnapshot.capturedAtMs = 13000;
+    DecisionContext rootedContext(rootedSnapshot, rootedSnapshot.members[0], coordinator, 13000);
+    DecisionReport rootedReport = engine.Evaluate(rootedContext);
+    bool const rootedRejected = rootedReport.selectedIndices.empty() &&
+        rootedReport.candidates.size() == 1 &&
+        rootedReport.candidates[0].candidate.actionName == "core_move_point" &&
+        rootedReport.candidates[0].status == CandidateStatus::RejectedImpossible;
+
+    mover.creature->ClearUnitState(UNIT_STATE_CAN_NOT_MOVE);
+    mover.creature->AddUnitState(UNIT_STATE_POSSESSED);
+    PartySnapshot possessedSnapshot = initialSnapshot;
+    possessedSnapshot.epoch = 14;
+    possessedSnapshot.capturedAtMs = 14000;
+    DecisionContext possessedContext(possessedSnapshot, possessedSnapshot.members[0], coordinator, 14000);
+    DecisionReport possessedReport = engine.Evaluate(possessedContext);
+    bool const possessedRejected = possessedReport.selectedIndices.empty() &&
+        possessedReport.candidates.size() == 1 &&
+        possessedReport.candidates[0].candidate.actionName == "core_move_point" &&
+        possessedReport.candidates[0].status == CandidateStatus::RejectedImpossible;
+
+    mover.creature->ClearUnitState(UNIT_STATE_POSSESSED);
+    bool const noMovementStarted =
+        mover.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE;
+    bool const positionUnchanged =
+        mover.creature->GetPositionX() == initialX &&
+        mover.creature->GetPositionY() == initialY &&
+        mover.creature->GetPositionZ() == initialZ;
+
+    bool cleaned = DestroySimulatorActor(map, mover);
+    cleaned = DestroySimulatorActor(map, leader) && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] MovePoint control safety: registered=%u rootedRejected=%u possessedRejected=%u noMovementStarted=%u positionUnchanged=%u cleanup=%u.",
+             registered ? 1u : 0u, rootedRejected ? 1u : 0u,
+             possessedRejected ? 1u : 0u, noMovementStarted ? 1u : 0u,
+             positionUnchanged ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!registered || !rootedRejected || !possessedRejected ||
+        !noMovementStarted || !positionUnchanged || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] MovePoint control-safety smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine refused Core MovePoint while the mover had CAN_NOT_MOVE or POSSESSED state.");
+    return true;
+}
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -2521,13 +2901,16 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const playerFollowCastSafetyPassed = RunEngineCorePlayerFollowCastSafetySmokeTest(*map);
     bool const followRetargetPassed = RunEngineCoreFollowRetargetSmokeTest(*map);
     bool const playerHealRevalidationPassed = RunEngineCorePlayerHealRevalidationSmokeTest(*map);
+    bool const playerHealLosPassed = RunEngineCorePlayerHealLosSmokeTest(*map);
+    bool const movePointControlSafetyPassed = RunEngineCoreMovePointControlSafetySmokeTest(*map);
     bool const movementInterruptPassed = RunEngineCoreMovementInterruptSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
-                              playerHealRevalidationPassed && movementInterruptPassed;
+                              playerHealRevalidationPassed && playerHealLosPassed &&
+                              movePointControlSafetyPassed && movementInterruptPassed;
 
     sMapMgr.DeleteTestMap(map);
 

@@ -180,4 +180,21 @@ Confirmed: the pinned Core has a purpose-built test-map creation/deletion API, p
 
 Not yet confirmed: runtime behavior of either stage with disposable DB copies and normal 5875 data; template/faction selection on the actual database; active-Creature update delivery; real damage/threat/target switching; actor/map cleanup; complete RNG control; or absence of writes outside the prefixed test schemas.
 
-**Next gate:** provide the isolated runner with disposable copies of all four required databases and the normal Vanilla 5875 extracted data, then run the one-shot simulator there. A GitHub-hosted ARM64 runner does not automatically have the user's private extracted map/DBC data or populated realm schemas, so runtime execution must not silently fall back to the live Oracle realm. Inspect logs for all three AI counters, damage/threat values, target switch and actor cleanup. Do not connect the PartyBotEngine executor or begin five-player/dungeon scenarios until this scenario passes runtime validation.
+### Optional GitHub Actions runtime runner
+
+The repository now contains `tools/partybot-simulator/run-ci.sh`, wired into the ARM64 build workflow as a push-only optional step. It is a no-op until both repository Actions secrets below are configured:
+
+- `PARTYBOT_SIMULATOR_DBC_URL`: HTTPS read-only download URL for a `.tar.gz` archive containing `dbc/5875/*.dbc`.
+- `PARTYBOT_SIMULATOR_DBC_SHA256`: SHA-256 checksum of that archive.
+
+Only the extracted DBC directory is required for this first scenario. The test does not validate terrain, collision or navigation, so the large `maps/`, `vmaps/` and `mmaps/` trees are intentionally not included. The runner starts the same public vMangos database image used by the pinned deployment wrapper, clones its `mangos`, `characters`, `realmd` and `logs` schemas to `partybot_sim_*`, and points all four Core connections exclusively at those disposable copies. It then runs the one-shot `mangosd` simulator and uploads `simulator.log` as a 14-day Actions artifact. It never reads or connects to the Oracle realm.
+
+To prepare the archive from the deployment directory, preserve the required directory layout:
+
+```sh
+tar -czf dbc-5875.tar.gz -C storage/mangosd/extracted-data dbc/5875
+```
+
+Create a read-only HTTPS object URL (for example, an OCI Object Storage pre-authenticated request), add it and the archive checksum as the two repository Actions secrets, and the next push to this branch will run the simulator automatically after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
+
+**Next gate:** obtain the small private DBC archive and configure those two secrets, then inspect the first runtime artifact for all three AI counters, health/damage/threat values, selected target GUIDs and cleanup results. Do not connect the PartyBotEngine executor or begin five-player/dungeon scenarios until this scenario passes runtime validation.

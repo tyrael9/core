@@ -48,8 +48,10 @@ CreatureInfo const* FindSafeCreatureTemplate()
         CreatureInfo const* info = item.second.get();
         if (!info || info->entry != item.first || info->rank != CREATURE_ELITE_NORMAL ||
             !info->display_total_probability || !info->display_id[0] ||
-            info->spawn_spell_id || info->totem_spell_id || info->spell_list_id || info->auras ||
-            info->script_id || !info->ai_name.empty() ||
+            info->npc_flags || info->civilian || info->racial_leader || info->pet_family ||
+            info->pet_spell_list_id || info->immunity_flags || info->school_immune_mask ||
+            info->mechanic_immune_mask || info->spawn_spell_id || info->totem_spell_id ||
+            info->spell_list_id || info->auras || info->script_id || !info->ai_name.empty() ||
             (info->flags_extra & (CREATURE_FLAG_EXTRA_INVISIBLE | CREATURE_FLAG_EXTRA_NO_THREAT_LIST)))
             continue;
 

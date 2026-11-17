@@ -728,13 +728,26 @@ public:
         // action we must cancel a flagged preparing cast immediately, even in
         // that first tick, rather than let it complete while moving.
         Spell* const genericSpell = mover->GetCurrentSpell(CURRENT_GENERIC_SPELL);
-        if (genericSpell &&
-            (genericSpell->getState() == SPELL_STATE_PREPARING ||
-             genericSpell->getState() == SPELL_STATE_CASTING) &&
-            !genericSpell->IsTriggered() && !genericSpell->IsAutoRepeat() &&
-            genericSpell->m_spellInfo &&
-            genericSpell->m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT))
-            mover->InterruptSpell(CURRENT_GENERIC_SPELL);
+        if (genericSpell)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[PartyBotSimulator] Movement adapter pre-interrupt: spell=%u state=%u castedTime=%u triggered=%u autorepeat=%u movementFlag=%u.",
+                     genericSpell->m_spellInfo ? genericSpell->m_spellInfo->Id : 0u,
+                     static_cast<uint32>(genericSpell->getState()), genericSpell->GetCastedTime(),
+                     genericSpell->IsTriggered() ? 1u : 0u, genericSpell->IsAutoRepeat() ? 1u : 0u,
+                     genericSpell->m_spellInfo && genericSpell->m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT) ? 1u : 0u);
+            if ((genericSpell->getState() == SPELL_STATE_PREPARING ||
+                 genericSpell->getState() == SPELL_STATE_CASTING) &&
+                !genericSpell->IsTriggered() && !genericSpell->IsAutoRepeat() &&
+                genericSpell->m_spellInfo &&
+                genericSpell->m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT))
+            {
+                mover->InterruptSpell(CURRENT_GENERIC_SPELL);
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[PartyBotSimulator] Movement adapter post-interrupt: genericSpellPresent=%u.",
+                         mover->GetCurrentSpell(CURRENT_GENERIC_SPELL) ? 1u : 0u);
+            }
+        }
 
         Spell* const channeledSpell = mover->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
         if (channeledSpell && channeledSpell->getState() == SPELL_STATE_CASTING &&

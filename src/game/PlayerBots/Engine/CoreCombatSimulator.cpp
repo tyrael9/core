@@ -324,7 +324,7 @@ public:
 private:
     Map& m_map;
     std::string m_name = "core_heal";
-    SpellCastResult m_lastCastResult = SPELL_FAILED_UNKNOWN;
+    SpellCastResult m_lastCastResult = SPELL_FAILED_DONT_REPORT;
     uint32 m_lastHealing = 0;
 };
 

@@ -18,11 +18,11 @@ if [[ -z "${PARTYBOT_SIMULATOR_DATA_URL:-}" && -z "${PARTYBOT_SIMULATOR_DATA_SHA
     exit 0
 fi
 if [[ -z "${PARTYBOT_SIMULATOR_DATA_URL:-}" || -z "${PARTYBOT_SIMULATOR_DATA_SHA256:-}" ]]; then
-    echo "[PartyBotSimulator] Both DBC fixture secrets must be configured together." | tee -a "$LOG_FILE"
+    echo "[PartyBotSimulator] Both extracted-data fixture secrets must be configured together." | tee -a "$LOG_FILE"
     exit 1
 fi
 if [[ "$PARTYBOT_SIMULATOR_DATA_URL" != https://* ]]; then
-    echo "[PartyBotSimulator] The DBC fixture URL must use HTTPS." | tee -a "$LOG_FILE"
+    echo "[PartyBotSimulator] The extracted-data fixture URL must use HTTPS." | tee -a "$LOG_FILE"
     exit 1
 fi
 
@@ -38,14 +38,14 @@ command -v docker >/dev/null
 command -v curl >/dev/null
 command -v python3 >/dev/null
 
-DBC_ARCHIVE="$PWD/partybot-simulator-dbc.tar.gz"
+DATA_ARCHIVE="$PWD/partybot-simulator-extracted-data.tar.gz"
 echo "[PartyBotSimulator] Downloading the complete private 5875 extracted-data fixture." | tee -a "$LOG_FILE"
-curl --fail --silent --show-error --location "$PARTYBOT_SIMULATOR_DATA_URL" --output "$DBC_ARCHIVE"
-printf '%s  %s\n' "$(printf '%s' "$PARTYBOT_SIMULATOR_DATA_SHA256" | tr '[:upper:]' '[:lower:]')" "$DBC_ARCHIVE" | sha256sum --check
+curl --fail --silent --show-error --location "$PARTYBOT_SIMULATOR_DATA_URL" --output "$DATA_ARCHIVE"
+printf '%s  %s\n' "$(printf '%s' "$PARTYBOT_SIMULATOR_DATA_SHA256" | tr '[:upper:]' '[:lower:]')" "$DATA_ARCHIVE" | sha256sum --check
 
 rm -rf "$DATA_DIR"
 mkdir -p "$DATA_DIR" "$PWD/simulator-logs"
-tar -xzf "$DBC_ARCHIVE" -C "$DATA_DIR"
+tar -xzf "$DATA_ARCHIVE" -C "$DATA_DIR"
 
 DBC_DIR="$DATA_DIR/dbc/5875"
 for required in Map.dbc FactionTemplate.dbc CreatureDisplayInfo.dbc; do

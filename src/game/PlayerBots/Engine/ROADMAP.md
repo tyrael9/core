@@ -57,8 +57,8 @@ The current role-aware Shadow slice is a proof of the data-to-candidate path onl
 - [~] Bound map tick progression and document wall-clock cadence; deterministic RNG/replay control remains.
 - [x] Add a Stage B push-only CI runtime job with strict timeout and no deployment/image-publish side effects.
 - [x] Connect PartyBotEngine to a fixture-backed five-member party snapshot and a real Core Unit::Attack executor; runtime CI verifies selection, execution result, actual victim and cleanup.
-- [~] Add a spell-aware healer-triage action using the real Core Spell/SpellEffects pipeline; the first Lesser Heal Creature fixture is under runtime CI validation. This triggered-cast test deliberately does not claim Player spellbook, mana, GCD or cast-time coverage.
-- [ ] Extend spell execution to ordinary non-triggered Player casts and validate accepted/pending/completed/interrupted outcomes.
+- [x] Add a spell-aware healer-triage action using the real Core Spell/SpellEffects pipeline; runtime CI verifies a triggered Lesser Heal effect on a Creature fixture.
+- [~] Add a Player-backed healer fixture using a real WorldSession/Player object and ordinary non-triggered Lesser Heal. Runtime CI now checks known-spell ownership, Core acceptance, pending cast/GCD, mana consumption, completion, real healing and logout cleanup. Interrupt/cancel and failure paths remain.
 - [ ] Extend the executor to movement and defensive actions.
 - [ ] Add scripted aggro, healer-threat, tank-death, healer-death and multi-add scenarios.
 - [ ] Evaluate full dungeon/instance scripts as a later tier.

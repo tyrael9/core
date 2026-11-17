@@ -12,7 +12,9 @@
 #include "PlayerBots/Engine/PartySnapshot.h"
 #include "PlayerBots/Engine/Strategy.h"
 #include "PlayerBots/Engine/Trigger.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "Player.h"
 #include "SpellMgr.h"
 
 #include <algorithm>
@@ -331,6 +333,11 @@ private:
 class SimulatorHealerTriageTrigger final : public Trigger
 {
 public:
+    explicit SimulatorHealerTriageTrigger(std::string actionName = "core_heal")
+        : m_actionName(std::move(actionName))
+    {
+    }
+
     std::string const& GetName() const override { return m_name; }
     bool IsActive(DecisionContext const& context) const override
     {
@@ -346,7 +353,7 @@ public:
                 !member.maxHealth || member.health >= member.maxHealth)
                 continue;
             ActionCandidate candidate;
-            candidate.actionName = "core_heal";
+            candidate.actionName = m_actionName;
             candidate.targetGuid = member.guid;
             candidate.spellId = SIMULATOR_HEAL_SPELL_ID;
             candidate.basePriority = 100.0f *
@@ -357,6 +364,7 @@ public:
     }
 private:
     std::string m_name = "simulator_healer_triage";
+    std::string m_actionName;
 };
 
 bool RunEngineCoreSpellHealSmokeTest(Map& map)
@@ -462,6 +470,260 @@ bool RunEngineCoreSpellHealSmokeTest(Map& map)
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: PartyBotEngine selected healer triage and the Core Spell pipeline applied a real Lesser Heal effect.");
+    return true;
+}
+
+
+
+// This fixture follows the same Core Player construction sequence as
+// PlayerBotAI::SpawnNewPlayer, but keeps its WorldSession local to the test.
+bool CreateSimulatorPlayer(Map& map, uint32 factionId, WorldSession& session, Player*& player)
+{
+    player = new Player(&session);
+    uint8 gender = GENDER_MALE;
+    uint8 skin = 0, face = 0, hairStyle = 0, hairColor = 0, facialHair = 0;
+    Player::SelectRandomAppearance(RACE_HUMAN, gender, hairStyle, hairColor, face, facialHair, skin);
+    uint32 const guidLow = sObjectMgr.GeneratePlayerLowGuid();
+    std::string const name = sObjectMgr.GenerateFreePlayerName();
+    if (!player->Create(guidLow, name, RACE_HUMAN, CLASS_PRIEST, gender,
+                        skin, face, hairStyle, hairColor, facialHair))
+    {
+        delete player;
+        player = nullptr;
+        return false;
+    }
+
+    player->SetLocationMapId(map.GetId());
+    player->SetLocationInstanceId(map.GetInstanceId());
+    player->SetAutoInstanceSwitch(false);
+    player->GetMotionMaster()->Initialize();
+    player->Relocate(0.0f, 6.0f, 4.0f, 0.0f);
+    player->SetMap(&map);
+    player->SaveRecallPosition();
+    player->CreatePacketBroadcaster();
+    player->SetFactionTemplateId(factionId);
+    player->GiveLevel(60);
+
+    if (!map.Add(player))
+    {
+        delete player;
+        player = nullptr;
+        return false;
+    }
+
+    sObjectMgr.InsertPlayerInCache(player);
+    session.SetPlayer(player);
+    sObjectAccessor.AddObject(player);
+    player->SetCanModifyStats(true);
+    player->UpdateAllStats();
+    player->SetPower(POWER_MANA, player->GetMaxPower(POWER_MANA));
+    return player->IsInWorld() && player->HasSpell(SIMULATOR_HEAL_SPELL_ID);
+}
+
+class SimulatorCorePlayerHealAction final : public Action
+{
+public:
+    explicit SimulatorCorePlayerHealAction(Map& map) : m_map(map) {}
+    std::string const& GetName() const override { return m_name; }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        Player* caster = m_map.GetUnit(ObjectGuid(context.bot.guid))
+            ? m_map.GetUnit(ObjectGuid(context.bot.guid))->ToPlayer() : nullptr;
+        PartyMemberSnapshot const* patientSnapshot = context.snapshot.FindMember(candidate.targetGuid);
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(candidate.spellId);
+        bool const isHealingSpell = spell &&
+            (spell->Effect[0] == SPELL_EFFECT_HEAL ||
+             spell->Effect[1] == SPELL_EFFECT_HEAL ||
+             spell->Effect[2] == SPELL_EFFECT_HEAL);
+        if (!caster || !caster->IsAlive() || !caster->HasSpell(candidate.spellId) ||
+            !caster->IsSpellReady(spell) || caster->HasGCD(spell) ||
+            caster->IsNonMeleeSpellCasted(false) || !patientSnapshot ||
+            !patientSnapshot->alive || !patient || !patient->IsAlive() ||
+            !caster->IsFriendlyTo(patient) || !isHealingSpell ||
+            patient->GetHealth() >= patient->GetMaxHealth())
+        {
+            reason = "player_spell_not_known_ready_or_target_invalid";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Player* caster = unit ? unit->ToPlayer() : nullptr;
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!caster || !patient || !caster->IsAlive() || !patient->IsAlive() ||
+            patient->GetHealth() >= patient->GetMaxHealth() ||
+            caster->IsNonMeleeSpellCasted(false))
+        {
+            reason = "player_heal_no_longer_useful";
+            return false;
+        }
+        return true;
+    }
+
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    {
+        Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Player* caster = unit ? unit->ToPlayer() : nullptr;
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(candidate.spellId);
+        if (!caster || !patient || !spell || !caster->IsAlive() || !patient->IsAlive() ||
+            !caster->HasSpell(candidate.spellId) || !caster->IsSpellReady(spell) ||
+            caster->HasGCD(spell) || caster->IsNonMeleeSpellCasted(false) ||
+            !caster->IsFriendlyTo(patient) || patient->GetHealth() >= patient->GetMaxHealth())
+            return ActionResult::Impossible;
+
+        caster->SetFacingToObject(patient);
+        caster->SetTargetGuid(patient->GetObjectGuid());
+        m_manaBefore = caster->GetPower(POWER_MANA);
+        m_lastCastResult = caster->CastSpell(patient, spell, false);
+        m_manaAfterAccept = caster->GetPower(POWER_MANA);
+        m_castPendingAfterAccept = caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr;
+        m_gcdAfterAccept = caster->HasGCD(spell);
+        return m_lastCastResult == SPELL_CAST_OK ? ActionResult::Success : ActionResult::Failed;
+    }
+
+    SpellCastResult GetLastCastResult() const { return m_lastCastResult; }
+    uint32 GetManaBefore() const { return m_manaBefore; }
+    uint32 GetManaAfterAccept() const { return m_manaAfterAccept; }
+    bool WasCastPendingAfterAccept() const { return m_castPendingAfterAccept; }
+    bool HadGcdAfterAccept() const { return m_gcdAfterAccept; }
+
+private:
+    Map& m_map;
+    std::string m_name = "core_player_heal";
+    SpellCastResult m_lastCastResult = SPELL_FAILED_DONT_REPORT;
+    uint32 m_manaBefore = 0;
+    uint32 m_manaAfterAccept = 0;
+    bool m_castPendingAfterAccept = false;
+    bool m_gcdAfterAccept = false;
+};
+
+bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor patient;
+    bool const patientCreated = CreateSimulatorActor(map, *info, partyFaction, 1.0f, 6.0f, patient);
+    if (!patientCreated)
+    {
+        DestroySimulatorActor(map, patient);
+        return false;
+    }
+
+    WorldSession healerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* healer = nullptr;
+    bool const healerCreated = CreateSimulatorPlayer(map, partyFaction, healerSession, healer);
+    if (!healerCreated)
+    {
+        bool cleaned = true;
+        if (healerSession.GetPlayer())
+            healerSession.LogoutPlayer(false);
+        else if (healer)
+            delete healer;
+        cleaned = DestroySimulatorActor(map, patient) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Player spell/heal fixture creation failed (cleanup=%u).", cleaned ? 1u : 0u);
+        return false;
+    }
+
+    patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
+    uint32 const healthBefore = patient.creature->GetHealth();
+    uint32 const manaBefore = healer->GetPower(POWER_MANA);
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 3;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 3;
+    snapshot.capturedAtMs = 3000;
+
+    PartyMemberSnapshot healerMember;
+    healerMember.guid = healer->GetObjectGuid().GetRawValue();
+    healerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    healerMember.mapId = map.GetId();
+    healerMember.instanceId = map.GetInstanceId();
+    healerMember.health = healer->GetHealth();
+    healerMember.maxHealth = healer->GetMaxHealth();
+    healerMember.online = true;
+    healerMember.alive = healer->IsAlive();
+    snapshot.members.push_back(healerMember);
+
+    PartyMemberSnapshot patientMember;
+    patientMember.guid = patient.creature->GetObjectGuid().GetRawValue();
+    patientMember.roleId = static_cast<std::uint8_t>(PartyRole::Tank);
+    patientMember.mapId = map.GetId();
+    patientMember.instanceId = map.GetInstanceId();
+    patientMember.health = healthBefore;
+    patientMember.maxHealth = patient.creature->GetMaxHealth();
+    patientMember.online = true;
+    patientMember.alive = patient.creature->IsAlive();
+    patientMember.isMainTank = true;
+    snapshot.members.push_back(patientMember);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 3000);
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
+    bool const registered = engine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_healer_triage"));
+    strategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
+        report.candidates[report.selectedIndices[0]].candidate.spellId == SIMULATOR_HEAL_SPELL_ID &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(context, report);
+
+    bool const accepted = !report.selectedIndices.empty() &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Success &&
+        healAction->GetLastCastResult() == SPELL_CAST_OK &&
+        healAction->WasCastPendingAfterAccept() && healAction->HadGcdAfterAccept();
+
+    for (uint32 tick = 0; tick < 20 && healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+        map.Update(250);
+
+    uint32 const healthAfter = patient.creature->GetHealth();
+    uint32 const manaAfter = healer->GetPower(POWER_MANA);
+    bool const completed = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+                           healthAfter > healthBefore && manaAfter < manaBefore;
+
+    healerSession.LogoutPlayer(false);
+    bool const playerCleaned = healerSession.GetPlayer() == nullptr;
+    healer = nullptr; // LogoutPlayer(true/false) removes and deletes the in-world Player.
+    bool const patientCleaned = DestroySimulatorActor(map, patient);
+    bool const cleaned = playerCleaned && patientCleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u mana=%u>%u health=%u>%u completed=%u cleanup=%u.",
+             1u, selected ? 1u : 0u, accepted ? 1u : 0u,
+             healAction->WasCastPendingAfterAccept() ? 1u : 0u,
+             healAction->HadGcdAfterAccept() ? 1u : 0u,
+             static_cast<uint32>(healAction->GetLastCastResult()),
+             manaBefore, manaAfter, healthBefore, healthAfter,
+             completed ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!registered || !selected || !accepted || !completed || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine-to-Player normal spell/heal smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine selected a known Player spell, Core accepted a non-triggered cast with GCD, and the cast completed with real healing and mana cost.");
     return true;
 }
 
@@ -746,6 +1008,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                              RunCoreCombatThreatSmokeTest(*map) &&
                              RunEngineCoreExecutorSmokeTest(*map);
                              RunEngineCoreSpellHealSmokeTest(*map);
+                             RunEngineCorePlayerSpellHealSmokeTest(*map);
 
     sMapMgr.DeleteTestMap(map);
 

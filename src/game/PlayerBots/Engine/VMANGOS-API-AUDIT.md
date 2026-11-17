@@ -173,3 +173,16 @@ Additional source inspection for the pinned revision:
 - The existing \`CombatBotBaseAI::DoCastSpell\` confirms the normal PlayerBot path uses \`Player::CastSpell(target, spell, false)\` and treats \`SPELL_CAST_OK\` as the authoritative immediate result. Its companion \`CanTryToCastSpell\` performs additional readiness, GCD, power, aura, immunity, shapeshift and range checks.
 
 Stage D currently uses spell 2050 (Lesser Heal, Rank 1) with \`triggered=true\` on a same-faction simulator Creature. This makes the test deterministic and proves the Core Spell/SpellEffects heal path, but intentionally does not validate player spell ownership, normal mana/GCD/cast-time rules, interruption, or completion events. Those remain mandatory before production PlayerBot spell execution.
+
+
+## 8. Player-backed non-triggered spell execution — simulator Stage E
+
+Pinned Core source supports a test Player without inventing a parallel fake player type:
+
+- \`Player(WorldSession*)\` initializes the real Player object and its session-backed menu; \`Player::Create\` initializes class/race data, stats, default spells and a Core player GUID.
+- \`ObjectMgr::GeneratePlayerLowGuid\` supplies a Core-generated low GUID; the simulator uses \`Player::SelectRandomAppearance\` and the normal Player creation API.
+- The fixture mirrors \`PlayerBotAI::SpawnNewPlayer\` for location, MotionMaster, packet broadcaster, map insertion, ObjectMgr cache and ObjectAccessor registration. It uses a local \`WorldSession\` with no socket and no production account; no DB character row is created.
+- \`SpellCaster::IsSpellReady\`, \`HasGCD\`, \`GetCurrentSpell\` and non-triggered \`CastSpell\` are used to distinguish readiness, GCD, pending cast and completion.
+- \`WorldSession::LogoutPlayer(false)\` performs normal in-world Player removal/deletion; the fixture checks the session's Player pointer is cleared before deleting the remaining Creature actor.
+
+The Stage E runtime assertion requires a known Priest Lesser Heal (2050), a successful non-triggered Core cast result, a pending generic spell/GCD immediately after acceptance, subsequent cast completion, an actual target health increase and mana consumption. This validates one normal Player spell lifecycle. It does not yet establish production bot session authentication, Group membership, movement interruption, or all failure/rejection paths.

@@ -242,3 +242,19 @@ The simulator uses Vanilla spell 2050 (Lesser Heal, Rank 1). It requires all of 
 **Important scope limitation:** this first fixture deliberately uses a triggered cast from a template-backed Creature. This still exercises the real Core spell implementation and healing effect, but bypasses player spellbook ownership, mana cost, GCD and cast-time progression. It is not proof that an authenticated PlayerBot can cast a known spell normally. A separate non-triggered Player-backed slice must cover those mechanics before this adapter is used by production PlayerBots.
 
 The optional CI runner now requires the Stage D PASS marker in addition to the Stage A/B and Stage C markers. It remains push-only, uses the complete extracted-data fixture and four disposable \`partybot_sim_*\` schemas, and has no image-publish or deployment side effects.
+
+
+## Stage E — normal Player spell execution
+
+Stage E adds an actual Core \`Player\` as the Engine healer. The simulator constructs it through the pinned Player creation path (\`Player::Create\`, real Player stats/default spell initialization, a local \`WorldSession\`, map insertion and ObjectAccessor registration), rather than disguising a Creature as a Player. The fixture is not authenticated against a production account and is never persisted; it uses the disposable simulator DB and logs out through \`WorldSession::LogoutPlayer(false)\` before map teardown.
+
+The Engine candidate still comes from the same healer-triage trigger. The Player action adapter re-resolves the healer and patient GUIDs, requires the healer to actually know spell 2050, checks spell readiness/GCD/current-cast state and friendly living target state, then calls the ordinary non-triggered \`Player::CastSpell(..., false)\` path.
+
+The runtime assertion distinguishes acceptance from completion:
+- The Engine reports the action as executed and the Core returns \`SPELL_CAST_OK\`.
+- A generic spell remains pending immediately after acceptance and the Player GCD is active.
+- The Core map ticks advance the normal cast to completion.
+- The patient Creature's actual health increases and the Player's mana decreases.
+- The Player logs out and is deleted by the Core session/map cleanup path; the patient actor is also destroyed.
+
+This is the first Player-backed spell slice, not yet a production PlayerBot integration. It does not yet exercise a five-member Core Group, concurrent bot casters, cast interruption/movement cancellation, target range/LOS failure matrices, or a full combat rotation. The local session is deliberately not registered as a live account session; all map, spell, and cleanup behavior is exercised on the isolated test map.

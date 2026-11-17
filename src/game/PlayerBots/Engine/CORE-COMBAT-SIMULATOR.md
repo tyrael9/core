@@ -301,3 +301,6 @@ This proves one point-movement primitive and the Engine-to-Core movement boundar
 A second Stage F scenario starts an ordinary non-triggered Player Lesser Heal through the Engine, confirms that the cast is pending with GCD, then runs a separate Engine movement decision for the same Player. The formation trigger derives a point from the Main Tank snapshot; the same Core \`MovePoint\` adapter moves the Player while the spell is pending.
 
 The runtime assertion requires the cast to be cleared by the pinned Core \`Spell::update\` movement-interrupt check, the target's health to remain unchanged, the Player to reach the movement destination, and both Player/session and Creature cleanup to succeed. The simulator does not call \`InterruptSpell\` itself and does not fake a failed cast.
+
+
+Stage F2 timing note: the fixture performs one ordinary Player/map update before the cast begins. This primes \`Map::UpdatePlayers\`' wall-clock cadence so the first post-movement update cannot carry a stale multi-second diff and complete the heal before a subsequent tick observes movement. The test still relies on the real \`Spell::update\` position comparison and never advances cast state directly.

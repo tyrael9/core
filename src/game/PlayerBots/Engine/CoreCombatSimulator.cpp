@@ -770,6 +770,13 @@ bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
     patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
     uint32 const healthBefore = patient.creature->GetHealth();
 
+    // Prime the real wall-clock Player update cadence before starting the
+    // cast. Otherwise a stale m_lastPlayersUpdate can make the first update
+    // after MovePoint carry a large diff and complete the spell before the
+    // next tick observes the changed position.
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    map.Update(250);
+
     PartySnapshot snapshot;
     snapshot.groupId = 5;
     snapshot.mapId = map.GetId();

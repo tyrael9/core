@@ -203,3 +203,6 @@ This proves only one point movement. Continuous \`MoveFollow\`, pathfinding, cas
 
 
 Stage F2 confirms the pinned \`Spell::update\` movement-interrupt rule: while a non-triggered cast with \`SPELL_INTERRUPT_FLAG_MOVEMENT\` / moving-cancel semantics is pending, a real Player position change is detected against the cast-start position and Core cancels the spell. The simulator invokes only the real Engine movement action and waits for normal Player/Unit update cadence; it does not call \`InterruptSpell\` directly.
+
+
+Stage F2 requires a priming Player update before casting because \`Map::UpdatePlayers\` computes its diff from the previous real wall-clock player update. The fixture ensures the first post-MovePoint update is a normal bounded tick, allowing \`Spell::update\` to observe the new position before the cast timer expires.

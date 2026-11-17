@@ -14,7 +14,7 @@ struct PartyMemberSnapshot {
 struct ThreatEntrySnapshot {
     Guid unitGuid = 0;
     float threat = 0.0f;
-    bool online = false, accessible = false;
+    bool online = false, accessible = false, meleeReachable = false;
 };
 struct HostileSnapshot {
     Guid guid = 0, victimGuid = 0;

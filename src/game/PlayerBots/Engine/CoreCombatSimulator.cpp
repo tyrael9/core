@@ -2816,12 +2816,33 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     uint32 const groupId = group->GetId();
     bool const registeredBeforeCleanup = groupRegistered &&
         sObjectMgr.GetGroupById(groupId) == group.get();
+    auto snapshotMeleeReachabilityMatchesCore = [](HostileSnapshot const* hostileSnapshot,
+                                                    Unit* hostileUnit, ObjectGuid memberGuid)
+    {
+        if (!hostileSnapshot || !hostileUnit)
+            return false;
+        for (ThreatEntrySnapshot const& entry : hostileSnapshot->threat)
+        {
+            if (entry.unitGuid != memberGuid.GetRawValue())
+                continue;
+            Unit* member = hostileUnit->GetMap()->GetUnit(memberGuid);
+            return member && entry.meleeReachable ==
+                hostileUnit->CanReachWithMeleeAutoAttack(member);
+        }
+        return false;
+    };
+    bool const coreReachabilityCopied =
+        snapshotMeleeReachabilityMatchesCore(bossSnapshot, hostiles[0].creature, tankGuid) &&
+        snapshotMeleeReachabilityMatchesCore(bossSnapshot, hostiles[0].creature, healerGuid) &&
+        snapshotMeleeReachabilityMatchesCore(addSnapshot, hostiles[1].creature, tankGuid) &&
+        snapshotMeleeReachabilityMatchesCore(addSnapshot, hostiles[1].creature, healerGuid);
+
     bool const f9ChecksPassed = hostileAIReady && membersAdded && mainTankAssigned &&
         allPlayersOnSameMap && initialSnapshotValid && initialRosterResolved &&
         initialValuesCopied && initialRolesUnknown && initialCacheRetained &&
         registeredBeforeCleanup && bothHostilesInitiallyTargetTank &&
         tankAliveAndInjured && healCompleted && healerPulledBothAdds &&
-        snapshotValid && rosterRoleStateValid && bothAddsResolved && threatValuesCopied;
+        snapshotValid && rosterRoleStateValid && bothAddsResolved && threatValuesCopied && coreReachabilityCopied;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u.",
@@ -2844,7 +2865,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
 
     if (f9ChecksPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat snapshots matched Core and all Group/session cleanup succeeded.");
+                 "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat values and per-reference melee reachability matched Core, and all Group/session cleanup succeeded.");
 
     // F10: the living DPS establishes lower real damage-threat on both adds.
     // It must not steal aggro from the healer (212+) while it is alive.

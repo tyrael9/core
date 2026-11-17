@@ -29,7 +29,7 @@ These tests validate lifecycle-host behavior, not new combat AI behavior.
 - [x] Trace MapManager -> Map -> Player::Update -> PlayerAI::UpdateAI update path.
 - [x] Audit same-map versus cross-map update ownership and Group roster read safety.
 - [x] Audit initial group, target, attacker, threat, cast and movement APIs.
-- [~] Continue action-specific audit for target validity, threat values, spell execution results, range/LOS and movement side effects; F6/F7 now validate Core range, resource, LOS and immobility rejection. Stage F8 established the real five-Player Core Group and production snapshot-builder boundary. Stage F9 passed the combined multi-add healer-threat and threat-snapshot scenario on the same Group lifecycle. Stage F10 adds Tank/Healer death cleanup and recovery across both adds.
+- [~] Continue action-specific audit for target validity, threat values, spell execution results, range/LOS and movement side effects; F6/F7 validate Core range, resource, LOS and immobility rejection. F8-F10 establish the real five-Player Group, multi-add healer threat, death-reference cleanup and post-death recovery. Stage F11 captures Core-derived melee reachability per threat reference, required to distinguish the 110% melee and 130% ranged victim-switch rules.
 
 ## Phase 2 — independent engine foundation
 
@@ -146,7 +146,8 @@ All classes and roles are composed within one PartyBotEngine queue; this is not 
 
 - [ ] Main Tank and assistant assignments.
 - [ ] Shared target selection and add pickup.
-- [~] Stage F10 exercises Core Tank and Healer death cleanup with two adds: lethal DealDamage must remove each dead Player from both hostile ThreatManagers; native Unit::SelectHostileTarget must keep the healer after Tank death, then switch both adds to the remaining DPS after Healer death; production PartySnapshotBuilder must reflect both dead roster members and new victims. Runtime validation is pending.
+- [x] Stage F10 validates Core Tank and Healer death cleanup with two adds. Runtime CI `#44185236970` on `1a463d8` passed: lethal Core DealDamage removed both dead Players from both hostile ThreatManagers; native `SelectHostileTarget` kept both adds on Healer after Tank death, then selected surviving DPS after Healer death; production snapshots reflected both dead roster states, current victims and remaining threat entries; Group/session cleanup and Runtime PASS succeeded.
+- [~] Stage F11 extends copied threat entries with Core-derived `meleeReachable` (`hostileUnit->CanReachWithMeleeAutoAttack(threatTarget)`) to distinguish Core's 110% melee and 130% ranged aggro-switch thresholds. Snapshot parity runtime validation is pending.
 - [ ] Threat budgets, aggro prevention and broader recovery.
 - [ ] Healing triage with incoming heals, HoTs, shields, effective healing and reservations.
 - [ ] CC assignment, protection and break recovery.

@@ -87,6 +87,9 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
             threat.threat = reference->getThreat();
             threat.online = reference->isOnline();
             threat.accessible = reference->isAccessable();
+            Unit* threatTarget = reference->getTarget();
+            threat.meleeReachable = threatTarget &&
+                hostileUnit->CanReachWithMeleeAutoAttack(threatTarget);
             hostile.threat.push_back(threat);
         }
     };

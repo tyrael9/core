@@ -219,7 +219,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank an
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat snapshots matched Core and all Group/session cleanup succeeded." "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat values and per-reference melee reachability matched Core, and all Group/session cleanup succeeded." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The combined five-Player Group and multi-add/healer-threat PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi

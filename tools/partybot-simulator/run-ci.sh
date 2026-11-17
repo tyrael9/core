@@ -123,7 +123,7 @@ replacements = {
 }
 
 for key, value in replacements.items():
-    pattern = re.compile(r"^\\s*" + re.escape(key) + r"\\s*=.*$", re.MULTILINE)
+    pattern = re.compile(r"^\s*" + re.escape(key) + r"\s*=.*$", re.MULTILINE)
     config, count = pattern.subn(f"{key} = {value}", config)
     if count != 1:
         raise SystemExit(f"Expected exactly one config entry for {key}, found {count}")

@@ -6,12 +6,13 @@
 #include <vector>
 namespace PartyBotEngine {
 using Guid = std::uint64_t;
-enum class PartyRole : std::uint8_t { Unknown, MainTank, Healer, RangedDamage, MeleeDamage, Support };
+enum class PartyRole : std::uint8_t { Unknown, Tank, MainTank, Healer, RangedDamage, MeleeDamage, Support };
 enum class ActionChannel : std::uint8_t { GlobalCooldown, Movement, Targeting, Utility };
 enum class ActionResult : std::uint8_t { NotAttempted, Success, Impossible, Useless, Failed, Skipped };
 enum class CandidateStatus : std::uint8_t { RejectedMissingAction, RejectedImpossible, RejectedUseless, RejectedMultiplier, RejectedInvalidPriority, NotSelected, Selected, Executed, ExecutionFailed };
 enum class ReservationType : std::uint8_t { Heal, CrowdControl, Interrupt, Target, Dispel, Resurrection };
 struct ActionCandidate {
+    std::string strategyName;
     std::string actionName;
     Guid targetGuid = 0;
     std::uint32_t spellId = 0;

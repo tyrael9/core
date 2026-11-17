@@ -31,7 +31,10 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
             for (auto const& candidate : candidates) {
                 CandidateEvaluation evaluation;
                 evaluation.candidate = candidate;
-                std::shared_ptr<Action> action = FindAction(candidate.actionName);
+                if (evaluation.candidate.strategyName.empty())
+                    evaluation.candidate.strategyName = strategy->GetName();
+                ActionCandidate const& evaluatedCandidate = evaluation.candidate;
+                std::shared_ptr<Action> action = FindAction(evaluatedCandidate.actionName);
                 if (!action) {
                     evaluation.status = CandidateStatus::RejectedMissingAction;
                     evaluation.reason = "action_not_registered";
@@ -44,14 +47,14 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
                     report.candidates.push_back(std::move(evaluation));
                     continue;
                 }
-                if (!action->IsPossible(context, candidate, evaluation.reason)) {
+                if (!action->IsPossible(context, evaluatedCandidate, evaluation.reason)) {
                     evaluation.status = CandidateStatus::RejectedImpossible;
                     if (evaluation.reason.empty()) evaluation.reason = "action_not_possible";
                     report.candidates.push_back(std::move(evaluation));
                     continue;
                 }
                 evaluation.reason.clear();
-                if (!action->IsUseful(context, candidate, evaluation.reason)) {
+                if (!action->IsUseful(context, evaluatedCandidate, evaluation.reason)) {
                     evaluation.status = CandidateStatus::RejectedUseless;
                     if (evaluation.reason.empty()) evaluation.reason = "action_not_useful";
                     report.candidates.push_back(std::move(evaluation));
@@ -61,7 +64,7 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
                 bool vetoed = false;
                 for (auto const& multiplier : m_multipliers) {
                     if (!multiplier) continue;
-                    float const factor = multiplier->GetValue(context, candidate);
+                    float const factor = multiplier->GetValue(context, evaluatedCandidate);
                     if (!std::isfinite(factor) || factor <= 0.0f) {
                         evaluation.status = CandidateStatus::RejectedMultiplier;
                         evaluation.reason = multiplier->GetName();

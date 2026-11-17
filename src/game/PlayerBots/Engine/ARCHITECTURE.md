@@ -175,3 +175,19 @@ The standalone C++14 tests now cover decision arbitration and rejection states, 
 The dedicated Linux ARM64 / Vanilla 5875 workflow validates these tests plus a full Core configure/build/link. It does not prove live snapshot correctness or in-game behavior.
 
 The first role vertical slice should start with healing triage: use the new same-map snapshot and shared reservation model to propose healer actions in Shadow mode, compare the proposals with Legacy behavior, and only later add an execution adapter behind a domain-specific Strategy gate. No Strategy-mode execution becomes active before separate in-game validation.
+
+
+## Role-aware Shadow strategy slice
+
+The live snapshot records each same-map PartyBot's actual `CombatBotBaseAI::GetRole()` as Tank, Healer, RangedDamage or MeleeDamage. A separate `isMainTank` flag comes from the Group main-tank GUID, so a human player can be recognized as Main Tank even when their combat role remains Unknown. Other non-PartyBot players remain Unknown rather than having their roles guessed.
+
+The hostile set contains the union of (a) units currently attacking a same-map party member and (b) units currently targeted by a same-map party member. Each hostile record retains its current victim and copied threat references. Party references are resolved only through the snapshot; current victim is preferred, with the highest online/accessibile threat entry used as a fallback when the victim is absent.
+
+Three candidate-only strategies are registered on each PartyBot's Shadow engine:
+- `healing_triage`: proposes same-map living members below 90% health, ranking lower health first with emergency and tank weighting.
+- `tank_target`: proposes living hostiles currently attacking a non-tank party member, prioritizing healers.
+- `dps_target`: proposes current party targets, favoring the Main Tank's target, and also considers hostiles attacking party members.
+
+These are coarse target/triage intents, not spell-level actions. They do not validate spell availability, line of sight, range, healing-over-time effects, incoming heals, threat thresholds, class-specific rotations or encounter mechanics. Candidate Actions return `Skipped` if ever executed; Shadow integration calls `Evaluate` only and continues to leave Legacy as the sole executor.
+
+For each rate-limited summary, up to three `[PartyBotShadowDecision]` lines report role, strategy, action, target GUID, priority, selected status and arbitration reason. This provides candidate detail for live comparison without changing gameplay.

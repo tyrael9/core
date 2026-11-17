@@ -9,7 +9,7 @@ struct PartyMemberSnapshot {
     std::uint32_t health = 0, maxHealth = 0, power = 0, maxPower = 0;
     Guid victimGuid = 0;
     float x = 0.0f, y = 0.0f, z = 0.0f;
-    bool online = false, alive = false, inCombat = false;
+    bool online = false, alive = false, inCombat = false, isMainTank = false;
 };
 struct ThreatEntrySnapshot {
     Guid unitGuid = 0;

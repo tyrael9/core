@@ -120,6 +120,7 @@ public:
     uint32 m_partyCoordinatorMapId = 0;
     uint32 m_partyCoordinatorInstanceId = 0;
     uint32 m_engineShadowTraceMs = 0;
+    bool m_engineShadowStrategiesRegistered = false;
 
     void UpdatePartyBotEngineShadow();
 };

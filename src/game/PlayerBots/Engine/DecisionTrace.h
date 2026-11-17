@@ -38,6 +38,12 @@ public:
                              uint32 snapshotEpoch, uint32 memberCount, uint32 hostileCount,
                              uint32 candidateCount, uint32 selectedCount) const;
 
+    // Record one candidate/selection detail; caller limits these to a few per summary.
+    void RecordShadowDecision(Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
+                              uint32 snapshotEpoch, char const* role, char const* strategy,
+                              char const* action, uint64 targetGuid, float priority,
+                              char const* status, char const* reason) const;
+
 private:
     mutable uint32 m_recordsThisTick;
     mutable bool m_enabled;

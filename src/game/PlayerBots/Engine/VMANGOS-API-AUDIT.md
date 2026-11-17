@@ -152,3 +152,12 @@ These are integration seams, not a reason to keep old class routines as the main
 - Document what happens when bots split across maps or group membership changes during combat.
 
 No code should depend on guessed TrinityCore/AzerothCore APIs. Real Strategy-mode execution waits until these remaining items are closed.
+
+
+## 10. Role and target snapshot adapter
+
+The role-aware snapshot adapter reads `Player::AI()` on the current Map and uses `dynamic_cast<CombatBotBaseAI*>` before reading `GetRole()`. The role enum mapping is explicit: `ROLE_TANK`, `ROLE_HEALER`, `ROLE_RANGE_DPS` and `ROLE_MELEE_DPS`; other PlayerAI types and `ROLE_INVALID` remain Unknown. The Group's `GetMainTankGuid()` is copied separately into `PartyMemberSnapshot::isMainTank`.
+
+Hostiles are copied from both each member's current `GetVictim()` and `GetAttackers()`. The builder rejects a Group member as a hostile, requires the Unit to belong to the current Map, and stores only GUID/scalar data. Threat-list GUIDs are resolved to snapshot members in the pure engine; current victim is preferred and threat is a fallback only when the victim does not resolve to an available group member.
+
+This slice intentionally does not expose live Unit pointers to strategies, infer roles for human players, inspect pet attackers as a distinct entity, or treat the hostile set as a complete nearby-enemy scan. It also does not prove role assignments or target quality in-game; those require Shadow decision logs and operator comparison.

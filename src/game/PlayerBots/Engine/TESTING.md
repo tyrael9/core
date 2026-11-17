@@ -126,7 +126,7 @@ Shadow mode is opt-in and must be enabled only on a test realm:
 3. Restart only the game server through the deployment helper after publishing and deploying the intended test image.
 4. Form a normal party and keep PartyBots on the same map/instance.
 5. Inspect `[PartyBotShadow]` records. Group/map/instance IDs should match the game session, member count should include the bot and same-map group members, and snapshot epoch should advance when the cache refreshes.
-6. Candidate and selected counts are expected to be zero until a runtime Strategy and its Actions are registered.
+6. Confirm detailed `[PartyBotShadowDecision]` records contain the expected role, strategy, target GUID, priority and selection status. Healers should propose injured members; tanks should propose hostiles attacking non-tanks; DPS should favor the Main Tank's target.
 7. Verify Legacy behavior is unchanged. Shadow mode must never call `ExecuteSelected`.
 
 Battleground groups (group ID zero), missing group state and unavailable snapshots are skipped. Cross-map party members are intentionally not resolved into the current map snapshot.
@@ -216,3 +216,13 @@ matrix spending while still validating the deployment-relevant target.
 
 A successful focused run is compile/test evidence only; it is not an in-game
 test and does not authorize deployment.
+
+
+## Role-aware Shadow strategy tests
+
+The standalone harness additionally validates:
+- the healer triage candidate prefers a critically injured party member over a healthier tank;
+- a tank proposes a hostile attacking a healer and does not pull a hostile already attacking the designated Main Tank;
+- a DPS bot prefers the Main Tank's current target over a hostile attacking the healer.
+
+These tests exercise pure snapshot-to-candidate logic. They do not test the Core role adapter, hostile collection against live maps, or whether suggestions are tactically correct in an encounter. For live comparison, inspect bounded `[PartyBotShadowDecision]` records alongside Legacy behavior.

@@ -1,4 +1,5 @@
 #include "PartyBotEngine.h"
+#include "ShadowStrategies.h"
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -185,12 +186,97 @@ void TestCoordinatorRegistryIdentityAndBattlegroundBypass() {
 
     PartyCoordinatorRegistry::PruneExpired();
 }
+
+void ConfigureMember(PartyMemberSnapshot& member, Guid guid, PartyRole role,
+                     std::uint32_t health, std::uint32_t maxHealth, bool mainTank = false) {
+    member.guid = guid;
+    member.roleId = static_cast<std::uint8_t>(role);
+    member.health = health;
+    member.maxHealth = maxHealth;
+    member.online = true;
+    member.alive = true;
+    member.isMainTank = mainTank;
+}
+void TestHealingTriageShadowStrategy() {
+    PartySnapshot snapshot; snapshot.epoch = 81;
+    PartyMemberSnapshot healer, tank, damage;
+    ConfigureMember(healer, 11, PartyRole::Healer, 100, 100);
+    ConfigureMember(tank, 22, PartyRole::Tank, 40, 100, true);
+    ConfigureMember(damage, 33, PartyRole::RangedDamage, 20, 100);
+    snapshot.members = {healer, tank, damage};
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, healer, coordinator, 1000);
+    PartyBotEngine::PartyBotEngine engine;
+    RegisterDefaultShadowStrategies(engine);
+
+    DecisionReport report = engine.Evaluate(context);
+    assert(report.candidates.size() == 2);
+    assert(report.selectedIndices.size() == 1);
+    CandidateEvaluation const& selected = report.candidates[report.selectedIndices.front()];
+    assert(selected.candidate.actionName == "shadow_heal_triage");
+    assert(selected.candidate.strategyName == "healing_triage");
+    assert(selected.candidate.targetGuid == damage.guid);
+    assert(selected.status == CandidateStatus::Selected);
+}
+void TestTankPeelTargetShadowStrategy() {
+    PartySnapshot snapshot; snapshot.epoch = 82;
+    PartyMemberSnapshot tankBot, mainTank, healer;
+    ConfigureMember(tankBot, 11, PartyRole::Tank, 100, 100);
+    ConfigureMember(mainTank, 22, PartyRole::Unknown, 100, 100, true);
+    ConfigureMember(healer, 33, PartyRole::Healer, 100, 100);
+    snapshot.members = {tankBot, mainTank, healer};
+    HostileSnapshot attackingHealer;
+    attackingHealer.guid = 3001; attackingHealer.victimGuid = healer.guid; attackingHealer.alive = true;
+    HostileSnapshot attackingMainTank;
+    attackingMainTank.guid = 3002; attackingMainTank.victimGuid = mainTank.guid; attackingMainTank.alive = true;
+    snapshot.hostiles = {attackingHealer, attackingMainTank};
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, tankBot, coordinator, 1000);
+    PartyBotEngine::PartyBotEngine engine;
+    RegisterDefaultShadowStrategies(engine);
+
+    DecisionReport report = engine.Evaluate(context);
+    assert(report.candidates.size() == 1);
+    assert(report.selectedIndices.size() == 1);
+    CandidateEvaluation const& selected = report.candidates[report.selectedIndices.front()];
+    assert(selected.candidate.strategyName == "tank_target");
+    assert(selected.candidate.targetGuid == attackingHealer.guid);
+}
+void TestDpsAssistTargetShadowStrategy() {
+    PartySnapshot snapshot; snapshot.epoch = 83;
+    PartyMemberSnapshot dpsBot, mainTank, healer;
+    ConfigureMember(dpsBot, 11, PartyRole::MeleeDamage, 100, 100);
+    ConfigureMember(mainTank, 22, PartyRole::Tank, 100, 100, true);
+    ConfigureMember(healer, 33, PartyRole::Healer, 100, 100);
+    mainTank.victimGuid = 4002;
+    snapshot.members = {dpsBot, mainTank, healer};
+    HostileSnapshot attackingHealer;
+    attackingHealer.guid = 4001; attackingHealer.victimGuid = healer.guid; attackingHealer.alive = true;
+    HostileSnapshot mainTankTarget;
+    mainTankTarget.guid = 4002; mainTankTarget.alive = true;
+    snapshot.hostiles = {attackingHealer, mainTankTarget};
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, dpsBot, coordinator, 1000);
+    PartyBotEngine::PartyBotEngine engine;
+    RegisterDefaultShadowStrategies(engine);
+
+    DecisionReport report = engine.Evaluate(context);
+    assert(report.candidates.size() == 2);
+    assert(report.selectedIndices.size() == 1);
+    CandidateEvaluation const& selected = report.candidates[report.selectedIndices.front()];
+    assert(selected.candidate.strategyName == "dps_target");
+    assert(selected.candidate.targetGuid == mainTankTarget.guid);
+}
+
 }
 int main() {
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();
     TestReservationOwnershipAndExpiry(); TestInvalidPriorityAndMultiplierVeto();
     TestSnapshotCacheFreshnessAndEpoch();
     TestCoordinatorRegistryIdentityAndBattlegroundBypass();
+    TestHealingTriageShadowStrategy();
+    TestTankPeelTargetShadowStrategy();
+    TestDpsAssistTargetShadowStrategy();
     std::cout << "PartyBotEngine tests passed\n";
     return 0;
 }

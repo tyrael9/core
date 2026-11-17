@@ -29,8 +29,10 @@
 #include "Chat.h"
 #include "Utilities/Random.h"
 #include "Engine/PartySnapshotBuilder.h"
+#include "Engine/ShadowStrategies.h"
 #include "Timer.h"
 
+#include <algorithm>
 #include <random>
 
 enum PartyBotSpells
@@ -1031,6 +1033,43 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 }
 
 
+
+namespace
+{
+char const* ShadowRoleName(std::uint8 roleId)
+{
+    using PartyBotEngine::PartyRole;
+    switch (static_cast<PartyRole>(roleId))
+    {
+        case PartyRole::Tank: return "tank";
+        case PartyRole::MainTank: return "main_tank";
+        case PartyRole::Healer: return "healer";
+        case PartyRole::RangedDamage: return "ranged_dps";
+        case PartyRole::MeleeDamage: return "melee_dps";
+        case PartyRole::Support: return "support";
+        default: return "unknown";
+    }
+}
+
+char const* ShadowCandidateStatusName(PartyBotEngine::CandidateStatus status)
+{
+    using PartyBotEngine::CandidateStatus;
+    switch (status)
+    {
+        case CandidateStatus::RejectedMissingAction: return "rejected_missing_action";
+        case CandidateStatus::RejectedImpossible: return "rejected_impossible";
+        case CandidateStatus::RejectedUseless: return "rejected_useless";
+        case CandidateStatus::RejectedMultiplier: return "rejected_multiplier";
+        case CandidateStatus::RejectedInvalidPriority: return "rejected_invalid_priority";
+        case CandidateStatus::NotSelected: return "not_selected";
+        case CandidateStatus::Selected: return "selected";
+        case CandidateStatus::Executed: return "executed";
+        case CandidateStatus::ExecutionFailed: return "execution_failed";
+        default: return "unknown";
+    }
+}
+} // namespace
+
 void PartyBotAI::UpdatePartyBotEngineShadow()
 {
     if (!me || !me->IsInWorld())
@@ -1051,6 +1090,12 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         m_partyCoordinatorInstanceId = 0;
         m_engineShadowTraceMs = 0;
         return;
+    }
+
+    if (!m_engineShadowStrategiesRegistered)
+    {
+        PartyBotEngine::RegisterDefaultShadowStrategies(m_partyBotEngine);
+        m_engineShadowStrategiesRegistered = true;
     }
 
     // Share the same per-bot ten-second rate limit between successful summaries
@@ -1132,6 +1177,42 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     }
     else
         m_engineShadowTraceMs -= PB_UPDATE_INTERVAL;
+
+    std::vector<std::size_t> decisionOrder;
+    decisionOrder.reserve(report.candidates.size());
+    for (std::size_t i = 0; i < report.candidates.size(); ++i)
+        decisionOrder.push_back(i);
+    std::stable_sort(decisionOrder.begin(), decisionOrder.end(),
+        [&report](std::size_t left, std::size_t right)
+        {
+            CandidateEvaluation const& a = report.candidates[left];
+            CandidateEvaluation const& b = report.candidates[right];
+            bool const aSelected = a.status == CandidateStatus::Selected;
+            bool const bSelected = b.status == CandidateStatus::Selected;
+            if (aSelected != bSelected)
+                return aSelected;
+            return a.candidate.finalPriority > b.candidate.finalPriority;
+        });
+
+    // Log selected candidates first, followed by strongest alternatives.
+    // Evaluation remains read-only; this path never executes actions.
+    std::size_t loggedDecisions = 0;
+    for (std::size_t index : decisionOrder)
+    {
+        if (loggedDecisions >= 3)
+            break;
+        CandidateEvaluation const& evaluation = report.candidates[index];
+        ActionCandidate const& candidate = evaluation.candidate;
+        m_decisionTrace.RecordShadowDecision(
+            me, snapshot->groupId, snapshot->mapId, snapshot->instanceId, snapshot->epoch,
+            ShadowRoleName(botSnapshot->roleId),
+            candidate.strategyName.c_str(), candidate.actionName.c_str(),
+            candidate.targetGuid, candidate.finalPriority,
+            ShadowCandidateStatusName(evaluation.status),
+            evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
+        ++loggedDecisions;
+    }
+
 }
 
 void PartyBotAI::UpdateOutOfCombatAI()

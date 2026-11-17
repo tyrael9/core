@@ -49,9 +49,9 @@ Legacy PartyBot fixes are maintenance work and do not count as new-engine milest
 
 ## Phase 3 — first role vertical slice
 
-- [ ] Select healing-triage-first or tank-threat-first after remaining API audit.
-- [ ] Implement the chosen class/role strategy and shared reservations.
-- [ ] Implement the matching vMaNGOS action adapter.
+- [x] Add role-aware same-map party snapshots, Main Tank metadata, member targets and hostile threat references.
+- [x] Register candidate-only Shadow strategies for healer triage, tank peel targeting and DPS assist targeting.
+- [ ] Add spell-level heal/taunt/attack action adapters only after target and spell API audits.
 - [ ] Implement Strategy-mode execution for only that decision domain.
 - [ ] Prove Legacy does not issue competing GCD actions.
 - [ ] Validate in-game with a real five-player party composition.
@@ -87,8 +87,8 @@ Legacy PartyBot fixes are maintenance work and do not count as new-engine milest
 
 ## Current gate
 
-The live snapshot builder, bounded cache, weak coordinator registry and opt-in Shadow hook are now connected to PartyBotAI. Shadow mode is disabled by default, runs only from the bot's map update, and never invokes ExecuteSelected. No runtime strategies/actions are registered yet, so a successful snapshot normally reports candidates=0. This is an integration and observability milestone, not new AI behavior.
+The live snapshot builder, bounded cache, weak coordinator registry and opt-in Shadow hook are connected to PartyBotAI. Shadow mode is disabled by default, runs only from the bot's map update, and never invokes ExecuteSelected. Candidate-only healer triage, tank-peel and DPS-assist strategies now evaluate copied data and emit bounded decision details. These are coarse target/triage proposals, not spell-level decisions or new AI behavior.
 
-The next development gate is the first role vertical slice. Healing triage is the recommended starting point because it exercises same-map party state, class/role awareness and shared reservations while addressing a previously observed healer reliability gap. Candidate generation and spell/target validation will first be compared in Shadow mode while Legacy remains the only executor.
+The next development gate is validating candidate quality in real five-player play. Compare healer triage targets, tank peel targets and DPS assist targets with actual encounter context. Then refine snapshots and priorities (incoming heals, HoTs, pets, threat ratios, CC protection) before adding spell-level actions. Legacy remains the only executor until each domain passes separate validation.
 
 Owner disconnect/reconnect, same-instance persistence, intentional leave and grace-period expiry have all been exercised on the Oracle test realm using the pinned PartyBot test image. These results validate the Legacy lifecycle path only; they do not validate the new engine's combat behavior.

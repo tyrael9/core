@@ -1447,7 +1447,7 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
     leaderMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
     leaderMember.mapId = map.GetId();
     leaderMember.instanceId = map.GetInstanceId();
-    leaderMember.health = patientHealthBefore;
+    leaderMember.health = leader.creature->GetHealth();
     leaderMember.maxHealth = leader.creature->GetMaxHealth();
     leaderMember.online = true;
     leaderMember.alive = leader.creature->IsAlive();

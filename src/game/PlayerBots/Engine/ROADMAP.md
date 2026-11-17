@@ -68,7 +68,7 @@ The current role-aware Shadow slice is a proof of the data-to-candidate path onl
 - Final runtime verification: CI `#44145923142`, commit `cb5be3d`, passed with `castCancelled=1`, patient health unchanged (`50000>50000`), movement completion and cleanup.
 
 - [x] Validate the initial native Core follow behavior: PartyBotEngine selects `MoveFollow`, and the Core `FollowMovementGenerator` tracks the Main Tank after it relocates. Runtime CI `#44153619126` reports `initialCaughtUp=1`, `leaderReached=1`, `followerTracked=1`, final separation `1.87`, active follow generator and cleanup.
-- [~] Validate Player follow safety while casting: a new simulator fixture uses the Core Player FollowMovementGenerator, an Engine-selected non-triggered Lesser Heal and a moving Main Tank; it requires Core-owned movement pause during the pending cast and follow resumption after the cast. Runtime CI is pending.
+- [~] Validate Player follow safety while casting: the simulator fixture uses the Core Player FollowMovementGenerator, an Engine-selected non-triggered Lesser Heal and a moving Main Tank; it checks Core `IsNoMovementSpellCasted()` during the pending cast and follow resumption afterward. First runtime attempt `#44157542291` did not reach the cast phase because the fixture's arrival observation was unreliable and target regeneration removed the heal candidate; the fixture now uses stable position samples and resets the injury before triage. Runtime verification is pending.
 - [~] Extend follow/formation coverage to retargeting/recovery edge cases, defensive actions and full range/LOS/resource validation.
 - [ ] Add scripted aggro, healer-threat, tank-death, healer-death and multi-add scenarios.
 - [ ] Evaluate full dungeon/instance scripts as a later tier.

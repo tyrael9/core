@@ -40,19 +40,19 @@ Therefore, do not instantiate `Map` directly (its constructor is protected), or 
 
 ## Recommended execution architecture
 
-### Stage A — isolated Core test mode
+### Stage A — isolated Core bootstrap smoke test
 
-Preferred first implementation: add a test-only command-line mode to existing `mangosd`, entered only after the required Core data/services have initialized. It should:
+Implemented as a configuration-gated one-shot mode in the existing `mangosd` executable. It is intentionally smaller than the eventual simulator:
 
-1. load the same DBC, creature templates and spell data as normal startup;
-2. use an explicitly separate test configuration and DB connection (or prove the scenario needs no DB access after startup);
-3. create a fresh map through `sMapMgr.CreateTestMap`;
-4. construct temporary actors from real `CreatureInfo` templates and add them with test-controlled AI;
-5. advance the map using bounded explicit tick steps;
-6. collect assertions and structured trace;
-7. remove every actor, call `DeleteTestMap`, shut down cleanly and exit with a test result code.
+1. run the normal Core initialization path using a dedicated disposable configuration/database;
+2. create a fresh dungeon/raid test map through `sMapMgr.CreateTestMap`;
+3. assert that the map is registered, advance one empty `Map::Update(50)` tick, and assert it remains registered;
+4. delete it through `sMapMgr.DeleteTestMap` and assert the registry entry is gone;
+5. set the process exit code from the assertions and reuse the normal WorldRunnable shutdown path.
 
-This reuses real Core initialization and avoids maintaining a second incomplete bootstrap.
+The mode skips world/RA/SOAP listeners, realm-online/offline updates, daemon/PID-file behavior, account cleanup and mass-mail processing. Before connecting to any DB it verifies that all four configured schema names begin with `PartyBot.Simulator.DatabaseNamePrefix` (default `partybot_sim_`). This guard prevents accidental use of the ordinary realm schema names; the schemas must still be disposable copies.
+
+This smoke test proves only that the real Core can create, tick and delete an empty instance map in headless mode. It does not create actors or prove combat.
 
 **Startup hook found:** `Master::Run()` calls `sWorld.SetInitialWorldSettings()` before it launches `WorldRunnable` and before `sWorldSocketMgr.StartWorldNetworking()`. This is the first practical hook: required world data/managers have been initialized, and the world listener has not yet been opened. A test-mode branch can therefore skip the listener and normal world loop while reusing the real startup path.
 
@@ -135,7 +135,7 @@ Initial scenarios:
 
 ## Current status and next gate
 
-**Status: Stage A smoke-test code committed; not yet runtime-tested.** The entry point is opt-in through `PartyBot.Simulator.Enable`. It requires all four DB schema names to begin with `PartyBot.Simulator.DatabaseNamePrefix` (default `partybot_sim_`) and runs after Core initialization, before the world loop/listeners. It creates a real dungeon/raid test map with `CreateTestMap`, verifies the instance is registered, advances one real `Map::Update(50)` tick with no actors, verifies the map remains registered, deletes it with `DeleteTestMap`, and verifies the registry entry is gone. It then exits through the normal WorldRunnable shutdown path. Default map ID is 33. No Creature actors or combat/threat simulation are implemented in Stage A; its only tick is one empty `Map::Update(50)` call.
+**Status: Stage A smoke-test code committed and compile-tested in CI; not yet runtime-tested against a disposable DB/data installation.** The entry point is opt-in through `PartyBot.Simulator.Enable`. It requires all four DB schema names to begin with `PartyBot.Simulator.DatabaseNamePrefix` (default `partybot_sim_`) and runs after Core initialization, before the world loop/listeners. It creates a real dungeon/raid test map with `CreateTestMap`, verifies the instance is registered, advances one real `Map::Update(50)` tick with no actors, verifies the map remains registered, deletes it with `DeleteTestMap`, and verifies the registry entry is gone. It then exits through the normal WorldRunnable shutdown path. Default map ID is 33. No Creature actors or combat/threat simulation are implemented in Stage A; its only tick is one empty `Map::Update(50)` call.
 
 Confirmed: the pinned Core has a purpose-built test-map creation/deletion API, public map add/update APIs, native Creature creation, real Unit damage/attack methods and a real ThreatManager API.
 

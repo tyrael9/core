@@ -818,6 +818,8 @@ bool RunEngineCoreMovementSmokeTest(Map& map)
         report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
         report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Success &&
         moveAction->DidStartMovement();
+    MovementGeneratorType const movementTypeAfterExecute =
+        mover.creature->GetMotionMaster()->GetCurrentMovementGeneratorType();
 
     float const destinationX = report.selectedIndices.empty() ? moverMember.x :
         report.candidates[report.selectedIndices[0]].candidate.destinationX;
@@ -837,8 +839,6 @@ bool RunEngineCoreMovementSmokeTest(Map& map)
     }
 
     float const distanceAfter = mover.creature->GetDistance(leader.creature);
-    MovementGeneratorType const movementTypeAfterExecute =
-        mover.creature->GetMotionMaster()->GetCurrentMovementGeneratorType();
     float const destinationDx = mover.creature->GetPositionX() - destinationX;
     float const destinationDy = mover.creature->GetPositionY() - destinationY;
     float const destinationDz = mover.creature->GetPositionZ() - destinationZ;

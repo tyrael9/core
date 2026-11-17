@@ -16,6 +16,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "Spell.h"
 #include "SpellMgr.h"
 
 #include <algorithm>

@@ -133,6 +133,30 @@ Initial scenarios:
 - It must not claim deterministic replay until RNG, tick progression, map threading and external data dependencies are controlled.
 - It does not replace pure C++14 decision tests; both layers are required.
 
+
+### Stage B source audit — actor lifecycle and combat semantics
+
+The pinned source audit now confirms the following exact lifecycle:
+
+- Construct a temporary actor with `Creature::Create(guidLow, CreatureCreatePos(map, x, y, z, o), creatureInfo, firstCreatureId)`. The template must come from the loaded `sObjectMgr.GetCreatureTemplate(entry)`; reject a missing template and do not fabricate a `CreatureInfo`.
+- Install a simulator-owned `CreatureAI` with `Creature::SetAI` **before** calling `Map::Add(creature)`. `Creature::AddToWorld` invokes `AIM_Initialize()` when no AI is installed, which would otherwise select normal script/factory AI. The creature destructor owns and deletes the installed AI.
+- `Map::Add(Creature*)` sets the map, creates/loads the grid as required, inserts the creature into the grid, calls `AddToWorld`, adds active objects, registers the viewpoint and visibility, and invokes `CastSpawnSpell()`. Test templates must therefore be checked for spawn spells and other template-driven side effects; a custom AI alone does not suppress those.
+- `Creature::AddToWorld` registers a normal unit GUID with the map before `Unit::AddToWorld`, then initializes AI only if none was supplied. Avoid database-spawn GUIDs and creature-group/linking behavior for simulator actors.
+
+**Cleanup is safety-critical.** Do not call `Map::Remove(creature, true)` for a temporary simulator actor: the normal remove path calls `CleanupsBeforeDelete`, may call `SaveRespawnTime()`, and deletes the object. The test-specific sequence should be: stop the actor's combat/AI activity, call `Map::Remove(creature, false)` while it is still on the map, then delete the detached object explicitly. The `false` path calls `RemoveFromWorld`, unlinks it from the grid and resets its map without saving respawn time or deleting it. `Creature::~Creature` calls `Unit::CleanupsBeforeDelete` before destroying its AI, so references and combat state are cleaned during explicit destruction. Only after every actor is detached and destroyed may the harness call `MapManager::DeleteTestMap`; the map destructor unloads its remaining grids.
+
+Combat API semantics confirmed:
+
+- `Unit::Attack(victim, meleeAttack)` requires both units alive and the victim in-world; it establishes attack state and attacker references. It is not itself a damage event and does not by itself establish a victim threat entry.
+- `Unit::DealDamage(..., DIRECT_DAMAGE, ...)` is the real health/death path. The normal hostile-damage path adds threat to the victim through `victim->AddThreat(attacker, threat, ...)`.
+- `Unit::AddThreat` only forwards to `ThreatManager` when the receiving unit can own a threat list and both units are on the same map.
+- `ThreatManager::getHostileTarget()` updates/sorts the real threat container and calls `ThreatContainer::selectNextVictim`. The pinned selector includes the normal 110% melee / 130% ranged switching thresholds and target-validity checks. A test that calls this method directly proves Core threat selection, but does not prove that a Creature AI automatically invokes it during a map tick.
+- `CreatureAI::UpdateAI(diff)` is the intended test-AI update seam. The simulator must verify from the complete Creature/Map update path that this callback is reached on the selected map tick, rather than assuming that `Map::Update(50)` alone advances every creature.
+
+The first Stage B proof should be deliberately split into independently reported assertions: (1) template-backed actors can be created, inserted and found on the map; (2) real `DealDamage` changes health and creates the expected threat reference; (3) the real threat selector chooses and switches victims at the Core thresholds; (4) custom AI receives bounded updates; and (5) all actors are removed without respawn persistence before the test map is deleted. A passing direct-damage/threat proof must not be described as a full autonomous combat simulation.
+
+The current implementation does not yet include this Stage B code. This section records verified source behavior and the required safety contract; it is not a runtime result.
+
 ## Current status and next gate
 
 **Status: Stage A smoke-test code committed and compile-tested in CI; not yet runtime-tested against a disposable DB/data installation.** The entry point is opt-in through `PartyBot.Simulator.Enable`. It requires all four DB schema names to begin with `PartyBot.Simulator.DatabaseNamePrefix` (default `partybot_sim_`) and runs after Core initialization, before the world loop/listeners. It creates a real dungeon/raid test map with `CreateTestMap`, verifies the instance is registered, advances one real `Map::Update(50)` tick with no actors, verifies the map remains registered, deletes it with `DeleteTestMap`, and verifies the registry entry is gone. It then exits through the normal WorldRunnable shutdown path. Default map ID is 33. No Creature actors or combat/threat simulation are implemented in Stage A; its only tick is one empty `Map::Update(50)` call.
@@ -141,4 +165,4 @@ Confirmed: the pinned Core has a purpose-built test-map creation/deletion API, p
 
 Not yet confirmed: runtime behavior of the Stage A path with a disposable full DB copy, clean insertion/removal of temporary Creature actors, whether repeated map ticks can be driven deterministically without world-loop side effects, complete RNG control and absence of writes outside the prefixed test schemas.
 
-**Next gate:** run Stage A once with a disposable DB copy and normal 5875 data; confirm the prefix guard, no-listener behavior and clean exit. Then implement real temporary Creature creation and Stage B damage/threat assertions. Do not begin five-player or dungeon simulation until real damage, threat, target-reselection and cleanup assertions pass in CI.
+**Next gate:** finish the update-path and GUID-allocation audit, then implement the first bounded Stage B actor/damage/threat proof. The proof must explicitly report which assertions execute direct Core methods and which are driven by map ticks. Stage A still needs a one-time runtime smoke test against disposable DB copies and normal 5875 data; neither Stage A nor Stage B has been runtime-tested yet. Do not begin five-player or dungeon simulation until real damage, threat, target-reselection and cleanup assertions pass in CI.

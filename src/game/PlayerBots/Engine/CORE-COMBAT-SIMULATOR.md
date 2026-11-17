@@ -304,3 +304,12 @@ The runtime assertion requires the cast to be cleared by the pinned Core \`Spell
 
 
 Stage F2 timing note: the fixture performs one ordinary Player/map update before the cast begins. This primes \`Map::UpdatePlayers\`' wall-clock cadence so the first post-movement update cannot carry a stale multi-second diff and complete the heal before a subsequent tick observes movement. The test still relies on the real \`Spell::update\` position comparison and never advances cast state directly.
+
+
+### Stage F2 runtime finding — 2026-11-17
+
+The first configured-fixture run on commit `eceb4696591b29254a115c1b4bce5b17a5589971` built the full ARM64 Core successfully and passed Stages A–F, but failed the movement-interruption assertion. The runtime log confirmed Lesser Heal (2050) has a 1500 ms cast time and `SPELL_INTERRUPT_FLAG_MOVEMENT`; movement completed, but the heal also completed. This is a real runtime failure, not a CI/build issue.
+
+Inspection found that the Core movement adapter explicitly cancelled a movement-interruptible spell in the generic slot only while it was `SPELL_STATE_PREPARING`. It already handled the `SPELL_STATE_CASTING` state for the channeled slot. The adapter now checks both `SPELL_STATE_PREPARING` and `SPELL_STATE_CASTING` for a non-triggered, non-autorepeat generic spell carrying the movement interrupt flag.
+
+The next simulator run must prove cancellation immediately after the Engine-selected movement action, preserve the patient's pre-cast health, complete movement, and clean up the Player/session and target. Until that run passes, Stage F2 remains partial and no continuous-follow, defensive-action or dungeon milestone is claimed.

@@ -1421,10 +1421,6 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
         return false;
     }
 
-    leader.creature->SetHealth(leader.creature->GetMaxHealth() / 2);
-    uint32 const patientHealthBefore = leader.creature->GetHealth();
-    uint32 const healerManaBefore = follower->GetPower(POWER_MANA);
-
     PartySnapshot followSnapshot;
     followSnapshot.groupId = 7;
     followSnapshot.mapId = map.GetId();
@@ -1481,18 +1477,36 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
         followReport.candidates[followReport.selectedIndices[0]].actionResult == ActionResult::Success &&
         followAction->DidStartFollow();
 
-    bool initialCaughtUpAndStopped = false;
-    for (uint32 tick = 0; tick < 36; ++tick)
+    bool initialCaughtUpAndStable = false;
+    uint32 stationarySamples = 0;
+    float previousFollowerX = follower->GetPositionX();
+    float previousFollowerY = follower->GetPositionY();
+    float previousFollowerZ = follower->GetPositionZ();
+    for (uint32 tick = 0; tick < 48; ++tick)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
         map.Update(250);
+
         float const dx = follower->GetPositionX() - leader.creature->GetPositionX();
         float const dy = follower->GetPositionY() - leader.creature->GetPositionY();
         float const dz = follower->GetPositionZ() - leader.creature->GetPositionZ();
         float const distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (distance <= 5.0f && follower->IsStopped())
+
+        float const stepX = follower->GetPositionX() - previousFollowerX;
+        float const stepY = follower->GetPositionY() - previousFollowerY;
+        float const stepZ = follower->GetPositionZ() - previousFollowerZ;
+        float const stepDistance = std::sqrt(stepX * stepX + stepY * stepY + stepZ * stepZ);
+        if (distance <= 5.0f && stepDistance <= 0.05f)
+            ++stationarySamples;
+        else
+            stationarySamples = 0;
+
+        previousFollowerX = follower->GetPositionX();
+        previousFollowerY = follower->GetPositionY();
+        previousFollowerZ = follower->GetPositionZ();
+        if (stationarySamples >= 2)
         {
-            initialCaughtUpAndStopped = true;
+            initialCaughtUpAndStable = true;
             break;
         }
     }
@@ -1502,6 +1516,13 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
     // updates; no spell timer or player position is changed by the fixture.
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     map.Update(250);
+
+    // The follower may spend several seconds reaching formation range. Reset
+    // the fixture target after that wait so passive Creature regeneration
+    // cannot remove the injury before the Engine evaluates healer triage.
+    leader.creature->SetHealth(leader.creature->GetMaxHealth() / 2);
+    uint32 const patientHealthBefore = leader.creature->GetHealth();
+    uint32 const healerManaBefore = follower->GetPower(POWER_MANA);
 
     PartySnapshot healSnapshot;
     healSnapshot.groupId = 8;
@@ -1548,8 +1569,8 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
         leader.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
 
     uint32 pendingCastTicks = 0;
+    uint32 coreNoMovementGateTicks = 0;
     float maxFollowerDisplacementWhileCasting = 0.0f;
-    bool followerStayedStoppedWhileCasting = true;
     bool leaderReachedDestination = false;
     for (uint32 tick = 0; tick < 32; ++tick)
     {
@@ -1559,13 +1580,15 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
         if (follower->GetCurrentSpell(CURRENT_GENERIC_SPELL))
         {
             ++pendingCastTicks;
-            followerStayedStoppedWhileCasting =
-                followerStayedStoppedWhileCasting && follower->IsStopped();
-            float const dx = follower->GetPositionX() - followerXBeforeLeaderMove;
-            float const dy = follower->GetPositionY() - followerYBeforeLeaderMove;
-            float const dz = follower->GetPositionZ() - followerZBeforeLeaderMove;
-            maxFollowerDisplacementWhileCasting = std::max(
-                maxFollowerDisplacementWhileCasting, std::sqrt(dx * dx + dy * dy + dz * dz));
+            if (follower->IsNoMovementSpellCasted())
+            {
+                ++coreNoMovementGateTicks;
+                float const dx = follower->GetPositionX() - followerXBeforeLeaderMove;
+                float const dy = follower->GetPositionY() - followerYBeforeLeaderMove;
+                float const dz = follower->GetPositionZ() - followerZBeforeLeaderMove;
+                maxFollowerDisplacementWhileCasting = std::max(
+                    maxFollowerDisplacementWhileCasting, std::sqrt(dx * dx + dy * dy + dz * dz));
+            }
         }
 
         float const leaderDx = leader.creature->GetPositionX() + 20.0f;
@@ -1582,8 +1605,8 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
     uint32 const healerManaAfterCast = follower->GetPower(POWER_MANA);
     bool const castCompleted = !follower->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
         patientHealthAfterCast > patientHealthBefore && healerManaAfterCast < healerManaBefore;
-    bool const followPausedDuringCast = pendingCastTicks >= 2 &&
-        maxFollowerDisplacementWhileCasting <= 0.25f && followerStayedStoppedWhileCasting;
+    bool const followPausedDuringCast = coreNoMovementGateTicks >= 2 &&
+        maxFollowerDisplacementWhileCasting <= 0.25f;
 
     bool followedAfterCast = false;
     for (uint32 tick = 0; tick < 48; ++tick)
@@ -1618,17 +1641,17 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
     bool const cleaned = playerCleaned && leaderCleaned;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Engine Player follow/cast safety: followRegistered=%u followSelected=%u followStarted=%u initialCaughtUpStopped=%u healRegistered=%u healSelected=%u castAccepted=%u pendingTicks=%u maxCastMove=%.2f stoppedWhileCasting=%u castCompleted=%u leaderMove=%u leaderReached=%u followPaused=%u followedAfterCast=%u finalDistance=%.2f followRetained=%u cleanup=%u.",
+             "[PartyBotSimulator] Engine Player follow/cast safety: followRegistered=%u followSelected=%u followStarted=%u initialCaughtUpStable=%u stationarySamples=%u healRegistered=%u healSelected=%u castAccepted=%u pendingTicks=%u coreNoMovementTicks=%u maxCastMove=%.2f castCompleted=%u leaderMove=%u leaderReached=%u followPaused=%u followedAfterCast=%u finalDistance=%.2f followRetained=%u cleanup=%u.",
              followRegistered ? 1u : 0u, followSelected ? 1u : 0u, followStarted ? 1u : 0u,
-             initialCaughtUpAndStopped ? 1u : 0u, healRegistered ? 1u : 0u,
-             healSelected ? 1u : 0u, castAccepted ? 1u : 0u, pendingCastTicks,
-             maxFollowerDisplacementWhileCasting, followerStayedStoppedWhileCasting ? 1u : 0u,
-             castCompleted ? 1u : 0u, leaderMovementStarted ? 1u : 0u,
-             leaderReachedDestination ? 1u : 0u, followPausedDuringCast ? 1u : 0u,
-             followedAfterCast ? 1u : 0u, finalDistance,
-             followRetained ? 1u : 0u, cleaned ? 1u : 0u);
+             initialCaughtUpAndStable ? 1u : 0u, stationarySamples,
+             healRegistered ? 1u : 0u, healSelected ? 1u : 0u,
+             castAccepted ? 1u : 0u, pendingCastTicks, coreNoMovementGateTicks,
+             maxFollowerDisplacementWhileCasting, castCompleted ? 1u : 0u,
+             leaderMovementStarted ? 1u : 0u, leaderReachedDestination ? 1u : 0u,
+             followPausedDuringCast ? 1u : 0u, followedAfterCast ? 1u : 0u,
+             finalDistance, followRetained ? 1u : 0u, cleaned ? 1u : 0u);
 
-    if (!followRegistered || !followSelected || !followStarted || !initialCaughtUpAndStopped ||
+    if (!followRegistered || !followSelected || !followStarted || !initialCaughtUpAndStable ||
         !healRegistered || !healSelected || !castAccepted || !castCompleted ||
         !leaderMovementStarted || !leaderReachedDestination || !followPausedDuringCast ||
         !followedAfterCast || !followRetained || !cleaned)

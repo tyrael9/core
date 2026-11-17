@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # Optional GitHub Actions runtime harness for the Core-backed PartyBot simulator.
-# The only private fixture required by this first smoke test is the full Vanilla
-# 5875 DBC directory. World/character/login/log schemas are seeded from the
-# public vmangos-deploy database image and cloned into disposable prefixed DBs.
+# The private fixture is the complete extracted-data directory:
+# dbc/5875, maps, vmaps and mmaps. World/character/login/log schemas are seeded
+# from the public vmangos-deploy database image and cloned into disposable DBs.
 
 LOG_FILE="${GITHUB_WORKSPACE:-$PWD}/simulator.log"
 DB_CONTAINER="partybot-simulator-db"
@@ -39,7 +39,7 @@ command -v curl >/dev/null
 command -v python3 >/dev/null
 
 DBC_ARCHIVE="$PWD/partybot-simulator-dbc.tar.gz"
-echo "[PartyBotSimulator] Downloading the private 5875 DBC fixture." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Downloading the complete private 5875 extracted-data fixture." | tee -a "$LOG_FILE"
 curl --fail --silent --show-error --location "$PARTYBOT_SIMULATOR_DBC_URL" --output "$DBC_ARCHIVE"
 printf '%s  %s\n' "$(printf '%s' "$PARTYBOT_SIMULATOR_DBC_SHA256" | tr '[:upper:]' '[:lower:]')" "$DBC_ARCHIVE" | sha256sum --check
 
@@ -51,6 +51,13 @@ DBC_DIR="$DATA_DIR/dbc/5875"
 for required in Map.dbc FactionTemplate.dbc CreatureDisplayInfo.dbc; do
     if [[ ! -s "$DBC_DIR/$required" ]]; then
         echo "[PartyBotSimulator] Missing required DBC file: dbc/5875/$required" | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
+for required_dir in maps vmaps mmaps; do
+    if [[ ! -d "$DATA_DIR/$required_dir" ]] || ! find "$DATA_DIR/$required_dir" -type f -print -quit | grep -q .; then
+        echo "[PartyBotSimulator] Missing or empty extracted-data directory: $required_dir/" | tee -a "$LOG_FILE"
         exit 1
     fi
 done

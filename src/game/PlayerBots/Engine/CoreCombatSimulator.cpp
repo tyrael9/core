@@ -728,7 +728,9 @@ public:
         // action we must cancel a flagged preparing cast immediately, even in
         // that first tick, rather than let it complete while moving.
         Spell* const genericSpell = mover->GetCurrentSpell(CURRENT_GENERIC_SPELL);
-        if (genericSpell && genericSpell->getState() == SPELL_STATE_PREPARING &&
+        if (genericSpell &&
+            (genericSpell->getState() == SPELL_STATE_PREPARING ||
+             genericSpell->getState() == SPELL_STATE_CASTING) &&
             !genericSpell->IsTriggered() && !genericSpell->IsAutoRepeat() &&
             genericSpell->m_spellInfo &&
             genericSpell->m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT))

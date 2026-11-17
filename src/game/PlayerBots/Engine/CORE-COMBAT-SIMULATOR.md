@@ -105,8 +105,9 @@ This remains a simulator fixture, not a production-authenticated PlayerBot or fi
 
 ### Stage F — movement and defensive action adapters
 
-- Implement movement/formation and defensive actions against real Core movement generators and unit state.
-- Verify movement completion, movement cancellation of casts, target/range/LOS revalidation and cleanup.
+- [~] First Core point-movement primitive: PartyBotEngine derives a formation destination from the Main Tank snapshot, the adapter calls `MotionMaster::MovePoint`, and runtime CI verifies the real position reaches the destination.
+- [ ] Add continuous follow/formation tracking and defensive actions against real Core movement generators and unit state.
+- [ ] Verify movement completion, movement cancellation of casts, target/range/LOS revalidation and cleanup.
 
 ### Stage G — dungeon encounter simulation
 
@@ -283,3 +284,12 @@ This is the first Player-backed spell slice, not yet a production PlayerBot inte
 ### Stage E timing detail
 
 The first Player-backed run confirmed that \`Map::Update(t_diff)\` does not advance Player spell events merely because a synthetic diff is passed. \`Map::UpdatePlayers()\` and session movement/spell processing are throttled against the Core's monotonic \`WorldTimer\`. The fixture therefore waits between bounded map updates, allowing the normal Player update cadence and spell event processor to advance in real time. This is intentional: the simulator must not fake completion by directly advancing a cast timer or applying the heal itself.
+
+
+## Stage F — Engine-selected Core point movement
+
+The first movement slice adds a destination payload to \`ActionCandidate\` and a formation trigger that derives a 2.5-yard trailing position from the Main Tank's snapshot coordinates. The adapter re-resolves mover and leader GUIDs on the current map, checks life/faction/map/instance/control state and finite destination coordinates, then invokes \`MotionMaster::MovePoint(..., MOVE_NONE)\`.
+
+The fixture uses two active Core Creature actors on the isolated map. Runtime CI requires the Engine to select the leader as the target, the action report to be Executed/Success, the real movement generator to become \`POINT_MOTION_TYPE\`, the mover's actual distance to decrease and its final position to reach the derived destination before both actors are detached and destroyed.
+
+This proves one point-movement primitive and the Engine-to-Core movement boundary. It does not yet implement continuous \`MoveFollow\`, pathfinding/navmesh behavior, movement interruption of a cast, formation slot arbitration or defensive movement.

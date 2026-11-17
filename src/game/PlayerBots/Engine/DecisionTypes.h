@@ -19,6 +19,8 @@ struct ActionCandidate {
     float basePriority = 0.0f;
     float finalPriority = 0.0f;
     ActionChannel channel = ActionChannel::GlobalCooldown;
+    float destinationX = 0.0f, destinationY = 0.0f, destinationZ = 0.0f;
+    bool hasDestination = false;
 };
 struct CandidateEvaluation {
     ActionCandidate candidate;

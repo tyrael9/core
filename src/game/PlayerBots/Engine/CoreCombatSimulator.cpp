@@ -6,6 +6,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "MapManager.h"
+#include "Movement/MotionMaster.h"
 #include "PlayerBots/Engine/Action.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/PartyCoordinator.h"
@@ -19,6 +20,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <thread>
 #include <vector>
 
@@ -605,6 +607,265 @@ private:
     bool m_gcdAfterAccept = false;
 };
 
+
+
+class SimulatorFormationTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive &&
+            context.bot.roleId != static_cast<std::uint8_t>(PartyRole::Tank) &&
+            context.bot.roleId != static_cast<std::uint8_t>(PartyRole::MainTank);
+    }
+
+    void CollectCandidates(DecisionContext const& context,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        for (PartyMemberSnapshot const& leader : context.snapshot.members)
+        {
+            if (!leader.alive || !leader.isMainTank || leader.guid == context.bot.guid ||
+                leader.mapId != context.bot.mapId || leader.instanceId != context.bot.instanceId)
+                continue;
+
+            float const dx = context.bot.x - leader.x;
+            float const dy = context.bot.y - leader.y;
+            float const dz = context.bot.z - leader.z;
+            float const distanceSquared = dx * dx + dy * dy + dz * dz;
+            if (distanceSquared <= 36.0f)
+                continue;
+
+            float const distance = std::sqrt(distanceSquared);
+            if (distance <= 0.1f)
+                continue;
+
+            constexpr float FORMATION_DISTANCE = 2.5f;
+            ActionCandidate candidate;
+            candidate.actionName = "core_move_point";
+            candidate.targetGuid = leader.guid;
+            candidate.destinationX = leader.x + dx / distance * FORMATION_DISTANCE;
+            candidate.destinationY = leader.y + dy / distance * FORMATION_DISTANCE;
+            candidate.destinationZ = leader.z;
+            candidate.hasDestination = true;
+            candidate.basePriority = 70.0f;
+            candidate.channel = ActionChannel::Movement;
+            candidates.push_back(candidate);
+            break;
+        }
+    }
+private:
+    std::string m_name = "simulator_formation";
+};
+
+class SimulatorCoreMovePointAction final : public Action
+{
+public:
+    explicit SimulatorCoreMovePointAction(Map& map) : m_map(map) {}
+    std::string const& GetName() const override { return m_name; }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        Unit* mover = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* leader = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        PartyMemberSnapshot const* leaderSnapshot = context.snapshot.FindMember(candidate.targetGuid);
+        if (!candidate.hasDestination || !std::isfinite(candidate.destinationX) ||
+            !std::isfinite(candidate.destinationY) || !std::isfinite(candidate.destinationZ) ||
+            !mover || !leader || !leaderSnapshot || !leaderSnapshot->alive ||
+            !mover->IsInWorld() || !leader->IsInWorld() || !mover->IsAlive() ||
+            !leader->IsAlive() || !mover->IsFriendlyTo(leader) ||
+            mover->GetMapId() != leader->GetMapId() ||
+            mover->GetInstanceId() != leader->GetInstanceId() ||
+            mover->HasUnitState(UNIT_STATE_LOST_CONTROL))
+        {
+            reason = "core_move_point_destination_or_actor_invalid";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        Unit* mover = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        if (!mover)
+        {
+            reason = "core_move_point_mover_missing";
+            return false;
+        }
+        float const dx = mover->GetPositionX() - candidate.destinationX;
+        float const dy = mover->GetPositionY() - candidate.destinationY;
+        float const dz = mover->GetPositionZ() - candidate.destinationZ;
+        if (dx * dx + dy * dy + dz * dz <= 1.0f ||
+            mover->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        {
+            reason = "core_move_point_already_at_destination_or_moving";
+            return false;
+        }
+        return true;
+    }
+
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    {
+        Unit* mover = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* leader = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!mover || !leader || !candidate.hasDestination ||
+            !mover->IsAlive() || !leader->IsAlive() ||
+            !mover->IsFriendlyTo(leader) ||
+            mover->GetMapId() != leader->GetMapId() ||
+            mover->GetInstanceId() != leader->GetInstanceId() ||
+            mover->HasUnitState(UNIT_STATE_LOST_CONTROL))
+            return ActionResult::Impossible;
+
+        // MOVE_NONE uses the Core point movement generator without requiring
+        // a pathfinder/navmesh; the spline and position are still Core-owned.
+        mover->GetMotionMaster()->MovePoint(1, candidate.destinationX,
+                                             candidate.destinationY,
+                                             candidate.destinationZ, MOVE_NONE);
+        m_started = mover->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+        return m_started ? ActionResult::Success : ActionResult::Failed;
+    }
+
+    bool DidStartMovement() const { return m_started; }
+
+private:
+    Map& m_map;
+    std::string m_name = "core_move_point";
+    bool m_started = false;
+};
+
+bool RunEngineCoreMovementSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor leader;
+    SimulatorActor mover;
+    bool created = CreateSimulatorActor(map, *info, partyFaction, 0.0f, 6.0f, leader) &&
+                   CreateSimulatorActor(map, *info, partyFaction, 10.0f, 6.0f, mover);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, mover);
+        cleaned = DestroySimulatorActor(map, leader) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Movement fixture creation failed (cleanup=%u).", cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120 && (!leader.updateCount || !mover.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!leader.updateCount || !mover.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 4;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 4;
+    snapshot.capturedAtMs = 4000;
+
+    PartyMemberSnapshot moverMember;
+    moverMember.guid = mover.creature->GetObjectGuid().GetRawValue();
+    moverMember.roleId = static_cast<std::uint8_t>(PartyRole::MeleeDamage);
+    moverMember.mapId = map.GetId();
+    moverMember.instanceId = map.GetInstanceId();
+    moverMember.health = mover.creature->GetHealth();
+    moverMember.maxHealth = mover.creature->GetMaxHealth();
+    moverMember.online = true;
+    moverMember.alive = mover.creature->IsAlive();
+    moverMember.x = mover.creature->GetPositionX();
+    moverMember.y = mover.creature->GetPositionY();
+    moverMember.z = mover.creature->GetPositionZ();
+    snapshot.members.push_back(moverMember);
+
+    PartyMemberSnapshot leaderMember;
+    leaderMember.guid = leader.creature->GetObjectGuid().GetRawValue();
+    leaderMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    leaderMember.mapId = map.GetId();
+    leaderMember.instanceId = map.GetInstanceId();
+    leaderMember.health = leader.creature->GetHealth();
+    leaderMember.maxHealth = leader.creature->GetMaxHealth();
+    leaderMember.online = true;
+    leaderMember.alive = leader.creature->IsAlive();
+    leaderMember.isMainTank = true;
+    leaderMember.x = leader.creature->GetPositionX();
+    leaderMember.y = leader.creature->GetPositionY();
+    leaderMember.z = leader.creature->GetPositionZ();
+    snapshot.members.push_back(leaderMember);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 4000);
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCoreMovePointAction> moveAction(new SimulatorCoreMovePointAction(map));
+    bool const registered = engine.RegisterAction(moveAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_formation"));
+    strategy->AddTrigger(std::make_shared<SimulatorFormationTrigger>());
+    engine.AddStrategy(strategy);
+
+    float const distanceBefore = mover.creature->GetDistance(leader.creature);
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == leaderMember.guid &&
+        report.candidates[report.selectedIndices[0]].candidate.hasDestination &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(context, report);
+    bool const executed = !report.selectedIndices.empty() &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Success &&
+        moveAction->DidStartMovement();
+
+    float const destinationX = report.selectedIndices.empty() ? moverMember.x :
+        report.candidates[report.selectedIndices[0]].candidate.destinationX;
+    float const destinationY = report.selectedIndices.empty() ? moverMember.y :
+        report.candidates[report.selectedIndices[0]].candidate.destinationY;
+    float const destinationZ = report.selectedIndices.empty() ? moverMember.z :
+        report.candidates[report.selectedIndices[0]].candidate.destinationZ;
+    for (uint32 tick = 0; tick < 20; ++tick)
+    {
+        float const dx = mover.creature->GetPositionX() - destinationX;
+        float const dy = mover.creature->GetPositionY() - destinationY;
+        float const dz = mover.creature->GetPositionZ() - destinationZ;
+        if (dx * dx + dy * dy + dz * dz <= 1.0f)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    float const distanceAfter = mover.creature->GetDistance(leader.creature);
+    float const destinationDx = mover.creature->GetPositionX() - destinationX;
+    float const destinationDy = mover.creature->GetPositionY() - destinationY;
+    float const destinationDz = mover.creature->GetPositionZ() - destinationZ;
+    bool const moved = distanceAfter + 1.0f < distanceBefore &&
+        destinationDx * destinationDx + destinationDy * destinationDy +
+        destinationDz * destinationDz <= 1.0f;
+
+    bool cleaned = DestroySimulatorActor(map, mover);
+    cleaned = DestroySimulatorActor(map, leader) && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine movement: aiReady=%u registered=%u selected=%u executed=%u motion=%u distance=%.2f>%.2f reached=%u cleanup=%u.",
+             (leader.updateCount && mover.updateCount) ? 1u : 0u,
+             registered ? 1u : 0u, selected ? 1u : 0u, executed ? 1u : 0u,
+             static_cast<uint32>(mover.creature ? mover.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() : IDLE_MOTION_TYPE),
+             distanceBefore, distanceAfter, moved ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!registered || !selected || !executed || !moved || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine-to-Core movement smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine selected a formation destination and the Core PointMovementGenerator moved the actor to it.");
+    return true;
+}
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -1015,6 +1276,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                              RunEngineCoreExecutorSmokeTest(*map);
                              RunEngineCoreSpellHealSmokeTest(*map);
                              RunEngineCorePlayerSpellHealSmokeTest(*map);
+                             RunEngineCoreMovementSmokeTest(*map);
 
     sMapMgr.DeleteTestMap(map);
 

@@ -234,7 +234,7 @@ The archive listing should start with paths such as `maps/`, `mmaps/`, `vmaps/` 
 
 Upload the archive to Google Drive and set General access to “Anyone with the link” with Viewer permission. Put the share URL in `PARTYBOT_SIMULATOR_DATA_URL` and the checksum in `PARTYBOT_SIMULATOR_DATA_SHA256` under the repository's Actions secrets. The runner uses the pinned `gdown` downloader to handle Drive's large-file confirmation flow, then verifies SHA-256 before extraction. Each trusted push to this branch runs the simulator after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
 
-**Next gate:** extend point movement into continuous follow/formation tracking, then test movement-driven cast interruption and defensive actions. Expand the Player-backed spell path with rejection/cancellation/range/LOS cases and integrate a real Core Group fixture. Do not jump directly to five-player dungeon scenarios.
+**Next gate:** the initial Core point-movement, native Player movement-interrupt and continuous `MoveFollow` slices now pass runtime CI. Continue with follow retargeting/recovery edge cases, defensive actions and explicit range/LOS/resource rejection tests; then integrate a real Core Group fixture. Do not jump directly to five-player dungeon scenarios.
 
 
 ## Stage C — PartyBotEngine-to-Core executor vertical slice
@@ -287,46 +287,37 @@ This is the first Player-backed spell slice, not yet a production PlayerBot inte
 The first Player-backed run confirmed that \`Map::Update(t_diff)\` does not advance Player spell events merely because a synthetic diff is passed. \`Map::UpdatePlayers()\` and session movement/spell processing are throttled against the Core's monotonic \`WorldTimer\`. The fixture therefore waits between bounded map updates, allowing the normal Player update cadence and spell event processor to advance in real time. This is intentional: the simulator must not fake completion by directly advancing a cast timer or applying the heal itself.
 
 
-## Stage F — Engine-selected Core point movement
+## Stage F — Engine-selected Core movement and defensive-action foundations
+
+### Stage F1 — Core point movement
 
 The first movement slice adds a destination payload to \`ActionCandidate\` and a formation trigger that derives a 2.5-yard trailing position from the Main Tank's snapshot coordinates. The adapter re-resolves mover and leader GUIDs on the current map, checks life/faction/map/instance/control state and finite destination coordinates, then invokes \`MotionMaster::MovePoint(..., MOVE_NONE)\`.
 
 The fixture uses two active Core Creature actors on the isolated map. Runtime CI requires the Engine to select the leader as the target, the action report to be Executed/Success, the real movement generator to become \`POINT_MOTION_TYPE\`, the mover's actual distance to decrease and its final position to reach the derived destination before both actors are detached and destroyed.
 
-This proves one point-movement primitive and the Engine-to-Core movement boundary. It does not yet implement continuous \`MoveFollow\`, pathfinding/navmesh behavior, movement interruption of a cast, formation slot arbitration or defensive movement.
+This proves one Core point-movement primitive and the Engine-to-Core movement boundary. Continuous follow and native Player cast interruption are covered by the later Stage F2/F3 fixtures; formation slot arbitration and defensive movement remain out of scope.
 
 
 ### Stage F2 — movement interrupts an in-flight Player cast
 
-A second Stage F scenario starts an ordinary non-triggered Player Lesser Heal through the Engine, confirms that the cast is pending with GCD, then runs a separate Engine movement decision for the same Player. The formation trigger derives a point from the Main Tank snapshot; the Core `MovePoint` adapter only issues the movement-generator command while the spell is pending.
+A second Stage F scenario starts an ordinary non-triggered Player Lesser Heal through the Engine, confirms that the cast is pending with GCD, then runs a separate Engine movement decision for the same Player. The formation trigger derives a destination from the Main Tank snapshot. For this Player fixture, the adapter models the inbound mover-relocation entry point by calling `Player::SetPosition` with that destination; the Core owns movement-interrupt policy.
 
-The runtime assertion requires the real Player movement path to cancel the cast through `Player::SetPosition` -> `Unit::HandleInterruptsOnMovement` -> `SpellCaster::InterruptSpellsWithInterruptFlags`, preserve the target's health, reach the movement destination, and clean up both Player/session and Creature. The simulator adapter must not duplicate spell-interruption policy or call `InterruptSpell` directly; it verifies the behavior of the pinned Core movement path.
+Runtime CI `#44145923142` verifies the native `Player::SetPosition` -> `Unit::HandleInterruptsOnMovement` -> `SpellCaster::InterruptSpellsWithInterruptFlags` path cancels the cast, preserves target health (`50000>50000`), reaches the destination and cleans up the Player/session and Creature. The adapter does not duplicate spell-interruption policy or call `InterruptSpell` directly.
 
 Stage F2 timing note: the fixture performs one ordinary Player/map update before the cast begins. This primes `Map::UpdatePlayers`' wall-clock cadence so the first post-movement update cannot carry a stale multi-second diff and complete the heal before a subsequent tick observes movement. The test relies on real Core Player relocation and movement-interrupt handling; it never advances cast state directly or applies healing itself.
 
-### Stage F2 runtime finding — 2026-11-17
+### Stage F2 investigation history (superseded by the passing native-path runtime test)
 
-The first configured-fixture run on commit `eceb4696591b29254a115c1b4bce5b17a5589971` built the full ARM64 Core successfully and passed Stages A–F, but failed the movement-interruption assertion. The runtime log confirmed Lesser Heal (2050) has a 1500 ms cast time and `SPELL_INTERRUPT_FLAG_MOVEMENT`; movement completed, but the heal also completed. This is a real runtime failure, not a CI/build issue.
+The earlier failed runs are retained here as debugging history only. Attempts that manually inspected spell flags or called `InterruptSpell` from the simulator adapter were removed because they bypassed Core's native relocation path. Source audit established that inbound mover relocation enters `Player::SetPosition` and `Unit::HandleInterruptsOnMovement`, whereas server-side point movement updates the Player spline later in `Unit::Update`.
 
-Inspection found that the Core movement adapter explicitly cancelled a movement-interruptible spell in the generic slot only while it was `SPELL_STATE_PREPARING`. It already handled the `SPELL_STATE_CASTING` state for the channeled slot. The adapter now checks both `SPELL_STATE_PREPARING` and `SPELL_STATE_CASTING` for a non-triggered, non-autorepeat generic spell carrying the movement interrupt flag.
+The accepted fixture models the inbound relocation seam through `Player::SetPosition`; it does not construct or inject a network movement packet, and it does not implement spell-interruption policy. Runtime CI `#44145923142` passed with the generic spell cleared, target health unchanged, movement complete and actor/session cleanup successful.
 
-The next simulator run must prove cancellation immediately after the Engine-selected movement action, preserve the patient's pre-cast health, complete movement, and clean up the Player/session and target. Until that run passes, Stage F2 remains partial and no continuous-follow, defensive-action or dungeon milestone is claimed.
+### Stage F3 — continuous follow through the native Core FollowMovementGenerator
 
+The follow fixture adds a `core_follow` action and a Main-Tank follow trigger. The action re-resolves the follower and leader from the current map, validates life, faction, map/instance and movement-control state, then calls `MotionMaster::MoveFollow(leader, 2.5f, PI)`.
 
-### Stage F2 second runtime attempt — 2026-11-17
+The simulator does not calculate per-tick movement or write positions. Core's `FollowMovementGenerator` owns path generation, movement updates and target tracking. The runtime scenario requires the Engine to select and execute the follow action, the follower to reach formation range, and then the Main Tank to move 10 yards using Core `MovePoint`. The follower must track that relocation, retain `FOLLOW_MOTION_TYPE`/`UNIT_STATE_FOLLOW`, and finish within 5 yards of the leader before both actors are cleaned up.
 
-Run [#44132458876](https://github.com/tyrael9/core/actions/runs/44132458876) on `7ffae2fa377a0cb66a996fccae1c674f9bb67496` confirms the full ARM64 build, standalone engine tests, simulator harness syntax, fixture secret check, and Stages A–F all pass. F2 still fails: the movement action executes and reaches its destination, but Lesser Heal applies (`health=50000>83333`). Therefore the prior generic-slot state expansion did not fix the runtime behavior.
+Runtime CI `#44153619126` on commit `ccb4707` passed: `initialCaughtUp=1`, `leaderReached=1`, `followerTracked=1`, final separation `1.87`, `followGenerator=1`, `cleanup=1`.
 
-Core source inspection shows the ordinary Core movement-interrupt path (`SpellCaster::InterruptSpellsWithInterruptFlags`) has an additional `GetCastedTime()` gate and only interrupts generic `SPELL_STATE_PREPARING` spells (plus channeled spells while casting). The PartyBot movement adapter bypasses that helper and calls `InterruptSpell(CURRENT_GENERIC_SPELL)` directly, but the simulator log did not yet expose the exact live spell state/pointer at that call. The next commit adds pre/post diagnostics for spell ID, state, casted time, triggered/autorepeat flags, movement flag, and whether the generic slot remains occupied after interruption. No new state or cancellation behavior should be guessed until that evidence is available.
-
-
-### Stage F2 third runtime attempt — 2026-11-17
-
-Run [#44133799477](https://github.com/tyrael9/core/actions/runs/44133799477) on `e482e266163ff7c903652d0e6b2b52b1526b866e` passed the ARM64 build, standalone engine tests, harness syntax and Stages A–F, but F2 still failed. The new trace narrows the live state: immediately before interruption the generic spell is Lesser Heal (2050), `SPELL_STATE_PREPARING` (enum value 1), with `GetCastedTime()=1500`, non-triggered/non-autorepeat, and the movement flag set. Immediately after `InterruptSpell(CURRENT_GENERIC_SPELL)`, the current generic slot is empty; nevertheless the heal later applies (`50000>83333`) while movement completes.
-
-This rules out the previous hypotheses that the slot was absent, the spell was already delayed, or the generic state predicate did not match. It does **not** yet prove whether the retained `Spell` object reached `SPELL_STATE_FINISHED` or whether another cast/event applied the heal. Core source shows `Spell::cancel()` calls `finish(false)`, while the queued `SpellEvent` retains its own Spell reference and only calls `update()` when the state is not FINISHED. The next diagnostic therefore records the retained Spell object's post-interrupt state and deletability, plus target health at that exact moment; no additional cancellation policy change is justified until that evidence is available.
-
-### Stage F2 fourth runtime attempt — 2026-11-17
-The previous diagnostic run (#44137933754, commit b3e551b) showed that the adapter's direct Core InterruptSpell(CURRENT_GENERIC_SPELL) call left the retained Spell in SPELL_STATE_FINISHED and deletable, while the patient was still at 50,000 health immediately afterward; the patient later reached 83,333. This proves the direct cancellation call ran, but it did not establish which SpellEvent or other path subsequently applied the heal.
-
-A source audit found the actual native movement-interrupt chain: Player::SetPosition calls Unit::HandleInterruptsOnMovement, which delegates to Core's InterruptSpellsWithInterruptFlags(SPELL_INTERRUPT_FLAG_MOVEMENT) and InterruptSpellsWithChannelFlags(AURA_INTERRUPT_MOVING_CANCELS). The simulator movement adapter had been manually checking SpellEntry flags and calling InterruptSpell before issuing MovePoint, thereby duplicating policy and bypassing the native relocation hook. The adapter now only issues Core MovePoint; F2 observes the first real Player movement update and requires the normal Core path to cancel the cast. The stage aggregator was also corrected so every smoke test result contributes to the final simulator result rather than later stage return values being discarded. The next configured-fixture run is the acceptance test; no F2 pass is claimed yet.
+The fixture is still a Core-backed simulator proof using Creature actors, not production PlayerBot follow behavior or a real Core Group. Retargeting/recovery edge cases, formation slot arbitration, LOS/range checks and defensive movement remain future work.

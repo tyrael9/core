@@ -58,12 +58,12 @@ The current role-aware Shadow slice is a proof of the data-to-candidate path onl
 - [x] Add a Stage B push-only CI runtime job with strict timeout and no deployment/image-publish side effects.
 - [x] Connect PartyBotEngine to a fixture-backed five-member party snapshot and a real Core Unit::Attack executor; runtime CI verifies selection, execution result, actual victim and cleanup.
 - [x] Add a spell-aware healer-triage action using the real Core Spell/SpellEffects pipeline; runtime CI verifies a triggered Lesser Heal effect on a Creature fixture.
-- [~] Add a Player-backed healer fixture using a real WorldSession/Player object and ordinary non-triggered Lesser Heal. Runtime CI now checks known-spell ownership, Core acceptance, pending cast/GCD, mana consumption, completion, real healing and logout cleanup. Interrupt/cancel and failure paths remain.
-- [ ] Extend the executor to movement and defensive actions.
+- [x] Add a Player-backed healer fixture using a real WorldSession/Player object and ordinary non-triggered Lesser Heal. Runtime CI verifies known-spell ownership, Core acceptance, pending cast/GCD, mana consumption, cast completion, real healing and logout cleanup. This is a simulator Player, not yet an authenticated production PlayerBot.
+- [~] Extend Player spell execution to movement/cast interruption, rejection paths and full range/LOS/resource validation; then add movement and defensive action adapters.
 - [ ] Add scripted aggro, healer-threat, tank-death, healer-death and multi-add scenarios.
 - [ ] Evaluate full dungeon/instance scripts as a later tier.
 
-**Acceptance:** a headless CI scenario runs real pinned-Core combat methods and verifies damage, threat, target changes, Engine-selected attacks, Engine-selected spell execution, resulting healing and cleanup. A toy combat model or direct mutation of expected results does not count.
+**Acceptance:** a headless CI scenario runs real pinned-Core combat methods and verifies damage, threat, target changes, Engine-selected attacks, a triggered Creature heal, a known-spell non-triggered Player cast through pending/GCD/completion, actual health and mana changes, and cleanup. A toy combat model or direct mutation of expected results does not count.
 
 Design and audit: CORE-COMBAT-SIMULATOR.md. This phase is test infrastructure, not an alternative AI architecture.
 

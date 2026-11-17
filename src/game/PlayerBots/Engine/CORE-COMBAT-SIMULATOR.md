@@ -82,21 +82,35 @@ A test is not successful merely because a helper directly writes health or a fak
 
 The exact mechanism for forcing victim reselection (normal CreatureAI update, threat-event processing or another Core update path) remains an implementation audit item. Do not substitute hand-coded target selection.
 
-### Stage C — PartyBotEngine integration
+### Stage C — Engine-to-Core attack executor (runtime CI passing)
 
-Only after Stage B passes:
+- Build a five-role value-only PartySnapshot from same-map simulator actors.
+- Let PartyBotEngine select a tank-assist candidate and execute a real Core \`Unit::Attack\`.
+- Verify the actual Core victim, action result and actor cleanup.
 
-- create a five-member party snapshot from real map actors;
-- attach the actual Engine executor adapters, not mock actions;
-- run a scripted encounter timeline against the same Core tick loop;
-- capture decision trace and Core action results;
-- add scenarios for aggro, healer threat, tank death, healer death, adds and resource pressure.
+### Stage D — triggered spell-effect proof (runtime CI passing)
 
-The Engine may initially make poor decisions. The harness must expose those failures faithfully rather than patching the simulation to make tests green.
+- Let the healer trigger select an injured party member.
+- Execute Vanilla Lesser Heal (2050) through the real Core Spell/SpellEffects path as a triggered Creature cast.
+- Verify the Core cast result and actual health increase.
 
-### Stage D — dungeon encounter simulation
+### Stage E — normal Player spell lifecycle (runtime CI passing)
 
-After party combat is stable, evaluate loading a real dungeon map with real instance scripts/data. This adds grid/terrain/vmap loading, instance state, scripted creature AI, spell data, doors and encounter lifecycle. Full dungeon loading is not a prerequisite for the first Core combat proof.
+- Construct a real Core \`Player\` with a local \`WorldSession\` in the isolated simulator process.
+- Require spellbook ownership and let the Engine select the heal.
+- Call ordinary non-triggered \`Player::CastSpell(..., false)\`; verify acceptance, pending cast, GCD, mana cost, normal completion and actual healing.
+- Logout and delete the Player through the Core session/map cleanup path.
+
+This remains a simulator fixture, not a production-authenticated PlayerBot or five-member Core Group. Detailed assertions and limitations are recorded below.
+
+### Stage F — movement and defensive action adapters
+
+- Implement movement/formation and defensive actions against real Core movement generators and unit state.
+- Verify movement completion, movement cancellation of casts, target/range/LOS revalidation and cleanup.
+
+### Stage G — dungeon encounter simulation
+
+After the action/executor layer and party-wide combat behavior are stable, evaluate loading a real dungeon map with instance scripts/data. This adds grid/terrain/vmap loading, instance state, scripted creature AI, doors and encounter lifecycle. Full dungeon loading is not a prerequisite for the current Core-backed action proofs.
 
 ## Scenario format
 
@@ -158,7 +172,7 @@ A further tick-path constraint was confirmed in `Map::UpdateCells`: it visits ce
 
 The first Stage B proof should be deliberately split into independently reported assertions: (1) template-backed actors can be created, inserted and found on the map; (2) real `DealDamage` changes health and creates the expected threat reference; (3) the real threat selector chooses and switches victims at the Core thresholds; (4) custom AI receives bounded updates; and (5) all actors are removed without respawn persistence before the test map is deleted. A passing direct-damage/threat proof must not be described as a full autonomous combat simulation.
 
-### Stage B implementation now present (Core scenario runtime assertions passed; CI wrapper correction pending)
+### Stage B implementation now present (Core runtime assertions and push CI passing)
 
 The simulator now contains a bounded first Core-backed Creature/threat scenario:
 
@@ -170,15 +184,21 @@ The simulator now contains a bounded first Core-backed Creature/threat scenario:
 - Deal real direct damage to the threat owner from the two hostile actors (100, 105, then +10), verify health loss and damage-generated threat references, and check that the Core threat selector retains the first target below the 110% melee threshold and switches above it.
 - Clear combat/threat references, detach each actor with `Map::Remove(actor, false)`, and verify it is no longer in-world or registered in the map before explicit destruction.
 
-This is deliberately a **Core Creature damage/threat smoke test**, not yet an autonomous encounter simulation: there are no Player actors, spell casts, healing, movement, bot decision/executor calls, boss scripts or multi-phase mechanics. The probe AI only counts update callbacks. Actor stats are normalized to a large health pool to keep the test damage non-lethal. The tick loop is bounded but still depends on Core wall-clock cell-update cadence; this does not establish deterministic replay.
+This Stage B section is deliberately a **Core Creature damage/threat smoke test**, not an autonomous encounter simulation. Later Stage C–E sections document the separately implemented Engine attack and spell/heal slices; movement, boss scripts and multi-phase encounter mechanics remain future work. The probe AI only counts update callbacks. Actor stats are normalized to a large health pool to keep the test damage non-lethal. The tick loop is bounded but still depends on Core wall-clock cell-update cadence; this does not establish deterministic replay.
 
 ## Current status and next gate
 
-**Runtime evidence (2026-11-17):** the configured Google Drive fixture downloaded successfully (1.21 GiB; SHA-256 verified), the disposable DB schemas initialized, and `mangosd` completed the full Stage A/B path and exited successfully. The log showed three AI update callbacks (`1/1/1`), mutual hostility, health `100000>99900>99795>99785`, generated threat `100/115`, target retention below and switching above the 110% melee threshold, successful cleanup of all actors, and test-map deletion. The workflow was nevertheless marked failed because `run-ci.sh` still searched for an obsolete final PASS string containing `ticked`; the current Core PASS line intentionally omits that phrase. The runner's final-marker checks are being corrected and the full CI job must pass once more before this gate is marked green. The entry point remains opt-in through `PartyBot.Simulator.Enable`, checks all four DB schema names against the `partybot_sim_` prefix, and runs after Core initialization before world listeners.
+**Runtime evidence (2026-11-17):** [push CI #44049443380](https://github.com/tyrael9/core/actions/runs/44049443380) passed end to end on commit \`16d73f712fa3698b8a2411bac8e087cbb8dc4d26\`. The run downloaded the complete 1.21 GiB Vanilla 5875 extracted-data fixture, verified SHA-256, initialized disposable database copies, built the ARM64 server and ran the opt-in Core simulator. Runtime assertions passed for:
 
-Confirmed: the pinned Core has a purpose-built test-map creation/deletion API, public map add/update APIs, native Creature creation, real Unit damage/attack methods and a real ThreatManager API.
+- Real Creature updates, direct damage, generated threat and the Core 110% melee victim-switch threshold.
+- Engine-selected tank assist calling real \`Unit::Attack\`, with actual victim verification.
+- Engine-selected triggered Creature Lesser Heal, with actual health increase.
+- Engine-selected normal non-triggered Player Lesser Heal: spell known, \`SPELL_CAST_OK\`, pending generic cast and GCD, mana \`2896>2866\`, target health \`50000>83386\`, cast completion and Player logout cleanup.
+- Test map and all actors deleted; \`mangosd\` shut down successfully.
 
-Not yet confirmed: complete RNG control, deterministic replay, spell/heal/movement behavior, PartyBotEngine decisions/execution, and absence of writes beyond the four prefixed disposable schemas. The first Creature damage/threat path has now been observed at runtime.
+The Player fixture is a real Core Player object with a local no-socket WorldSession, but is not authenticated as a production PlayerBot and is not inserted into a real five-member Core Group. The map update cadence is wall-clock throttled; the simulator waits between bounded updates rather than faking cast completion. Deterministic replay and broader lifecycle/failure coverage remain open.
+
+The entry point remains opt-in through \`PartyBot.Simulator.Enable\`, checks all four DB schema names against the \`partybot_sim_\` prefix, and runs after Core initialization before world listeners. The workflow is push-only and has no image-publish or deployment side effects.
 
 ### Optional GitHub Actions runtime runner
 
@@ -212,7 +232,7 @@ The archive listing should start with paths such as `maps/`, `mmaps/`, `vmaps/` 
 
 Upload the archive to Google Drive and set General access to “Anyone with the link” with Viewer permission. Put the share URL in `PARTYBOT_SIMULATOR_DATA_URL` and the checksum in `PARTYBOT_SIMULATOR_DATA_SHA256` under the repository's Actions secrets. The runner uses the pinned `gdown` downloader to handle Drive's large-file confirmation flow, then verifies SHA-256 before extraction. Each trusted push to this branch runs the simulator after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
 
-**Next gate:** rerun the corrected harness and require a green end-to-end CI result. The current fixture and both Actions secrets are already configured; no user action is required. After that, extend coverage in layers (Player-backed actors, actual spell casts/healing, movement, then PartyBotEngine execution). Do not jump directly to five-player/dungeon scenarios.
+**Next gate:** add a movement/defensive action adapter and test real movement-generator state and cast interruption. Then extend the Player-backed spell path to explicit rejection/cancellation/range/LOS cases and integrate a real Core Group fixture. Do not jump directly to five-player dungeon scenarios.
 
 
 ## Stage C — PartyBotEngine-to-Core executor vertical slice
@@ -224,14 +244,14 @@ A simulator Trigger emits a tank-assist candidate. \`PartyBotEngine::Evaluate\` 
 This is deliberately a narrow proof:
 - It validates the real Engine evaluation/execution boundary and one real Core action adapter.
 - The five roster entries are simulator Creature actors, not authenticated \`Player\` objects or a Core \`Group\`.
-- It does not yet prove player spell casting, healing, movement generators, class rotations, or a full dungeon AI.
-- The next vertical slices should add spell-result-aware casts and healing, then movement/formation, with each action revalidating its Core preconditions immediately before execution.
+- Stage C proves the Engine-to-Core attack boundary only; Stage D and Stage E separately prove triggered Creature healing and normal non-triggered Player healing.
+- These slices still do not prove production PlayerBot authentication, real Group membership, movement generators, class rotations or a full dungeon AI. Stage F should add movement/formation and defensive actions with Core precondition revalidation.
 
 
 
-## Stage D — PartyBotEngine healer triage and Core spell effect
+## Stage D — PartyBotEngine healer triage and triggered Core spell effect
 
-The next vertical slice adds a healer-role trigger and a \`core_heal\` Action adapter. The trigger reads only the value snapshot and emits a healing candidate for an injured living party member. The action resolves caster/target GUIDs on the current test map, checks that the spell is a heal effect and that the two units are alive, friendly and the target is still injured.
+This completed vertical slice adds a healer-role trigger and a \`core_heal\` Action adapter. The trigger reads only the value snapshot and emits a healing candidate for an injured living party member. The action resolves caster/target GUIDs on the current test map, checks that the spell is a heal effect and that the two units are alive, friendly and the target is still injured.
 
 The simulator uses Vanilla spell 2050 (Lesser Heal, Rank 1). It requires all of the following:
 - PartyBotEngine registers the action, evaluates the healer trigger and selects the injured tank.
@@ -241,7 +261,7 @@ The simulator uses Vanilla spell 2050 (Lesser Heal, Rank 1). It requires all of 
 
 **Important scope limitation:** this first fixture deliberately uses a triggered cast from a template-backed Creature. This still exercises the real Core spell implementation and healing effect, but bypasses player spellbook ownership, mana cost, GCD and cast-time progression. It is not proof that an authenticated PlayerBot can cast a known spell normally. A separate non-triggered Player-backed slice must cover those mechanics before this adapter is used by production PlayerBots.
 
-The optional CI runner now requires the Stage D PASS marker in addition to the Stage A/B and Stage C markers. It remains push-only, uses the complete extracted-data fixture and four disposable \`partybot_sim_*\` schemas, and has no image-publish or deployment side effects.
+The optional CI runner now requires both Stage D and Stage E PASS markers in addition to the Stage A/B and Stage C markers. It remains push-only, uses the complete extracted-data fixture and four disposable \`partybot_sim_*\` schemas, and has no image-publish or deployment side effects.
 
 
 ## Stage E — normal Player spell execution

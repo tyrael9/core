@@ -86,7 +86,11 @@ docker run --detach \
 
 database_ready=0
 for attempt in $(seq 1 180); do
-    if docker exec "$DB_CONTAINER" mariadb-admin --user=root --password=password ping --silent >/dev/null 2>&1; then
+    # The image entrypoint first starts a temporary socket-only MariaDB while
+    # importing seed SQL. Require the final TCP listener used by mangosd.
+    if docker exec "$DB_CONTAINER" mariadb-admin \
+        --host=127.0.0.1 --protocol=tcp \
+        --user=root --password=password ping --silent >/dev/null 2>&1; then
         database_ready=1
         break
     fi

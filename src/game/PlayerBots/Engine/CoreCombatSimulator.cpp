@@ -742,10 +742,18 @@ public:
                 genericSpell->m_spellInfo &&
                 genericSpell->m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT))
             {
+                // SpellEvent retains its own reference after the caster slot is cleared.
+                // Inspect the Spell object itself as well as the slot so the simulator
+                // can distinguish a real cancel from merely dropping the current-spell link.
+                Spell* const interruptedSpell = genericSpell;
                 mover->InterruptSpell(CURRENT_GENERIC_SPELL);
+                Unit* const interruptedTarget = mover->GetMap()->GetUnit(mover->GetTargetGuid());
                 sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                         "[PartyBotSimulator] Movement adapter post-interrupt: genericSpellPresent=%u.",
-                         mover->GetCurrentSpell(CURRENT_GENERIC_SPELL) ? 1u : 0u);
+                         "[PartyBotSimulator] Movement adapter post-interrupt: genericSpellPresent=%u spellState=%u deletable=%u targetHealth=%u.",
+                         mover->GetCurrentSpell(CURRENT_GENERIC_SPELL) ? 1u : 0u,
+                         static_cast<uint32>(interruptedSpell->getState()),
+                         interruptedSpell->IsDeletable() ? 1u : 0u,
+                         interruptedTarget ? interruptedTarget->GetHealth() : 0u);
             }
         }
 

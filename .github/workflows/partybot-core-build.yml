@@ -72,6 +72,24 @@ jobs:
       - name: Validate simulator runtime harness syntax
         run: bash -n tools/partybot-simulator/run-ci.sh
 
+      # Report only whether fixture secrets were injected; never print their values.
+      - name: Check simulator fixture secret availability
+        if: github.event_name == 'push'
+        env:
+          PARTYBOT_SIMULATOR_DATA_URL: ${{ secrets.PARTYBOT_SIMULATOR_DATA_URL }}
+          PARTYBOT_SIMULATOR_DATA_SHA256: ${{ secrets.PARTYBOT_SIMULATOR_DATA_SHA256 }}
+        run: |
+          if [[ -n "$PARTYBOT_SIMULATOR_DATA_URL" ]]; then
+            echo "[PartyBotSimulator] Google Drive URL secret: present"
+          else
+            echo "[PartyBotSimulator] Google Drive URL secret: MISSING"
+          fi
+          if [[ -n "$PARTYBOT_SIMULATOR_DATA_SHA256" ]]; then
+            echo "[PartyBotSimulator] SHA256 secret: present"
+          else
+            echo "[PartyBotSimulator] SHA256 secret: MISSING"
+          fi
+
       # Runtime uses only disposable schemas and an extracted-data fixture shared
       # through Google Drive. It is push-only and remains a no-op until both secrets exist.
       - name: Run optional Core-backed simulator runtime test

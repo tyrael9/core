@@ -189,3 +189,14 @@ The Stage E runtime assertion requires a known Priest Lesser Heal (2050), a succ
 
 
 Stage E runtime note: \`Map::Update(uint32 t_diff)\` calls \`UpdatePlayers()\`, but that method compares the real \`WorldTimer::getMSTime()\` against \`m_lastPlayersUpdate\` and the configured player-update interval. The synthetic \`t_diff\` alone does not force a Player update. The simulator sleeps for a bounded 250 ms between map updates so the real monotonic cadence advances; the normal \`Player::Update -> Unit::Update -> EventProcessor\` path completes the cast.
+
+
+## 9. Core movement adapter audit — simulator Stage F
+
+- \`MotionMaster::MovePoint(id, x, y, z, options, speed, finalOrientation)\` is the pinned Core primitive for one-shot movement to a point.
+- \`MOVE_NONE\` uses the Core \`PointMovementGenerator\` and \`MoveSplineInit::MoveTo\` without requiring the pathfinder/navmesh. The spline and resulting Unit position remain Core-owned; the simulator does not directly relocate the actor.
+- The Engine adapter re-resolves mover and leader GUIDs on the test map, checks life, faction, map/instance, lost-control state and finite destination coordinates before invoking the movement generator.
+- \`Unit::Update\` advances \`MotionMaster::UpdateMotion\`; the headless map fixture must mark Creature actors active and advance the real wall-clock map update cadence.
+- Runtime CI verifies the movement generator becomes \`POINT_MOTION_TYPE\`, the actor reaches the snapshot-derived formation destination and both actors are detached before test-map deletion.
+
+This proves only one point movement. Continuous \`MoveFollow\`, pathfinding, cast interruption on movement and defensive movement remain separate acceptance criteria.

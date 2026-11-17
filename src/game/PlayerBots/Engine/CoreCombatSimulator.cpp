@@ -837,6 +837,8 @@ bool RunEngineCoreMovementSmokeTest(Map& map)
     }
 
     float const distanceAfter = mover.creature->GetDistance(leader.creature);
+    MovementGeneratorType const movementTypeAfterExecute =
+        mover.creature->GetMotionMaster()->GetCurrentMovementGeneratorType();
     float const destinationDx = mover.creature->GetPositionX() - destinationX;
     float const destinationDy = mover.creature->GetPositionY() - destinationY;
     float const destinationDz = mover.creature->GetPositionZ() - destinationZ;
@@ -851,7 +853,7 @@ bool RunEngineCoreMovementSmokeTest(Map& map)
              "[PartyBotSimulator] Engine movement: aiReady=%u registered=%u selected=%u executed=%u motion=%u distance=%.2f>%.2f reached=%u cleanup=%u.",
              (leader.updateCount && mover.updateCount) ? 1u : 0u,
              registered ? 1u : 0u, selected ? 1u : 0u, executed ? 1u : 0u,
-             static_cast<uint32>(mover.creature ? mover.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() : IDLE_MOTION_TYPE),
+             static_cast<uint32>(movementTypeAfterExecute),
              distanceBefore, distanceAfter, moved ? 1u : 0u, cleaned ? 1u : 0u);
 
     if (!registered || !selected || !executed || !moved || !cleaned)

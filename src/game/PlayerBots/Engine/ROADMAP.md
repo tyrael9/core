@@ -59,7 +59,8 @@ The current role-aware Shadow slice is a proof of the data-to-candidate path onl
 - [x] Connect PartyBotEngine to a fixture-backed five-member party snapshot and a real Core Unit::Attack executor; runtime CI verifies selection, execution result, actual victim and cleanup.
 - [x] Add a spell-aware healer-triage action using the real Core Spell/SpellEffects pipeline; runtime CI verifies a triggered Lesser Heal effect on a Creature fixture.
 - [x] Add a Player-backed healer fixture using a real WorldSession/Player object and ordinary non-triggered Lesser Heal. Runtime CI verifies known-spell ownership, Core acceptance, pending cast/GCD, mana consumption, cast completion, real healing and logout cleanup. This is a simulator Player, not yet an authenticated production PlayerBot.
-- [~] Add a Core PointMovementGenerator formation action selected by PartyBotEngine and verified by real position change in runtime CI; continue with follow/formation tracking, movement/cast interruption, defensive actions and full range/LOS/resource validation.
+- [x] Add a Core PointMovementGenerator formation action selected by PartyBotEngine; runtime CI verifies the movement generator starts, the real position reaches the snapshot-derived destination and both actors are cleaned up.
+- [~] Continue with continuous follow/formation tracking, movement/cast interruption, defensive actions and full range/LOS/resource validation.
 - [ ] Add scripted aggro, healer-threat, tank-death, healer-death and multi-add scenarios.
 - [ ] Evaluate full dungeon/instance scripts as a later tier.
 

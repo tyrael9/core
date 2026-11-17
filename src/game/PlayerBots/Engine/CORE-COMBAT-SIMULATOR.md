@@ -105,7 +105,7 @@ This remains a simulator fixture, not a production-authenticated PlayerBot or fi
 
 ### Stage F — movement and defensive action adapters
 
-- [~] First Core point-movement primitive: PartyBotEngine derives a formation destination from the Main Tank snapshot, the adapter calls `MotionMaster::MovePoint`, and runtime CI verifies the real position reaches the destination.
+- [x] First Core point-movement primitive: PartyBotEngine derives a formation destination from the Main Tank snapshot, the adapter calls `MotionMaster::MovePoint`, and runtime CI verifies the real position reaches the destination.
 - [ ] Add continuous follow/formation tracking and defensive actions against real Core movement generators and unit state.
 - [ ] Verify movement completion, movement cancellation of casts, target/range/LOS revalidation and cleanup.
 
@@ -233,7 +233,7 @@ The archive listing should start with paths such as `maps/`, `mmaps/`, `vmaps/` 
 
 Upload the archive to Google Drive and set General access to “Anyone with the link” with Viewer permission. Put the share URL in `PARTYBOT_SIMULATOR_DATA_URL` and the checksum in `PARTYBOT_SIMULATOR_DATA_SHA256` under the repository's Actions secrets. The runner uses the pinned `gdown` downloader to handle Drive's large-file confirmation flow, then verifies SHA-256 before extraction. Each trusted push to this branch runs the simulator after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
 
-**Next gate:** add a movement/defensive action adapter and test real movement-generator state and cast interruption. Then extend the Player-backed spell path to explicit rejection/cancellation/range/LOS cases and integrate a real Core Group fixture. Do not jump directly to five-player dungeon scenarios.
+**Next gate:** extend point movement into continuous follow/formation tracking, then test movement-driven cast interruption and defensive actions. Expand the Player-backed spell path with rejection/cancellation/range/LOS cases and integrate a real Core Group fixture. Do not jump directly to five-player dungeon scenarios.
 
 
 ## Stage C — PartyBotEngine-to-Core executor vertical slice

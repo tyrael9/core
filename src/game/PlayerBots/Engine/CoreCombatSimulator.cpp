@@ -1,13 +1,248 @@
 #include "CoreCombatSimulator.h"
 
+#include "AI/CreatureAI.h"
+#include "Creature.h"
 #include "DBCStores.h"
 #include "Log.h"
 #include "Map.h"
 #include "MapManager.h"
+#include "ObjectMgr.h"
+
+#include <algorithm>
+#include <chrono>
+#include <thread>
+#include <vector>
 
 namespace PartyBotEngine
 {
-bool RunCoreMapLifecycleSmokeTest(std::uint32_t mapId)
+namespace
+{
+class SimulatorProbeAI final : public CreatureAI
+{
+public:
+    SimulatorProbeAI(Creature* creature, uint32& updateCount)
+        : CreatureAI(creature), m_updateCount(updateCount)
+    {
+    }
+
+    void UpdateAI(uint32 const /*diff*/) override
+    {
+        ++m_updateCount;
+    }
+
+private:
+    uint32& m_updateCount;
+};
+
+struct SimulatorActor
+{
+    Creature* creature = nullptr;
+    uint32 updateCount = 0;
+};
+
+CreatureInfo const* FindSafeCreatureTemplate()
+{
+    std::vector<CreatureInfo const*> candidates;
+    for (auto const& item : sObjectMgr.GetCreatureInfoMap())
+    {
+        CreatureInfo const* info = item.second.get();
+        if (!info || info->entry != item.first || info->rank != CREATURE_ELITE_NORMAL ||
+            !info->display_total_probability || !info->display_id[0] ||
+            info->spawn_spell_id || info->totem_spell_id || info->spell_list_id ||
+            info->script_id || !info->ai_name.empty())
+            continue;
+
+        candidates.push_back(info);
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](CreatureInfo const* lhs, CreatureInfo const* rhs) { return lhs->entry < rhs->entry; });
+    return candidates.empty() ? nullptr : candidates.front();
+}
+
+bool FindMutuallyHostileFactions(uint32& firstId, uint32& secondId)
+{
+    std::vector<FactionTemplateEntry const*> factions;
+    for (auto const& item : sObjectMgr.GetFactionTemplateMap())
+        if (item.second.ID)
+            factions.push_back(&item.second);
+
+    std::sort(factions.begin(), factions.end(),
+              [](FactionTemplateEntry const* lhs, FactionTemplateEntry const* rhs) { return lhs->ID < rhs->ID; });
+
+    for (std::size_t i = 0; i < factions.size(); ++i)
+    {
+        for (std::size_t j = i + 1; j < factions.size(); ++j)
+        {
+            if (factions[i]->IsHostileTo(*factions[j]) && factions[j]->IsHostileTo(*factions[i]))
+            {
+                firstId = factions[i]->ID;
+                secondId = factions[j]->ID;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool CreateSimulatorActor(Map& map, CreatureInfo const& info, uint32 factionId,
+                          float x, float y, SimulatorActor& actor)
+{
+    Creature* creature = new Creature();
+    CreatureCreatePos position(&map, x, y, 0.0f, 0.0f);
+    if (!creature->Create(map.GenerateLocalLowGuid(HIGHGUID_UNIT), position, &info, info.entry))
+    {
+        delete creature;
+        return false;
+    }
+
+    creature->SetFactionTemplateId(factionId);
+    creature->SetMaxHealth(100000);
+    creature->SetHealth(100000);
+    creature->SetAI(new SimulatorProbeAI(creature, actor.updateCount));
+
+    // A headless map has no player-centered update cells. Active actors are
+    // visited by Map::UpdateCells through the Core's normal active-object path.
+    creature->SetActiveObjectState(true);
+    map.Add(creature);
+
+    if (!creature->IsInWorld())
+    {
+        delete creature;
+        return false;
+    }
+
+    actor.creature = creature;
+    return true;
+}
+
+void DestroySimulatorActor(Map& map, SimulatorActor& actor)
+{
+    if (!actor.creature)
+        return;
+
+    actor.creature->CombatStop(true);
+    actor.creature->DeleteThreatList();
+
+    if (actor.creature->IsInWorld())
+        map.Remove(actor.creature, false);
+
+    delete actor.creature;
+    actor.creature = nullptr;
+}
+
+bool RunCoreCombatThreatSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    if (!info)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] No safe creature_template found (requires a normal-rank template with a display and no spawn spell, spell list or script).");
+        return false;
+    }
+
+    uint32 bossFaction = 0;
+    uint32 attackerFaction = 0;
+    if (!FindMutuallyHostileFactions(bossFaction, attackerFaction))
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Could not find a mutually hostile pair in the loaded faction_template data.");
+        return false;
+    }
+
+    SimulatorActor boss;
+    SimulatorActor tank;
+    SimulatorActor damageDealer;
+
+    bool created = CreateSimulatorActor(map, *info, bossFaction, 0.0f, 0.0f, boss) &&
+                   CreateSimulatorActor(map, *info, attackerFaction, 1.0f, 0.0f, tank) &&
+                   CreateSimulatorActor(map, *info, attackerFaction, 2.0f, 0.0f, damageDealer);
+
+    if (!created)
+    {
+        DestroySimulatorActor(map, boss);
+        DestroySimulatorActor(map, tank);
+        DestroySimulatorActor(map, damageDealer);
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Failed to create and insert all three template-backed Creature actors.");
+        return false;
+    }
+
+    bool const hostilePair = boss.creature->IsHostileTo(tank.creature) &&
+                             tank.creature->IsHostileTo(boss.creature) &&
+                             boss.creature->IsHostileTo(damageDealer.creature) &&
+                             damageDealer.creature->IsHostileTo(boss.creature);
+
+    // Map cell updates are paced by the Core's wall-clock update-cells
+    // interval. Drive bounded real map ticks and require each custom AI to
+    // prove that the active-object update path reached it.
+    for (uint32 tick = 0; tick < 120 &&
+         (!boss.updateCount || !tank.updateCount || !damageDealer.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!boss.updateCount || !tank.updateCount || !damageDealer.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    bool const aiUpdated = boss.updateCount && tank.updateCount && damageDealer.updateCount;
+    bool damageAndThreat = false;
+    bool targetSelection = false;
+
+    if (hostilePair && aiUpdated)
+    {
+        uint32 const initialHealth = boss.creature->GetHealth();
+        uint32 const tankDamage = tank.creature->DealDamage(
+            boss.creature, 100, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        float const tankThreat = boss.creature->GetThreatManager().getThreat(tank.creature);
+        uint32 const healthAfterTank = boss.creature->GetHealth();
+
+        Unit* selectedAfterTank = boss.creature->GetThreatManager().getHostileTarget();
+
+        uint32 const dpsDamage = damageDealer.creature->DealDamage(
+            boss.creature, 105, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        float dpsThreat = boss.creature->GetThreatManager().getThreat(damageDealer.creature);
+        Unit* selectedBelowThreshold = boss.creature->GetThreatManager().getHostileTarget();
+
+        uint32 const additionalDamage = damageDealer.creature->DealDamage(
+            boss.creature, 10, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        dpsThreat = boss.creature->GetThreatManager().getThreat(damageDealer.creature);
+        Unit* selectedAboveThreshold = boss.creature->GetThreatManager().getHostileTarget();
+
+        damageAndThreat = tankDamage > 0 && dpsDamage > 0 && additionalDamage > 0 &&
+                          healthAfterTank < initialHealth && tankThreat > 0.0f && dpsThreat > 0.0f;
+
+        targetSelection = selectedAfterTank == tank.creature &&
+                          selectedBelowThreshold == tank.creature &&
+                          dpsThreat > 1.1f * tankThreat &&
+                          selectedAboveThreshold == damageDealer.creature;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Creature probe: template=%u factions=%u/%u aiUpdates=%u/%u/%u hostile=%u damageThreat=%u targetSwitch=%u.",
+             info->entry, bossFaction, attackerFaction,
+             boss.updateCount, tank.updateCount, damageDealer.updateCount,
+             hostilePair ? 1u : 0u, damageAndThreat ? 1u : 0u, targetSelection ? 1u : 0u);
+
+    // Clear the boss-owned threat references before destroying their targets.
+    DestroySimulatorActor(map, boss);
+    DestroySimulatorActor(map, tank);
+    DestroySimulatorActor(map, damageDealer);
+
+    if (!hostilePair || !aiUpdated || !damageAndThreat || !targetSelection)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core combat/threat smoke test failed; all temporary actors were detached and destroyed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: real Creature updates, direct damage, damage-generated threat and 110%% melee target switching.");
+    return true;
+}
+} // namespace
+
+bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
 {
     MapEntry const* entry = sMapStorage.LookupEntry<MapEntry>(mapId);
     if (!entry || !entry->IsDungeon())
@@ -29,26 +264,29 @@ bool RunCoreMapLifecycleSmokeTest(std::uint32_t mapId)
         return false;
     }
 
-    std::uint32_t const instanceId = map->GetInstanceId();
+    uint32 const instanceId = map->GetInstanceId();
     bool const registered = instanceId != 0 && sMapMgr.FindMap(mapId, instanceId) == map;
 
-    // Advance one real Core instance-map tick with a fixed diff and no actors.
+    // Keep the Stage A empty-map tick as a separate lifecycle assertion.
     map->Update(50);
     bool const tickRetained = sMapMgr.FindMap(mapId, instanceId) == map;
+
+    bool const combatPassed = registered && tickRetained && RunCoreCombatThreatSmokeTest(*map);
 
     sMapMgr.DeleteTestMap(map);
 
     bool const removed = sMapMgr.FindMap(mapId, instanceId) == nullptr;
-    if (!registered || !tickRetained || !removed)
+    if (!registered || !tickRetained || !combatPassed || !removed)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Test-map lifecycle assertion failed (registered=%u tickRetained=%u removed=%u instance=%u).",
-                 registered ? 1u : 0u, tickRetained ? 1u : 0u, removed ? 1u : 0u, instanceId);
+                 "[PartyBotSimulator] Test-map/combat assertions failed (registered=%u emptyTickRetained=%u combat=%u removed=%u instance=%u).",
+                 registered ? 1u : 0u, tickRetained ? 1u : 0u, combatPassed ? 1u : 0u,
+                 removed ? 1u : 0u, instanceId);
         return false;
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PASS: created, ticked and deleted real Core test map %u instance %u.",
+             "[PartyBotSimulator] PASS: created, ticked, ran a bounded Core Creature combat/threat scenario and deleted map %u instance %u.",
              mapId, instanceId);
     return true;
 }

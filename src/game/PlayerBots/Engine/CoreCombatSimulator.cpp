@@ -660,6 +660,133 @@ private:
     std::string m_name = "simulator_formation";
 };
 
+
+class SimulatorFollowTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive &&
+            context.bot.roleId != static_cast<std::uint8_t>(PartyRole::Tank) &&
+            context.bot.roleId != static_cast<std::uint8_t>(PartyRole::MainTank);
+    }
+
+    void CollectCandidates(DecisionContext const& context,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        for (PartyMemberSnapshot const& leader : context.snapshot.members)
+        {
+            if (!leader.alive || !leader.isMainTank || leader.guid == context.bot.guid ||
+                leader.mapId != context.bot.mapId || leader.instanceId != context.bot.instanceId)
+                continue;
+
+            float const dx = context.bot.x - leader.x;
+            float const dy = context.bot.y - leader.y;
+            float const dz = context.bot.z - leader.z;
+            if (dx * dx + dy * dy + dz * dz <= 36.0f)
+                continue;
+
+            ActionCandidate candidate;
+            candidate.actionName = "core_follow";
+            candidate.targetGuid = leader.guid;
+            candidate.basePriority = 72.0f;
+            candidate.channel = ActionChannel::Movement;
+            candidates.push_back(candidate);
+            break;
+        }
+    }
+
+private:
+    std::string m_name = "simulator_follow";
+};
+
+class SimulatorCoreFollowAction final : public Action
+{
+public:
+    explicit SimulatorCoreFollowAction(Map& map) : m_map(map) {}
+    std::string const& GetName() const override { return m_name; }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        Unit* follower = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* leader = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        PartyMemberSnapshot const* leaderSnapshot = context.snapshot.FindMember(candidate.targetGuid);
+        if (!follower || !leader || !leaderSnapshot || !leaderSnapshot->alive ||
+            !follower->IsInWorld() || !leader->IsInWorld() ||
+            !follower->IsAlive() || !leader->IsAlive() ||
+            !follower->IsFriendlyTo(leader) ||
+            follower->GetMapId() != leader->GetMapId() ||
+            follower->GetInstanceId() != leader->GetInstanceId() ||
+            follower->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE | UNIT_STATE_POSSESSED))
+        {
+            reason = "core_follow_target_or_actor_invalid";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        Unit* follower = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* leader = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!follower || !leader)
+        {
+            reason = "core_follow_actor_missing";
+            return false;
+        }
+
+        if (follower->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
+            follower->HasUnitState(UNIT_STATE_FOLLOW))
+        {
+            reason = "core_follow_already_active";
+            return false;
+        }
+
+        float const dx = follower->GetPositionX() - leader->GetPositionX();
+        float const dy = follower->GetPositionY() - leader->GetPositionY();
+        float const dz = follower->GetPositionZ() - leader->GetPositionZ();
+        if (dx * dx + dy * dy + dz * dz <= 25.0f)
+        {
+            reason = "core_follow_within_formation_range";
+            return false;
+        }
+        return true;
+    }
+
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    {
+        Unit* follower = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* leader = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!follower || !leader || !follower->IsAlive() || !leader->IsAlive() ||
+            !follower->IsFriendlyTo(leader) ||
+            follower->GetMapId() != leader->GetMapId() ||
+            follower->GetInstanceId() != leader->GetInstanceId() ||
+            follower->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE | UNIT_STATE_POSSESSED))
+            return ActionResult::Impossible;
+
+        // Delegate continuous target tracking, path generation and movement
+        // updates to the pinned Core FollowMovementGenerator. The simulator
+        // does not synthesize movement steps or mutate actor positions.
+        static float constexpr FORMATION_OFFSET = 2.5f;
+        static float constexpr FOLLOW_ANGLE_BEHIND = 3.14159265358979323846f;
+        follower->GetMotionMaster()->MoveFollow(leader, FORMATION_OFFSET, FOLLOW_ANGLE_BEHIND);
+        m_started = follower->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
+                    follower->HasUnitState(UNIT_STATE_FOLLOW);
+        return m_started ? ActionResult::Success : ActionResult::Failed;
+    }
+
+    bool DidStartFollow() const { return m_started; }
+
+private:
+    Map& m_map;
+    std::string m_name = "core_follow";
+    bool m_started = false;
+};
+
+
 class SimulatorCoreMovePointAction final : public Action
 {
 public:
@@ -1087,6 +1214,180 @@ bool RunEngineCoreMovementSmokeTest(Map& map)
     return true;
 }
 
+
+bool RunEngineCoreFollowSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor leader;
+    SimulatorActor follower;
+    bool const created = CreateSimulatorActor(map, *info, partyFaction, 0.0f, 6.0f, leader) &&
+                         CreateSimulatorActor(map, *info, partyFaction, 10.0f, 6.0f, follower);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, follower);
+        cleaned = DestroySimulatorActor(map, leader) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Follow fixture creation failed (cleanup=%u).", cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120 && (!leader.updateCount || !follower.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!leader.updateCount || !follower.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 6;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 6;
+    snapshot.capturedAtMs = 6000;
+
+    PartyMemberSnapshot followerMember;
+    followerMember.guid = follower.creature->GetObjectGuid().GetRawValue();
+    followerMember.roleId = static_cast<std::uint8_t>(PartyRole::MeleeDamage);
+    followerMember.mapId = map.GetId();
+    followerMember.instanceId = map.GetInstanceId();
+    followerMember.health = follower.creature->GetHealth();
+    followerMember.maxHealth = follower.creature->GetMaxHealth();
+    followerMember.online = true;
+    followerMember.alive = follower.creature->IsAlive();
+    followerMember.x = follower.creature->GetPositionX();
+    followerMember.y = follower.creature->GetPositionY();
+    followerMember.z = follower.creature->GetPositionZ();
+    snapshot.members.push_back(followerMember);
+
+    PartyMemberSnapshot leaderMember;
+    leaderMember.guid = leader.creature->GetObjectGuid().GetRawValue();
+    leaderMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    leaderMember.mapId = map.GetId();
+    leaderMember.instanceId = map.GetInstanceId();
+    leaderMember.health = leader.creature->GetHealth();
+    leaderMember.maxHealth = leader.creature->GetMaxHealth();
+    leaderMember.online = true;
+    leaderMember.alive = leader.creature->IsAlive();
+    leaderMember.isMainTank = true;
+    leaderMember.x = leader.creature->GetPositionX();
+    leaderMember.y = leader.creature->GetPositionY();
+    leaderMember.z = leader.creature->GetPositionZ();
+    snapshot.members.push_back(leaderMember);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 6000);
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCoreFollowAction> followAction(new SimulatorCoreFollowAction(map));
+    bool const registered = engine.RegisterAction(followAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_continuous_follow"));
+    strategy->AddTrigger(std::make_shared<SimulatorFollowTrigger>());
+    engine.AddStrategy(strategy);
+
+    float const initialDistance = std::sqrt(
+        (follower.creature->GetPositionX() - leader.creature->GetPositionX()) *
+        (follower.creature->GetPositionX() - leader.creature->GetPositionX()) +
+        (follower.creature->GetPositionY() - leader.creature->GetPositionY()) *
+        (follower.creature->GetPositionY() - leader.creature->GetPositionY()) +
+        (follower.creature->GetPositionZ() - leader.creature->GetPositionZ()) *
+        (follower.creature->GetPositionZ() - leader.creature->GetPositionZ()));
+
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.actionName == "core_follow" &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == leaderMember.guid &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(context, report);
+    bool const executed = !report.selectedIndices.empty() &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Success &&
+        followAction->DidStartFollow();
+
+    bool initialCaughtUp = false;
+    for (uint32 tick = 0; tick < 24; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+        float const dx = follower.creature->GetPositionX() - leader.creature->GetPositionX();
+        float const dy = follower.creature->GetPositionY() - leader.creature->GetPositionY();
+        float const dz = follower.creature->GetPositionZ() - leader.creature->GetPositionZ();
+        float const distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (distance <= 5.0f)
+        {
+            initialCaughtUp = true;
+            break;
+        }
+    }
+
+    float const followerXBeforeLeaderMove = follower.creature->GetPositionX();
+    leader.creature->GetMotionMaster()->MovePoint(2, -10.0f, 6.0f, 0.0f, MOVE_NONE);
+    bool const leaderMovementStarted =
+        leader.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+
+    bool followedLeaderRelocation = false;
+    for (uint32 tick = 0; tick < 48; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+
+        float const leaderDx = leader.creature->GetPositionX() + 10.0f;
+        float const leaderDy = leader.creature->GetPositionY() - 6.0f;
+        float const leaderDz = leader.creature->GetPositionZ();
+        bool const leaderAtDestination =
+            leaderDx * leaderDx + leaderDy * leaderDy + leaderDz * leaderDz <= 1.0f;
+
+        float const dx = follower.creature->GetPositionX() - leader.creature->GetPositionX();
+        float const dy = follower.creature->GetPositionY() - leader.creature->GetPositionY();
+        float const dz = follower.creature->GetPositionZ() - leader.creature->GetPositionZ();
+        float const distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (leaderAtDestination && distance <= 5.0f &&
+            follower.creature->GetPositionX() < followerXBeforeLeaderMove - 5.0f)
+        {
+            followedLeaderRelocation = true;
+            break;
+        }
+    }
+
+    float const finalDx = follower.creature->GetPositionX() - leader.creature->GetPositionX();
+    float const finalDy = follower.creature->GetPositionY() - leader.creature->GetPositionY();
+    float const finalDz = follower.creature->GetPositionZ() - leader.creature->GetPositionZ();
+    float const finalDistance = std::sqrt(finalDx * finalDx + finalDy * finalDy + finalDz * finalDz);
+    bool const followGeneratorRetained =
+        follower.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
+        follower.creature->HasUnitState(UNIT_STATE_FOLLOW);
+    bool const leaderReachedDestination =
+        std::fabs(leader.creature->GetPositionX() + 10.0f) <= 1.0f &&
+        std::fabs(leader.creature->GetPositionY() - 6.0f) <= 1.0f;
+
+    bool cleaned = DestroySimulatorActor(map, follower);
+    cleaned = DestroySimulatorActor(map, leader) && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine Core follow: aiReady=%u registered=%u selected=%u executed=%u initialDistance=%.2f initialCaughtUp=%u leaderMove=%u leaderReached=%u followerTracked=%u finalDistance=%.2f followGenerator=%u cleanup=%u.",
+             (leader.updateCount && follower.updateCount) ? 1u : 0u,
+             registered ? 1u : 0u, selected ? 1u : 0u, executed ? 1u : 0u,
+             initialDistance, initialCaughtUp ? 1u : 0u,
+             leaderMovementStarted ? 1u : 0u, leaderReachedDestination ? 1u : 0u,
+             followedLeaderRelocation ? 1u : 0u, finalDistance,
+             followGeneratorRetained ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!leader.updateCount || !follower.updateCount || !registered || !selected || !executed ||
+        !initialCaughtUp || !leaderMovementStarted || !leaderReachedDestination ||
+        !followedLeaderRelocation || !followGeneratorRetained || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine Core continuous-follow smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine selected Core MoveFollow and the native FollowMovementGenerator tracked the Main Tank after it relocated.");
+    return true;
+}
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -1499,11 +1800,12 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
+    bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
     bool const movementInterruptPassed = RunEngineCoreMovementInterruptSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
-                              movementPassed && movementInterruptPassed;
+                              movementPassed && followPassed && movementInterruptPassed;
 
     sMapMgr.DeleteTestMap(map);
 

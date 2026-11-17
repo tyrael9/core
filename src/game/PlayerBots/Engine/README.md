@@ -50,7 +50,7 @@ The current implementation does not yet provide New Engine mode. See ROADMAP.md 
 
 ## Automated combat simulation
 
-A Core-backed headless simulator is under active development. Stage A creates/ticks/deletes a real Core test map. Stage B now adds three template-backed Creature actors, probe-AI tick assertions, real direct damage, damage-generated threat, Core 110% melee target switching and explicit actor cleanup. Stage B code is committed but has not yet been compiled or runtime-tested; neither stage has been run against disposable DB copies and normal 5875 data. See CORE-COMBAT-SIMULATOR.md and TESTING.md for exact scope and gates.
+A Core-backed headless simulator is under active development. Stage A creates/ticks/deletes a real Core test map. Stage B now adds three template-backed Creature actors, probe-AI tick assertions, real direct damage, damage-generated threat, Core 110% melee target switching and explicit actor cleanup. Both stages pass full Linux ARM64 / Vanilla 5875 compile/link CI ([run #114](https://github.com/tyrael9/core/actions/runs/44011441992)); neither stage has been run against disposable DB copies and normal 5875 data. See CORE-COMBAT-SIMULATOR.md and TESTING.md for exact scope and gates.
 
 ## Logging is a required feature
 

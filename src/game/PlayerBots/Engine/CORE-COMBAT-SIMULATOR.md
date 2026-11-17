@@ -196,6 +196,18 @@ tar -czf extracted-data-5875.tar.gz -C storage/mangosd/extracted-data maps mmaps
 sha256sum extracted-data-5875.tar.gz
 ```
 
+On Windows PowerShell (run from the `vmangos-deploy` repository root):
+
+```powershell
+$source = ".\\storage\\mangosd\\extracted-data"
+tar.exe -czf .\\extracted-data-5875.tar.gz -C $source maps mmaps vmaps dbc
+if ($LASTEXITCODE -ne 0) { throw "tar failed" }
+(Get-FileHash .\\extracted-data-5875.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+tar.exe -tzf .\\extracted-data-5875.tar.gz | Select-Object -First 12
+```
+
+The archive listing should start with paths such as `maps/`, `mmaps/`, `vmaps/` and `dbc/5875/`. This is the extracted server data, not the original WoW client `Data` directory.
+
 Upload that archive to a private OCI Object Storage bucket, create a read-only pre-authenticated request for that exact object, and add its URL and checksum as the two repository Actions secrets. The next push to this branch will then run the simulator automatically after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
 
 **Next gate:** upload the complete extracted-data archive and configure those two secrets, then inspect the first runtime artifact for all three AI counters, health/damage/threat values, selected target GUIDs and cleanup results. Do not connect the PartyBotEngine executor or begin five-player/dungeon scenarios until this scenario passes runtime validation.

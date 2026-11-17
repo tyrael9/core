@@ -184,17 +184,18 @@ Not yet confirmed: runtime behavior of either stage with disposable DB copies an
 
 The repository now contains `tools/partybot-simulator/run-ci.sh`, wired into the ARM64 build workflow as a push-only optional step. It is a no-op until both repository Actions secrets below are configured:
 
-- `PARTYBOT_SIMULATOR_DBC_URL`: HTTPS read-only download URL for a `.tar.gz` archive containing `dbc/5875/*.dbc`.
+- `PARTYBOT_SIMULATOR_DBC_URL`: HTTPS read-only download URL for a `.tar.gz` archive of the complete extracted-data directory, preserving `dbc/5875/`, `maps/`, `vmaps/` and `mmaps/` at the archive root.
 - `PARTYBOT_SIMULATOR_DBC_SHA256`: SHA-256 checksum of that archive.
 
-Only the extracted DBC directory is required for this first scenario. The test does not validate terrain, collision or navigation, so the large `maps/`, `vmaps/` and `mmaps/` trees are intentionally not included. The runner starts the same public vMangos database image used by the pinned deployment wrapper, clones its `mangos`, `characters`, `realmd` and `logs` schemas to `partybot_sim_*`, and points all four Core connections exclusively at those disposable copies. It then runs the one-shot `mangosd` simulator and uploads `simulator.log` as a 14-day Actions artifact. It never reads or connects to the Oracle realm.
+The runner extracts the full archive into its isolated `DataDir` and checks that the required DBC files and all three world-data directories are present and nonempty. This supports later terrain, collision, navigation and map-content scenarios without uploading another fixture. It starts the same public vMangos database image used by the pinned deployment wrapper, clones its `mangos`, `characters`, `realmd` and `logs` schemas to `partybot_sim_*`, and points all four Core connections exclusively at those disposable copies. It then runs the one-shot `mangosd` simulator and uploads both console and file logs as a 14-day Actions artifact. It never reads or connects to the Oracle realm.
 
-To prepare the archive from the deployment directory, preserve the required directory layout:
+From the deployment directory, create a single archive while preserving the extracted-data directory structure:
 
 ```sh
-tar -czf dbc-5875.tar.gz -C storage/mangosd/extracted-data dbc/5875
+tar -czf extracted-data-5875.tar.gz -C storage/mangosd/extracted-data maps mmaps vmaps dbc
+sha256sum extracted-data-5875.tar.gz
 ```
 
-Create a read-only HTTPS object URL (for example, an OCI Object Storage pre-authenticated request), add it and the archive checksum as the two repository Actions secrets, and the next push to this branch will run the simulator automatically after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
+Upload that archive to a private OCI Object Storage bucket, create a read-only pre-authenticated request for that exact object, and add its URL and checksum as the two repository Actions secrets. The next push to this branch will then run the simulator automatically after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
 
-**Next gate:** obtain the small private DBC archive and configure those two secrets, then inspect the first runtime artifact for all three AI counters, health/damage/threat values, selected target GUIDs and cleanup results. Do not connect the PartyBotEngine executor or begin five-player/dungeon scenarios until this scenario passes runtime validation.
+**Next gate:** upload the complete extracted-data archive and configure those two secrets, then inspect the first runtime artifact for all three AI counters, health/damage/threat values, selected target GUIDs and cleanup results. Do not connect the PartyBotEngine executor or begin five-player/dungeon scenarios until this scenario passes runtime validation.

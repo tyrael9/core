@@ -720,50 +720,11 @@ public:
             mover->HasUnitState(UNIT_STATE_LOST_CONTROL))
             return ActionResult::Impossible;
 
-        // Server-driven bot movement does not pass through the client's
-        // movement-packet handler (where Core normally interrupts movement-
-        // interruptible casts). SpellCaster's bulk helper additionally gates
-        // on GetCastedTime() (the remaining timer), which can still be zero
-        // during the first server tick of a newly accepted cast. For a bot
-        // action we must cancel a flagged preparing cast immediately, even in
-        // that first tick, rather than let it complete while moving.
-        Spell* const genericSpell = mover->GetCurrentSpell(CURRENT_GENERIC_SPELL);
-        if (genericSpell)
-        {
-            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                     "[PartyBotSimulator] Movement adapter pre-interrupt: spell=%u state=%u castedTime=%u triggered=%u autorepeat=%u movementFlag=%u.",
-                     genericSpell->m_spellInfo ? genericSpell->m_spellInfo->Id : 0u,
-                     static_cast<uint32>(genericSpell->getState()), genericSpell->GetCastedTime(),
-                     genericSpell->IsTriggered() ? 1u : 0u, genericSpell->IsAutoRepeat() ? 1u : 0u,
-                     genericSpell->m_spellInfo && genericSpell->m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT) ? 1u : 0u);
-            if ((genericSpell->getState() == SPELL_STATE_PREPARING ||
-                 genericSpell->getState() == SPELL_STATE_CASTING) &&
-                !genericSpell->IsTriggered() && !genericSpell->IsAutoRepeat() &&
-                genericSpell->m_spellInfo &&
-                genericSpell->m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT))
-            {
-                // SpellEvent retains its own reference after the caster slot is cleared.
-                // Inspect the Spell object itself as well as the slot so the simulator
-                // can distinguish a real cancel from merely dropping the current-spell link.
-                Spell* const interruptedSpell = genericSpell;
-                mover->InterruptSpell(CURRENT_GENERIC_SPELL);
-                Unit* const interruptedTarget = mover->GetMap()->GetUnit(mover->GetTargetGuid());
-                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                         "[PartyBotSimulator] Movement adapter post-interrupt: genericSpellPresent=%u spellState=%u deletable=%u targetHealth=%u.",
-                         mover->GetCurrentSpell(CURRENT_GENERIC_SPELL) ? 1u : 0u,
-                         static_cast<uint32>(interruptedSpell->getState()),
-                         interruptedSpell->IsDeletable() ? 1u : 0u,
-                         interruptedTarget ? interruptedTarget->GetHealth() : 0u);
-            }
-        }
-
-        Spell* const channeledSpell = mover->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
-        if (channeledSpell && channeledSpell->getState() == SPELL_STATE_CASTING &&
-            !channeledSpell->IsTriggered() && channeledSpell->m_spellInfo &&
-            (channeledSpell->m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT) ||
-             channeledSpell->m_spellInfo->HasChannelInterruptFlag(AURA_INTERRUPT_MOVING_CANCELS)))
-            mover->InterruptSpell(CURRENT_CHANNELED_SPELL);
-
+        // Keep the adapter limited to issuing a Core movement command. Do not
+        // duplicate spell-interruption policy here: when the Core movement
+        // generator relocates a Player, Player::SetPosition calls
+        // Unit::HandleInterruptsOnMovement, which applies the native movement
+        // interrupt flags and channel-interrupt rules.
         // MOVE_NONE uses the Core point movement generator without requiring
         // a pathfinder/navmesh; the spline and position are still Core-owned.
         mover->GetMotionMaster()->MovePoint(1, candidate.destinationX,
@@ -922,6 +883,16 @@ bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
             break;
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
         map.Update(250);
+        if (tick == 0)
+        {
+            Spell* const pendingSpell = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[PartyBotSimulator] First Core movement update: genericSpellPresent=%u spellId=%u state=%u patientHealth=%u.",
+                     pendingSpell ? 1u : 0u,
+                     pendingSpell && pendingSpell->m_spellInfo ? pendingSpell->m_spellInfo->Id : 0u,
+                     pendingSpell ? static_cast<uint32>(pendingSpell->getState()) : 0u,
+                     patient.creature->GetHealth());
+        }
     }
 
     uint32 const healthAfter = patient.creature->GetHealth();
@@ -1498,13 +1469,18 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     // the normal Creature::AIM_Initialize lifecycle above.
     bool const mapRetained = sMapMgr.FindMap(mapId, instanceId) == map;
 
+    // Run every stage independently so one failure does not suppress the
+    // remaining diagnostics; the final result still requires every stage.
+    bool const creatureCombatPassed = RunCoreCombatThreatSmokeTest(*map);
+    bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
+    bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
+    bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
+    bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
+    bool const movementInterruptPassed = RunEngineCoreMovementInterruptSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
-                             RunCoreCombatThreatSmokeTest(*map) &&
-                             RunEngineCoreExecutorSmokeTest(*map);
-                             RunEngineCoreSpellHealSmokeTest(*map);
-                             RunEngineCorePlayerSpellHealSmokeTest(*map);
-                             RunEngineCoreMovementSmokeTest(*map);
-                             RunEngineCoreMovementInterruptSmokeTest(*map);
+                              creatureCombatPassed && engineExecutorPassed &&
+                              creatureHealPassed && playerHealPassed &&
+                              movementPassed && movementInterruptPassed;
 
     sMapMgr.DeleteTestMap(map);
 

@@ -259,6 +259,9 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
     bool const cleanedTank = DestroySimulatorActor(map, tank);
     bool const cleanedDamageDealer = DestroySimulatorActor(map, damageDealer);
     bool const actorsCleaned = cleanedBoss && cleanedTank && cleanedDamageDealer;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Actor cleanup: boss=%u tank=%u damageDealer=%u.",
+             cleanedBoss ? 1u : 0u, cleanedTank ? 1u : 0u, cleanedDamageDealer ? 1u : 0u);
 
     if (!hostilePair || !aiUpdated || !damageAndThreat || !targetSelection || !actorsCleaned)
     {

@@ -2497,6 +2497,7 @@ bool RunEngineCoreRealGroupSnapshotSmokeTest(Map& map)
 
     std::vector<std::unique_ptr<WorldSession>> sessions;
     std::vector<Player*> players;
+    std::vector<ObjectGuid> playerGuids;
     std::unique_ptr<Group> group(new Group());
     bool groupRegistered = false;
 
@@ -2528,9 +2529,18 @@ bool RunEngineCoreRealGroupSnapshotSmokeTest(Map& map)
             if (session && session->GetPlayer())
                 sessionsCleaned = false;
         }
+
+        // Logout must remove every Player from the actual Map as well as
+        // clearing the session pointer. Keep GUIDs to assert this after the
+        // Player objects have been destroyed.
+        bool playersDetachedFromMap = true;
+        for (ObjectGuid const& guid : playerGuids)
+            if (map.GetUnit(guid))
+                playersDetachedFromMap = false;
+
         players.clear();
         sessions.clear();
-        return ungrouped && sessionsCleaned;
+        return ungrouped && sessionsCleaned && playersDetachedFromMap;
     };
 
     // Create five real Core Player objects with local sessions on this Map.
@@ -2546,7 +2556,10 @@ bool RunEngineCoreRealGroupSnapshotSmokeTest(Map& map)
             static_cast<float>(index) * 2.0f, 6.0f, 0.0f);
         sessions.push_back(std::move(session));
         if (player)
+        {
             players.push_back(player);
+            playerGuids.push_back(player->GetObjectGuid());
+        }
 
         if (!created || !player || !player->IsInWorld())
         {
@@ -2647,9 +2660,10 @@ bool RunEngineCoreRealGroupSnapshotSmokeTest(Map& map)
     uint32 const groupId = group->GetId();
     bool const objectMgrRegistered =
         sObjectMgr.GetGroupById(groupId) == group.get();
+    bool const groupRegisteredBeforeCleanup = groupRegistered && objectMgrRegistered;
     uint32 const membersBeforeDisband = group->GetMembersCount();
-    bool const allChecksPassed = groupCreated && groupRegistered &&
-        objectMgrRegistered && allMembersAdded && allPlayersOnSameMap &&
+    bool const allChecksPassed = groupCreated && groupRegisteredBeforeCleanup &&
+        allMembersAdded && allPlayersOnSameMap &&
         snapshotValid && rosterResolved && valuesCopied &&
         rolesAreExplicitlyUnknown && cacheRetained;
 
@@ -2658,8 +2672,8 @@ bool RunEngineCoreRealGroupSnapshotSmokeTest(Map& map)
     bool const cleanupPassed = cleaned && groupRemoved;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Real Core Group snapshot: created=%u registered=%u objectMgr=%u members=%u membersAdded=%u sameMap=%u snapshotValid=%u rosterResolved=%u valuesCopied=%u rolesUnknown=%u cacheRetained=%u groupRemoved=%u cleanup=%u.",
-             groupCreated ? 1u : 0u, groupRegistered ? 1u : 0u,
+             "[PartyBotSimulator] Real Core Group snapshot: created=%u registeredBeforeCleanup=%u objectMgr=%u members=%u membersAdded=%u sameMap=%u snapshotValid=%u rosterResolved=%u valuesCopied=%u rolesUnknown=%u cacheRetained=%u groupRemoved=%u cleanup=%u.",
+             groupCreated ? 1u : 0u, groupRegisteredBeforeCleanup ? 1u : 0u,
              objectMgrRegistered ? 1u : 0u, membersBeforeDisband,
              allMembersAdded ? 1u : 0u, allPlayersOnSameMap ? 1u : 0u,
              snapshotValid ? 1u : 0u, rosterResolved ? 1u : 0u,
@@ -3097,8 +3111,11 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const playerHealRevalidationPassed = RunEngineCorePlayerHealRevalidationSmokeTest(*map);
     bool const playerHealLosPassed = RunEngineCorePlayerHealLosSmokeTest(*map);
     bool const movePointControlSafetyPassed = RunEngineCoreMovePointControlSafetySmokeTest(*map);
-    bool const realGroupSnapshotPassed = RunEngineCoreRealGroupSnapshotSmokeTest(*map);
     bool const movementInterruptPassed = RunEngineCoreMovementInterruptSmokeTest(*map);
+    // Keep the five-Player Group fixture last: it exercises real Group
+    // teardown and session logout, so no later Player fixture can inherit
+    // temporary session or instance state.
+    bool const realGroupSnapshotPassed = RunEngineCoreRealGroupSnapshotSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&

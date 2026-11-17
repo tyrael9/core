@@ -90,7 +90,7 @@ fi
 for source_schema in mangos characters realmd logs; do
     target_schema="partybot_sim_$source_schema"
     docker exec "$DB_CONTAINER" mariadb --user=root --password=password --execute \
-        "CREATE DATABASE `$target_schema` DEFAULT CHARSET utf8 COLLATE utf8_general_ci; GRANT ALL ON `$target_schema`.* TO 'mangos'@'%'; FLUSH PRIVILEGES;"
+        "CREATE DATABASE $target_schema DEFAULT CHARSET utf8 COLLATE utf8_general_ci; GRANT ALL ON $target_schema.* TO 'mangos'@'%'; FLUSH PRIVILEGES;"
     docker exec "$DB_CONTAINER" bash -o pipefail -c \
         "mariadb-dump --user=root --password=password --single-transaction --skip-lock-tables '$source_schema' | mariadb --user=root --password=password '$target_schema'"
 done

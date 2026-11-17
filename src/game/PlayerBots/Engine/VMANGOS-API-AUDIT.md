@@ -161,3 +161,15 @@ The role-aware snapshot adapter reads `Player::AI()` on the current Map and uses
 Hostiles are copied from both each member's current `GetVictim()` and `GetAttackers()`. The builder rejects a Group member as a hostile, requires the Unit to belong to the current Map, and stores only GUID/scalar data. Threat-list GUIDs are resolved to snapshot members in the pure engine; current victim is preferred and threat is a fallback only when the victim does not resolve to an available group member.
 
 This slice intentionally does not expose live Unit pointers to strategies, infer roles for human players, inspect pet attackers as a distinct entity, or treat the hostile set as a complete nearby-enemy scan. It also does not prove role assignments or target quality in-game; those require Shadow decision logs and operator comparison.
+
+
+## 7. Spell execution audit — simulator Stage D
+
+Additional source inspection for the pinned revision:
+
+- \`SpellCaster::CastSpell(SpellCaster*, SpellEntry const*, bool triggered, ...)\` returns the authoritative \`SpellCastResult\`.
+- \`SpellEntry::Effect[0..2]\` identifies the spell effect slots; the simulator validates that its configured spell includes \`SPELL_EFFECT_HEAL\`.
+- \`Unit::GetHealth()\` / \`GetMaxHealth()\` expose the resulting target state. The simulator does not synthesize a heal by calling \`ModifyHealth\` or \`SetHealth\` after casting.
+- The existing \`CombatBotBaseAI::DoCastSpell\` confirms the normal PlayerBot path uses \`Player::CastSpell(target, spell, false)\` and treats \`SPELL_CAST_OK\` as the authoritative immediate result. Its companion \`CanTryToCastSpell\` performs additional readiness, GCD, power, aura, immunity, shapeshift and range checks.
+
+Stage D currently uses spell 2050 (Lesser Heal, Rank 1) with \`triggered=true\` on a same-faction simulator Creature. This makes the test deterministic and proves the Core Spell/SpellEffects heal path, but intentionally does not validate player spell ownership, normal mana/GCD/cast-time rules, interruption, or completion events. Those remain mandatory before production PlayerBot spell execution.

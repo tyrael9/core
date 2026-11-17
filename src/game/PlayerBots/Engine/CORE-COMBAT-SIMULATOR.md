@@ -227,3 +227,18 @@ This is deliberately a narrow proof:
 - It does not yet prove player spell casting, healing, movement generators, class rotations, or a full dungeon AI.
 - The next vertical slices should add spell-result-aware casts and healing, then movement/formation, with each action revalidating its Core preconditions immediately before execution.
 
+
+
+## Stage D — PartyBotEngine healer triage and Core spell effect
+
+The next vertical slice adds a healer-role trigger and a \`core_heal\` Action adapter. The trigger reads only the value snapshot and emits a healing candidate for an injured living party member. The action resolves caster/target GUIDs on the current test map, checks that the spell is a heal effect and that the two units are alive, friendly and the target is still injured.
+
+The simulator uses Vanilla spell 2050 (Lesser Heal, Rank 1). It requires all of the following:
+- PartyBotEngine registers the action, evaluates the healer trigger and selects the injured tank.
+- The adapter calls the pinned Core \`SpellCaster::CastSpell\` API and receives \`SPELL_CAST_OK\`.
+- The Core Spell / SpellEffects path increases the target's actual health; the measured delta is logged and checked.
+- Both Creature actors are detached and destroyed before the test map is deleted.
+
+**Important scope limitation:** this first fixture deliberately uses a triggered cast from a template-backed Creature. This still exercises the real Core spell implementation and healing effect, but bypasses player spellbook ownership, mana cost, GCD and cast-time progression. It is not proof that an authenticated PlayerBot can cast a known spell normally. A separate non-triggered Player-backed slice must cover those mechanics before this adapter is used by production PlayerBots.
+
+The optional CI runner now requires the Stage D PASS marker in addition to the Stage A/B and Stage C markers. It remains push-only, uses the complete extracted-data fixture and four disposable \`partybot_sim_*\` schemas, and has no image-publish or deployment side effects.

@@ -56,12 +56,14 @@ The current role-aware Shadow slice is a proof of the data-to-candidate path onl
 - [x] Prove real Core damage, damage-generated threat, threat ordering and victim reselection with runtime Core-state assertions.
 - [~] Bound map tick progression and document wall-clock cadence; deterministic RNG/replay control remains.
 - [x] Add a Stage B push-only CI runtime job with strict timeout and no deployment/image-publish side effects.
-- [~] Connect PartyBotEngine to a fixture-backed five-member party snapshot and a real Core Unit::Attack executor; first tank-assist vertical slice is under runtime CI validation.
-- [ ] Extend the executor from attack/targeting to spell casts, healing, movement and defensive actions.
+- [x] Connect PartyBotEngine to a fixture-backed five-member party snapshot and a real Core Unit::Attack executor; runtime CI verifies selection, execution result, actual victim and cleanup.
+- [~] Add a spell-aware healer-triage action using the real Core Spell/SpellEffects pipeline; the first Lesser Heal Creature fixture is under runtime CI validation. This triggered-cast test deliberately does not claim Player spellbook, mana, GCD or cast-time coverage.
+- [ ] Extend spell execution to ordinary non-triggered Player casts and validate accepted/pending/completed/interrupted outcomes.
+- [ ] Extend the executor to movement and defensive actions.
 - [ ] Add scripted aggro, healer-threat, tank-death, healer-death and multi-add scenarios.
 - [ ] Evaluate full dungeon/instance scripts as a later tier.
 
-**Acceptance:** a headless CI scenario runs real pinned-Core combat methods and verifies damage, threat, target changes and cleanup. A toy combat model or direct mutation of expected results does not count.
+**Acceptance:** a headless CI scenario runs real pinned-Core combat methods and verifies damage, threat, target changes, Engine-selected attacks, Engine-selected spell execution, resulting healing and cleanup. A toy combat model or direct mutation of expected results does not count.
 
 Design and audit: CORE-COMBAT-SIMULATOR.md. This phase is test infrastructure, not an alternative AI architecture.
 

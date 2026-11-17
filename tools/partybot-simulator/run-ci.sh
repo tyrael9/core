@@ -149,7 +149,7 @@ with open(destination, "w", encoding="utf-8") as output:
     output.write(config)
 PY
 
-echo "[PartyBotSimulator] Running one-shot Stage A/B Core simulator on disposable schemas." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Running one-shot Stage A-D Core simulator on disposable schemas." | tee -a "$LOG_FILE"
 set +e
 timeout --signal=TERM --kill-after=15s 10m "$MANGOSD_BIN" -c "$CONFIG_FILE" 2>&1 | tee -a "$LOG_FILE"
 simulator_status=${PIPESTATUS[0]}
@@ -170,9 +170,20 @@ if ! grep -Fq "[PartyBotSimulator] Actor cleanup: boss=1 tank=1 damageDealer=1."
     exit 1
 fi
 
+
+if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine selected a tank-assist action and executed real Unit::Attack against a hostile Core Creature." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The PartyBotEngine attack-executor PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine selected healer triage and the Core Spell pipeline applied a real Lesser Heal effect." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The PartyBotEngine Core spell/heal PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: created, ran a bounded Core Creature combat/threat scenario and deleted map" "$LOG_FILE"; then
     echo "[PartyBotSimulator] The map/combat lifecycle PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 
-echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, damage, threat switching and actor cleanup." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, damage, threat switching, Engine attack, spell healing and actor cleanup." | tee -a "$LOG_FILE"

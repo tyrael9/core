@@ -13,6 +13,7 @@
 #include "PlayerBots/Engine/Strategy.h"
 #include "PlayerBots/Engine/Trigger.h"
 #include "ObjectMgr.h"
+#include "SpellMgr.h"
 
 #include <algorithm>
 #include <chrono>
@@ -249,6 +250,220 @@ public:
 private:
     std::string m_name = "simulator_tank_assist";
 };
+
+
+
+static uint32 constexpr SIMULATOR_HEAL_SPELL_ID = 2050; // Lesser Heal (Rank 1), Vanilla 1.12.
+
+class SimulatorCoreHealAction final : public Action
+{
+public:
+    explicit SimulatorCoreHealAction(Map& map) : m_map(map) {}
+    std::string const& GetName() const override { return m_name; }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        PartyMemberSnapshot const* patientSnapshot = context.snapshot.FindMember(candidate.targetGuid);
+        Unit* caster = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(candidate.spellId);
+        bool const isHealingSpell = spell &&
+            (spell->Effect[0] == SPELL_EFFECT_HEAL ||
+             spell->Effect[1] == SPELL_EFFECT_HEAL ||
+             spell->Effect[2] == SPELL_EFFECT_HEAL);
+        if (!patientSnapshot || !patientSnapshot->alive || !caster || !patient ||
+            !caster->IsAlive() || !patient->IsAlive() || !caster->IsFriendlyTo(patient) ||
+            !isHealingSpell || patient->GetHealth() >= patient->GetMaxHealth())
+        {
+            reason = "core_heal_target_or_spell_unavailable";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!patient || patient->GetHealth() >= patient->GetMaxHealth())
+        {
+            reason = "core_heal_target_already_full_or_missing";
+            return false;
+        }
+        return true;
+    }
+
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    {
+        Unit* caster = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(candidate.spellId);
+        if (!caster || !patient || !spell || !caster->IsAlive() || !patient->IsAlive() ||
+            !caster->IsFriendlyTo(patient) || patient->GetHealth() >= patient->GetMaxHealth())
+            return ActionResult::Impossible;
+
+        uint32 const healthBefore = patient->GetHealth();
+        caster->SetFacingToObject(patient);
+
+        // Triggered=true keeps this headless Creature fixture independent of
+        // player spellbook, mana, GCD and cast-time state. The Core still runs
+        // the real Spell/SpellEffects pipeline and returns its authoritative
+        // SpellCastResult; the test separately requires an actual heal effect.
+        SpellCastResult const castResult = caster->CastSpell(patient, spell, true);
+        uint32 const healthAfter = patient->GetHealth();
+        m_lastCastResult = castResult;
+        m_lastHealing = healthAfter > healthBefore ? healthAfter - healthBefore : 0;
+        return castResult == SPELL_CAST_OK && healthAfter > healthBefore
+            ? ActionResult::Success : ActionResult::Failed;
+    }
+
+    SpellCastResult GetLastCastResult() const { return m_lastCastResult; }
+    uint32 GetLastHealing() const { return m_lastHealing; }
+
+private:
+    Map& m_map;
+    std::string m_name = "core_heal";
+    SpellCastResult m_lastCastResult = SPELL_FAILED_UNKNOWN;
+    uint32 m_lastHealing = 0;
+};
+
+class SimulatorHealerTriageTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive &&
+               context.bot.roleId == static_cast<std::uint8_t>(PartyRole::Healer);
+    }
+    void CollectCandidates(DecisionContext const& context,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        for (PartyMemberSnapshot const& member : context.snapshot.members)
+        {
+            if (!member.alive || member.guid == context.bot.guid ||
+                !member.maxHealth || member.health >= member.maxHealth)
+                continue;
+            ActionCandidate candidate;
+            candidate.actionName = "core_heal";
+            candidate.targetGuid = member.guid;
+            candidate.spellId = SIMULATOR_HEAL_SPELL_ID;
+            candidate.basePriority = 100.0f *
+                (1.0f - static_cast<float>(member.health) / member.maxHealth);
+            candidate.channel = ActionChannel::GlobalCooldown;
+            candidates.push_back(candidate);
+        }
+    }
+private:
+    std::string m_name = "simulator_healer_triage";
+};
+
+bool RunEngineCoreSpellHealSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor healer;
+    SimulatorActor patient;
+    bool created = CreateSimulatorActor(map, *info, partyFaction, 0.0f, 4.0f, healer) &&
+                   CreateSimulatorActor(map, *info, partyFaction, 1.0f, 4.0f, patient);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, patient);
+        cleaned = DestroySimulatorActor(map, healer) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Spell/heal fixture creation failed (cleanup=%u).", cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120 && (!healer.updateCount || !patient.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!healer.updateCount || !patient.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    healer.creature->SetLevel(60);
+    patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
+    uint32 const healthBefore = patient.creature->GetHealth();
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 2;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 2;
+    snapshot.capturedAtMs = 2000;
+
+    PartyMemberSnapshot healerMember;
+    healerMember.guid = healer.creature->GetObjectGuid().GetRawValue();
+    healerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    healerMember.mapId = map.GetId();
+    healerMember.instanceId = map.GetInstanceId();
+    healerMember.health = healer.creature->GetHealth();
+    healerMember.maxHealth = healer.creature->GetMaxHealth();
+    healerMember.online = true;
+    healerMember.alive = healer.creature->IsAlive();
+    snapshot.members.push_back(healerMember);
+
+    PartyMemberSnapshot patientMember;
+    patientMember.guid = patient.creature->GetObjectGuid().GetRawValue();
+    patientMember.roleId = static_cast<std::uint8_t>(PartyRole::Tank);
+    patientMember.mapId = map.GetId();
+    patientMember.instanceId = map.GetInstanceId();
+    patientMember.health = healthBefore;
+    patientMember.maxHealth = patient.creature->GetMaxHealth();
+    patientMember.online = true;
+    patientMember.alive = patient.creature->IsAlive();
+    patientMember.isMainTank = true;
+    snapshot.members.push_back(patientMember);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 2000);
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCoreHealAction> healAction(new SimulatorCoreHealAction(map));
+    bool const registered = engine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_healer_triage"));
+    strategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>());
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
+        report.candidates[report.selectedIndices[0]].candidate.spellId == SIMULATOR_HEAL_SPELL_ID &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(context, report);
+
+    uint32 const healthAfter = patient.creature->GetHealth();
+    bool const executed = !report.selectedIndices.empty() &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Success &&
+        healAction->GetLastCastResult() == SPELL_CAST_OK && healthAfter > healthBefore &&
+        healAction->GetLastHealing() == healthAfter - healthBefore;
+
+    bool cleaned = DestroySimulatorActor(map, patient);
+    cleaned = DestroySimulatorActor(map, healer) && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine spell/heal: aiReady=%u registered=%u candidates=%u selected=%u castResult=%u health=%u>%u healed=%u cleanup=%u.",
+             (healer.updateCount != 0 && patient.updateCount != 0) ? 1u : 0u,
+             registered ? 1u : 0u, static_cast<uint32>(report.candidates.size()),
+             selected ? 1u : 0u, static_cast<uint32>(healAction->GetLastCastResult()),
+             healthBefore, healthAfter, healAction->GetLastHealing(), cleaned ? 1u : 0u);
+
+    if (!registered || !selected || !executed || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine-to-Core spell/heal smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine selected healer triage and the Core Spell pipeline applied a real Lesser Heal effect.");
+    return true;
+}
 
 bool RunEngineCoreExecutorSmokeTest(Map& map)
 {
@@ -530,6 +745,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const combatPassed = registered && mapRetained &&
                              RunCoreCombatThreatSmokeTest(*map) &&
                              RunEngineCoreExecutorSmokeTest(*map);
+                             RunEngineCoreSpellHealSmokeTest(*map);
 
     sMapMgr.DeleteTestMap(map);
 

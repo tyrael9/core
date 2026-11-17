@@ -69,6 +69,27 @@ jobs:
       - name: Build server and realm daemon
         run: cmake --build build --parallel 2
 
+      - name: Validate simulator runtime harness syntax
+        run: bash -n tools/partybot-simulator/run-ci.sh
+
+      # Runtime uses only disposable schemas and a private DBC fixture. It is
+      # push-only and remains a no-op until the two repository secrets exist.
+      - name: Run optional Core-backed simulator runtime test
+        if: github.event_name == 'push'
+        env:
+          PARTYBOT_SIMULATOR_DBC_URL: ${{ secrets.PARTYBOT_SIMULATOR_DBC_URL }}
+          PARTYBOT_SIMULATOR_DBC_SHA256: ${{ secrets.PARTYBOT_SIMULATOR_DBC_SHA256 }}
+        run: bash tools/partybot-simulator/run-ci.sh
+
+      - name: Upload simulator runtime logs
+        if: always() && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: partybot-simulator-${{ github.sha }}
+          path: simulator.log
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Show compiler cache statistics
         if: always()
         run: ccache --show-stats

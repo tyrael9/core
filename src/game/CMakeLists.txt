@@ -195,6 +195,7 @@ set (game_SRCS
     PlayerBots/Engine/PartyBotEngine.cpp
     PlayerBots/Engine/ShadowStrategies.cpp
     PlayerBots/Engine/PartySnapshotBuilder.cpp
+    PlayerBots/Engine/CoreCombatSimulator.cpp
     PlayerBots/CombatBotBaseAI.cpp
     PlayerBots/BattleBotAI.cpp
     PlayerBots/BattleBotWaypoints.cpp

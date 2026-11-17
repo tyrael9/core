@@ -100,10 +100,25 @@ bool CreateSimulatorActor(Map& map, CreatureInfo const& info, uint32 factionId,
         return false;
     }
 
+    // AIM_Initialize is the Core lifecycle entry point for both the default
+    // MotionMaster generator and the template-selected AI. Do this before
+    // replacing the AI: installing a custom AI before Map::Add makes
+    // Creature::AddToWorld skip AIM_Initialize entirely, leaving MotionMaster
+    // empty and causing UpdateMotion's !empty() assertion.
+    if (!creature->AIM_Initialize())
+    {
+        delete creature;
+        return false;
+    }
+
+    // AIM_Initialize created the normal template AI. Replace it explicitly;
+    // Creature::SetAI is a raw pointer setter and does not delete the old AI.
+    delete creature->AI();
+    creature->SetAI(new SimulatorProbeAI(creature, actor.updateCount));
+
     creature->SetFactionTemplateId(factionId);
     creature->SetMaxHealth(100000);
     creature->SetHealth(100000);
-    creature->SetAI(new SimulatorProbeAI(creature, actor.updateCount));
 
     // A headless map has no player-centered update cells. Active actors are
     // visited by Map::UpdateCells through the Core's normal active-object path.
@@ -318,26 +333,28 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     uint32 const instanceId = map->GetInstanceId();
     bool const registered = instanceId != 0 && sMapMgr.FindMap(mapId, instanceId) == map;
 
-    // Keep the Stage A empty-map tick as a separate lifecycle assertion.
-    map->Update(50);
-    bool const tickRetained = sMapMgr.FindMap(mapId, instanceId) == map;
+    // Keep Stage A limited to map registration/registry cleanup. An empty
+    // Map::Update can execute instance-script work before simulator actors
+    // exist; the first map tick belongs to Stage B, after actors have completed
+    // the normal Creature::AIM_Initialize lifecycle above.
+    bool const mapRetained = sMapMgr.FindMap(mapId, instanceId) == map;
 
-    bool const combatPassed = registered && tickRetained && RunCoreCombatThreatSmokeTest(*map);
+    bool const combatPassed = registered && mapRetained && RunCoreCombatThreatSmokeTest(*map);
 
     sMapMgr.DeleteTestMap(map);
 
     bool const removed = sMapMgr.FindMap(mapId, instanceId) == nullptr;
-    if (!registered || !tickRetained || !combatPassed || !removed)
+    if (!registered || !mapRetained || !combatPassed || !removed)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Test-map/combat assertions failed (registered=%u emptyTickRetained=%u combat=%u removed=%u instance=%u).",
-                 registered ? 1u : 0u, tickRetained ? 1u : 0u, combatPassed ? 1u : 0u,
+                 "[PartyBotSimulator] Test-map/combat assertions failed (registered=%u retained=%u combat=%u removed=%u instance=%u).",
+                 registered ? 1u : 0u, mapRetained ? 1u : 0u, combatPassed ? 1u : 0u,
                  removed ? 1u : 0u, instanceId);
         return false;
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PASS: created, ticked, ran a bounded Core Creature combat/threat scenario and deleted map %u instance %u.",
+             "[PartyBotSimulator] PASS: created, ran a bounded Core Creature combat/threat scenario and deleted map %u instance %u.",
              mapId, instanceId);
     return true;
 }

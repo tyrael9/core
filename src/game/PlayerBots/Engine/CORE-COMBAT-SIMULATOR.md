@@ -106,9 +106,9 @@ This remains a simulator fixture, not a production-authenticated PlayerBot or fi
 ### Stage F — movement and defensive action adapters
 
 - [x] First Core point-movement primitive: PartyBotEngine derives a formation destination from the Main Tank snapshot, the adapter calls `MotionMaster::MovePoint`, and runtime CI verifies the real position reaches the destination.
-- [~] Player movement-interrupt fixture: the Engine selects the formation destination, and the simulator models the inbound mover-relocation operation by calling `Player::SetPosition`. This enters the native `Player::SetPosition` → `Unit::HandleInterruptsOnMovement` path; the simulator does not inspect spell flags or cancel spells itself. The separate Stage F test continues to cover server-driven `MotionMaster::MovePoint` on a Creature. Runtime CI must still prove the Player cast is cancelled and the patient remains unchanged.
-- [ ] Add continuous follow/formation tracking and defensive actions against real Core movement generators and unit state.
-- [ ] Verify continuous movement completion, movement cancellation of casts, target/range/LOS revalidation and cleanup.
+- [x] Player movement-interrupt fixture: the Engine selects the formation destination, and the simulator models the inbound mover-relocation operation by calling `Player::SetPosition`. This enters the native `Player::SetPosition` → `Unit::HandleInterruptsOnMovement` path; the simulator does not inspect spell flags or cancel spells itself. Runtime CI run `#44145923142` proves `castCancelled=1`, patient health `50000>50000`, movement completion and cleanup.
+- [~] Add continuous follow/formation tracking and defensive actions against real Core movement generators and unit state. A Core `FollowMovementGenerator` action and a moving-leader runtime scenario are now implemented; pending the next configured-fixture CI run.
+- [ ] Extend follow coverage to retargeting/recovery edge cases, target/range/LOS revalidation and cleanup; add defensive-action scenarios against real Core movement generators and unit state.
 
 ### Stage G — dungeon encounter simulation
 

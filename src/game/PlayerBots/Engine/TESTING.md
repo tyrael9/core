@@ -113,6 +113,7 @@ The initial audit confirmed a useful seam: `MapManager::CreateTestMap` / `Delete
 The Stage B source audit has now verified the temporary-Creature lifecycle contract:
 - Create actors only from loaded `CreatureInfo` templates and explicit test positions.
 - Install the simulator-owned `CreatureAI` before `Map::Add`, otherwise normal AI factory selection runs.
+- In an empty headless instance, ordinary non-active Creatures are not guaranteed to receive `Creature::Update`: `Map::UpdateCells` visits cells around players and active non-player objects. Mark simulator actors active before `Map::Add`, and assert the custom AI update counter advances after a tick. Respect the configured wall-clock cell-update cadence; do not count an empty map tick as an actor update.
 - Check template-driven spawn spells: `Map::Add` invokes `Creature::CastSpawnSpell()` after insertion.
 - Detach temporary actors with `Map::Remove(creature, false)`, then explicitly destroy them. Never use `remove=true` for these actors because that path can save respawn time.
 - Remove/destroy every actor before `MapManager::DeleteTestMap`.

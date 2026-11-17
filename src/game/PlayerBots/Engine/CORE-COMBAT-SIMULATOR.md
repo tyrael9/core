@@ -106,7 +106,7 @@ This remains a simulator fixture, not a production-authenticated PlayerBot or fi
 ### Stage F — movement and defensive action adapters
 
 - [x] First Core point-movement primitive: PartyBotEngine derives a formation destination from the Main Tank snapshot, the adapter calls `MotionMaster::MovePoint`, and runtime CI verifies the real position reaches the destination.
-- [x] Add a runtime regression proving that an Engine-selected Player MovePoint interrupts a pending non-triggered Lesser Heal through the real Core Spell::update movement check, without applying the heal.
+- [~] Movement-interrupt fixture is implemented, but the current Lesser Heal runtime probe moves the Player without cancelling the cast. The test logs SpellEntry cast time and interrupt flags; this remains unresolved and is not an acceptance pass.
 - [ ] Add continuous follow/formation tracking and defensive actions against real Core movement generators and unit state.
 - [ ] Verify movement completion, movement cancellation of casts, target/range/LOS revalidation and cleanup.
 

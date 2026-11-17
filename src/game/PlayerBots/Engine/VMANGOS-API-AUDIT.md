@@ -206,3 +206,6 @@ Stage F2 confirms the pinned \`Spell::update\` movement-interrupt rule: while a 
 
 
 Stage F2 requires a priming Player update before casting because \`Map::UpdatePlayers\` computes its diff from the previous real wall-clock player update. The fixture ensures the first post-MovePoint update is a normal bounded tick, allowing \`Spell::update\` to observe the new position before the cast timer expires.
+
+
+The Core source condition for movement cancellation requires a Player cast with a nonzero timer, a position delta greater than 0.5 yards, and one of the spell's movement interrupt flags. The runtime fixture must prove that its selected spell actually has the relevant DBC flag before treating a no-heal outcome as expected. Lesser Heal (2050) currently completed after movement, so its data flags and effective cast time are being logged rather than assumed.

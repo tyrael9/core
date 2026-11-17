@@ -770,6 +770,16 @@ bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
     patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
     uint32 const healthBefore = patient.creature->GetHealth();
 
+    SpellEntry const* const interruptProbeSpell = sSpellMgr.GetSpellEntry(SIMULATOR_HEAL_SPELL_ID);
+    if (interruptProbeSpell)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] Player interrupt probe: spell=%u castTime=%u interruptFlags=%u movementFlag=%u auraFlags=%u channelFlags=%u.",
+                 SIMULATOR_HEAL_SPELL_ID, interruptProbeSpell->GetCastTime(healer),
+                 interruptProbeSpell->InterruptFlags,
+                 interruptProbeSpell->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT) ? 1u : 0u,
+                 interruptProbeSpell->AuraInterruptFlags,
+                 interruptProbeSpell->ChannelInterruptFlags);
+
     // Prime the real wall-clock Player update cadence before starting the
     // cast. Otherwise a stale m_lastPlayersUpdate can make the first update
     // after MovePoint carry a large diff and complete the spell before the

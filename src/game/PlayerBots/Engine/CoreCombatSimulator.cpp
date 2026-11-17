@@ -721,9 +721,24 @@ public:
 
         // Server-driven bot movement does not pass through the client's
         // movement-packet handler (where Core normally interrupts movement-
-        // interruptible casts). Mirror that Core contract explicitly before
-        // starting the movement generator; the flag check is spell-data driven.
-        mover->InterruptSpellsWithInterruptFlags(SPELL_INTERRUPT_FLAG_MOVEMENT);
+        // interruptible casts). SpellCaster's bulk helper additionally gates
+        // on GetCastedTime() (the remaining timer), which can still be zero
+        // during the first server tick of a newly accepted cast. For a bot
+        // action we must cancel a flagged preparing cast immediately, even in
+        // that first tick, rather than let it complete while moving.
+        Spell* const genericSpell = mover->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        if (genericSpell && genericSpell->getState() == SPELL_STATE_PREPARING &&
+            !genericSpell->IsTriggered() && !genericSpell->IsAutoRepeat() &&
+            genericSpell->m_spellInfo &&
+            genericSpell->m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT))
+            mover->InterruptSpell(CURRENT_GENERIC_SPELL);
+
+        Spell* const channeledSpell = mover->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+        if (channeledSpell && channeledSpell->getState() == SPELL_STATE_CASTING &&
+            !channeledSpell->IsTriggered() && channeledSpell->m_spellInfo &&
+            (channeledSpell->m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT) ||
+             channeledSpell->m_spellInfo->HasChannelInterruptFlag(AURA_INTERRUPT_MOVING_CANCELS)))
+            mover->InterruptSpell(CURRENT_CHANNELED_SPELL);
 
         // MOVE_NONE uses the Core point movement generator without requiring
         // a pathfinder/navmesh; the spline and position are still Core-owned.

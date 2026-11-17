@@ -50,7 +50,7 @@ The current implementation does not yet provide New Engine mode. See ROADMAP.md 
 
 ## Automated combat simulation
 
-A Core-backed headless simulator is the next test-infrastructure milestone. The pinned Core exposes test-map, creature, damage, attack and threat APIs, but global initialization requirements mean a trivial standalone unit test is insufficient. Current status and the first proof gate are documented in CORE-COMBAT-SIMULATOR.md; a first Stage A smoke-test entry point is now implemented; it creates an empty Core test map, advances one 50 ms map tick, then deletes it and has not yet been executed.
+A Core-backed headless simulator is under active development. Stage A creates/ticks/deletes a real Core test map. Stage B now adds three template-backed Creature actors, probe-AI tick assertions, real direct damage, damage-generated threat, Core 110% melee target switching and explicit actor cleanup. Stage B code is committed but has not yet been compiled or runtime-tested; neither stage has been run against disposable DB copies and normal 5875 data. See CORE-COMBAT-SIMULATOR.md and TESTING.md for exact scope and gates.
 
 ## Logging is a required feature
 

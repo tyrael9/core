@@ -32,19 +32,23 @@ bool RunCoreMapLifecycleSmokeTest(std::uint32_t mapId)
     std::uint32_t const instanceId = map->GetInstanceId();
     bool const registered = instanceId != 0 && sMapMgr.FindMap(mapId, instanceId) == map;
 
+    // Advance one real Core instance-map tick with a fixed diff and no actors.
+    map->Update(50);
+    bool const tickRetained = sMapMgr.FindMap(mapId, instanceId) == map;
+
     sMapMgr.DeleteTestMap(map);
 
     bool const removed = sMapMgr.FindMap(mapId, instanceId) == nullptr;
-    if (!registered || !removed)
+    if (!registered || !tickRetained || !removed)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Test-map lifecycle assertion failed (registered=%u removed=%u instance=%u).",
-                 registered ? 1u : 0u, removed ? 1u : 0u, instanceId);
+                 "[PartyBotSimulator] Test-map lifecycle assertion failed (registered=%u tickRetained=%u removed=%u instance=%u).",
+                 registered ? 1u : 0u, tickRetained ? 1u : 0u, removed ? 1u : 0u, instanceId);
         return false;
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PASS: created and deleted real Core test map %u instance %u.",
+             "[PartyBotSimulator] PASS: created, ticked and deleted real Core test map %u instance %u.",
              mapId, instanceId);
     return true;
 }

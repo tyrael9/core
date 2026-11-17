@@ -479,7 +479,8 @@ bool RunEngineCoreSpellHealSmokeTest(Map& map)
 
 // This fixture follows the same Core Player construction sequence as
 // PlayerBotAI::SpawnNewPlayer, but keeps its WorldSession local to the test.
-bool CreateSimulatorPlayer(Map& map, uint32 factionId, WorldSession& session, Player*& player)
+bool CreateSimulatorPlayer(Map& map, uint32 factionId, WorldSession& session, Player*& player,
+                          float x = 0.0f, float y = 6.0f, float z = 4.0f)
 {
     player = new Player(&session);
     uint8 gender = GENDER_MALE;
@@ -499,7 +500,7 @@ bool CreateSimulatorPlayer(Map& map, uint32 factionId, WorldSession& session, Pl
     player->SetLocationInstanceId(map.GetInstanceId());
     player->SetAutoInstanceSwitch(false);
     player->GetMotionMaster()->Initialize();
-    player->Relocate(0.0f, 6.0f, 4.0f, 0.0f);
+    player->Relocate(x, y, z, 0.0f);
     player->SetMap(&map);
     player->SaveRecallPosition();
     player->CreatePacketBroadcaster();
@@ -734,6 +735,168 @@ private:
     std::string m_name = "core_move_point";
     bool m_started = false;
 };
+
+
+
+bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor patient;
+    bool const patientCreated = CreateSimulatorActor(map, *info, partyFaction, 0.0f, 6.0f, patient);
+    if (!patientCreated)
+    {
+        DestroySimulatorActor(map, patient);
+        return false;
+    }
+
+    WorldSession healerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* healer = nullptr;
+    bool const healerCreated = CreateSimulatorPlayer(map, partyFaction, healerSession, healer,
+                                                       10.0f, 6.0f, 0.0f);
+    if (!healerCreated)
+    {
+        if (healerSession.GetPlayer())
+            healerSession.LogoutPlayer(false);
+        else if (healer)
+            delete healer;
+        DestroySimulatorActor(map, patient);
+        return false;
+    }
+
+    patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
+    uint32 const healthBefore = patient.creature->GetHealth();
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 5;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 5;
+    snapshot.capturedAtMs = 5000;
+
+    PartyMemberSnapshot healerMember;
+    healerMember.guid = healer->GetObjectGuid().GetRawValue();
+    healerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    healerMember.mapId = map.GetId();
+    healerMember.instanceId = map.GetInstanceId();
+    healerMember.health = healer->GetHealth();
+    healerMember.maxHealth = healer->GetMaxHealth();
+    healerMember.online = true;
+    healerMember.alive = healer->IsAlive();
+    healerMember.x = healer->GetPositionX();
+    healerMember.y = healer->GetPositionY();
+    healerMember.z = healer->GetPositionZ();
+    snapshot.members.push_back(healerMember);
+
+    PartyMemberSnapshot patientMember;
+    patientMember.guid = patient.creature->GetObjectGuid().GetRawValue();
+    patientMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    patientMember.mapId = map.GetId();
+    patientMember.instanceId = map.GetInstanceId();
+    patientMember.health = healthBefore;
+    patientMember.maxHealth = patient.creature->GetMaxHealth();
+    patientMember.online = true;
+    patientMember.alive = patient.creature->IsAlive();
+    patientMember.isMainTank = true;
+    patientMember.x = patient.creature->GetPositionX();
+    patientMember.y = patient.creature->GetPositionY();
+    patientMember.z = patient.creature->GetPositionZ();
+    snapshot.members.push_back(patientMember);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 5000);
+
+    PartyBotEngine healEngine;
+    std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
+    bool const healRegistered = healEngine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> healStrategy(new Strategy("simulator_healer_triage"));
+    healStrategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
+    healEngine.AddStrategy(healStrategy);
+    DecisionReport healReport = healEngine.Evaluate(context);
+    bool const healSelected = healReport.selectedIndices.size() == 1 &&
+        healReport.candidates[healReport.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
+        healReport.candidates[healReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    healEngine.ExecuteSelected(context, healReport);
+    bool const castAccepted = !healReport.selectedIndices.empty() &&
+        healReport.candidates[healReport.selectedIndices[0]].status == CandidateStatus::Executed &&
+        healReport.candidates[healReport.selectedIndices[0]].actionResult == ActionResult::Success &&
+        healAction->GetLastCastResult() == SPELL_CAST_OK &&
+        healAction->WasCastPendingAfterAccept() && healAction->HadGcdAfterAccept();
+
+    PartyBotEngine moveEngine;
+    std::shared_ptr<SimulatorCoreMovePointAction> moveAction(new SimulatorCoreMovePointAction(map));
+    bool const moveRegistered = moveEngine.RegisterAction(moveAction);
+    std::shared_ptr<Strategy> moveStrategy(new Strategy("simulator_formation"));
+    moveStrategy->AddTrigger(std::make_shared<SimulatorFormationTrigger>());
+    moveEngine.AddStrategy(moveStrategy);
+    DecisionReport moveReport = moveEngine.Evaluate(context);
+    bool const moveSelected = moveReport.selectedIndices.size() == 1 &&
+        moveReport.candidates[moveReport.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
+        moveReport.candidates[moveReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    moveEngine.ExecuteSelected(context, moveReport);
+    bool const moveExecuted = !moveReport.selectedIndices.empty() &&
+        moveReport.candidates[moveReport.selectedIndices[0]].status == CandidateStatus::Executed &&
+        moveReport.candidates[moveReport.selectedIndices[0]].actionResult == ActionResult::Success &&
+        moveAction->DidStartMovement();
+
+    float const destinationX = moveReport.selectedIndices.empty() ? healerMember.x :
+        moveReport.candidates[moveReport.selectedIndices[0]].candidate.destinationX;
+    float const destinationY = moveReport.selectedIndices.empty() ? healerMember.y :
+        moveReport.candidates[moveReport.selectedIndices[0]].candidate.destinationY;
+    float const destinationZ = moveReport.selectedIndices.empty() ? healerMember.z :
+        moveReport.candidates[moveReport.selectedIndices[0]].candidate.destinationZ;
+
+    for (uint32 tick = 0; tick < 20; ++tick)
+    {
+        float const dx = healer->GetPositionX() - destinationX;
+        float const dy = healer->GetPositionY() - destinationY;
+        float const dz = healer->GetPositionZ() - destinationZ;
+        bool const atDestination = dx * dx + dy * dy + dz * dz <= 1.0f;
+        bool const castEnded = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+        if (atDestination && castEnded)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    uint32 const healthAfter = patient.creature->GetHealth();
+    bool const castCancelled = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+                               healthAfter == healthBefore;
+    float const finalDx = healer->GetPositionX() - destinationX;
+    float const finalDy = healer->GetPositionY() - destinationY;
+    float const finalDz = healer->GetPositionZ() - destinationZ;
+    bool const movementCompleted = finalDx * finalDx + finalDy * finalDy +
+                                   finalDz * finalDz <= 1.0f;
+
+    healerSession.LogoutPlayer(false);
+    bool const playerCleaned = healerSession.GetPlayer() == nullptr;
+    healer = nullptr;
+    bool const patientCleaned = DestroySimulatorActor(map, patient);
+    bool const cleaned = playerCleaned && patientCleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Movement interrupts Player cast: healRegistered=%u healSelected=%u castAccepted=%u moveRegistered=%u moveSelected=%u moveExecuted=%u castCancelled=%u health=%u>%u movementCompleted=%u cleanup=%u.",
+             healRegistered ? 1u : 0u, healSelected ? 1u : 0u, castAccepted ? 1u : 0u,
+             moveRegistered ? 1u : 0u, moveSelected ? 1u : 0u, moveExecuted ? 1u : 0u,
+             castCancelled ? 1u : 0u, healthBefore, healthAfter,
+             movementCompleted ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!healRegistered || !healSelected || !castAccepted ||
+        !moveRegistered || !moveSelected || !moveExecuted ||
+        !castCancelled || !movementCompleted || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine movement/cast-interrupt smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Engine-selected Player movement interrupted a pending Core Lesser Heal cast without applying the heal.");
+    return true;
+}
 
 bool RunEngineCoreMovementSmokeTest(Map& map)
 {
@@ -1279,6 +1442,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                              RunEngineCoreSpellHealSmokeTest(*map);
                              RunEngineCorePlayerSpellHealSmokeTest(*map);
                              RunEngineCoreMovementSmokeTest(*map);
+                             RunEngineCoreMovementInterruptSmokeTest(*map);
 
     sMapMgr.DeleteTestMap(map);
 

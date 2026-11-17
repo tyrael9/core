@@ -200,3 +200,6 @@ Stage E runtime note: \`Map::Update(uint32 t_diff)\` calls \`UpdatePlayers()\`, 
 - Runtime CI verifies the movement generator becomes \`POINT_MOTION_TYPE\`, the actor reaches the snapshot-derived formation destination and both actors are detached before test-map deletion.
 
 This proves only one point movement. Continuous \`MoveFollow\`, pathfinding, cast interruption on movement and defensive movement remain separate acceptance criteria.
+
+
+Stage F2 confirms the pinned \`Spell::update\` movement-interrupt rule: while a non-triggered cast with \`SPELL_INTERRUPT_FLAG_MOVEMENT\` / moving-cancel semantics is pending, a real Player position change is detected against the cast-start position and Core cancels the spell. The simulator invokes only the real Engine movement action and waits for normal Player/Unit update cadence; it does not call \`InterruptSpell\` directly.

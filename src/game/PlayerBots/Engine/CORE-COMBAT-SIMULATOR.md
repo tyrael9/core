@@ -106,6 +106,7 @@ This remains a simulator fixture, not a production-authenticated PlayerBot or fi
 ### Stage F — movement and defensive action adapters
 
 - [x] First Core point-movement primitive: PartyBotEngine derives a formation destination from the Main Tank snapshot, the adapter calls `MotionMaster::MovePoint`, and runtime CI verifies the real position reaches the destination.
+- [x] Add a runtime regression proving that an Engine-selected Player MovePoint interrupts a pending non-triggered Lesser Heal through the real Core Spell::update movement check, without applying the heal.
 - [ ] Add continuous follow/formation tracking and defensive actions against real Core movement generators and unit state.
 - [ ] Verify movement completion, movement cancellation of casts, target/range/LOS revalidation and cleanup.
 
@@ -293,3 +294,10 @@ The first movement slice adds a destination payload to \`ActionCandidate\` and a
 The fixture uses two active Core Creature actors on the isolated map. Runtime CI requires the Engine to select the leader as the target, the action report to be Executed/Success, the real movement generator to become \`POINT_MOTION_TYPE\`, the mover's actual distance to decrease and its final position to reach the derived destination before both actors are detached and destroyed.
 
 This proves one point-movement primitive and the Engine-to-Core movement boundary. It does not yet implement continuous \`MoveFollow\`, pathfinding/navmesh behavior, movement interruption of a cast, formation slot arbitration or defensive movement.
+
+
+### Stage F2 — movement interrupts an in-flight Player cast
+
+A second Stage F scenario starts an ordinary non-triggered Player Lesser Heal through the Engine, confirms that the cast is pending with GCD, then runs a separate Engine movement decision for the same Player. The formation trigger derives a point from the Main Tank snapshot; the same Core \`MovePoint\` adapter moves the Player while the spell is pending.
+
+The runtime assertion requires the cast to be cleared by the pinned Core \`Spell::update\` movement-interrupt check, the target's health to remain unchanged, the Player to reach the movement destination, and both Player/session and Creature cleanup to succeed. The simulator does not call \`InterruptSpell\` itself and does not fake a failed cast.

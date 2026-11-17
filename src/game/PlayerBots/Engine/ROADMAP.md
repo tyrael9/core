@@ -67,7 +67,8 @@ The current role-aware Shadow slice is a proof of the data-to-candidate path onl
 - Source audit distinguished inbound client relocation (`WorldSession::HandleMoverRelocation` → `Player::SetPosition` → `Unit::HandleInterruptsOnMovement`) from server-driven point movement (`Unit::UpdateSplineMovement`, later in the Unit update order). The final F2 fixture now exercises the inbound relocation seam without implementing spell-interruption policy in the simulator.
 - Final runtime verification: CI `#44145923142`, commit `cb5be3d`, passed with `castCancelled=1`, patient health unchanged (`50000>50000`), movement completion and cleanup.
 
-- [~] Continue with continuous follow/formation tracking, defensive actions and full range/LOS/resource validation. A Core `FollowMovementGenerator` action and moving-leader simulator scenario are implemented; runtime CI validation is pending.
+- [x] Validate the initial native Core follow behavior: PartyBotEngine selects `MoveFollow`, and the Core `FollowMovementGenerator` tracks the Main Tank after it relocates. Runtime CI `#44153619126` reports `initialCaughtUp=1`, `leaderReached=1`, `followerTracked=1`, final separation `1.87`, active follow generator and cleanup.
+- [~] Extend follow/formation coverage to retargeting/recovery edge cases, defensive actions and full range/LOS/resource validation.
 - [ ] Add scripted aggro, healer-threat, tank-death, healer-death and multi-add scenarios.
 - [ ] Evaluate full dungeon/instance scripts as a later tier.
 

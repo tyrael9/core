@@ -2872,6 +2872,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     uint32 const patientHealthBeforeHeal = tank->GetHealth();
     uint32 const healerManaBefore = healer->GetPower(POWER_MANA);
     SpellEntry const* const healSpell = sSpellMgr.GetSpellEntry(SIMULATOR_HEAL_SPELL_ID);
+    healer->SetFacingToObject(tank);
     SpellCastResult const healCastResult = healSpell
         ? healer->CastSpell(tank, healSpell, false) : SPELL_FAILED_UNKNOWN;
     for (uint32 tick = 0; tick < 20 &&
@@ -2887,8 +2888,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         patientHealthAfterHeal > patientHealthBeforeHeal &&
         healerManaAfter < healerManaBefore;
 
-    uint32 const hostileRefsOnTank =
-        static_cast<uint32>(tank->GetHostileRefManager().getSize());
+    uint32 hostileRefsOnTank = 0;
+    for (HostileReference* reference = tank->GetHostileRefManager().getFirst();
+         reference; reference = reference->next())
+        ++hostileRefsOnTank;
     float constexpr kScriptedAssistThreat = 400.0f;
     if (healCompleted && hostileRefsOnTank == 2)
         tank->GetHostileRefManager().threatAssist(healer, kScriptedAssistThreat);
@@ -2970,10 +2973,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool const cleanupPassed = cleaned && groupRemoved;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u registered=%u tankDamage=%u/%u initialTankVictim=%u/%u hostilesOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u snapshotValid=%u roster=%u adds=%u threatCopied=%u groupRemoved=%u cleanup=%u.",
+             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u registered=%u tankDamage=%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u snapshotValid=%u roster=%u adds=%u threatCopied=%u groupRemoved=%u cleanup=%u.",
              hostileAIReady ? 1u : 0u, membersAdded ? 1u : 0u,
              mainTankAssigned ? 1u : 0u, registeredBeforeCleanup ? 1u : 0u,
-             tankDamage0, tankDamage1,
+             tankDamage0, tankDamage1, tankThreat0, tankThreat1,
              initialVictim0 == tank ? 1u : 0u, initialVictim1 == tank ? 1u : 0u,
              hostileRefsOnTank, static_cast<uint32>(healCastResult),
              patientHealthBeforeHeal, patientHealthAfterHeal,
@@ -3417,10 +3420,10 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const playerHealLosPassed = RunEngineCorePlayerHealLosSmokeTest(*map);
     bool const movePointControlSafetyPassed = RunEngineCoreMovePointControlSafetySmokeTest(*map);
     bool const movementInterruptPassed = RunEngineCoreMovementInterruptSmokeTest(*map);
-    bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
-    // Keep the basic five-Player Group lifecycle fixture last: it exercises
-    // final Group teardown/session logout after encounter fixtures have ended.
+    // Run the basic Group lifecycle fixture before the more demanding
+    // multi-add encounter fixture. F9 is the final Player/Group scenario.
     bool const realGroupSnapshotPassed = RunEngineCoreRealGroupSnapshotSmokeTest(*map);
+    bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&

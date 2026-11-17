@@ -109,7 +109,8 @@ This remains a simulator fixture, not a production-authenticated PlayerBot or fi
 - [x] Player movement-interrupt fixture: the Engine selects the formation destination, and the simulator models the inbound mover-relocation operation by calling `Player::SetPosition`. This enters the native `Player::SetPosition` → `Unit::HandleInterruptsOnMovement` path; the simulator does not inspect spell flags or cancel spells itself. Runtime CI run `#44145923142` proves `castCancelled=1`, patient health `50000>50000`, movement completion and cleanup.
 - [x] Add continuous follow/formation tracking on native Core movement generators, Player cast pause/resume, Main Tank handoff and recovery after target removal. Runtime CI `#44159191502` and `#44163805016` pass these distinct Player/Creature slices.
 - [x] Stage F6 action-time range/resource revalidation: CI `#44167535205` confirms Core rejects the stale out-of-range and late no-mana Player heals without side effects.
-- [~] Stage F7: exercise Player heal LOS rejection through a real dynamic GameObject collision model and reject movement while the Core unit has `CAN_NOT_MOVE` or `POSSESSED`; runtime validation is pending.
+- [x] Stage F7: real dynamic GameObject LOS rejection and `CAN_NOT_MOVE`/`POSSESSED` movement rejection passed in CI `#44170264755`.
+- [~] Stage F8: create and tear down a real five-member Core Group, and verify production PartySnapshotBuilder reads its same-map Player roster; runtime validation is pending.
 
 ### Stage G — dungeon encounter simulation
 
@@ -235,7 +236,7 @@ The archive listing should start with paths such as `maps/`, `mmaps/`, `vmaps/` 
 
 Upload the archive to Google Drive and set General access to “Anyone with the link” with Viewer permission. Put the share URL in `PARTYBOT_SIMULATOR_DATA_URL` and the checksum in `PARTYBOT_SIMULATOR_DATA_SHA256` under the repository's Actions secrets. The runner uses the pinned `gdown` downloader to handle Drive's large-file confirmation flow, then verifies SHA-256 before extraction. Each trusted push to this branch runs the simulator after the full ARM64 build. If either secret is absent, the workflow records a skip rather than attempting a partial runtime test.
 
-**Runtime update (2026-11-17):** Stage F4 passed on push CI `#44159191502` (`5d3c9c5`): the Core Player FollowMovementGenerator remained paused during five no-movement-cast gate ticks, the ordinary Lesser Heal completed with mana cost, and following resumed to a final separation of `2.00` with cleanup. Stage F5 then passed on CI `#44163805016` (`cfdda0c`): target handoff to a new Main Tank, tracking the new leader instead of the old one, removal of the active target and recovery to the remaining Main Tank all succeeded; final separation was `4.55`, with Follow state and cleanup intact. Stage F6 passed on push CI `#44167535205` (`e52bea6`): stale-snapshot range rejection returned `SPELL_FAILED_OUT_OF_RANGE` (`89`) with no health/mana/cast/GCD side effects, and late mana depletion returned `SPELL_FAILED_NO_POWER` (`77`) with no heal/cast/GCD. The next gate is Stage F7 real GameObject LOS blocking and movement refusal under Core immobility states; then integrate a real Core Group fixture. Do not jump directly to five-player dungeon scenarios.
+**Runtime update (2026-11-17):** Stage F4 passed on push CI `#44159191502` (`5d3c9c5`): the Core Player FollowMovementGenerator remained paused during five no-movement-cast gate ticks, the ordinary Lesser Heal completed with mana cost, and following resumed to a final separation of `2.00` with cleanup. Stage F5 then passed on CI `#44163805016` (`cfdda0c`): target handoff to a new Main Tank, tracking the new leader instead of the old one, removal of the active target and recovery to the remaining Main Tank all succeeded; final separation was `4.55`, with Follow state and cleanup intact. Stage F6 passed on push CI `#44167535205` (`e52bea6`): stale-snapshot range rejection returned `SPELL_FAILED_OUT_OF_RANGE` (`89`) with no health/mana/cast/GCD side effects, and late mana depletion returned `SPELL_FAILED_NO_POWER` (`77`) with no heal/cast/GCD. Stage F7 passed on push CI `#44170264755` (`e46a246`): Core `Spell::CheckCast` rejected the heal through dynamic GameObject Entry `13965` (`testedModels=13`, `blockedLOS=1`, result `42`), LOS restored after removal, and Core rejected MovePoint for both `CAN_NOT_MOVE` and `POSSESSED`. The next gate is Stage F8: create a real five-member Core Group, exercise the production PartySnapshotBuilder against its same-map Player roster, and prove complete Group/session cleanup. Do not jump directly to five-player dungeon scenarios.
 
 
 ## Stage C — PartyBotEngine-to-Core executor vertical slice
@@ -348,6 +349,19 @@ The simulator does not move the follower, rewrite positions, or synthesize targe
 
 
 
+
+
+### Stage F8 — Real Core five-member Group and production snapshot builder
+
+This fixture creates five real Core Player objects through the same local-session Player construction helper used by the Player spell tests. It creates a normal Core Group with the first Player as leader, registers that Group with ObjectMgr, and adds the other four Players through Group::AddMember. The group is a real five-slot party, not a hand-authored member vector.
+
+The fixture calls the production PartySnapshotBuilder::GetOrBuild using the first Player and a real PartyCoordinator. It requires the resulting value snapshot to use the actual Group ID, Map ID and instance ID, contain exactly five members, and resolve every actual Player GUID through the Group member slots and current Map. It verifies online/alive state, Priest class/level, health/max health, power/max power and coordinates. The test Players have no PartyBotAI attached, so the expected role is explicitly Unknown; this is not misreported as a role-classification test.
+
+A second GetOrBuild call inside the cache window must return the same snapshot epoch/capture time. The fixture then calls Core Group::Disband, verifies every Player has been unlinked, removes the Group from ObjectMgr, and logs out all five local sessions. Group and group_member rows are created/deleted only inside the runner's disposable partybot_sim_* database clones; no production character or group data is modified.
+
+Runtime acceptance requires five unique same-map Player GUIDs, Group registration and membership, a five-member production snapshot, accurate scalar copies, cache reuse, Group/ObjectMgr removal and complete session cleanup.
+
+
 ### Stage F7 — Core LOS collision and movement-control safety
 
 The LOS fixture creates a real Player healer and injured Creature target with a clear baseline ray. It discovers loaded Vanilla GameObject templates with a collision-bearing door or solid generic model, creates each candidate through GameObject::Create, and inserts it into the map so Core registers the model in the dynamic collision tree. The fixture keeps the first model/orientation that makes Player::IsWithinLOSInMap(target) return false. No simulator LOS flag or synthetic geometry result is used.
@@ -357,6 +371,8 @@ PartyBotEngine selects its ordinary Player Lesser Heal while the PartySnapshot s
 The movement-control fixture creates a normal Engine formation candidate and evaluates the real SimulatorCoreMovePointAction while the Core mover has UNIT_STATE_CAN_NOT_MOVE, then UNIT_STATE_POSSESSED. Both candidates must be rejected as impossible before execution; no PointMovementGenerator may start and the mover's position must remain unchanged. The adapter's execution-time check applies the same state mask so stale selection cannot bypass the movement safety gate.
 
 The simulator changes no combat or LOS policy. Core dynamic collision and Core Unit state are authoritative; the fixture only creates/removes a real GameObject and injects the corresponding Core unit-state bits to test the executor boundary. A real root/stun aura-to-state transition and additional crowd-control types remain future coverage.
+
+Runtime CI `#44170264755` on `e46a246` passed: `registered=1`, `selected=1`, baseline LOS clear, `blockerTemplates=370`, `testedModels=13`, collision model `blockerEntry=13965`, `blockedLOS=1`, `executionFailed=1`, `castResult=42` (`SPELL_FAILED_LINE_OF_SIGHT`), health `50000>50000`, mana `2896>2896`, no pending/GCD, `losRestored=1`, `cleanup=1`. The movement fixture also passed with `rootedRejected=1`, `possessedRejected=1`, `noMovementStarted=1`, `positionUnchanged=1`, `cleanup=1`.
 
 
 ### Stage F6 — Player heal execution-time range and resource rejection

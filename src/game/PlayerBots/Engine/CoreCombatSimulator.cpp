@@ -3,6 +3,7 @@
 #include "AI/CreatureAI.h"
 #include "Creature.h"
 #include "GameObject.h"
+#include "Group.h"
 #include "DBCStores.h"
 #include "Log.h"
 #include "Map.h"
@@ -10,6 +11,7 @@
 #include "Movement/MotionMaster.h"
 #include "PlayerBots/Engine/Action.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
+#include "PlayerBots/Engine/PartySnapshotBuilder.h"
 #include "PlayerBots/Engine/PartyCoordinator.h"
 #include "PlayerBots/Engine/PartySnapshot.h"
 #include "PlayerBots/Engine/Strategy.h"
@@ -2485,6 +2487,198 @@ bool RunEngineCoreMovePointControlSafetySmokeTest(Map& map)
     return true;
 }
 
+
+bool RunEngineCoreRealGroupSnapshotSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    std::vector<std::unique_ptr<WorldSession>> sessions;
+    std::vector<Player*> players;
+    std::unique_ptr<Group> group(new Group());
+    bool groupRegistered = false;
+
+    auto cleanup = [&]() -> bool
+    {
+        bool ungrouped = true;
+        if (group && group->GetId())
+        {
+            ObjectGuid initiator = players.empty()
+                ? ObjectGuid() : players.back()->GetObjectGuid();
+            group->Disband(true, initiator);
+            for (Player* player : players)
+                if (player && player->GetGroup())
+                    ungrouped = false;
+
+            if (groupRegistered)
+            {
+                sObjectMgr.RemoveGroup(group.get());
+                groupRegistered = false;
+            }
+            group.reset();
+        }
+
+        bool sessionsCleaned = true;
+        for (std::unique_ptr<WorldSession>& session : sessions)
+        {
+            if (session && session->GetPlayer())
+                session->LogoutPlayer(false);
+            if (session && session->GetPlayer())
+                sessionsCleaned = false;
+        }
+        players.clear();
+        sessions.clear();
+        return ungrouped && sessionsCleaned;
+    };
+
+    // Create five real Core Player objects with local sessions on this Map.
+    // They are not database-backed characters; Group persistence is confined
+    // to the disposable partybot_sim_* schema and is deleted during cleanup.
+    for (uint32 index = 0; index < MAX_GROUP_SIZE; ++index)
+    {
+        std::unique_ptr<WorldSession> session(
+            new WorldSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS));
+        Player* player = nullptr;
+        bool const created = CreateSimulatorPlayer(
+            map, partyFaction, *session, player,
+            static_cast<float>(index) * 2.0f, 6.0f, 0.0f);
+        sessions.push_back(std::move(session));
+        if (player)
+            players.push_back(player);
+
+        if (!created || !player || !player->IsInWorld())
+        {
+            bool const cleaned = cleanup();
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                     "[PartyBotSimulator] Real Group Player fixture creation failed at member %u (cleanup=%u).",
+                     index, cleaned ? 1u : 0u);
+            return false;
+        }
+    }
+
+    bool const groupCreated = group->Create(
+        players[0]->GetObjectGuid(), players[0]->GetName());
+    if (!groupCreated)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core Group::Create failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    sObjectMgr.AddGroup(group.get());
+    groupRegistered = true;
+
+    bool allMembersAdded = group->GetMembersCount() == 1 &&
+        players[0]->GetGroup() == group.get() &&
+        group->IsMember(players[0]->GetObjectGuid());
+    for (std::size_t index = 1; index < players.size(); ++index)
+    {
+        Player* player = players[index];
+        bool const added = group->AddMember(player->GetObjectGuid(), player->GetName());
+        allMembersAdded = allMembersAdded && added &&
+            player->GetGroup() == group.get() &&
+            group->IsMember(player->GetObjectGuid());
+        if (!added)
+            break;
+    }
+
+    bool const allPlayersOnSameMap = std::all_of(
+        players.begin(), players.end(),
+        [&map](Player const* player)
+        {
+            return player && player->IsInWorld() && player->GetMap() == &map &&
+                player->GetMapId() == map.GetId() &&
+                player->GetInstanceId() == map.GetInstanceId();
+        });
+
+    PartyCoordinator coordinator;
+    PartySnapshot const* snapshot = nullptr;
+    if (allMembersAdded && allPlayersOnSameMap)
+        snapshot = PartySnapshotBuilder::GetOrBuild(players[0], coordinator, 15000, 250);
+
+    bool snapshotValid = snapshot &&
+        snapshot->groupId == group->GetId() &&
+        snapshot->mapId == map.GetId() &&
+        snapshot->instanceId == map.GetInstanceId() &&
+        snapshot->members.size() == MAX_GROUP_SIZE;
+    bool rosterResolved = snapshotValid;
+    bool valuesCopied = snapshotValid;
+    bool rolesAreExplicitlyUnknown = snapshotValid;
+    for (Player* player : players)
+    {
+        PartyMemberSnapshot const* member = snapshot
+            ? snapshot->FindMember(player->GetObjectGuid().GetRawValue()) : nullptr;
+        bool const memberValid = member &&
+            member->online && member->alive &&
+            member->mapId == map.GetId() &&
+            member->instanceId == map.GetInstanceId() &&
+            member->classId == CLASS_PRIEST &&
+            member->level == player->GetLevel() &&
+            member->health == player->GetHealth() &&
+            member->maxHealth == player->GetMaxHealth();
+        rosterResolved = rosterResolved && memberValid;
+        if (member)
+        {
+            valuesCopied = valuesCopied &&
+                member->power == player->GetPower(player->GetPowerType()) &&
+                member->maxPower == player->GetMaxPower(player->GetPowerType()) &&
+                member->x == player->GetPositionX() &&
+                member->y == player->GetPositionY() &&
+                member->z == player->GetPositionZ();
+            // The fixture does not attach PartyBotAI; Unknown is the truthful
+            // role result for ordinary simulated Players without CombatBotAI.
+            rolesAreExplicitlyUnknown = rolesAreExplicitlyUnknown &&
+                member->roleId == static_cast<std::uint8_t>(PartyRole::Unknown);
+        }
+        else
+            valuesCopied = false;
+    }
+
+    PartySnapshot const* cachedSnapshot =
+        PartySnapshotBuilder::GetOrBuild(players[0], coordinator, 15100, 250);
+    bool const cacheRetained = cachedSnapshot == snapshot &&
+        cachedSnapshot && cachedSnapshot->epoch == snapshot->epoch &&
+        cachedSnapshot->capturedAtMs == 15000;
+
+    uint32 const groupId = group->GetId();
+    bool const objectMgrRegistered =
+        sObjectMgr.GetGroupById(groupId) == group.get();
+    uint32 const membersBeforeDisband = group->GetMembersCount();
+    bool const allChecksPassed = groupCreated && groupRegistered &&
+        objectMgrRegistered && allMembersAdded && allPlayersOnSameMap &&
+        snapshotValid && rosterResolved && valuesCopied &&
+        rolesAreExplicitlyUnknown && cacheRetained;
+
+    bool const cleaned = cleanup();
+    bool const groupRemoved = sObjectMgr.GetGroupById(groupId) == nullptr;
+    bool const cleanupPassed = cleaned && groupRemoved;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Real Core Group snapshot: created=%u registered=%u objectMgr=%u members=%u membersAdded=%u sameMap=%u snapshotValid=%u rosterResolved=%u valuesCopied=%u rolesUnknown=%u cacheRetained=%u groupRemoved=%u cleanup=%u.",
+             groupCreated ? 1u : 0u, groupRegistered ? 1u : 0u,
+             objectMgrRegistered ? 1u : 0u, membersBeforeDisband,
+             allMembersAdded ? 1u : 0u, allPlayersOnSameMap ? 1u : 0u,
+             snapshotValid ? 1u : 0u, rosterResolved ? 1u : 0u,
+             valuesCopied ? 1u : 0u, rolesAreExplicitlyUnknown ? 1u : 0u,
+             cacheRetained ? 1u : 0u, groupRemoved ? 1u : 0u,
+             cleanupPassed ? 1u : 0u);
+
+    if (!allChecksPassed || !cleanupPassed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Real Core Group/PartySnapshotBuilder smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: five real Core Players joined a real Group and production PartySnapshotBuilder copied the same-map roster into value snapshots; group/session cleanup succeeded.");
+    return true;
+}
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -2903,6 +3097,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const playerHealRevalidationPassed = RunEngineCorePlayerHealRevalidationSmokeTest(*map);
     bool const playerHealLosPassed = RunEngineCorePlayerHealLosSmokeTest(*map);
     bool const movePointControlSafetyPassed = RunEngineCoreMovePointControlSafetySmokeTest(*map);
+    bool const realGroupSnapshotPassed = RunEngineCoreRealGroupSnapshotSmokeTest(*map);
     bool const movementInterruptPassed = RunEngineCoreMovementInterruptSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && engineExecutorPassed &&
@@ -2910,7 +3105,8 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&
-                              movePointControlSafetyPassed && movementInterruptPassed;
+                              movePointControlSafetyPassed && realGroupSnapshotPassed &&
+                              movementInterruptPassed;
 
     sMapMgr.DeleteTestMap(map);
 

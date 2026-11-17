@@ -29,7 +29,7 @@ These tests validate lifecycle-host behavior, not new combat AI behavior.
 - [x] Trace MapManager -> Map -> Player::Update -> PlayerAI::UpdateAI update path.
 - [x] Audit same-map versus cross-map update ownership and Group roster read safety.
 - [x] Audit initial group, target, attacker, threat, cast and movement APIs.
-- [~] Continue action-specific audit for target validity, threat values, spell execution results, range/LOS and movement side effects; Stage F6 validates Core range/resource rejection, and Stage F7 adds real dynamic-GameObject LOS plus immobility-state movement rejection.
+- [~] Continue action-specific audit for target validity, threat values, spell execution results, range/LOS and movement side effects; F6/F7 now validate Core range, resource, LOS and immobility rejection. Stage F8 adds the real five-Player Core Group and production snapshot-builder boundary.
 
 ## Phase 2 — independent engine foundation
 
@@ -71,7 +71,8 @@ The current role-aware Shadow slice is a proof of the data-to-candidate path onl
 - [x] Validate Player follow safety while casting: the simulator fixture uses the Core Player FollowMovementGenerator, an Engine-selected non-triggered Lesser Heal and a moving Main Tank; it verifies stable formation arrival, pending cast/GCD, Core `IsNoMovementSpellCasted()` ticks, no follower displacement during the cast, completed healing/mana cost and follow resumption. Runtime CI `#44159191502` on `5d3c9c5` passed (`pendingTicks=6`, `coreNoMovementTicks=5`, `maxCastMove=0.00`, `castCompleted=1`, `leaderReached=1`, `followPaused=1`, `followedAfterCast=1`, final distance `2.00`, `followRetained=1`, `cleanup=1`).
 - [x] Extend follow/formation coverage: Stage F5 validates Engine-selected Main Tank handoff and recovery after the followed target disappears. Runtime CI `#44163805016` on `cfdda0c` passed (`handoffTargetChanged=1`, `followerTrackedNewLeader=1`, `oldLeaderRemoved=1`, `recoveryTargetRestored=1`, `recoveredToAvailableLeader=1`, final distance `4.55`, `followGenerator=1`, `cleanup=1`).
 - [x] Validate Player heal execution-time range/resource rejection. Runtime CI `#44167535205` on `e52bea6` passed: stale nearby snapshot versus actual 60-yard target returned `SPELL_FAILED_OUT_OF_RANGE` (`89`), health remained `50000`, mana `2896>2896`, no pending cast/GCD; mana depleted after evaluation returned `SPELL_FAILED_NO_POWER` (`77`), health remained `50000`, mana stayed `0`, no pending cast/GCD, cleanup succeeded.
-- [~] Validate Player heal LOS rejection through a real closed GameObject collision model, and refuse Engine-selected MovePoint while Core reports `UNIT_STATE_CAN_NOT_MOVE` or `UNIT_STATE_POSSESSED`; runtime validation is pending.
+- [x] Validate Player heal LOS rejection through a real closed GameObject collision model, and refuse Engine-selected MovePoint while Core reports `UNIT_STATE_CAN_NOT_MOVE` or `UNIT_STATE_POSSESSED`. Runtime CI `#44170264755` on `e46a246` passed: `blockerTemplates=370`, `testedModels=13`, `blockerEntry=13965`, `blockedLOS=1`, `castResult=42` (`SPELL_FAILED_LINE_OF_SIGHT`), health `50000>50000`, mana `2896>2896`, no pending/GCD, LOS restored and cleanup; both control-state candidates rejected with no movement and cleanup.
+- [~] Add a five-member real Core Group fixture, verify `PartySnapshotBuilder` resolves the Group's same-map Player roster and copies GUID/scalar state, then disband/remove the Group and log out every test Player. Runtime validation is pending.
 - [ ] Add scripted aggro, healer-threat, tank-death, healer-death and multi-add scenarios.
 - [ ] Evaluate full dungeon/instance scripts as a later tier.
 

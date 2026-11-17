@@ -13,15 +13,15 @@ CONFIG_FILE="${GITHUB_WORKSPACE:-$PWD}/simulator-mangosd.conf"
 
 : >"$LOG_FILE"
 
-if [[ -z "${PARTYBOT_SIMULATOR_DBC_URL:-}" && -z "${PARTYBOT_SIMULATOR_DBC_SHA256:-}" ]]; then
-    echo "[PartyBotSimulator] Runtime test skipped: configure repository secrets PARTYBOT_SIMULATOR_DBC_URL and PARTYBOT_SIMULATOR_DBC_SHA256." | tee -a "$LOG_FILE"
+if [[ -z "${PARTYBOT_SIMULATOR_DATA_URL:-}" && -z "${PARTYBOT_SIMULATOR_DATA_SHA256:-}" ]]; then
+    echo "[PartyBotSimulator] Runtime test skipped: configure repository secrets PARTYBOT_SIMULATOR_DATA_URL and PARTYBOT_SIMULATOR_DATA_SHA256." | tee -a "$LOG_FILE"
     exit 0
 fi
-if [[ -z "${PARTYBOT_SIMULATOR_DBC_URL:-}" || -z "${PARTYBOT_SIMULATOR_DBC_SHA256:-}" ]]; then
+if [[ -z "${PARTYBOT_SIMULATOR_DATA_URL:-}" || -z "${PARTYBOT_SIMULATOR_DATA_SHA256:-}" ]]; then
     echo "[PartyBotSimulator] Both DBC fixture secrets must be configured together." | tee -a "$LOG_FILE"
     exit 1
 fi
-if [[ "$PARTYBOT_SIMULATOR_DBC_URL" != https://* ]]; then
+if [[ "$PARTYBOT_SIMULATOR_DATA_URL" != https://* ]]; then
     echo "[PartyBotSimulator] The DBC fixture URL must use HTTPS." | tee -a "$LOG_FILE"
     exit 1
 fi
@@ -40,8 +40,8 @@ command -v python3 >/dev/null
 
 DBC_ARCHIVE="$PWD/partybot-simulator-dbc.tar.gz"
 echo "[PartyBotSimulator] Downloading the complete private 5875 extracted-data fixture." | tee -a "$LOG_FILE"
-curl --fail --silent --show-error --location "$PARTYBOT_SIMULATOR_DBC_URL" --output "$DBC_ARCHIVE"
-printf '%s  %s\n' "$(printf '%s' "$PARTYBOT_SIMULATOR_DBC_SHA256" | tr '[:upper:]' '[:lower:]')" "$DBC_ARCHIVE" | sha256sum --check
+curl --fail --silent --show-error --location "$PARTYBOT_SIMULATOR_DATA_URL" --output "$DBC_ARCHIVE"
+printf '%s  %s\n' "$(printf '%s' "$PARTYBOT_SIMULATOR_DATA_SHA256" | tr '[:upper:]' '[:lower:]')" "$DBC_ARCHIVE" | sha256sum --check
 
 rm -rf "$DATA_DIR"
 mkdir -p "$DATA_DIR" "$PWD/simulator-logs"

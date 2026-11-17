@@ -11,6 +11,7 @@ The target is a complete independent PartyBot AI for Vanilla 1.12.1 / client bui
 - RESEARCH-CMANGOS.md: Strategy/Trigger/Action/Value/Multiplier and ActionNode research.
 - RESEARCH-AZEROTHCORE.md: class/role/encounter strategy research.
 - TESTING.md: CI, in-game validation and log collection.
+- CORE-COMBAT-SIMULATOR.md: headless Core-backed combat simulator design and API feasibility audit.
 
 Update relevant source and design/testing documents in the same change.
 
@@ -46,6 +47,10 @@ The current Shadow hook is observational only: PartyBotAI still runs Legacy comb
 - PartyBotAI remains the Core lifecycle/map-thread host; the Engine owns bot behavior decisions.
 
 The current implementation does not yet provide New Engine mode. See ROADMAP.md for the next implementation milestones.
+
+## Automated combat simulation
+
+A Core-backed headless simulator is the next test-infrastructure milestone. The pinned Core exposes test-map, creature, damage, attack and threat APIs, but global initialization requirements mean a trivial standalone unit test is insufficient. Current status and the first proof gate are documented in CORE-COMBAT-SIMULATOR.md; no simulator runtime exists yet.
 
 ## Logging is a required feature
 

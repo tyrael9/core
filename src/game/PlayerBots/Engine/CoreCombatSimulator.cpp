@@ -2693,6 +2693,311 @@ bool RunEngineCoreRealGroupSnapshotSmokeTest(Map& map)
     return true;
 }
 
+
+bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    std::vector<std::unique_ptr<WorldSession>> sessions;
+    std::vector<Player*> players;
+    std::vector<ObjectGuid> playerGuids;
+    SimulatorActor hostiles[2];
+    std::unique_ptr<Group> group(new Group());
+    bool groupRegistered = false;
+
+    auto cleanup = [&]() -> bool
+    {
+        bool actorsCleaned = DestroySimulatorActor(map, hostiles[0]);
+        actorsCleaned = DestroySimulatorActor(map, hostiles[1]) && actorsCleaned;
+
+        bool ungrouped = true;
+        if (group && group->GetId())
+        {
+            ObjectGuid initiator = players.empty()
+                ? ObjectGuid() : players.back()->GetObjectGuid();
+            group->Disband(true, initiator);
+            for (Player* player : players)
+                if (player && player->GetGroup())
+                    ungrouped = false;
+
+            if (groupRegistered)
+            {
+                sObjectMgr.RemoveGroup(group.get());
+                groupRegistered = false;
+            }
+            group.reset();
+        }
+
+        bool sessionsCleaned = true;
+        for (std::unique_ptr<WorldSession>& session : sessions)
+        {
+            if (session && session->GetPlayer())
+                session->LogoutPlayer(false);
+            if (session && session->GetPlayer())
+                sessionsCleaned = false;
+        }
+
+        bool playersDetachedFromMap = true;
+        for (ObjectGuid const& guid : playerGuids)
+            if (map.GetUnit(guid))
+                playersDetachedFromMap = false;
+
+        players.clear();
+        sessions.clear();
+        return actorsCleaned && ungrouped && sessionsCleaned && playersDetachedFromMap;
+    };
+
+    // Five real Core Players, all on the same test Map. The first is assigned
+    // Main Tank through the actual Group API; the second is the healer.
+    for (uint32 index = 0; index < MAX_GROUP_SIZE; ++index)
+    {
+        std::unique_ptr<WorldSession> session(
+            new WorldSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS));
+        Player* player = nullptr;
+        bool const created = CreateSimulatorPlayer(
+            map, partyFaction, *session, player,
+            static_cast<float>(index) * 2.0f, 6.0f, 0.0f);
+        sessions.push_back(std::move(session));
+        if (player)
+        {
+            players.push_back(player);
+            playerGuids.push_back(player->GetObjectGuid());
+        }
+        if (!created || !player || !player->IsInWorld())
+        {
+            bool const cleaned = cleanup();
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                     "[PartyBotSimulator] Group threat Player creation failed at member %u (cleanup=%u).",
+                     index, cleaned ? 1u : 0u);
+            return false;
+        }
+    }
+
+    bool const groupCreated = group->Create(
+        players[0]->GetObjectGuid(), players[0]->GetName());
+    if (!groupCreated)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Group threat Group::Create failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+    sObjectMgr.AddGroup(group.get());
+    groupRegistered = true;
+
+    bool membersAdded = group->GetMembersCount() == 1 &&
+        players[0]->GetGroup() == group.get();
+    for (std::size_t index = 1; index < players.size(); ++index)
+    {
+        bool const added = group->AddMember(
+            players[index]->GetObjectGuid(), players[index]->GetName());
+        membersAdded = membersAdded && added &&
+            players[index]->GetGroup() == group.get();
+        if (!added)
+            break;
+    }
+
+    if (membersAdded)
+    {
+        group->ConvertToRaid();
+        group->SetMainTank(players[0]->GetObjectGuid());
+    }
+    bool const mainTankAssigned = membersAdded &&
+        group->GetMainTankGuid() == players[0]->GetObjectGuid();
+
+    bool actorsCreated = false;
+    if (membersAdded && mainTankAssigned)
+        actorsCreated =
+            CreateSimulatorActor(map, *info, hostileFaction, 14.0f, 6.0f, hostiles[0]) &&
+            CreateSimulatorActor(map, *info, hostileFaction, 16.0f, 6.0f, hostiles[1]);
+
+    if (!actorsCreated)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Group threat hostile creation failed (members=%u mainTank=%u cleanup=%u).",
+                 membersAdded ? 1u : 0u, mainTankAssigned ? 1u : 0u,
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120 &&
+         (!hostiles[0].updateCount || !hostiles[1].updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!hostiles[0].updateCount || !hostiles[1].updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    bool const hostileAIReady = hostiles[0].updateCount && hostiles[1].updateCount;
+
+    Player* tank = players[0];
+    Player* healer = players[1];
+    ObjectGuid const tankGuid = tank->GetObjectGuid();
+    ObjectGuid const healerGuid = healer->GetObjectGuid();
+
+    // Start both hostiles on the real Main Tank and create their threat through
+    // actual Core damage. No threat list or victim pointer is written here.
+    if (hostileAIReady)
+    {
+        hostiles[0].creature->AI()->AttackStart(tank);
+        hostiles[1].creature->AI()->AttackStart(tank);
+    }
+    uint32 const tankDamage0 = hostileAIReady
+        ? tank->DealDamage(hostiles[0].creature, 100, nullptr, DIRECT_DAMAGE,
+                           SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    uint32 const tankDamage1 = hostileAIReady
+        ? tank->DealDamage(hostiles[1].creature, 100, nullptr, DIRECT_DAMAGE,
+                           SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+
+    float const tankThreat0 = hostiles[0].creature->GetThreatManager().getThreat(tank);
+    float const tankThreat1 = hostiles[1].creature->GetThreatManager().getThreat(tank);
+    Unit* const initialVictim0 = hostiles[0].creature->GetThreatManager().getHostileTarget();
+    Unit* const initialVictim1 = hostiles[1].creature->GetThreatManager().getHostileTarget();
+    bool const bothHostilesInitiallyTargetTank =
+        tankDamage0 > 0 && tankDamage1 > 0 &&
+        initialVictim0 == tank && initialVictim1 == tank &&
+        tankThreat0 > 0.0f && tankThreat1 > 0.0f;
+
+    // The healer performs a normal non-triggered Lesser Heal. The follow-up
+    // assist is an explicit scripted event through Core's native
+    // HostileRefManager::threatAssist API; the simulator does not implement
+    // healing-threat arithmetic or mutate either ThreatManager directly.
+    uint32 const patientHealthBeforeDamage = tank->GetHealth();
+    hostiles[0].creature->DealDamage(
+        tank, 3000, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    uint32 const patientHealthBeforeHeal = tank->GetHealth();
+    uint32 const healerManaBefore = healer->GetPower(POWER_MANA);
+    SpellEntry const* const healSpell = sSpellMgr.GetSpellEntry(SIMULATOR_HEAL_SPELL_ID);
+    SpellCastResult const healCastResult = healSpell
+        ? healer->CastSpell(tank, healSpell, false) : SPELL_FAILED_UNKNOWN;
+    for (uint32 tick = 0; tick < 20 &&
+         healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+    uint32 const patientHealthAfterHeal = tank->GetHealth();
+    uint32 const healerManaAfter = healer->GetPower(POWER_MANA);
+    bool const healCompleted = healCastResult == SPELL_CAST_OK &&
+        !healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
+        patientHealthAfterHeal > patientHealthBeforeHeal &&
+        healerManaAfter < healerManaBefore;
+
+    uint32 const hostileRefsOnTank =
+        static_cast<uint32>(tank->GetHostileRefManager().getSize());
+    float constexpr kScriptedAssistThreat = 400.0f;
+    if (healCompleted && hostileRefsOnTank == 2)
+        tank->GetHostileRefManager().threatAssist(healer, kScriptedAssistThreat);
+
+    float const healerThreat0 = hostiles[0].creature->GetThreatManager().getThreat(healer);
+    float const healerThreat1 = hostiles[1].creature->GetThreatManager().getThreat(healer);
+    Unit* const selectedAfterAssist0 =
+        hostiles[0].creature->GetThreatManager().getHostileTarget();
+    Unit* const selectedAfterAssist1 =
+        hostiles[1].creature->GetThreatManager().getHostileTarget();
+    bool const healerPulledBothAdds = healCompleted && hostileRefsOnTank == 2 &&
+        healerThreat0 > tankThreat0 * 1.3f &&
+        healerThreat1 > tankThreat1 * 1.3f &&
+        selectedAfterAssist0 == healer && selectedAfterAssist1 == healer;
+
+    // Let the Creature AI consume the Core-selected target so the production
+    // snapshot builder observes the actual current victim and attacker refs.
+    if (healerPulledBothAdds)
+    {
+        hostiles[0].creature->AI()->AttackStart(healer);
+        hostiles[1].creature->AI()->AttackStart(healer);
+    }
+
+    PartyCoordinator coordinator;
+    PartySnapshot const* snapshot = nullptr;
+    if (healerPulledBothAdds)
+        snapshot = PartySnapshotBuilder::GetOrBuild(tank, coordinator, 24000, 250);
+
+    bool const snapshotValid = snapshot &&
+        snapshot->groupId == group->GetId() &&
+        snapshot->mapId == map.GetId() &&
+        snapshot->instanceId == map.GetInstanceId() &&
+        snapshot->members.size() == MAX_GROUP_SIZE &&
+        snapshot->hostiles.size() == 2;
+    PartyMemberSnapshot const* tankSnapshot = snapshot
+        ? snapshot->FindMember(tankGuid.GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* healerSnapshot = snapshot
+        ? snapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
+    bool const rosterRoleStateValid = tankSnapshot && healerSnapshot &&
+        tankSnapshot->isMainTank && tankSnapshot->alive &&
+        healerSnapshot->alive && tankSnapshot->classId == CLASS_PRIEST &&
+        healerSnapshot->classId == CLASS_PRIEST;
+
+    auto containsThreat = [](HostileSnapshot const* hostile, Guid guid, float expected)
+    {
+        if (!hostile)
+            return false;
+        for (ThreatEntrySnapshot const& threat : hostile->threat)
+            if (threat.unitGuid == guid)
+                return threat.online && threat.accessible &&
+                    std::fabs(threat.threat - expected) < 0.01f;
+        return false;
+    };
+
+    HostileSnapshot const* bossSnapshot = snapshot
+        ? snapshot->FindHostile(hostiles[0].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    HostileSnapshot const* addSnapshot = snapshot
+        ? snapshot->FindHostile(hostiles[1].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    bool const bothAddsResolved = bossSnapshot && addSnapshot &&
+        bossSnapshot->alive && addSnapshot->alive &&
+        bossSnapshot->victimGuid == healerGuid.GetRawValue() &&
+        addSnapshot->victimGuid == healerGuid.GetRawValue();
+    bool const threatValuesCopied = containsThreat(
+            bossSnapshot, tankGuid.GetRawValue(), tankThreat0) &&
+        containsThreat(bossSnapshot, healerGuid.GetRawValue(), healerThreat0) &&
+        containsThreat(addSnapshot, tankGuid.GetRawValue(), tankThreat1) &&
+        containsThreat(addSnapshot, healerGuid.GetRawValue(), healerThreat1);
+
+    uint32 const groupId = group->GetId();
+    bool const registeredBeforeCleanup = groupRegistered &&
+        sObjectMgr.GetGroupById(groupId) == group.get();
+    bool const allChecksPassed = hostileAIReady && membersAdded && mainTankAssigned &&
+        registeredBeforeCleanup && bothHostilesInitiallyTargetTank && healCompleted &&
+        healerPulledBothAdds && snapshotValid && rosterRoleStateValid &&
+        bothAddsResolved && threatValuesCopied;
+
+    bool const cleaned = cleanup();
+    bool const groupRemoved = sObjectMgr.GetGroupById(groupId) == nullptr;
+    bool const cleanupPassed = cleaned && groupRemoved;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u registered=%u tankDamage=%u/%u initialTankVictim=%u/%u hostilesOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u snapshotValid=%u roster=%u adds=%u threatCopied=%u groupRemoved=%u cleanup=%u.",
+             hostileAIReady ? 1u : 0u, membersAdded ? 1u : 0u,
+             mainTankAssigned ? 1u : 0u, registeredBeforeCleanup ? 1u : 0u,
+             tankDamage0, tankDamage1,
+             initialVictim0 == tank ? 1u : 0u, initialVictim1 == tank ? 1u : 0u,
+             hostileRefsOnTank, static_cast<uint32>(healCastResult),
+             patientHealthBeforeHeal, patientHealthAfterHeal,
+             healerManaBefore, healerManaAfter, kScriptedAssistThreat,
+             healerThreat0, healerThreat1,
+             selectedAfterAssist0 == healer ? 1u : 0u,
+             selectedAfterAssist1 == healer ? 1u : 0u,
+             snapshotValid ? 1u : 0u, rosterRoleStateValid ? 1u : 0u,
+             bothAddsResolved ? 1u : 0u, threatValuesCopied ? 1u : 0u,
+             groupRemoved ? 1u : 0u, cleanupPassed ? 1u : 0u);
+
+    if (!allChecksPassed || !cleanupPassed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Real Group multi-add/healer-threat smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: a real five-Player Group exposed two Core hostile adds, Core assist-threat made both switch from Main Tank to healer, and PartySnapshotBuilder copied both real threat lists and victims.");
+    return true;
+}
+
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -3112,9 +3417,9 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const playerHealLosPassed = RunEngineCorePlayerHealLosSmokeTest(*map);
     bool const movePointControlSafetyPassed = RunEngineCoreMovePointControlSafetySmokeTest(*map);
     bool const movementInterruptPassed = RunEngineCoreMovementInterruptSmokeTest(*map);
-    // Keep the five-Player Group fixture last: it exercises real Group
-    // teardown and session logout, so no later Player fixture can inherit
-    // temporary session or instance state.
+    bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
+    // Keep the basic five-Player Group lifecycle fixture last: it exercises
+    // final Group teardown/session logout after encounter fixtures have ended.
     bool const realGroupSnapshotPassed = RunEngineCoreRealGroupSnapshotSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && engineExecutorPassed &&
@@ -3122,8 +3427,8 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&
-                              movePointControlSafetyPassed && realGroupSnapshotPassed &&
-                              movementInterruptPassed;
+                              movePointControlSafetyPassed && movementInterruptPassed &&
+                              realGroupThreatSnapshotPassed && realGroupSnapshotPassed;
 
     sMapMgr.DeleteTestMap(map);
 

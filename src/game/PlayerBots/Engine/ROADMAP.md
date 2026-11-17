@@ -48,7 +48,8 @@ The current role-aware Shadow slice is a proof of the data-to-candidate path onl
 
 - [x] Audit pinned-Core test-map, map-tick, creature-construction, damage, attack and threat APIs.
 - [x] Confirm `MapManager::CreateTestMap` / `DeleteTestMap` and public map add/update APIs.
-- [~] Locate a safe post-initialization, pre-world-loop hook for isolated headless test mode.
+- [x] Locate the hook: `Master::Run` after `SetInitialWorldSettings` and before `WorldRunnable` / world-listener startup.
+- [~] Design simulator mode to skip normal networking/world loop and reuse clean shutdown; startup itself performs DB writes and starts workers, so an isolated DB is mandatory.
 - [ ] Prove test-only `mangosd` mode can create/clean up a real test map without a client or production DB access.
 - [ ] Prove real Core `Unit::DealDamage`, `Unit::AddThreat`, threat ordering and victim reselection with Core-state assertions.
 - [ ] Control tick progression and RNG seed; document residual nondeterminism.

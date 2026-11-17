@@ -106,9 +106,9 @@ This remains a simulator fixture, not a production-authenticated PlayerBot or fi
 ### Stage F — movement and defensive action adapters
 
 - [x] First Core point-movement primitive: PartyBotEngine derives a formation destination from the Main Tank snapshot, the adapter calls `MotionMaster::MovePoint`, and runtime CI verifies the real position reaches the destination.
-- [~] Movement-interrupt fixture is implemented, but the current Lesser Heal runtime probe moves the Player without cancelling the cast. The test logs SpellEntry cast time and interrupt flags; this remains unresolved and is not an acceptance pass.
+- [~] Player movement-interrupt fixture: the Engine selects the formation destination, and the simulator models the inbound mover-relocation operation by calling `Player::SetPosition`. This enters the native `Player::SetPosition` → `Unit::HandleInterruptsOnMovement` path; the simulator does not inspect spell flags or cancel spells itself. The separate Stage F test continues to cover server-driven `MotionMaster::MovePoint` on a Creature. Runtime CI must still prove the Player cast is cancelled and the patient remains unchanged.
 - [ ] Add continuous follow/formation tracking and defensive actions against real Core movement generators and unit state.
-- [ ] Verify movement completion, movement cancellation of casts, target/range/LOS revalidation and cleanup.
+- [ ] Verify continuous movement completion, movement cancellation of casts, target/range/LOS revalidation and cleanup.
 
 ### Stage G — dungeon encounter simulation
 

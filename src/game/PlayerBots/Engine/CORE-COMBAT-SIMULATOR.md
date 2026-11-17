@@ -162,7 +162,7 @@ The first Stage B proof should be deliberately split into independently reported
 
 The simulator now contains a bounded first Core-backed Creature/threat scenario:
 
-- Select a normal-rank creature template deterministically from loaded templates, requiring a display and excluding templates with spawn spells, totem spells, spell lists, scripts or named AI.
+- Select a normal-rank creature template deterministically from loaded templates, requiring a display and excluding templates with spawn spells, totem spells, default auras, spell lists, scripts, named AI, invisibility or the no-threat-list flag.
 - Select a mutually hostile faction-template pair from the loaded Core faction data, rather than hard-coding Vanilla faction IDs.
 - Create one threat-owning Creature and two hostile Creature actors from that real template. Each is inserted with a Core-generated map-local GUID, assigned a small probe AI before insertion, marked active before `Map::Add`, and verified through both `IsInWorld()` and `Map::GetCreature(guid)`.
 - Drive bounded real `Map::Update(50)` calls, paced with short wall-clock sleeps, and require all three probe AIs to receive `UpdateAI`.

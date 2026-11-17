@@ -44,6 +44,23 @@ These tests validate lifecycle-host behavior, not new combat AI behavior.
 
 The current role-aware Shadow slice is a proof of the data-to-candidate path only. It is not a shipped behavior and does not justify further expanding coarse candidate-only rules.
 
+## Phase 2.5 — Core-backed headless combat simulator
+
+- [x] Audit pinned-Core test-map, map-tick, creature-construction, damage, attack and threat APIs.
+- [x] Confirm `MapManager::CreateTestMap` / `DeleteTestMap` and public map add/update APIs.
+- [~] Locate a safe post-initialization, pre-world-loop hook for isolated headless test mode.
+- [ ] Prove test-only `mangosd` mode can create/clean up a real test map without a client or production DB access.
+- [ ] Prove real Core `Unit::DealDamage`, `Unit::AddThreat`, threat ordering and victim reselection with Core-state assertions.
+- [ ] Control tick progression and RNG seed; document residual nondeterminism.
+- [ ] Add a Stage B CI job with strict timeout and no deployment/image-publish side effects.
+- [ ] Only after the Core proof passes, connect PartyBotEngine's real executor and party coordination.
+- [ ] Add scripted aggro, healer-threat, tank-death, healer-death and multi-add scenarios.
+- [ ] Evaluate full dungeon/instance scripts as a later tier.
+
+**Acceptance:** a headless CI scenario runs real pinned-Core combat methods and verifies damage, threat, target changes and cleanup. A toy combat model or direct mutation of expected results does not count.
+
+Design and audit: CORE-COMBAT-SIMULATOR.md. This phase is test infrastructure, not an alternative AI architecture.
+
 ## Phase 3 — first-class encounter trace and post-fight analysis
 
 - [ ] Implement encounter identity and start/end detection.

@@ -184,8 +184,8 @@ Not yet confirmed: runtime behavior of either stage with disposable DB copies an
 
 The repository now contains `tools/partybot-simulator/run-ci.sh`, wired into the ARM64 build workflow as a push-only optional step. It is a no-op until both repository Actions secrets below are configured:
 
-- `PARTYBOT_SIMULATOR_DBC_URL`: HTTPS read-only download URL for a `.tar.gz` archive of the complete extracted-data directory, preserving `dbc/5875/`, `maps/`, `vmaps/` and `mmaps/` at the archive root.
-- `PARTYBOT_SIMULATOR_DBC_SHA256`: SHA-256 checksum of that archive.
+- `PARTYBOT_SIMULATOR_DATA_URL`: HTTPS read-only download URL for a `.tar.gz` archive of the complete extracted-data directory, preserving `dbc/5875/`, `maps/`, `vmaps/` and `mmaps/` at the archive root.
+- `PARTYBOT_SIMULATOR_DATA_SHA256`: SHA-256 checksum of that archive.
 
 The runner extracts the full archive into its isolated `DataDir` and checks that the required DBC files and all three world-data directories are present and nonempty. This supports later terrain, collision, navigation and map-content scenarios without uploading another fixture. It starts the same public vMangos database image used by the pinned deployment wrapper, clones its `mangos`, `characters`, `realmd` and `logs` schemas to `partybot_sim_*`, and points all four Core connections exclusively at those disposable copies. It then runs the one-shot `mangosd` simulator and uploads both console and file logs as a 14-day Actions artifact. It never reads or connects to the Oracle realm.
 

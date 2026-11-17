@@ -2968,7 +2968,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         healerDeathSnapshotValid && healerDeathRosterValid && healerDeathThreatSnapshotValid;
 
     uint32 const groupIdAfterEvents = group->GetId();
-    bool const registeredBeforeCleanup = groupRegistered &&
+    bool const groupStillRegistered = registeredBeforeCleanup &&
         sObjectMgr.GetGroupById(groupIdAfterEvents) == group.get();
     bool const cleaned = cleanup();
     bool const groupRemoved = sObjectMgr.GetGroupById(groupIdAfterEvents) == nullptr;
@@ -2989,7 +2989,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
              registeredBeforeCleanup ? 1u : 0u, groupRemoved ? 1u : 0u,
              cleanupPassed ? 1u : 0u);
 
-    if (!f9ChecksPassed || !registeredBeforeCleanup)
+    if (!f9ChecksPassed || !groupStillRegistered)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Combined Group F8/F9 scenario failed before death recovery.");

@@ -21,6 +21,10 @@ if [[ -z "${PARTYBOT_SIMULATOR_DBC_URL:-}" || -z "${PARTYBOT_SIMULATOR_DBC_SHA25
     echo "[PartyBotSimulator] Both DBC fixture secrets must be configured together." | tee -a "$LOG_FILE"
     exit 1
 fi
+if [[ "$PARTYBOT_SIMULATOR_DBC_URL" != https://* ]]; then
+    echo "[PartyBotSimulator] The DBC fixture URL must use HTTPS." | tee -a "$LOG_FILE"
+    exit 1
+fi
 
 cleanup() {
     if docker container inspect "$DB_CONTAINER" >/dev/null 2>&1; then

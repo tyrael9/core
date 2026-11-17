@@ -313,3 +313,10 @@ The first configured-fixture run on commit `eceb4696591b29254a115c1b4bce5b17a558
 Inspection found that the Core movement adapter explicitly cancelled a movement-interruptible spell in the generic slot only while it was `SPELL_STATE_PREPARING`. It already handled the `SPELL_STATE_CASTING` state for the channeled slot. The adapter now checks both `SPELL_STATE_PREPARING` and `SPELL_STATE_CASTING` for a non-triggered, non-autorepeat generic spell carrying the movement interrupt flag.
 
 The next simulator run must prove cancellation immediately after the Engine-selected movement action, preserve the patient's pre-cast health, complete movement, and clean up the Player/session and target. Until that run passes, Stage F2 remains partial and no continuous-follow, defensive-action or dungeon milestone is claimed.
+
+
+### Stage F2 second runtime attempt — 2026-11-17
+
+Run [#44132458876](https://github.com/tyrael9/core/actions/runs/44132458876) on `7ffae2fa377a0cb66a996fccae1c674f9bb67496` confirms the full ARM64 build, standalone engine tests, simulator harness syntax, fixture secret check, and Stages A–F all pass. F2 still fails: the movement action executes and reaches its destination, but Lesser Heal applies (`health=50000>83333`). Therefore the prior generic-slot state expansion did not fix the runtime behavior.
+
+Core source inspection shows the ordinary Core movement-interrupt path (`SpellCaster::InterruptSpellsWithInterruptFlags`) has an additional `GetCastedTime()` gate and only interrupts generic `SPELL_STATE_PREPARING` spells (plus channeled spells while casting). The PartyBot movement adapter bypasses that helper and calls `InterruptSpell(CURRENT_GENERIC_SPELL)` directly, but the simulator log did not yet expose the exact live spell state/pointer at that call. The next commit adds pre/post diagnostics for spell ID, state, casted time, triggered/autorepeat flags, movement flag, and whether the generic slot remains occupied after interruption. No new state or cancellation behavior should be guessed until that evidence is available.

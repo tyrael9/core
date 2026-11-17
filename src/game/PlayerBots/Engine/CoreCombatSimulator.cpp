@@ -107,29 +107,35 @@ bool CreateSimulatorActor(Map& map, CreatureInfo const& info, uint32 factionId,
     creature->SetActiveObjectState(true);
     map.Add(creature);
 
-    if (!creature->IsInWorld())
+    actor.creature = creature;
+    if (!creature->IsInWorld() || map.GetCreature(creature->GetObjectGuid()) != creature)
     {
+        if (creature->IsInWorld())
+            map.Remove(creature, false);
         delete creature;
+        actor.creature = nullptr;
         return false;
     }
 
-    actor.creature = creature;
     return true;
 }
 
-void DestroySimulatorActor(Map& map, SimulatorActor& actor)
+bool DestroySimulatorActor(Map& map, SimulatorActor& actor)
 {
     if (!actor.creature)
-        return;
+        return true;
 
+    ObjectGuid const guid = actor.creature->GetObjectGuid();
     actor.creature->CombatStop(true);
     actor.creature->DeleteThreatList();
 
     if (actor.creature->IsInWorld())
         map.Remove(actor.creature, false);
 
+    bool const detached = !actor.creature->IsInWorld() && map.GetCreature(guid) == nullptr;
     delete actor.creature;
     actor.creature = nullptr;
+    return detached;
 }
 
 bool RunCoreCombatThreatSmokeTest(Map& map)
@@ -161,9 +167,11 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
 
     if (!created)
     {
-        DestroySimulatorActor(map, boss);
-        DestroySimulatorActor(map, tank);
-        DestroySimulatorActor(map, damageDealer);
+        bool const cleanedBoss = DestroySimulatorActor(map, boss);
+        bool const cleanedTank = DestroySimulatorActor(map, tank);
+        bool const cleanedDamageDealer = DestroySimulatorActor(map, damageDealer);
+        if (!cleanedBoss || !cleanedTank || !cleanedDamageDealer)
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[PartyBotSimulator] Actor cleanup failed after a partial create.");
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Failed to create and insert all three template-backed Creature actors.");
         return false;
@@ -225,14 +233,15 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
              hostilePair ? 1u : 0u, damageAndThreat ? 1u : 0u, targetSelection ? 1u : 0u);
 
     // Clear the boss-owned threat references before destroying their targets.
-    DestroySimulatorActor(map, boss);
-    DestroySimulatorActor(map, tank);
-    DestroySimulatorActor(map, damageDealer);
+    bool const cleanedBoss = DestroySimulatorActor(map, boss);
+    bool const cleanedTank = DestroySimulatorActor(map, tank);
+    bool const cleanedDamageDealer = DestroySimulatorActor(map, damageDealer);
+    bool const actorsCleaned = cleanedBoss && cleanedTank && cleanedDamageDealer;
 
-    if (!hostilePair || !aiUpdated || !damageAndThreat || !targetSelection)
+    if (!hostilePair || !aiUpdated || !damageAndThreat || !targetSelection || !actorsCleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Core combat/threat smoke test failed; all temporary actors were detached and destroyed.");
+                 "[PartyBotSimulator] Core combat/threat smoke test failed (actorsCleaned=%u).", actorsCleaned ? 1u : 0u);
         return false;
     }
 

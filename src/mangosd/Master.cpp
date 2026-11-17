@@ -161,9 +161,9 @@ bool ValidatePartyBotSimulatorDatabases()
         }
 
         std::string databaseName = info.substr(separator + 1);
-        while (!databaseName.empty() && (databaseName.front() == ' ' || databaseName.front() == '\\t'))
+        while (!databaseName.empty() && databaseName.front() == ' ')
             databaseName.erase(databaseName.begin());
-        while (!databaseName.empty() && (databaseName.back() == ' ' || databaseName.back() == '\\t'))
+        while (!databaseName.empty() && databaseName.back() == ' ')
             databaseName.pop_back();
 
         if (databaseName.compare(0, prefix.size(), prefix) != 0)
@@ -268,7 +268,8 @@ int Master::Run()
     std::thread world_thread = IO::Multithreading::CreateThread("WorldRunnable", WorldRunnable());
     // world_thread.setPriority(ACE_Based::Highest); // TODO
 
-    // set realmbuilds depend on mangosd expected builds, and set server online
+    // Keep simulator mode offline: it must never advertise a realm to clients.
+    if (!partyBotSimulator)
     {
         std::string builds = AcceptableClientBuildsListStr();
         LoginDatabase.escape_string(builds);
@@ -350,7 +351,8 @@ int Master::Run()
 
     // Start up freeze catcher thread
     std::unique_ptr<std::thread> freeze_thread = nullptr;
-    if (!partyBotSimulator && sConfig.GetIntDefault("MaxCoreStuckTime", 0))
+    uint32 const freeze_delay = sConfig.GetIntDefault("MaxCoreStuckTime", 0);
+    if (!partyBotSimulator && freeze_delay)
     {
         freeze_thread = IO::Multithreading::CreateThreadPtr("FreezeDetector", std::bind(&freezeDetector, freeze_delay * 1000));
     }

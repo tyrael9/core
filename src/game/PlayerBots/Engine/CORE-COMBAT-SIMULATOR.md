@@ -321,3 +321,13 @@ The simulator does not calculate per-tick movement or write positions. Core's `F
 Runtime CI `#44153619126` on commit `ccb4707` passed: `initialCaughtUp=1`, `leaderReached=1`, `followerTracked=1`, final separation `1.87`, `followGenerator=1`, `cleanup=1`.
 
 The fixture is still a Core-backed simulator proof using Creature actors, not production PlayerBot follow behavior or a real Core Group. Retargeting/recovery edge cases, formation slot arbitration, LOS/range checks and defensive movement remain future work.
+
+### Stage F4 — Player follow pauses for a non-triggered cast
+
+This fixture uses a Core `Player` with a local `WorldSession` as the follower and a template-backed Creature as the Main Tank. PartyBotEngine selects the normal `core_follow` action, which installs Core's `FollowMovementGenerator<Player>`. After the Player reaches the formation distance and stops, PartyBotEngine selects the existing Player-backed Lesser Heal action against the Main Tank. The leader then moves through its Core `PointMovementGenerator` while the Player's cast remains pending.
+
+The intended Core behavior is the guard in `FollowMovementGenerator<T>::Update`: while `IsNoMovementSpellCasted()` is true, the Core stops the follower and does not start another movement spline. The test observes the real pending Player spell and Core Player position/state; it does not implement a simulator-side movement veto, write the Player position, or directly complete the cast. After the ordinary Core SpellEvent completes the heal and consumes mana, the same FollowMovementGenerator must resume tracking the moving Main Tank.
+
+Acceptance requires the Engine-selected follow and heal actions, a pending/GCD cast over multiple Player updates, the Player remaining stopped and within 0.25 yards of its pre-cast position while the cast is pending, the leader reaching its destination, a real completed heal/mana cost, follow resuming after cast completion, final formation distance within 5 yards, the Follow generator remaining active, and Player/session plus Creature cleanup. Runtime CI is pending for this new scenario.
+
+This is a Player-backed Core simulator fixture, but the test Player still uses a local unauthenticated session and is not a production PlayerBot or real Core Group member.

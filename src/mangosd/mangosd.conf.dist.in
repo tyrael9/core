@@ -3356,3 +3356,23 @@ DynamicRespawn.AffectLevelBelow = 0
 DynamicRespawn.PlayersThreshold = 0
 DynamicRespawn.PlayersMaxLevelDiff = 0
 
+
+
+###################################################################################################################
+# PARTYBOT CORE-BACKED SIMULATOR (TEST ONLY)
+#
+# WARNING: This performs normal mangosd startup, including database writes and
+# background worker initialization. Use disposable copies of all four databases.
+# Simulator mode refuses to start unless every DB schema name begins with the
+# configured prefix. It does not open world/RA/SOAP listeners.
+###################################################################################################################
+
+# Run the one-shot Core test-map create/delete smoke test, then shut down.
+PartyBot.Simulator.Enable = 0
+
+# Required prefix for all four DB schema names in simulator mode.
+PartyBot.Simulator.DatabaseNamePrefix = partybot_sim_
+
+# Existing dungeon/raid MapEntry used for the isolated test map.
+# Default: 33 (Shadowfang Keep).
+PartyBot.Simulator.MapId = 33

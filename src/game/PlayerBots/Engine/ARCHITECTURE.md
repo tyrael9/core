@@ -166,7 +166,7 @@ The Core-agnostic decision layer and live data adapter are now connected to Part
 
 `PlayerBot.EngineShadow` defaults to 0. When set to 1, the runtime builds/reuses the snapshot and calls the read-only Evaluate path. `ExecuteSelected` is never called from Shadow mode; Legacy remains the sole action executor. The hook skips battleground groups (group ID zero) and unavailable snapshots.
 
-`PlayerBot.DecisionTrace=1` additionally emits a rate-limited `[PartyBotShadow]` summary (one per bot every ten seconds) with group/map/instance, snapshot epoch, member/hostile counts and candidate/selected counts. No runtime strategy or vMaNGOS action adapter is registered yet, so candidates=0 is expected until the first strategy is implemented.
+`PlayerBot.DecisionTrace=1` additionally emits a rate-limited `[PartyBotShadow]` summary and up to three `[PartyBotShadowDecision]` details per bot every ten seconds. Details identify role, strategy, target GUID, priority, selection status and reason. Candidate-only healer triage, tank peel and DPS assist strategies are registered; zero candidates may still be normal when no strategy trigger has an eligible live target.
 
 ## 11. Validation and next milestone
 

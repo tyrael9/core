@@ -1036,7 +1036,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
 namespace
 {
-char const* ShadowRoleName(std::uint8 roleId)
+char const* ShadowRoleName(uint8 roleId)
 {
     using PartyBotEngine::PartyRole;
     switch (static_cast<PartyRole>(roleId))
@@ -1173,45 +1173,45 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
             static_cast<uint32>(snapshot->hostiles.size()),
             static_cast<uint32>(report.candidates.size()),
             static_cast<uint32>(report.selectedIndices.size()));
+
+        std::vector<std::size_t> decisionOrder;
+        decisionOrder.reserve(report.candidates.size());
+        for (std::size_t i = 0; i < report.candidates.size(); ++i)
+            decisionOrder.push_back(i);
+        std::stable_sort(decisionOrder.begin(), decisionOrder.end(),
+            [&report](std::size_t left, std::size_t right)
+            {
+                PartyBotEngine::CandidateEvaluation const& a = report.candidates[left];
+                PartyBotEngine::CandidateEvaluation const& b = report.candidates[right];
+                bool const aSelected = a.status == PartyBotEngine::CandidateStatus::Selected;
+                bool const bSelected = b.status == PartyBotEngine::CandidateStatus::Selected;
+                if (aSelected != bSelected)
+                    return aSelected;
+                return a.candidate.finalPriority > b.candidate.finalPriority;
+            });
+
+        // Log selected candidates first, followed by strongest alternatives.
+        // Evaluation remains read-only; this path never executes actions.
+        std::size_t loggedDecisions = 0;
+        for (std::size_t index : decisionOrder)
+        {
+            if (loggedDecisions >= 3)
+                break;
+            PartyBotEngine::CandidateEvaluation const& evaluation = report.candidates[index];
+            PartyBotEngine::ActionCandidate const& candidate = evaluation.candidate;
+            m_decisionTrace.RecordShadowDecision(
+                me, snapshot->groupId, snapshot->mapId, snapshot->instanceId, snapshot->epoch,
+                ShadowRoleName(botSnapshot->roleId),
+                candidate.strategyName.c_str(), candidate.actionName.c_str(),
+                candidate.targetGuid, candidate.finalPriority,
+                ShadowCandidateStatusName(evaluation.status),
+                evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
+            ++loggedDecisions;
+        }
         m_engineShadowTraceMs = 10000;
     }
     else
         m_engineShadowTraceMs -= PB_UPDATE_INTERVAL;
-
-    std::vector<std::size_t> decisionOrder;
-    decisionOrder.reserve(report.candidates.size());
-    for (std::size_t i = 0; i < report.candidates.size(); ++i)
-        decisionOrder.push_back(i);
-    std::stable_sort(decisionOrder.begin(), decisionOrder.end(),
-        [&report](std::size_t left, std::size_t right)
-        {
-            CandidateEvaluation const& a = report.candidates[left];
-            CandidateEvaluation const& b = report.candidates[right];
-            bool const aSelected = a.status == CandidateStatus::Selected;
-            bool const bSelected = b.status == CandidateStatus::Selected;
-            if (aSelected != bSelected)
-                return aSelected;
-            return a.candidate.finalPriority > b.candidate.finalPriority;
-        });
-
-    // Log selected candidates first, followed by strongest alternatives.
-    // Evaluation remains read-only; this path never executes actions.
-    std::size_t loggedDecisions = 0;
-    for (std::size_t index : decisionOrder)
-    {
-        if (loggedDecisions >= 3)
-            break;
-        CandidateEvaluation const& evaluation = report.candidates[index];
-        ActionCandidate const& candidate = evaluation.candidate;
-        m_decisionTrace.RecordShadowDecision(
-            me, snapshot->groupId, snapshot->mapId, snapshot->instanceId, snapshot->epoch,
-            ShadowRoleName(botSnapshot->roleId),
-            candidate.strategyName.c_str(), candidate.actionName.c_str(),
-            candidate.targetGuid, candidate.finalPriority,
-            ShadowCandidateStatusName(evaluation.status),
-            evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
-        ++loggedDecisions;
-    }
 
 }
 

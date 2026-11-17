@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Optional GitHub Actions runtime harness for the Core-backed PartyBot simulator.
-# The private fixture is the complete extracted-data directory:
-# dbc/5875, maps, vmaps and mmaps. World/character/login/log schemas are seeded
+# The Google Drive fixture is the complete extracted-data directory:
+# 5875/dbc, maps, vmaps and mmaps. World/character/login/log schemas are seeded
 # from the public vmangos-deploy database image and cloned into disposable DBs.
 
 LOG_FILE="${GITHUB_WORKSPACE:-$PWD}/simulator.log"
@@ -35,22 +35,24 @@ cleanup() {
 trap cleanup EXIT
 
 command -v docker >/dev/null
-command -v curl >/dev/null
 command -v python3 >/dev/null
 
 DATA_ARCHIVE="$PWD/partybot-simulator-extracted-data.tar.gz"
-echo "[PartyBotSimulator] Downloading the complete private 5875 extracted-data fixture." | tee -a "$LOG_FILE"
-curl --fail --silent --show-error --location "$PARTYBOT_SIMULATOR_DATA_URL" --output "$DATA_ARCHIVE"
+GDOWN_VENV="$PWD/.partybot-gdown-venv"
+echo "[PartyBotSimulator] Downloading the complete Google Drive 5875 extracted-data fixture." | tee -a "$LOG_FILE"
+python3 -m venv "$GDOWN_VENV"
+"$GDOWN_VENV/bin/python" -m pip install --disable-pip-version-check --quiet "gdown==6.4.2"
+"$GDOWN_VENV/bin/gdown" --continue --retries 3 --timeout 60 "$PARTYBOT_SIMULATOR_DATA_URL" --output "$DATA_ARCHIVE"
 printf '%s  %s\n' "$(printf '%s' "$PARTYBOT_SIMULATOR_DATA_SHA256" | tr '[:upper:]' '[:lower:]')" "$DATA_ARCHIVE" | sha256sum --check
 
 rm -rf "$DATA_DIR"
 mkdir -p "$DATA_DIR" "$PWD/simulator-logs"
 tar -xzf "$DATA_ARCHIVE" -C "$DATA_DIR"
 
-DBC_DIR="$DATA_DIR/dbc/5875"
+DBC_DIR="$DATA_DIR/5875/dbc"
 for required in Map.dbc FactionTemplate.dbc CreatureDisplayInfo.dbc; do
     if [[ ! -s "$DBC_DIR/$required" ]]; then
-        echo "[PartyBotSimulator] Missing required DBC file: dbc/5875/$required" | tee -a "$LOG_FILE"
+        echo "[PartyBotSimulator] Missing required DBC file: 5875/dbc/$required" | tee -a "$LOG_FILE"
         exit 1
     fi
 done

@@ -197,29 +197,47 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
     bool const aiUpdated = boss.updateCount && tank.updateCount && damageDealer.updateCount;
     bool damageAndThreat = false;
     bool targetSelection = false;
+    uint32 initialHealth = 0;
+    uint32 healthAfterTank = 0;
+    uint32 healthAfterDps = 0;
+    uint32 healthAfterFinalHit = 0;
+    uint32 tankDamage = 0;
+    uint32 dpsDamage = 0;
+    uint32 additionalDamage = 0;
+    float tankThreat = 0.0f;
+    float dpsThreat = 0.0f;
+    uint32 selectedAfterTankGuid = 0;
+    uint32 selectedBelowThresholdGuid = 0;
+    uint32 selectedAboveThresholdGuid = 0;
 
     if (hostilePair && aiUpdated)
     {
-        uint32 const initialHealth = boss.creature->GetHealth();
-        uint32 const tankDamage = tank.creature->DealDamage(
+        initialHealth = boss.creature->GetHealth();
+        tankDamage = tank.creature->DealDamage(
             boss.creature, 100, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
-        float const tankThreat = boss.creature->GetThreatManager().getThreat(tank.creature);
-        uint32 const healthAfterTank = boss.creature->GetHealth();
+        tankThreat = boss.creature->GetThreatManager().getThreat(tank.creature);
+        healthAfterTank = boss.creature->GetHealth();
 
         Unit* selectedAfterTank = boss.creature->GetThreatManager().getHostileTarget();
+        selectedAfterTankGuid = selectedAfterTank ? selectedAfterTank->GetGUIDLow() : 0;
 
-        uint32 const dpsDamage = damageDealer.creature->DealDamage(
+        dpsDamage = damageDealer.creature->DealDamage(
             boss.creature, 105, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
-        float dpsThreat = boss.creature->GetThreatManager().getThreat(damageDealer.creature);
+        dpsThreat = boss.creature->GetThreatManager().getThreat(damageDealer.creature);
+        healthAfterDps = boss.creature->GetHealth();
         Unit* selectedBelowThreshold = boss.creature->GetThreatManager().getHostileTarget();
+        selectedBelowThresholdGuid = selectedBelowThreshold ? selectedBelowThreshold->GetGUIDLow() : 0;
 
-        uint32 const additionalDamage = damageDealer.creature->DealDamage(
+        additionalDamage = damageDealer.creature->DealDamage(
             boss.creature, 10, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
         dpsThreat = boss.creature->GetThreatManager().getThreat(damageDealer.creature);
+        healthAfterFinalHit = boss.creature->GetHealth();
         Unit* selectedAboveThreshold = boss.creature->GetThreatManager().getHostileTarget();
+        selectedAboveThresholdGuid = selectedAboveThreshold ? selectedAboveThreshold->GetGUIDLow() : 0;
 
         damageAndThreat = tankDamage > 0 && dpsDamage > 0 && additionalDamage > 0 &&
-                          healthAfterTank < initialHealth && tankThreat > 0.0f && dpsThreat > 0.0f;
+                          healthAfterTank < initialHealth && healthAfterDps < healthAfterTank &&
+                          healthAfterFinalHit < healthAfterDps && tankThreat > 0.0f && dpsThreat > 0.0f;
 
         targetSelection = selectedAfterTank == tank.creature &&
                           selectedBelowThreshold == tank.creature &&
@@ -228,10 +246,13 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Creature probe: template=%u factions=%u/%u aiUpdates=%u/%u/%u hostile=%u damageThreat=%u targetSwitch=%u.",
+             "[PartyBotSimulator] Creature probe: template=%u factions=%u/%u aiUpdates=%u/%u/%u hostile=%u health=%u>%u>%u>%u damage=%u/%u/%u threat=%.1f/%.1f switchThreshold=%.1f selectedGUID=%u/%u/%u damageThreat=%u targetSwitch=%u.",
              info->entry, bossFaction, attackerFaction,
              boss.updateCount, tank.updateCount, damageDealer.updateCount,
-             hostilePair ? 1u : 0u, damageAndThreat ? 1u : 0u, targetSelection ? 1u : 0u);
+             hostilePair ? 1u : 0u, initialHealth, healthAfterTank, healthAfterDps, healthAfterFinalHit,
+             tankDamage, dpsDamage, additionalDamage, tankThreat, dpsThreat, 1.1f * tankThreat,
+             selectedAfterTankGuid, selectedBelowThresholdGuid, selectedAboveThresholdGuid,
+             damageAndThreat ? 1u : 0u, targetSelection ? 1u : 0u);
 
     // Clear the boss-owned threat references before destroying their targets.
     bool const cleanedBoss = DestroySimulatorActor(map, boss);

@@ -24,7 +24,7 @@ The initial feasibility pass was performed against this branch's source.
 - `MapManager::CreateTestMap(mapid, instanced, x, y)` and `DeleteTestMap(Map*)` are public. For an instanced map, the implementation allocates a fresh instance ID, constructs a `DungeonMap` for dungeon/raid map entries (otherwise `WorldMap`), calls `CreateInstanceData(false)` and registers the map. It deliberately does not call `SpawnActiveObjects()` in this test-map path.
 - `Map` exposes public `Add(T*)`, `Update(uint32)`, `GetUnit(ObjectGuid)` and `GetCreature(ObjectGuid)`, candidate seams for adding actors and advancing a map without a client.
 - `CreatureCreatePos` and `Creature::Create(..., CreatureInfo const*, ...)` construct a creature from a loaded Core creature template and explicit position.
-- `Creature::AddToWorld()` registers the creature with its map and initializes AI if no AI was assigned. A test actor can install a test `CreatureAI` first, avoiding accidental production creature-script behavior while retaining Core Unit/Creature state.
+- `Creature::AddToWorld()` registers the creature with its map and initializes AI if no AI was assigned. `Creature::AIM_Initialize()` initializes both the `MotionMaster` and template-selected AI. A test actor must call this lifecycle method first, then explicitly delete/replace the template AI with its probe AI; installing a custom AI before `Map::Add` skips `AIM_Initialize` and leaves an empty `MotionMaster`.
 - `Unit::DealDamage` is the real damage/death path. `Unit::AddThreat` forwards to the owning unit's real `ThreatManager`; the manager exposes threat-list values and victim state.
 - `Unit::Attack` performs Core attack-state and attacker-reference bookkeeping and rejects dead, deleted or out-of-world targets.
 
@@ -46,13 +46,13 @@ Implemented as a configuration-gated one-shot mode in the existing `mangosd` exe
 
 1. run the normal Core initialization path using a dedicated disposable configuration/database;
 2. create a fresh dungeon/raid test map through `sMapMgr.CreateTestMap`;
-3. assert that the map is registered, advance one empty `Map::Update(50)` tick, and assert it remains registered;
+3. assert that the map is registered and remains registered before the combat scenario;
 4. delete it through `sMapMgr.DeleteTestMap` and assert the registry entry is gone;
 5. set the process exit code from the assertions and reuse the normal WorldRunnable shutdown path.
 
 The mode skips world/RA/SOAP listeners, realm-online/offline updates, daemon/PID-file behavior, account cleanup and mass-mail processing. Before connecting to any DB it verifies that all four configured schema names begin with `PartyBot.Simulator.DatabaseNamePrefix` (default `partybot_sim_`). This guard prevents accidental use of the ordinary realm schema names; the schemas must still be disposable copies.
 
-This smoke test proves only that the real Core can create, tick and delete an empty instance map in headless mode. It does not create actors or prove combat.
+This lifecycle check proves only that the real Core can create, register and delete an instance map in headless mode. It does not create actors or prove combat. The first map tick is deliberately deferred until Stage B has inserted actors with initialized movement state.
 
 **Startup hook found:** `Master::Run()` calls `sWorld.SetInitialWorldSettings()` before it launches `WorldRunnable` and before `sWorldSocketMgr.StartWorldNetworking()`. This is the first practical hook: required world data/managers have been initialized, and the world listener has not yet been opened. A test-mode branch can therefore skip the listener and normal world loop while reusing the real startup path.
 

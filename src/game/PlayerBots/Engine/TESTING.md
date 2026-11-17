@@ -156,8 +156,9 @@ The report deliberately labels absent heartbeats as WARN because that can mean
 Shadow is disabled, no eligible party bot is active, the log window is too
 short, or snapshot construction did not complete. It does not claim to detect
 internal coordinator leaks or prove lifecycle correctness; those still need
-dedicated instrumentation/tests. Zero candidates/selected is expected until
-runtime strategies/actions are registered.
+dedicated instrumentation/tests. Candidate counts depend on role and live
+combat state; no proposals can be normal while the party is idle or no strategy
+trigger has an eligible target.
 
 ## New engine tests (planned)
 

@@ -1549,6 +1549,7 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
 
     uint32 pendingCastTicks = 0;
     float maxFollowerDisplacementWhileCasting = 0.0f;
+    bool followerStayedStoppedWhileCasting = true;
     bool leaderReachedDestination = false;
     for (uint32 tick = 0; tick < 32; ++tick)
     {
@@ -1558,6 +1559,8 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
         if (follower->GetCurrentSpell(CURRENT_GENERIC_SPELL))
         {
             ++pendingCastTicks;
+            followerStayedStoppedWhileCasting =
+                followerStayedStoppedWhileCasting && follower->IsStopped();
             float const dx = follower->GetPositionX() - followerXBeforeLeaderMove;
             float const dy = follower->GetPositionY() - followerYBeforeLeaderMove;
             float const dz = follower->GetPositionZ() - followerZBeforeLeaderMove;
@@ -1580,7 +1583,7 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
     bool const castCompleted = !follower->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
         patientHealthAfterCast > patientHealthBefore && healerManaAfterCast < healerManaBefore;
     bool const followPausedDuringCast = pendingCastTicks >= 2 &&
-        maxFollowerDisplacementWhileCasting <= 0.25f && follower->IsStopped();
+        maxFollowerDisplacementWhileCasting <= 0.25f && followerStayedStoppedWhileCasting;
 
     bool followedAfterCast = false;
     for (uint32 tick = 0; tick < 48; ++tick)
@@ -1615,14 +1618,15 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
     bool const cleaned = playerCleaned && leaderCleaned;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Engine Player follow/cast safety: followRegistered=%u followSelected=%u followStarted=%u initialCaughtUpStopped=%u healRegistered=%u healSelected=%u castAccepted=%u pendingTicks=%u maxCastMove=%.2f castCompleted=%u leaderMove=%u leaderReached=%u followPaused=%u followedAfterCast=%u finalDistance=%.2f followRetained=%u cleanup=%u.",
+             "[PartyBotSimulator] Engine Player follow/cast safety: followRegistered=%u followSelected=%u followStarted=%u initialCaughtUpStopped=%u healRegistered=%u healSelected=%u castAccepted=%u pendingTicks=%u maxCastMove=%.2f stoppedWhileCasting=%u castCompleted=%u leaderMove=%u leaderReached=%u followPaused=%u followedAfterCast=%u finalDistance=%.2f followRetained=%u cleanup=%u.",
              followRegistered ? 1u : 0u, followSelected ? 1u : 0u, followStarted ? 1u : 0u,
              initialCaughtUpAndStopped ? 1u : 0u, healRegistered ? 1u : 0u,
              healSelected ? 1u : 0u, castAccepted ? 1u : 0u, pendingCastTicks,
-             maxFollowerDisplacementWhileCasting, castCompleted ? 1u : 0u,
-             leaderMovementStarted ? 1u : 0u, leaderReachedDestination ? 1u : 0u,
-             followPausedDuringCast ? 1u : 0u, followedAfterCast ? 1u : 0u,
-             finalDistance, followRetained ? 1u : 0u, cleaned ? 1u : 0u);
+             maxFollowerDisplacementWhileCasting, followerStayedStoppedWhileCasting ? 1u : 0u,
+             castCompleted ? 1u : 0u, leaderMovementStarted ? 1u : 0u,
+             leaderReachedDestination ? 1u : 0u, followPausedDuringCast ? 1u : 0u,
+             followedAfterCast ? 1u : 0u, finalDistance,
+             followRetained ? 1u : 0u, cleaned ? 1u : 0u);
 
     if (!followRegistered || !followSelected || !followStarted || !initialCaughtUpAndStopped ||
         !healRegistered || !healSelected || !castAccepted || !castCompleted ||

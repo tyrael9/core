@@ -719,6 +719,12 @@ public:
             mover->HasUnitState(UNIT_STATE_LOST_CONTROL))
             return ActionResult::Impossible;
 
+        // Server-driven bot movement does not pass through the client's
+        // movement-packet handler (where Core normally interrupts movement-
+        // interruptible casts). Mirror that Core contract explicitly before
+        // starting the movement generator; the flag check is spell-data driven.
+        mover->InterruptSpellsWithInterruptFlags(SPELL_INTERRUPT_FLAG_MOVEMENT);
+
         // MOVE_NONE uses the Core point movement generator without requiring
         // a pathfinder/navmesh; the spline and position are still Core-owned.
         mover->GetMotionMaster()->MovePoint(1, candidate.destinationX,

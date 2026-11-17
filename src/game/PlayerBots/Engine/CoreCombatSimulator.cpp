@@ -1388,6 +1388,258 @@ bool RunEngineCoreFollowSmokeTest(Map& map)
     return true;
 }
 
+
+bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor leader;
+    bool const leaderCreated = CreateSimulatorActor(map, *info, partyFaction, 0.0f, 6.0f, leader);
+    if (!leaderCreated)
+    {
+        DestroySimulatorActor(map, leader);
+        return false;
+    }
+
+    WorldSession followerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* follower = nullptr;
+    bool const followerCreated = CreateSimulatorPlayer(map, partyFaction, followerSession,
+                                                          follower, 10.0f, 6.0f, 0.0f);
+    if (!followerCreated)
+    {
+        if (followerSession.GetPlayer())
+            followerSession.LogoutPlayer(false);
+        else if (follower)
+            delete follower;
+        bool const cleaned = DestroySimulatorActor(map, leader);
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Player follow/cast fixture creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    leader.creature->SetHealth(leader.creature->GetMaxHealth() / 2);
+    uint32 const patientHealthBefore = leader.creature->GetHealth();
+    uint32 const healerManaBefore = follower->GetPower(POWER_MANA);
+
+    PartySnapshot followSnapshot;
+    followSnapshot.groupId = 7;
+    followSnapshot.mapId = map.GetId();
+    followSnapshot.instanceId = map.GetInstanceId();
+    followSnapshot.epoch = 7;
+    followSnapshot.capturedAtMs = 7000;
+
+    PartyMemberSnapshot followerMember;
+    followerMember.guid = follower->GetObjectGuid().GetRawValue();
+    followerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    followerMember.mapId = map.GetId();
+    followerMember.instanceId = map.GetInstanceId();
+    followerMember.health = follower->GetHealth();
+    followerMember.maxHealth = follower->GetMaxHealth();
+    followerMember.online = true;
+    followerMember.alive = follower->IsAlive();
+    followerMember.x = follower->GetPositionX();
+    followerMember.y = follower->GetPositionY();
+    followerMember.z = follower->GetPositionZ();
+    followSnapshot.members.push_back(followerMember);
+
+    PartyMemberSnapshot leaderMember;
+    leaderMember.guid = leader.creature->GetObjectGuid().GetRawValue();
+    leaderMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    leaderMember.mapId = map.GetId();
+    leaderMember.instanceId = map.GetInstanceId();
+    leaderMember.health = patientHealthBefore;
+    leaderMember.maxHealth = leader.creature->GetMaxHealth();
+    leaderMember.online = true;
+    leaderMember.alive = leader.creature->IsAlive();
+    leaderMember.isMainTank = true;
+    leaderMember.x = leader.creature->GetPositionX();
+    leaderMember.y = leader.creature->GetPositionY();
+    leaderMember.z = leader.creature->GetPositionZ();
+    followSnapshot.members.push_back(leaderMember);
+
+    PartyCoordinator coordinator;
+    DecisionContext followContext(followSnapshot, followSnapshot.members[0], coordinator, 7000);
+    PartyBotEngine followEngine;
+    std::shared_ptr<SimulatorCoreFollowAction> followAction(new SimulatorCoreFollowAction(map));
+    bool const followRegistered = followEngine.RegisterAction(followAction);
+    std::shared_ptr<Strategy> followStrategy(new Strategy("simulator_player_follow_during_cast"));
+    followStrategy->AddTrigger(std::make_shared<SimulatorFollowTrigger>());
+    followEngine.AddStrategy(followStrategy);
+
+    DecisionReport followReport = followEngine.Evaluate(followContext);
+    bool const followSelected = followReport.selectedIndices.size() == 1 &&
+        followReport.candidates[followReport.selectedIndices[0]].candidate.actionName == "core_follow" &&
+        followReport.candidates[followReport.selectedIndices[0]].candidate.targetGuid == leaderMember.guid &&
+        followReport.candidates[followReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    followEngine.ExecuteSelected(followContext, followReport);
+    bool const followStarted = !followReport.selectedIndices.empty() &&
+        followReport.candidates[followReport.selectedIndices[0]].status == CandidateStatus::Executed &&
+        followReport.candidates[followReport.selectedIndices[0]].actionResult == ActionResult::Success &&
+        followAction->DidStartFollow();
+
+    bool initialCaughtUpAndStopped = false;
+    for (uint32 tick = 0; tick < 36; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+        float const dx = follower->GetPositionX() - leader.creature->GetPositionX();
+        float const dy = follower->GetPositionY() - leader.creature->GetPositionY();
+        float const dz = follower->GetPositionZ() - leader.creature->GetPositionZ();
+        float const distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (distance <= 5.0f && follower->IsStopped() && follower->movespline->Finalized())
+        {
+            initialCaughtUpAndStopped = true;
+            break;
+        }
+    }
+
+    // Re-prime the real Player update cadence before starting the cast. The
+    // cast/follow interaction below is advanced only through normal Core map
+    // updates; no spell timer or player position is changed by the fixture.
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    map.Update(250);
+
+    PartySnapshot healSnapshot;
+    healSnapshot.groupId = 8;
+    healSnapshot.mapId = map.GetId();
+    healSnapshot.instanceId = map.GetInstanceId();
+    healSnapshot.epoch = 8;
+    healSnapshot.capturedAtMs = 8000;
+
+    followerMember.x = follower->GetPositionX();
+    followerMember.y = follower->GetPositionY();
+    followerMember.z = follower->GetPositionZ();
+    healSnapshot.members.push_back(followerMember);
+    leaderMember.health = leader.creature->GetHealth();
+    leaderMember.x = leader.creature->GetPositionX();
+    leaderMember.y = leader.creature->GetPositionY();
+    leaderMember.z = leader.creature->GetPositionZ();
+    healSnapshot.members.push_back(leaderMember);
+
+    DecisionContext healContext(healSnapshot, healSnapshot.members[0], coordinator, 8000);
+    PartyBotEngine healEngine;
+    std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
+    bool const healRegistered = healEngine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> healStrategy(new Strategy("simulator_follow_cast_safety_heal"));
+    healStrategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
+    healEngine.AddStrategy(healStrategy);
+
+    DecisionReport healReport = healEngine.Evaluate(healContext);
+    bool const healSelected = healReport.selectedIndices.size() == 1 &&
+        healReport.candidates[healReport.selectedIndices[0]].candidate.targetGuid == leaderMember.guid &&
+        healReport.candidates[healReport.selectedIndices[0]].candidate.spellId == SIMULATOR_HEAL_SPELL_ID &&
+        healReport.candidates[healReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    healEngine.ExecuteSelected(healContext, healReport);
+    bool const castAccepted = !healReport.selectedIndices.empty() &&
+        healReport.candidates[healReport.selectedIndices[0]].status == CandidateStatus::Executed &&
+        healReport.candidates[healReport.selectedIndices[0]].actionResult == ActionResult::Success &&
+        healAction->GetLastCastResult() == SPELL_CAST_OK &&
+        healAction->WasCastPendingAfterAccept() && healAction->HadGcdAfterAccept();
+
+    float const followerXBeforeLeaderMove = follower->GetPositionX();
+    float const followerYBeforeLeaderMove = follower->GetPositionY();
+    float const followerZBeforeLeaderMove = follower->GetPositionZ();
+    leader.creature->GetMotionMaster()->MovePoint(3, -20.0f, 6.0f, 0.0f, MOVE_NONE);
+    bool const leaderMovementStarted =
+        leader.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+
+    uint32 pendingCastTicks = 0;
+    float maxFollowerDisplacementWhileCasting = 0.0f;
+    bool leaderReachedDestination = false;
+    for (uint32 tick = 0; tick < 32; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+
+        if (follower->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        {
+            ++pendingCastTicks;
+            float const dx = follower->GetPositionX() - followerXBeforeLeaderMove;
+            float const dy = follower->GetPositionY() - followerYBeforeLeaderMove;
+            float const dz = follower->GetPositionZ() - followerZBeforeLeaderMove;
+            maxFollowerDisplacementWhileCasting = std::max(
+                maxFollowerDisplacementWhileCasting, std::sqrt(dx * dx + dy * dy + dz * dz));
+        }
+
+        float const leaderDx = leader.creature->GetPositionX() + 20.0f;
+        float const leaderDy = leader.creature->GetPositionY() - 6.0f;
+        float const leaderDz = leader.creature->GetPositionZ();
+        leaderReachedDestination =
+            leaderDx * leaderDx + leaderDy * leaderDy + leaderDz * leaderDz <= 1.0f;
+
+        if (!follower->GetCurrentSpell(CURRENT_GENERIC_SPELL) && leaderReachedDestination)
+            break;
+    }
+
+    uint32 const patientHealthAfterCast = leader.creature->GetHealth();
+    uint32 const healerManaAfterCast = follower->GetPower(POWER_MANA);
+    bool const castCompleted = !follower->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
+        patientHealthAfterCast > patientHealthBefore && healerManaAfterCast < healerManaBefore;
+    bool const followPausedDuringCast = pendingCastTicks >= 2 &&
+        maxFollowerDisplacementWhileCasting <= 0.25f && follower->IsStopped();
+
+    bool followedAfterCast = false;
+    for (uint32 tick = 0; tick < 48; ++tick)
+    {
+        float const dx = follower->GetPositionX() - leader.creature->GetPositionX();
+        float const dy = follower->GetPositionY() - leader.creature->GetPositionY();
+        float const dz = follower->GetPositionZ() - leader.creature->GetPositionZ();
+        float const distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (leaderReachedDestination && distance <= 5.0f &&
+            follower->GetPositionX() < followerXBeforeLeaderMove - 5.0f)
+        {
+            followedAfterCast = true;
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    float const finalDx = follower->GetPositionX() - leader.creature->GetPositionX();
+    float const finalDy = follower->GetPositionY() - leader.creature->GetPositionY();
+    float const finalDz = follower->GetPositionZ() - leader.creature->GetPositionZ();
+    float const finalDistance = std::sqrt(finalDx * finalDx + finalDy * finalDy + finalDz * finalDz);
+    bool const followRetained =
+        follower->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
+        follower->HasUnitState(UNIT_STATE_FOLLOW);
+
+    followerSession.LogoutPlayer(false);
+    bool const playerCleaned = followerSession.GetPlayer() == nullptr;
+    follower = nullptr;
+    bool const leaderCleaned = DestroySimulatorActor(map, leader);
+    bool const cleaned = playerCleaned && leaderCleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine Player follow/cast safety: followRegistered=%u followSelected=%u followStarted=%u initialCaughtUpStopped=%u healRegistered=%u healSelected=%u castAccepted=%u pendingTicks=%u maxCastMove=%.2f castCompleted=%u leaderMove=%u leaderReached=%u followPaused=%u followedAfterCast=%u finalDistance=%.2f followRetained=%u cleanup=%u.",
+             followRegistered ? 1u : 0u, followSelected ? 1u : 0u, followStarted ? 1u : 0u,
+             initialCaughtUpAndStopped ? 1u : 0u, healRegistered ? 1u : 0u,
+             healSelected ? 1u : 0u, castAccepted ? 1u : 0u, pendingCastTicks,
+             maxFollowerDisplacementWhileCasting, castCompleted ? 1u : 0u,
+             leaderMovementStarted ? 1u : 0u, leaderReachedDestination ? 1u : 0u,
+             followPausedDuringCast ? 1u : 0u, followedAfterCast ? 1u : 0u,
+             finalDistance, followRetained ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!followRegistered || !followSelected || !followStarted || !initialCaughtUpAndStopped ||
+        !healRegistered || !healSelected || !castAccepted || !castCompleted ||
+        !leaderMovementStarted || !leaderReachedDestination || !followPausedDuringCast ||
+        !followedAfterCast || !followRetained || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine Player follow/cast safety smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Core Player FollowMovementGenerator paused while its non-triggered Lesser Heal cast was pending and resumed tracking the Main Tank after the cast completed.");
+    return true;
+}
+
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -1801,11 +2053,13 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
     bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
+    bool const playerFollowCastSafetyPassed = RunEngineCorePlayerFollowCastSafetySmokeTest(*map);
     bool const movementInterruptPassed = RunEngineCoreMovementInterruptSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
-                              movementPassed && followPassed && movementInterruptPassed;
+                              movementPassed && followPassed &&
+                              playerFollowCastSafetyPassed && movementInterruptPassed;
 
     sMapMgr.DeleteTestMap(map);
 

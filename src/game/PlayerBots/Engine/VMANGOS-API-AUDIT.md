@@ -186,3 +186,6 @@ Pinned Core source supports a test Player without inventing a parallel fake play
 - \`WorldSession::LogoutPlayer(false)\` performs normal in-world Player removal/deletion; the fixture checks the session's Player pointer is cleared before deleting the remaining Creature actor.
 
 The Stage E runtime assertion requires a known Priest Lesser Heal (2050), a successful non-triggered Core cast result, a pending generic spell/GCD immediately after acceptance, subsequent cast completion, an actual target health increase and mana consumption. This validates one normal Player spell lifecycle. It does not yet establish production bot session authentication, Group membership, movement interruption, or all failure/rejection paths.
+
+
+Stage E runtime note: \`Map::Update(uint32 t_diff)\` calls \`UpdatePlayers()\`, but that method compares the real \`WorldTimer::getMSTime()\` against \`m_lastPlayersUpdate\` and the configured player-update interval. The synthetic \`t_diff\` alone does not force a Player update. The simulator sleeps for a bounded 250 ms between map updates so the real monotonic cadence advances; the normal \`Player::Update -> Unit::Update -> EventProcessor\` path completes the cast.

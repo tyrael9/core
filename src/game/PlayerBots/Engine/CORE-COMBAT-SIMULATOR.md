@@ -258,3 +258,8 @@ The runtime assertion distinguishes acceptance from completion:
 - The Player logs out and is deleted by the Core session/map cleanup path; the patient actor is also destroyed.
 
 This is the first Player-backed spell slice, not yet a production PlayerBot integration. It does not yet exercise a five-member Core Group, concurrent bot casters, cast interruption/movement cancellation, target range/LOS failure matrices, or a full combat rotation. The local session is deliberately not registered as a live account session; all map, spell, and cleanup behavior is exercised on the isolated test map.
+
+
+### Stage E timing detail
+
+The first Player-backed run confirmed that \`Map::Update(t_diff)\` does not advance Player spell events merely because a synthetic diff is passed. \`Map::UpdatePlayers()\` and session movement/spell processing are throttled against the Core's monotonic \`WorldTimer\`. The fixture therefore waits between bounded map updates, allowing the normal Player update cadence and spell event processor to advance in real time. This is intentional: the simulator must not fake completion by directly advancing a cast timer or applying the heal itself.

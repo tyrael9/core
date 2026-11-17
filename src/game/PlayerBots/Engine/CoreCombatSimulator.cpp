@@ -529,8 +529,8 @@ public:
     bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
                     std::string& reason) const override
     {
-        Player* caster = m_map.GetUnit(ObjectGuid(context.bot.guid))
-            ? m_map.GetUnit(ObjectGuid(context.bot.guid))->ToPlayer() : nullptr;
+        Unit* casterUnit = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Player* caster = casterUnit ? casterUnit->ToPlayer() : nullptr;
         PartyMemberSnapshot const* patientSnapshot = context.snapshot.FindMember(candidate.targetGuid);
         Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
         SpellEntry const* spell = sSpellMgr.GetSpellEntry(candidate.spellId);
@@ -538,7 +538,7 @@ public:
             (spell->Effect[0] == SPELL_EFFECT_HEAL ||
              spell->Effect[1] == SPELL_EFFECT_HEAL ||
              spell->Effect[2] == SPELL_EFFECT_HEAL);
-        if (!caster || !caster->IsAlive() || !caster->HasSpell(candidate.spellId) ||
+        if (!caster || !spell || !caster->IsAlive() || !caster->HasSpell(candidate.spellId) ||
             !caster->IsSpellReady(spell) || caster->HasGCD(spell) ||
             caster->IsNonMeleeSpellCasted(false) || !patientSnapshot ||
             !patientSnapshot->alive || !patient || !patient->IsAlive() ||
@@ -692,8 +692,14 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         healAction->GetLastCastResult() == SPELL_CAST_OK &&
         healAction->WasCastPendingAfterAccept() && healAction->HadGcdAfterAccept();
 
+    // Map::Update's Player update cadence is driven by WorldTimer's real
+    // monotonic clock, not only by the synthetic t_diff argument. Sleep so
+    // the normal Player::Update / Unit::Update spell-event path actually runs.
     for (uint32 tick = 0; tick < 20 && healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
         map.Update(250);
+    }
 
     uint32 const healthAfter = patient.creature->GetHealth();
     uint32 const manaAfter = healer->GetPower(POWER_MANA);

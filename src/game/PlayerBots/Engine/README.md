@@ -50,7 +50,7 @@ The current implementation does not yet provide New Engine mode. See ROADMAP.md 
 
 ## Automated combat simulation
 
-A Core-backed headless simulator is the next test-infrastructure milestone. The pinned Core exposes test-map, creature, damage, attack and threat APIs, but global initialization requirements mean a trivial standalone unit test is insufficient. Current status and the first proof gate are documented in CORE-COMBAT-SIMULATOR.md; no simulator runtime exists yet.
+A Core-backed headless simulator is the next test-infrastructure milestone. The pinned Core exposes test-map, creature, damage, attack and threat APIs, but global initialization requirements mean a trivial standalone unit test is insufficient. Current status and the first proof gate are documented in CORE-COMBAT-SIMULATOR.md; a first Stage A smoke-test entry point is now implemented; it only creates and deletes an empty Core test map and has not yet been executed.
 
 ## Logging is a required feature
 

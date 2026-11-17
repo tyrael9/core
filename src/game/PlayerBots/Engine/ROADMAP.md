@@ -29,7 +29,7 @@ These tests validate lifecycle-host behavior, not new combat AI behavior.
 - [x] Trace MapManager -> Map -> Player::Update -> PlayerAI::UpdateAI update path.
 - [x] Audit same-map versus cross-map update ownership and Group roster read safety.
 - [x] Audit initial group, target, attacker, threat, cast and movement APIs.
-- [~] Continue action-specific audit for target validity, threat values, spell execution results, range/LOS and movement side effects; F6/F7 now validate Core range, resource, LOS and immobility rejection. Stage F8 established the real five-Player Core Group and production snapshot-builder boundary. Stage F9 combines those checks with the first multi-add healer-threat and threat-snapshot scenario on the same Group lifecycle.
+- [~] Continue action-specific audit for target validity, threat values, spell execution results, range/LOS and movement side effects; F6/F7 now validate Core range, resource, LOS and immobility rejection. Stage F8 established the real five-Player Core Group and production snapshot-builder boundary. Stage F9 passed the combined multi-add healer-threat and threat-snapshot scenario on the same Group lifecycle. Stage F10 adds Tank/Healer death cleanup and recovery across both adds.
 
 ## Phase 2 — independent engine foundation
 
@@ -73,7 +73,7 @@ The current role-aware Shadow slice is a proof of the data-to-candidate path onl
 - [x] Validate Player heal execution-time range/resource rejection. Runtime CI `#44167535205` on `e52bea6` passed: stale nearby snapshot versus actual 60-yard target returned `SPELL_FAILED_OUT_OF_RANGE` (`89`), health remained `50000`, mana `2896>2896`, no pending cast/GCD; mana depleted after evaluation returned `SPELL_FAILED_NO_POWER` (`77`), health remained `50000`, mana stayed `0`, no pending cast/GCD, cleanup succeeded.
 - [x] Validate Player heal LOS rejection through a real closed GameObject collision model, and refuse Engine-selected MovePoint while Core reports `UNIT_STATE_CAN_NOT_MOVE` or `UNIT_STATE_POSSESSED`. Runtime CI `#44170264755` on `e46a246` passed: `blockerTemplates=370`, `testedModels=13`, `blockerEntry=13965`, `blockedLOS=1`, `castResult=42` (`SPELL_FAILED_LINE_OF_SIGHT`), health `50000>50000`, mana `2896>2896`, no pending/GCD, LOS restored and cleanup; both control-state candidates rejected with no movement and cleanup.
 - [x] Add a five-member real Core Group fixture and verify production PartySnapshotBuilder resolves the same-map Player roster, copies GUID/scalar state, reuses a fresh cache entry, then Core-disbands the Group and logs out all five Players. Runtime CI `#44175017402` on `434231f` passed (`members=5`, Main Tank/roster snapshot valid, `valuesCopied=1`, `cacheRetained=1`, `groupRemoved=1`, all Player GUIDs detached, `cleanup=1`, final `Runtime PASS`).
-- [~] Stage F9 combines F8's real five-Player Group/PartySnapshotBuilder roster and cache checks with two hostile adds, a normal non-triggered heal, Core HostileRefManager::threatAssist and threat-target switching, using one Group and one session set. Runtime CI `#44178467285` showed the first attempted tank damage killed the Player before healing; `#44180425226` then showed that creating a second five-Player Group after the first Group lifecycle fixture failed on the same headless Map. The combined fixture now performs the initial roster/cache checks before combat, applies only 20% of current tank max health, verifies the tank remains alive/injured before healing, then checks final threat projection and cleans up once. Tank-death, healer-death and post-death add recovery remain open.
+- [x] Stage F9 combines F8's real five-Player Group/PartySnapshotBuilder roster and cache checks with two hostile adds, a normal non-triggered heal, Core HostileRefManager::threatAssist and threat-target switching, using one Group and one session set. Runtime CI `#44182086347` on `02f0d80` passed: five members, initial roster/value/cache checks, Tank health `1717>343` while alive, normal Lesser Heal `1374>1423` with mana `2896>2866`, two hostile references, assist input `400`, healer threat `212.2/212.2`, both current targets healer, final snapshot/threat copy and cleanup.
 - [ ] Evaluate full dungeon/instance scripts as a later tier.
 
 **Acceptance:** a headless CI scenario runs real pinned-Core combat methods and verifies damage, threat, target changes, Engine-selected attacks, a triggered Creature heal, a known-spell non-triggered Player cast through pending/GCD/completion, actual health and mana changes, and cleanup. A toy combat model or direct mutation of expected results does not count.
@@ -146,7 +146,8 @@ All classes and roles are composed within one PartyBotEngine queue; this is not 
 
 - [ ] Main Tank and assistant assignments.
 - [ ] Shared target selection and add pickup.
-- [ ] Threat budgets, aggro prevention and threat recovery.
+- [~] Stage F10 exercises Core Tank and Healer death cleanup with two adds: lethal DealDamage must remove each dead Player from both hostile ThreatManagers; native Unit::SelectHostileTarget must keep the healer after Tank death, then switch both adds to the remaining DPS after Healer death; production PartySnapshotBuilder must reflect both dead roster members and new victims. Runtime validation is pending.
+- [ ] Threat budgets, aggro prevention and broader recovery.
 - [ ] Healing triage with incoming heals, HoTs, shields, effective healing and reservations.
 - [ ] CC assignment, protection and break recovery.
 - [ ] Interrupt, dispel and resurrection reservations.

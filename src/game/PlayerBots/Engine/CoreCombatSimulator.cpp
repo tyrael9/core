@@ -2816,19 +2816,15 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     uint32 const groupId = group->GetId();
     bool const registeredBeforeCleanup = groupRegistered &&
         sObjectMgr.GetGroupById(groupId) == group.get();
-    bool const allChecksPassed = hostileAIReady && membersAdded && mainTankAssigned &&
+    bool const f9ChecksPassed = hostileAIReady && membersAdded && mainTankAssigned &&
         allPlayersOnSameMap && initialSnapshotValid && initialRosterResolved &&
         initialValuesCopied && initialRolesUnknown && initialCacheRetained &&
         registeredBeforeCleanup && bothHostilesInitiallyTargetTank &&
         tankAliveAndInjured && healCompleted && healerPulledBothAdds &&
         snapshotValid && rosterRoleStateValid && bothAddsResolved && threatValuesCopied;
 
-    bool const cleaned = cleanup();
-    bool const groupRemoved = sObjectMgr.GetGroupById(groupId) == nullptr;
-    bool const cleanupPassed = cleaned && groupRemoved;
-
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u groupRemoved=%u cleanup=%u.",
+             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u.",
              hostileAIReady ? 1u : 0u, membersAdded ? 1u : 0u,
              mainTankAssigned ? 1u : 0u, allPlayersOnSameMap ? 1u : 0u,
              initialSnapshotValid ? 1u : 0u, initialRosterResolved ? 1u : 0u,
@@ -2844,20 +2840,174 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
              selectedAfterAssist0 == healer ? 1u : 0u,
              selectedAfterAssist1 == healer ? 1u : 0u,
              snapshotValid ? 1u : 0u, rosterRoleStateValid ? 1u : 0u,
-             bothAddsResolved ? 1u : 0u, threatValuesCopied ? 1u : 0u,
-             groupRemoved ? 1u : 0u, cleanupPassed ? 1u : 0u);
+             bothAddsResolved ? 1u : 0u, threatValuesCopied ? 1u : 0u);
 
-    if (!allChecksPassed || !cleanupPassed)
+    if (f9ChecksPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat snapshots matched Core and all Group/session cleanup succeeded.");
+
+    // F10: the living DPS establishes lower real damage-threat on both adds.
+    // It must not steal aggro from the healer (212+) while it is alive.
+    Player* dps = players[2];
+    ObjectGuid const dpsGuid = dps->GetObjectGuid();
+    uint32 const dpsDamage0 = f9ChecksPassed
+        ? dps->DealDamage(hostiles[0].creature, 100, nullptr, DIRECT_DAMAGE,
+                          SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    uint32 const dpsDamage1 = f9ChecksPassed
+        ? dps->DealDamage(hostiles[1].creature, 100, nullptr, DIRECT_DAMAGE,
+                          SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    float const dpsThreat0 = hostiles[0].creature->GetThreatManager().getThreat(dps);
+    float const dpsThreat1 = hostiles[1].creature->GetThreatManager().getThreat(dps);
+    Unit* const victimBeforeTankDeath0 =
+        hostiles[0].creature->GetThreatManager().getHostileTarget();
+    Unit* const victimBeforeTankDeath1 =
+        hostiles[1].creature->GetThreatManager().getHostileTarget();
+    bool const healerHoldsAggroOverDps = dpsDamage0 > 0 && dpsDamage1 > 0 &&
+        dpsThreat0 > 0.0f && dpsThreat1 > 0.0f &&
+        victimBeforeTankDeath0 == healer && victimBeforeTankDeath1 == healer;
+
+    // Kill the Main Tank through normal Core damage. Unit::DealDamage and
+    // Unit::SetDeathState must remove its HostileRefManager links from both
+    // hostile ThreatManagers; native selection then retains the living healer.
+    uint32 const tankHealthAtDeath = tank->GetHealth();
+    uint32 const tankDeathDamage = f9ChecksPassed && healerHoldsAggroOverDps
+        ? hostiles[0].creature->DealDamage(
+            tank, tankHealthAtDeath, nullptr, DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    bool const tankDied = tankDeathDamage > 0 && !tank->IsAlive() && tank->GetHealth() == 0;
+    bool const tankThreatReferencesRemoved =
+        hostiles[0].creature->GetThreatManager().getThreat(tank) == 0.0f &&
+        hostiles[1].creature->GetThreatManager().getThreat(tank) == 0.0f;
+    bool const tankDeathSelected0 = tankDied && hostiles[0].creature->SelectHostileTarget();
+    bool const tankDeathSelected1 = tankDied && hostiles[1].creature->SelectHostileTarget();
+    bool const healerRetargetedAfterTankDeath =
+        tankDeathSelected0 && tankDeathSelected1 &&
+        hostiles[0].creature->GetVictim() == healer &&
+        hostiles[1].creature->GetVictim() == healer;
+
+    PartySnapshot const* tankDeathSnapshot = nullptr;
+    if (healerRetargetedAfterTankDeath)
+        tankDeathSnapshot = PartySnapshotBuilder::GetOrBuild(healer, coordinator, 26000, 250);
+    bool const tankDeathSnapshotValid = tankDeathSnapshot &&
+        tankDeathSnapshot->groupId == groupId &&
+        tankDeathSnapshot->members.size() == MAX_GROUP_SIZE &&
+        tankDeathSnapshot->hostiles.size() == 2;
+    PartyMemberSnapshot const* tankAfterDeath = tankDeathSnapshot
+        ? tankDeathSnapshot->FindMember(tankGuid.GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* healerAfterTankDeath = tankDeathSnapshot
+        ? tankDeathSnapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
+    bool const tankDeathRosterValid = tankAfterDeath && healerAfterTankDeath &&
+        tankAfterDeath->isMainTank && !tankAfterDeath->alive && healerAfterTankDeath->alive;
+    HostileSnapshot const* tankDeathBossSnapshot = tankDeathSnapshot
+        ? tankDeathSnapshot->FindHostile(hostiles[0].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    HostileSnapshot const* tankDeathAddSnapshot = tankDeathSnapshot
+        ? tankDeathSnapshot->FindHostile(hostiles[1].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    bool const tankDeathThreatSnapshotValid =
+        tankDeathBossSnapshot && tankDeathAddSnapshot &&
+        tankDeathBossSnapshot->victimGuid == healerGuid.GetRawValue() &&
+        tankDeathAddSnapshot->victimGuid == healerGuid.GetRawValue() &&
+        containsThreat(tankDeathBossSnapshot, healerGuid.GetRawValue(), healerThreat0) &&
+        containsThreat(tankDeathAddSnapshot, healerGuid.GetRawValue(), healerThreat1) &&
+        !containsThreat(tankDeathBossSnapshot, tankGuid.GetRawValue(), tankThreat0) &&
+        !containsThreat(tankDeathAddSnapshot, tankGuid.GetRawValue(), tankThreat1);
+
+    // Kill the active healer through Core damage. Its hostile references must
+    // be removed; both adds then select the remaining DPS with real threat.
+    uint32 const healerHealthAtDeath = healer->GetHealth();
+    uint32 const healerDeathDamage = tankDeathThreatSnapshotValid
+        ? hostiles[0].creature->DealDamage(
+            healer, healerHealthAtDeath, nullptr, DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    bool const healerDied = healerDeathDamage > 0 && !healer->IsAlive() &&
+        healer->GetHealth() == 0;
+    bool const healerThreatReferencesRemoved =
+        hostiles[0].creature->GetThreatManager().getThreat(healer) == 0.0f &&
+        hostiles[1].creature->GetThreatManager().getThreat(healer) == 0.0f;
+    bool const healerDeathSelected0 = healerDied && hostiles[0].creature->SelectHostileTarget();
+    bool const healerDeathSelected1 = healerDied && hostiles[1].creature->SelectHostileTarget();
+    bool const dpsRetargetedAfterHealerDeath =
+        healerDeathSelected0 && healerDeathSelected1 &&
+        hostiles[0].creature->GetVictim() == dps &&
+        hostiles[1].creature->GetVictim() == dps;
+
+    PartySnapshot const* healerDeathSnapshot = nullptr;
+    if (dpsRetargetedAfterHealerDeath)
+        healerDeathSnapshot = PartySnapshotBuilder::GetOrBuild(dps, coordinator, 28000, 250);
+    bool const healerDeathSnapshotValid = healerDeathSnapshot &&
+        healerDeathSnapshot->groupId == groupId &&
+        healerDeathSnapshot->members.size() == MAX_GROUP_SIZE &&
+        healerDeathSnapshot->hostiles.size() == 2;
+    PartyMemberSnapshot const* tankAfterBothDeaths = healerDeathSnapshot
+        ? healerDeathSnapshot->FindMember(tankGuid.GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* healerAfterDeath = healerDeathSnapshot
+        ? healerDeathSnapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* dpsAfterDeaths = healerDeathSnapshot
+        ? healerDeathSnapshot->FindMember(dpsGuid.GetRawValue()) : nullptr;
+    bool const healerDeathRosterValid = tankAfterBothDeaths && healerAfterDeath &&
+        dpsAfterDeaths && !tankAfterBothDeaths->alive && !healerAfterDeath->alive &&
+        dpsAfterDeaths->alive;
+    HostileSnapshot const* healerDeathBossSnapshot = healerDeathSnapshot
+        ? healerDeathSnapshot->FindHostile(hostiles[0].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    HostileSnapshot const* healerDeathAddSnapshot = healerDeathSnapshot
+        ? healerDeathSnapshot->FindHostile(hostiles[1].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    bool const healerDeathThreatSnapshotValid =
+        healerDeathBossSnapshot && healerDeathAddSnapshot &&
+        healerDeathBossSnapshot->victimGuid == dpsGuid.GetRawValue() &&
+        healerDeathAddSnapshot->victimGuid == dpsGuid.GetRawValue() &&
+        containsThreat(healerDeathBossSnapshot, dpsGuid.GetRawValue(), dpsThreat0) &&
+        containsThreat(healerDeathAddSnapshot, dpsGuid.GetRawValue(), dpsThreat1) &&
+        !containsThreat(healerDeathBossSnapshot, tankGuid.GetRawValue(), tankThreat0) &&
+        !containsThreat(healerDeathAddSnapshot, tankGuid.GetRawValue(), tankThreat1) &&
+        !containsThreat(healerDeathBossSnapshot, healerGuid.GetRawValue(), healerThreat0) &&
+        !containsThreat(healerDeathAddSnapshot, healerGuid.GetRawValue(), healerThreat1);
+
+    bool const f10ChecksPassed = f9ChecksPassed && healerHoldsAggroOverDps &&
+        tankDied && tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
+        tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
+        healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&
+        healerDeathSnapshotValid && healerDeathRosterValid && healerDeathThreatSnapshotValid;
+
+    uint32 const groupIdAfterEvents = group->GetId();
+    bool const registeredBeforeCleanup = groupRegistered &&
+        sObjectMgr.GetGroupById(groupIdAfterEvents) == group.get();
+    bool const cleaned = cleanup();
+    bool const groupRemoved = sObjectMgr.GetGroupById(groupIdAfterEvents) == nullptr;
+    bool const cleanupPassed = cleaned && groupRemoved;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Group death recovery: dpsDamage=%u/%u dpsThreat=%.1f/%.1f healerHoldsAggro=%u tankDeath=%u tankRefsRemoved=%u healerRetargetAfterTankDeath=%u/%u tankSnapshot=%u tankRoster=%u tankThreatSnapshot=%u healerDeath=%u healerRefsRemoved=%u dpsRetargetAfterHealerDeath=%u/%u healerSnapshot=%u healerRoster=%u healerThreatSnapshot=%u registered=%u groupRemoved=%u cleanup=%u.",
+             dpsDamage0, dpsDamage1, dpsThreat0, dpsThreat1,
+             healerHoldsAggroOverDps ? 1u : 0u,
+             tankDied ? 1u : 0u, tankThreatReferencesRemoved ? 1u : 0u,
+             tankDeathSelected0 ? 1u : 0u, tankDeathSelected1 ? 1u : 0u,
+             tankDeathSnapshotValid ? 1u : 0u, tankDeathRosterValid ? 1u : 0u,
+             tankDeathThreatSnapshotValid ? 1u : 0u,
+             healerDied ? 1u : 0u, healerThreatReferencesRemoved ? 1u : 0u,
+             healerDeathSelected0 ? 1u : 0u, healerDeathSelected1 ? 1u : 0u,
+             healerDeathSnapshotValid ? 1u : 0u, healerDeathRosterValid ? 1u : 0u,
+             healerDeathThreatSnapshotValid ? 1u : 0u,
+             registeredBeforeCleanup ? 1u : 0u, groupRemoved ? 1u : 0u,
+             cleanupPassed ? 1u : 0u);
+
+    if (!f9ChecksPassed || !registeredBeforeCleanup)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Real Group multi-add/healer-threat smoke test failed.");
+                 "[PartyBotSimulator] Combined Group F8/F9 scenario failed before death recovery.");
+        return false;
+    }
+
+    if (!f10ChecksPassed || !cleanupPassed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core Tank/Healer death-reference cleanup and multi-add recovery failed.");
         return false;
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat snapshots matched Core and all Group/session cleanup succeeded.");
+             "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states.");
     return true;
 }
+
 
 
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)

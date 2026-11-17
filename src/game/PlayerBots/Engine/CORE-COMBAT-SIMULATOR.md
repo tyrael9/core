@@ -166,6 +166,7 @@ The simulator now contains a bounded first Core-backed Creature/threat scenario:
 - Select a mutually hostile faction-template pair from the loaded Core faction data, rather than hard-coding Vanilla faction IDs.
 - Create one threat-owning Creature and two hostile Creature actors from that real template. Each is inserted with a Core-generated map-local GUID, assigned a small probe AI before insertion, marked active before `Map::Add`, and verified through both `IsInWorld()` and `Map::GetCreature(guid)`.
 - Drive bounded real `Map::Update(50)` calls, paced with short wall-clock sleeps, and require all three probe AIs to receive `UpdateAI`.
+- Emit exact health progression, applied damage, tank/DPS threat values, selected target GUIDs at each threshold step, AI update counts and per-actor cleanup results in the simulator log.
 - Deal real direct damage to the threat owner from the two hostile actors (100, 105, then +10), verify health loss and damage-generated threat references, and check that the Core threat selector retains the first target below the 110% melee threshold and switches above it.
 - Clear combat/threat references, detach each actor with `Map::Remove(actor, false)`, and verify it is no longer in-world or registered in the map before explicit destruction.
 

@@ -123,7 +123,7 @@ The first Core-backed scenario must report separate assertions for actor inserti
 
 ### Stage B Core Creature damage/threat smoke test (implemented; ARM64 CI passed, runtime pending)
 
-The opt-in simulator now attempts a three-Creature scenario on its isolated test map. It chooses a safe normal-rank template and a mutually hostile faction-template pair from the loaded DB/DBC data, creates a threat owner plus two hostile actors, and verifies each actor is registered by `Map::GetCreature`. The actors receive a probe AI before insertion and are active objects; a bounded sequence of real map ticks must increment all three AI update counters.
+The opt-in simulator now attempts a three-Creature scenario on its isolated test map. It chooses an ordinary non-NPC, non-civilian, non-pet normal-rank template with no immunities or spawn/script side effects, plus a mutually hostile faction-template pair from the loaded DB/DBC data. It creates a threat owner plus two hostile actors and verifies each actor is registered by `Map::GetCreature`. The actors receive a probe AI before insertion and are active objects; a bounded sequence of real map ticks must increment all three AI update counters.
 
 The damage sequence uses real `Unit::DealDamage`: target A deals 100, target B deals 105, then B deals 10 more to the threat owner. The assertions require health loss, damage-generated threat references, target A retained below the 110% melee threshold, and target B selected after crossing it. Logs include exact health/damage/threat values, selected GUIDs, AI update counts and cleanup results. The actors are detached with `Map::Remove(actor, false)`, their threat references are cleared, and map lookup must return null before explicit destruction.
 

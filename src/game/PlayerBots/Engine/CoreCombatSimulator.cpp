@@ -663,7 +663,8 @@ private:
 class SimulatorCoreMovePointAction final : public Action
 {
 public:
-    explicit SimulatorCoreMovePointAction(Map& map) : m_map(map) {}
+    explicit SimulatorCoreMovePointAction(Map& map, bool simulateClientRelocation = false)
+        : m_map(map), m_simulateClientRelocation(simulateClientRelocation) {}
     std::string const& GetName() const override { return m_name; }
 
     bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
@@ -720,17 +721,38 @@ public:
             mover->HasUnitState(UNIT_STATE_LOST_CONTROL))
             return ActionResult::Impossible;
 
-        // Keep the adapter limited to issuing a Core movement command. Do not
-        // duplicate spell-interruption policy here: when the Core movement
-        // generator relocates a Player, Player::SetPosition calls
-        // Unit::HandleInterruptsOnMovement, which applies the native movement
-        // interrupt flags and channel-interrupt rules.
-        // MOVE_NONE uses the Core point movement generator without requiring
-        // a pathfinder/navmesh; the spline and position are still Core-owned.
-        mover->GetMotionMaster()->MovePoint(1, candidate.destinationX,
-                                             candidate.destinationY,
-                                             candidate.destinationZ, MOVE_NONE);
-        m_started = mover->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+        if (m_simulateClientRelocation)
+        {
+            // Model the inbound mover-relocation operation handled by
+            // WorldSession::HandleMoverRelocation. Player::SetPosition is the
+            // Core entry point and owns HandleInterruptsOnMovement; the
+            // simulator must not duplicate spell-interruption policy.
+            Player* player = mover->ToPlayer();
+            if (!player)
+                return ActionResult::Impossible;
+
+            float const oldX = player->GetPositionX();
+            float const oldY = player->GetPositionY();
+            float const oldZ = player->GetPositionZ();
+            if (!player->SetPosition(candidate.destinationX, candidate.destinationY,
+                                     candidate.destinationZ, player->GetOrientation()))
+                return ActionResult::Failed;
+
+            float const dx = player->GetPositionX() - oldX;
+            float const dy = player->GetPositionY() - oldY;
+            float const dz = player->GetPositionZ() - oldZ;
+            m_started = dx * dx + dy * dy + dz * dz > 0.01f;
+        }
+        else
+        {
+            // Server-driven point movement remains a Core MotionMaster action.
+            // MOVE_NONE avoids a pathfinder dependency; the spline and
+            // relocation remain Core-owned.
+            mover->GetMotionMaster()->MovePoint(1, candidate.destinationX,
+                                                 candidate.destinationY,
+                                                 candidate.destinationZ, MOVE_NONE);
+            m_started = mover->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+        }
         return m_started ? ActionResult::Success : ActionResult::Failed;
     }
 
@@ -739,6 +761,7 @@ public:
 private:
     Map& m_map;
     std::string m_name = "core_move_point";
+    bool m_simulateClientRelocation = false;
     bool m_started = false;
 };
 
@@ -850,7 +873,7 @@ bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
         healAction->WasCastPendingAfterAccept() && healAction->HadGcdAfterAccept();
 
     PartyBotEngine moveEngine;
-    std::shared_ptr<SimulatorCoreMovePointAction> moveAction(new SimulatorCoreMovePointAction(map));
+    std::shared_ptr<SimulatorCoreMovePointAction> moveAction(new SimulatorCoreMovePointAction(map, true));
     bool const moveRegistered = moveEngine.RegisterAction(moveAction);
     std::shared_ptr<Strategy> moveStrategy(new Strategy("simulator_formation"));
     moveStrategy->AddTrigger(std::make_shared<SimulatorFormationTrigger>());

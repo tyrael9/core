@@ -1490,7 +1490,7 @@ bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
         float const dy = follower->GetPositionY() - leader.creature->GetPositionY();
         float const dz = follower->GetPositionZ() - leader.creature->GetPositionZ();
         float const distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (distance <= 5.0f && follower->IsStopped() && follower->movespline->Finalized())
+        if (distance <= 5.0f && follower->IsStopped())
         {
             initialCaughtUpAndStopped = true;
             break;

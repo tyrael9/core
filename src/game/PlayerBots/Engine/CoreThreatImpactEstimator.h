@@ -277,7 +277,10 @@ inline ThreatImpactEstimate EstimateNegativeFlatSpellThreatComponent(
     if (!snapshotEpoch || !realCaster || !spellInfo || !threatEntry ||
         !threatEntry->threat || !successfulTargetSetComplete ||
         !realCaster->IsInWorld() || !realCaster->IsAlive() ||
-        spellInfo->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT)) {
+        spellInfo->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT) ||
+        // Core's no-new-threat flag still permits changing an existing
+        // reference; without proving that reference exists, fail closed.
+        spellInfo->HasAttribute(SPELL_ATTR_EX_NO_THREAT)) {
         estimate.reason = "negative_flat_spell_threat_component_inputs_incomplete";
         return estimate;
     }
@@ -322,6 +325,7 @@ inline ThreatImpactEstimate EstimateNegativeFlatSpellThreatComponent(
     for (NegativeFlatSpellThreatTarget const& hit : successfulTargets) {
         Unit* target = hit.target;
         if (!target || !hit.successfulEffectMask ||
+            (hit.successfulEffectMask & static_cast<std::uint8_t>(~activeEffectMask)) ||
             !target->IsInWorld() || !target->IsAlive() ||
             target->GetMap() != realCaster->GetMap()) {
             estimate.reason = "negative_flat_spell_threat_target_unresolved";

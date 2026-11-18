@@ -266,3 +266,6 @@ This runtime scenario is compiled in the latest PR CI (#44234198163); the push-o
 
 
 The standalone suite also verifies the execution-time race window: an action can be selected with 15 points of headroom, then another bot can reserve six points before dispatch; ExecuteSelected rechecks the coordinator and refuses the now-unsafe 21-point projection without invoking the action. A separate capacity test fills 127 of 128 slots, then attempts a two-recipient action whose first row would consume the final slot; when the second row is rejected, the Engine releases the action ID and restores the coordinator to its original 127 rows. Both tests preserve unrelated reservations and prove that partial fan-out reservations are never left behind.
+
+
+The workflow's fixture-backed runtime step is now available for both trusted branch pushes and maintainer-initiated workflow_dispatch. Pull-request jobs continue to skip secret access. Operators can manually start it from Actions → PartyBot Core build, selecting work/partybot-engine-foundation; it verifies the 5875 archive checksum and uploads bounded simulator logs without publishing or deploying an image.

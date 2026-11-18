@@ -770,6 +770,100 @@ void TestEngineReleasesThreatReservationWhenExecutionFails() {
     assert(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) == 0.0f);
 }
 
+void TestEngineRevalidatesReservationsImmediatelyBeforeExecution() {
+    Fixture f;
+    PrepareEngineThreatFixture(f);
+    PartyBotEngine::PartyBotEngine engine;
+    std::shared_ptr<TestAction> action = std::make_shared<TestAction>("revalidated_damage");
+    action->useThreatImpact = true;
+    action->threatImpact = MakeThreatEstimate(f.snapshot.epoch, f.bot.guid, 9001, 15.0f);
+    assert(engine.RegisterAction(action));
+
+    auto trigger = std::make_shared<TestTrigger>("revalidate_before_execute");
+    trigger->generated.push_back(Candidate("revalidated_damage", 10.0f, ActionChannel::GlobalCooldown));
+    auto strategy = std::make_shared<Strategy>("damage_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    assert(report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected);
+
+    // Another bot reserves six points after our decision but before dispatch.
+    ThreatReservation racing;
+    racing.ownerGuid = 303;
+    racing.threatOwnerGuid = f.bot.guid;
+    racing.hostileGuid = 9001;
+    racing.actionId = f.coordinator.NextThreatActionId();
+    racing.threatPoints = 6.0f;
+    racing.expiresAtMs = 1500;
+    assert(f.coordinator.TryReserveThreatImpact(racing, 1000));
+
+    engine.ExecuteSelected(f.context, report);
+    CandidateEvaluation const& result = report.candidates[report.selectedIndices[0]];
+    assert(result.status == CandidateStatus::ExecutionFailed);
+    assert(result.reason == "projected_threat_exceeds_core_headroom");
+    assert(result.threatActionId == 0);
+    assert(action->executeCount == 0);
+    assert(f.coordinator.GetThreatReservationCount() == 1);
+    assert(std::fabs(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) - 6.0f) <
+           0.0001f);
+}
+
+void TestEngineRollsBackPartialFanoutWhenReservationCapacityIsReached() {
+    Fixture f;
+    PrepareEngineThreatFixture(f);
+
+    // Leave exactly one slot. The action fans out to the current Tank and
+    // the DPS bot; ordered insertion accepts one row, then must fail closed
+    // and roll the first row back without deleting any other bot's reservation.
+    for (std::uint32_t i = 0; i < 127; ++i) {
+        ThreatReservation existing;
+        existing.ownerGuid = 900;
+        existing.threatOwnerGuid = 5000 + i;
+        existing.hostileGuid = 6000 + i;
+        existing.actionId = f.coordinator.NextThreatActionId();
+        existing.threatPoints = 0.25f;
+        existing.expiresAtMs = 2000;
+        assert(existing.actionId);
+        assert(f.coordinator.TryReserveThreatImpact(existing, 1000));
+    }
+    assert(f.coordinator.GetThreatReservationCount() == 127);
+
+    PartyBotEngine::PartyBotEngine engine;
+    std::shared_ptr<TestAction> action = std::make_shared<TestAction>("fanout_damage");
+    action->useThreatImpact = true;
+    action->threatImpact = MakeThreatEstimate(f.snapshot.epoch, f.bot.guid, 9001, 1.0f);
+    ThreatImpactEntry tankImpact;
+    tankImpact.threatOwnerGuid = 101; // The current victim is not an over-aggro challenger.
+    tankImpact.hostileGuid = 9001;
+    tankImpact.threatPoints = 1.0f;
+    tankImpact.source = ThreatImpactSource::DirectDamage;
+    tankImpact.bound = ThreatImpactBound::UpperBound;
+    action->threatImpact.impacts.push_back(tankImpact);
+    assert(engine.RegisterAction(action));
+
+    auto trigger = std::make_shared<TestTrigger>("fanout_capacity");
+    trigger->generated.push_back(Candidate("fanout_damage", 10.0f, ActionChannel::GlobalCooldown));
+    auto strategy = std::make_shared<Strategy>("damage_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    assert(report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected);
+
+    engine.ExecuteSelected(f.context, report);
+    CandidateEvaluation const& result = report.candidates[report.selectedIndices[0]];
+    assert(result.status == CandidateStatus::ExecutionFailed);
+    assert(result.reason == "threat_reservation_failed");
+    assert(result.threatActionId == 0);
+    assert(action->executeCount == 0);
+    assert(f.coordinator.GetThreatReservationCount() == 127);
+    assert(f.coordinator.GetReservedThreatImpact(9001, 101, 0, 1000) == 0.0f);
+    assert(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) == 0.0f);
+}
+
 void TestEngineThreatBudgetAccountsForHigherPriorityCandidates() {
     Fixture f;
     PrepareEngineThreatFixture(f);
@@ -954,6 +1048,8 @@ int main() {
     TestEngineThreatBudgetSelectionAndExecutionReservations();
     TestEngineThreatBudgetRejectsUnknownAndOverBudgetCandidates();
     TestEngineThreatBudgetAccountsForHigherPriorityCandidates();
+    TestEngineRevalidatesReservationsImmediatelyBeforeExecution();
+    TestEngineRollsBackPartialFanoutWhenReservationCapacityIsReached();
     TestEngineReleasesThreatReservationWhenExecutionFails();
     TestThreatBudgetCoreThresholdProjection();
     TestThreatBudgetStrictCoreThresholdBoundaries();

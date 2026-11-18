@@ -1,7 +1,9 @@
 #include "PartyBotEngine.h"
+#include "ThreatBudgetPolicy.h"
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <limits>
 #include <utility>
 namespace PartyBotEngine {
 void PartyBotEngine::AddStrategy(std::shared_ptr<Strategy> strategy) {
@@ -60,6 +62,16 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
                     report.candidates.push_back(std::move(evaluation));
                     continue;
                 }
+
+                evaluation.threatImpact = action->EstimateThreatImpact(context, evaluatedCandidate);
+                if (!IsWellFormedThreatImpactEstimate(evaluation.threatImpact) ||
+                    evaluation.threatImpact.snapshotEpoch != context.snapshot.epoch) {
+                    evaluation.status = CandidateStatus::RejectedThreatUnknown;
+                    evaluation.reason = "threat_impact_estimate_invalid_or_stale";
+                    report.candidates.push_back(std::move(evaluation));
+                    continue;
+                }
+
                 float priority = candidate.basePriority;
                 bool vetoed = false;
                 for (auto const& multiplier : m_multipliers) {
@@ -98,12 +110,29 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
         return report.candidates[a].candidate.finalPriority > report.candidates[b].candidate.finalPriority;
     });
     std::set<ActionChannel> occupiedChannels;
+    ThreatImpactTotals selectedThreatInReport;
     for (std::size_t index : eligible) {
         CandidateEvaluation& evaluation = report.candidates[index];
-        if (!occupiedChannels.insert(evaluation.candidate.channel).second) {
+        if (occupiedChannels.find(evaluation.candidate.channel) != occupiedChannels.end()) {
             evaluation.reason = "lower_priority_same_channel";
             continue;
         }
+
+        ThreatImpactBudgetResult const threatBudget = AssessThreatImpactBudget(
+            context.snapshot, evaluation.threatImpact, context.coordinator,
+            context.nowMs, 250, &selectedThreatInReport);
+        if (threatBudget.status == ThreatImpactBudgetStatus::Unknown) {
+            evaluation.status = CandidateStatus::RejectedThreatUnknown;
+            evaluation.reason = threatBudget.reason;
+            continue;
+        }
+        if (threatBudget.status == ThreatImpactBudgetStatus::Exceeded) {
+            evaluation.status = CandidateStatus::RejectedThreatBudget;
+            evaluation.reason = threatBudget.reason;
+            continue;
+        }
+
+        occupiedChannels.insert(evaluation.candidate.channel);
         evaluation.status = CandidateStatus::Selected;
         report.selectedIndices.push_back(index);
     }
@@ -121,10 +150,76 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
             evaluation.reason = "action_unregistered_before_execution";
             continue;
         }
+        // Recheck the action's exact estimate against current coordinator reservations
+        // immediately before execution. New Engine mode never falls back to Legacy.
+        ThreatImpactBudgetResult const threatBudget = AssessThreatImpactBudget(
+            context.snapshot, evaluation.threatImpact, context.coordinator,
+            context.nowMs, 250, nullptr);
+        if (threatBudget.status != ThreatImpactBudgetStatus::Safe) {
+            evaluation.status = CandidateStatus::ExecutionFailed;
+            evaluation.actionResult = ActionResult::Failed;
+            evaluation.reason = threatBudget.reason;
+            continue;
+        }
+
+        ThreatActionId actionId = 0;
+        if (evaluation.threatImpact.completeness == ThreatImpactCompleteness::Complete) {
+            ThreatImpactTotals totals;
+            for (ThreatImpactEntry const& impact : evaluation.threatImpact.impacts) {
+                if (impact.threatPoints > 0.0f)
+                    totals[ThreatImpactKey(impact.hostileGuid, impact.threatOwnerGuid)] +=
+                        static_cast<double>(impact.threatPoints);
+            }
+
+            if (!totals.empty()) {
+                actionId = context.coordinator.NextThreatActionId();
+                if (!actionId) {
+                    evaluation.status = CandidateStatus::ExecutionFailed;
+                    evaluation.actionResult = ActionResult::Failed;
+                    evaluation.reason = "threat_action_id_unavailable";
+                    continue;
+                }
+
+                std::uint32_t const expiresAtMs =
+                    context.nowMs + evaluation.threatImpact.reservationDurationMs;
+                bool reservationAccepted = true;
+                for (auto const& entry : totals) {
+                    if (!std::isfinite(entry.second) ||
+                        entry.second > static_cast<double>(std::numeric_limits<float>::max())) {
+                        reservationAccepted = false;
+                        break;
+                    }
+
+                    ThreatReservation reservation;
+                    reservation.ownerGuid = context.bot.guid;
+                    reservation.threatOwnerGuid = entry.first.second;
+                    reservation.hostileGuid = entry.first.first;
+                    reservation.actionId = actionId;
+                    reservation.threatPoints = static_cast<float>(entry.second);
+                    reservation.expiresAtMs = expiresAtMs;
+                    if (!context.coordinator.TryReserveThreatImpact(reservation, context.nowMs)) {
+                        reservationAccepted = false;
+                        break;
+                    }
+                }
+
+                if (!reservationAccepted) {
+                    context.coordinator.ReleaseThreatAction(actionId);
+                    evaluation.status = CandidateStatus::ExecutionFailed;
+                    evaluation.actionResult = ActionResult::Failed;
+                    evaluation.reason = "threat_reservation_failed";
+                    continue;
+                }
+            }
+        }
+
+        evaluation.threatActionId = actionId;
         evaluation.actionResult = action->Execute(context, evaluation.candidate);
         if (evaluation.actionResult == ActionResult::Success)
             evaluation.status = CandidateStatus::Executed;
         else {
+            if (actionId)
+                context.coordinator.ReleaseThreatAction(actionId);
             evaluation.status = CandidateStatus::ExecutionFailed;
             if (evaluation.reason.empty()) evaluation.reason = "action_execution_not_successful";
         }

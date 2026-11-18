@@ -1219,6 +1219,18 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
             static_cast<uint32>(report.candidates.size()),
             static_cast<uint32>(report.selectedIndices.size()));
 
+        if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter())
+        {
+            uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+            m_decisionTrace.RecordEncounterDecisionSummary(
+                me, snapshot->groupId, snapshot->mapId, snapshot->instanceId,
+                snapshot->epoch, m_partyCoordinator->GetEncounterId(), sequence,
+                m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                ShadowRoleName(botSnapshot->roleId),
+                static_cast<uint32>(report.candidates.size()),
+                static_cast<uint32>(report.selectedIndices.size()));
+        }
+
         std::vector<std::size_t> decisionOrder;
         decisionOrder.reserve(report.candidates.size());
         for (std::size_t i = 0; i < report.candidates.size(); ++i)
@@ -1251,6 +1263,19 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
                 candidate.targetGuid, candidate.finalPriority,
                 ShadowCandidateStatusName(evaluation.status),
                 evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
+            if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter())
+            {
+                uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+                m_decisionTrace.RecordEncounterCandidate(
+                    me, snapshot->groupId, snapshot->mapId, snapshot->instanceId,
+                    snapshot->epoch, m_partyCoordinator->GetEncounterId(), sequence,
+                    m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                    ShadowRoleName(botSnapshot->roleId),
+                    candidate.strategyName.c_str(), candidate.actionName.c_str(),
+                    candidate.targetGuid, candidate.finalPriority,
+                    ShadowCandidateStatusName(evaluation.status),
+                    evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
+            }
             ++loggedDecisions;
         }
         m_engineShadowTraceMs = 10000;

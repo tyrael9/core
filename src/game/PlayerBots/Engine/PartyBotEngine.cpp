@@ -214,6 +214,7 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
         }
 
         evaluation.threatActionId = actionId;
+        evaluation.candidate.threatActionId = actionId;
         evaluation.actionResult = action->Execute(context, evaluation.candidate);
         if (evaluation.actionResult == ActionResult::Success)
             evaluation.status = CandidateStatus::Executed;

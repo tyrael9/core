@@ -4217,9 +4217,6 @@ bool RunPeriodicDamageThreatFixture(Map& map)
     // Keep the victim in combat so passive Creature regeneration cannot hide
     // the effective tick damage. The simulator AI intentionally does not attack.
     hostile.creature->SetInCombatWith(caster.creature);
-    for (uint32 school = SPELL_SCHOOL_HOLY; school < MAX_SPELL_SCHOOL; ++school)
-        hostile.creature->SetResistance(SpellSchools(school), 0);
-
     SpellCastResult const castResult = caster.creature->CastSpell(
         hostile.creature, spell, true);
     Aura* aura = castResult == SPELL_CAST_OK

@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -116,6 +117,161 @@ void TestReservationOwnershipAndExpiry() {
     assert(!coordinator.HasReservation(ReservationType::CrowdControl, 101, 202, 1500));
     assert(coordinator.GetReservations().empty());
 }
+void TestThreatReservationAggregationAndActionRelease() {
+    PartyCoordinator coordinator;
+    ThreatActionId const actionOne = coordinator.NextThreatActionId();
+    ThreatActionId const actionTwo = coordinator.NextThreatActionId();
+    assert(actionOne && actionTwo && actionOne != actionTwo);
+
+    ThreatReservation botPetDamage;
+    botPetDamage.ownerGuid = 1001;
+    botPetDamage.threatOwnerGuid = 2001; // The pet, not the bot, receives Core threat.
+    botPetDamage.hostileGuid = 3001;
+    botPetDamage.actionId = actionOne;
+    botPetDamage.threatPoints = 12.5f;
+    botPetDamage.expiresAtMs = 1500;
+    assert(coordinator.TryReserveThreatImpact(botPetDamage, 1000));
+    assert(std::fabs(coordinator.GetReservedThreatImpact(3001, 2001, 0, 1100) - 12.5f) < 0.0001f);
+
+    // Re-submitting one action/hostile/recipient row replaces it rather than double-counting.
+    botPetDamage.threatPoints = 17.5f;
+    assert(coordinator.TryReserveThreatImpact(botPetDamage, 1100));
+    assert(std::fabs(coordinator.GetReservedThreatImpact(3001, 2001, 0, 1100) - 17.5f) < 0.0001f);
+
+    // One logical action may fan out to another hostile and/or another actual threat owner.
+    ThreatReservation secondHostile = botPetDamage;
+    secondHostile.hostileGuid = 3002;
+    secondHostile.threatPoints = 4.0f;
+    assert(coordinator.TryReserveThreatImpact(secondHostile, 1100));
+    ThreatReservation botSelfDamage = botPetDamage;
+    botSelfDamage.threatOwnerGuid = 1001;
+    botSelfDamage.threatPoints = 6.0f;
+    assert(coordinator.TryReserveThreatImpact(botSelfDamage, 1100));
+
+    ThreatReservation concurrentAction = botPetDamage;
+    concurrentAction.ownerGuid = 1002;
+    concurrentAction.actionId = actionTwo;
+    concurrentAction.threatPoints = 2.5f;
+    assert(coordinator.TryReserveThreatImpact(concurrentAction, 1100));
+
+    assert(coordinator.GetThreatReservationCount() == 4);
+    assert(std::fabs(coordinator.GetReservedThreatImpact(3001, 2001, 0, 1100) - 20.0f) < 0.0001f);
+    assert(std::fabs(coordinator.GetReservedThreatImpact(3001, 2001, actionOne, 1100) - 2.5f) < 0.0001f);
+    assert(std::fabs(coordinator.GetReservedThreatImpact(3002, 2001, 0, 1100) - 4.0f) < 0.0001f);
+    assert(std::fabs(coordinator.GetReservedThreatImpact(3001, 1001, 0, 1100) - 6.0f) < 0.0001f);
+    assert(coordinator.GetReservedThreatImpact(3001, 9999, 0, 1100) == 0.0f);
+
+    // Completing one action releases every hostile/recipient row it created.
+    coordinator.ReleaseThreatAction(actionOne);
+    assert(coordinator.GetThreatReservationCount() == 1);
+    assert(std::fabs(coordinator.GetReservedThreatImpact(3001, 2001, 0, 1100) - 2.5f) < 0.0001f);
+    assert(coordinator.GetReservedThreatImpact(3002, 2001, 0, 1100) == 0.0f);
+
+    // Owner cleanup is by the bot that owns the action, not by the pet GUID that receives threat.
+    coordinator.ReleaseOwner(1002);
+    assert(coordinator.GetThreatReservationCount() == 0);
+    assert(coordinator.GetReservedThreatImpact(3001, 2001, 0, 1100) == 0.0f);
+}
+
+void TestThreatReservationExpiryAndClockWrap() {
+    PartyCoordinator coordinator;
+    ThreatReservation reservation;
+    reservation.ownerGuid = 10;
+    reservation.threatOwnerGuid = 20;
+    reservation.hostileGuid = 30;
+    reservation.actionId = coordinator.NextThreatActionId();
+    reservation.threatPoints = 8.25f;
+    reservation.expiresAtMs = 1500;
+    assert(coordinator.TryReserveThreatImpact(reservation, 1000));
+    assert(std::fabs(coordinator.GetReservedThreatImpact(30, 20, 0, 1499) - 8.25f) < 0.0001f);
+    assert(coordinator.GetReservedThreatImpact(30, 20, 0, 1500) == 0.0f);
+    assert(coordinator.GetThreatReservationCount() == 0);
+
+    reservation.actionId = coordinator.NextThreatActionId();
+    reservation.expiresAtMs = 0x10u;
+    assert(coordinator.TryReserveThreatImpact(reservation, 0xfffffff0u));
+    assert(std::fabs(coordinator.GetReservedThreatImpact(30, 20, 0, 0xffffffffu) - 8.25f) < 0.0001f);
+    assert(coordinator.GetReservedThreatImpact(30, 20, 0, 0x10u) == 0.0f);
+}
+
+void TestThreatReservationValidationAndBoundedCapacity() {
+    PartyCoordinator coordinator;
+    ThreatReservation invalid;
+    invalid.ownerGuid = 1;
+    invalid.threatOwnerGuid = 2;
+    invalid.hostileGuid = 3;
+    invalid.actionId = coordinator.NextThreatActionId();
+    invalid.threatPoints = 1.0f;
+    invalid.expiresAtMs = 2000;
+    assert(!coordinator.TryReserveThreatImpact(invalid, 1000));
+
+    ThreatReservation valid = invalid;
+    valid.ownerGuid = 1;
+    valid.threatOwnerGuid = 2;
+    valid.hostileGuid = 3;
+    valid.actionId = coordinator.NextThreatActionId();
+    valid.expiresAtMs = 2000;
+    assert(valid.actionId && coordinator.TryReserveThreatImpact(valid, 1000));
+
+    ThreatReservation candidate = valid;
+    candidate.actionId = coordinator.NextThreatActionId();
+    candidate.ownerGuid = 0;
+    assert(!coordinator.TryReserveThreatImpact(candidate, 1000));
+    candidate = valid; candidate.actionId = coordinator.NextThreatActionId(); candidate.threatOwnerGuid = 0;
+    assert(!coordinator.TryReserveThreatImpact(candidate, 1000));
+    candidate = valid; candidate.actionId = coordinator.NextThreatActionId(); candidate.hostileGuid = 0;
+    assert(!coordinator.TryReserveThreatImpact(candidate, 1000));
+    candidate = valid; candidate.actionId = 0;
+    assert(!coordinator.TryReserveThreatImpact(candidate, 1000));
+    candidate = valid; candidate.actionId = coordinator.NextThreatActionId(); candidate.threatPoints = 0.0f;
+    assert(!coordinator.TryReserveThreatImpact(candidate, 1000));
+    candidate = valid; candidate.actionId = coordinator.NextThreatActionId(); candidate.threatPoints = -1.0f;
+    assert(!coordinator.TryReserveThreatImpact(candidate, 1000));
+    candidate = valid; candidate.actionId = coordinator.NextThreatActionId(); candidate.threatPoints = std::nanf("");
+    assert(!coordinator.TryReserveThreatImpact(candidate, 1000));
+    candidate = valid; candidate.actionId = coordinator.NextThreatActionId();
+    candidate.threatPoints = std::numeric_limits<float>::infinity();
+    assert(!coordinator.TryReserveThreatImpact(candidate, 1000));
+    candidate = valid; candidate.actionId = coordinator.NextThreatActionId(); candidate.expiresAtMs = 1000;
+    assert(!coordinator.TryReserveThreatImpact(candidate, 1000));
+    candidate = valid; candidate.actionId = coordinator.NextThreatActionId(); candidate.expiresAtMs = 0x800003e8u;
+    assert(!coordinator.TryReserveThreatImpact(candidate, 1000));
+
+    coordinator.ReleaseOwner(1);
+    assert(coordinator.GetThreatReservationCount() == 0);
+
+    ThreatReservation first;
+    for (std::uint32_t i = 0; i < 128; ++i) {
+        ThreatReservation row;
+        row.ownerGuid = 100;
+        row.threatOwnerGuid = 1000 + i;
+        row.hostileGuid = 2000 + i;
+        row.actionId = coordinator.NextThreatActionId();
+        row.threatPoints = 1.0f;
+        row.expiresAtMs = 5000;
+        assert(row.actionId && coordinator.TryReserveThreatImpact(row, 1000));
+        if (i == 0)
+            first = row;
+    }
+    assert(coordinator.GetThreatReservationCount() == 128);
+
+    ThreatReservation overflow = first;
+    overflow.hostileGuid = 99999;
+    overflow.actionId = coordinator.NextThreatActionId();
+    assert(!coordinator.TryReserveThreatImpact(overflow, 1000));
+    assert(coordinator.GetThreatReservationCount() == 128);
+
+    // An idempotent refresh remains legal at capacity.
+    first.threatPoints = 2.0f;
+    assert(coordinator.TryReserveThreatImpact(first, 1000));
+    assert(coordinator.GetThreatReservationCount() == 128);
+    assert(std::fabs(coordinator.GetReservedThreatImpact(first.hostileGuid,
+        first.threatOwnerGuid, 0, 1000) - 2.0f) < 0.0001f);
+
+    coordinator.ReleaseOwner(100);
+    assert(coordinator.GetThreatReservationCount() == 0);
+}
+
 void TestInvalidPriorityAndMultiplierVeto() {
     Fixture f; PartyBotEngine::PartyBotEngine engine;
     auto action = std::make_shared<TestAction>("damage"); assert(engine.RegisterAction(action));
@@ -485,7 +641,11 @@ void TestThreatBudgetUnknownAndCurrentVictimStates() {
 }
 int main() {
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();
-    TestReservationOwnershipAndExpiry(); TestInvalidPriorityAndMultiplierVeto();
+    TestReservationOwnershipAndExpiry();
+    TestThreatReservationAggregationAndActionRelease();
+    TestThreatReservationExpiryAndClockWrap();
+    TestThreatReservationValidationAndBoundedCapacity();
+    TestInvalidPriorityAndMultiplierVeto();
     TestSnapshotCacheFreshnessAndEpoch();
     TestCoordinatorRegistryIdentityAndBattlegroundBypass();
     TestHealingTriageShadowStrategy();

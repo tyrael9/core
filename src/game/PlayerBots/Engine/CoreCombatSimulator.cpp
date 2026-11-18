@@ -2936,7 +2936,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             // used by ThreatManager, not a hand-coded damage == threat assumption.
             auto estimateThreatForDamage = [&](Guid hostileGuid, uint32 damage) -> float
             {
-                SimulatorCoreThreatBudgetProbeAction estimator(map);
+                SimulatorThreatBudgetProbeAction estimator(map);
                 ActionCandidate candidate;
                 candidate.actionName = "core_threat_budget_probe";
                 candidate.targetGuid = hostileGuid;
@@ -2962,8 +2962,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             }
 
             PartyBotEngine overBudgetEngine;
-            std::shared_ptr<SimulatorCoreThreatBudgetProbeAction> overBudgetAction(
-                new SimulatorCoreThreatBudgetProbeAction(map));
+            std::shared_ptr<SimulatorThreatBudgetProbeAction> overBudgetAction(
+                new SimulatorThreatBudgetProbeAction(map));
             bool const overRegistered = overBudgetEngine.RegisterAction(overBudgetAction);
             std::shared_ptr<Strategy> overStrategy(new Strategy("simulator_over_budget_probe"));
             overStrategy->AddTrigger(std::make_shared<SimulatorThreatBudgetProbeTrigger>(
@@ -2978,11 +2978,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             // The melee 110% case uses a small direct-damage estimate. Execute
             // only reserves the declared impact; the test applies the actual
             // Core DealDamage immediately afterward and compares real threat.
-            uint32 const safeDamage = 1;
+            uint32 const safeDamage = 50;
             float const safeEstimatedThreat = estimateThreatForDamage(
                 hostiles[0].creature->GetObjectGuid().GetRawValue(), safeDamage);
-            std::shared_ptr<SimulatorCoreThreatBudgetProbeAction> safeBudgetAction(
-                new SimulatorCoreThreatBudgetProbeAction(map));
+            std::shared_ptr<SimulatorThreatBudgetProbeAction> safeBudgetAction(
+                new SimulatorThreatBudgetProbeAction(map));
             PartyBotEngine safeEngine;
             bool const safeRegistered = safeEngine.RegisterAction(safeBudgetAction);
             std::shared_ptr<Strategy> safeStrategy(new Strategy("simulator_safe_budget_probe"));

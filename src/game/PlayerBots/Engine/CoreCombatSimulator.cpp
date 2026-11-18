@@ -4354,7 +4354,7 @@ bool RunPeriodicHealingAssistThreatFixture(Map& map)
     // Rejuvenation rank 10 is an ordinary single-effect periodic heal in the
     // pinned Vanilla 5875 data. Reject DB/script drift, rather than substituting
     // a different effect family or broadening this fixture silently.
-    uint32 const spellId = 26982;
+    uint32 const spellId = 9841;
     SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
     bool const spellValid = spell &&
         spell->Effect[0] == SPELL_EFFECT_APPLY_AURA &&

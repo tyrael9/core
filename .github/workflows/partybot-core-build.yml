@@ -74,7 +74,7 @@ jobs:
 
       # Report only whether fixture secrets were injected; never print their values.
       - name: Check simulator fixture secret availability
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           PARTYBOT_SIMULATOR_DATA_URL: ${{ secrets.PARTYBOT_SIMULATOR_DATA_URL }}
           PARTYBOT_SIMULATOR_DATA_SHA256: ${{ secrets.PARTYBOT_SIMULATOR_DATA_SHA256 }}
@@ -93,14 +93,14 @@ jobs:
       # Runtime uses only disposable schemas and an extracted-data fixture shared
       # through Google Drive. It is push-only and remains a no-op until both secrets exist.
       - name: Run optional Core-backed simulator runtime test
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           PARTYBOT_SIMULATOR_DATA_URL: ${{ secrets.PARTYBOT_SIMULATOR_DATA_URL }}
           PARTYBOT_SIMULATOR_DATA_SHA256: ${{ secrets.PARTYBOT_SIMULATOR_DATA_SHA256 }}
         run: bash tools/partybot-simulator/run-ci.sh
 
       - name: Upload simulator runtime logs
-        if: always() && github.event_name == 'push'
+        if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/upload-artifact@v4
         with:
           name: partybot-simulator-${{ github.sha }}

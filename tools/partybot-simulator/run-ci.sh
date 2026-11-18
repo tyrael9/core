@@ -201,6 +201,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: Core PERIODIC_ENERGIZE granted assist t
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: a real Core periodic mana-leech tick drained target Mana, credited the caster's effective Mana gain and matched the target ThreatManager delta with the direct 50%-assist component." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The Core periodic mana-leech threat parity marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "impactMatches=1" "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Core applied-damage threat-impact estimate did not match the actual ThreatManager increment." | tee -a "$LOG_FILE"
     exit 1
@@ -295,4 +300,4 @@ if ! grep -Fq "[PartyBotSimulator] PASS: created, ran a bounded Core Creature co
     exit 1
 fi
 
-echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, periodic-healing-assist and periodic-power-assist threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, periodic-healing-assist, periodic-power-assist and periodic-mana-leech threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"

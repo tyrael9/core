@@ -46,6 +46,20 @@ public:
     void RecordPartyHeartbeat(Player const* bot, PartySnapshot const& snapshot,
                               EncounterHeartbeat const& heartbeat) const;
 
+    // Encounter-correlated Shadow summary and candidate records share the coordinator sequence.
+    void RecordEncounterDecisionSummary(Player const* bot, uint32 groupId, uint32 mapId,
+                                        uint32 instanceId, uint32 snapshotEpoch,
+                                        uint64 encounterId, uint32 sequence,
+                                        uint32 elapsedMs, char const* role,
+                                        uint32 candidateCount, uint32 selectedCount) const;
+    void RecordEncounterCandidate(Player const* bot, uint32 groupId, uint32 mapId,
+                                  uint32 instanceId, uint32 snapshotEpoch,
+                                  uint64 encounterId, uint32 sequence,
+                                  uint32 elapsedMs, char const* role,
+                                  char const* strategy, char const* action,
+                                  uint64 targetGuid, float priority,
+                                  char const* status, char const* reason) const;
+
     // Record a bounded status when Shadow cannot produce an evaluation.
     void RecordShadowStatus(Player const* bot, char const* status,
                             uint32 groupId, uint32 mapId, uint32 instanceId) const;

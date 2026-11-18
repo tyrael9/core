@@ -457,6 +457,142 @@ inline ThreatImpactEstimate EstimateAppliedPeriodicDamageComponent(
     return estimate;
 }
 
+
+
+// Estimate only the helpful-threat component of one already-applied periodic
+// healing tick. The caller supplies the actual effective health gain, not the
+// nominal Aura amount. Future ticks and other proc/script side effects remain
+// outside this component.
+inline ThreatImpactEstimate EstimateAppliedPeriodicHealingAssistComponent(
+    Unit* realCaster, Unit* healedTarget, std::uint32_t effectiveHealing,
+    SpellEntry const* spellInfo, std::uint32_t snapshotEpoch)
+{
+    ThreatImpactEstimate estimate;
+    estimate.snapshotEpoch = snapshotEpoch;
+    estimate.reason = "periodic_healing_assist_component_only";
+
+    bool periodicHealEffect = false;
+    if (spellInfo) {
+        for (std::uint8_t i = 0; i < MAX_EFFECT_INDEX; ++i) {
+            if (spellInfo->Effect[i] == SPELL_EFFECT_APPLY_AURA &&
+                (spellInfo->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_HEAL ||
+                 spellInfo->EffectApplyAuraName[i] == SPELL_AURA_OBS_MOD_HEALTH)) {
+                periodicHealEffect = true;
+                break;
+            }
+        }
+    }
+
+    if (!snapshotEpoch || !realCaster || !healedTarget || !spellInfo ||
+        !periodicHealEffect || !realCaster->IsAlive() || !healedTarget->IsAlive() ||
+        !realCaster->IsInWorld() || !healedTarget->IsInWorld() ||
+        !realCaster->IsInMap(healedTarget) || realCaster == healedTarget) {
+        estimate.reason = "periodic_healing_assist_component_missing_or_ineligible_core_state";
+        return estimate;
+    }
+
+    // Aura::PeriodicTick's visual-163 branch can add a separate caster-side
+    // health-loss event after this assist. Keep this helper to the isolated
+    // healed-target assist component.
+    if (spellInfo->SpellVisual == 163) {
+        estimate.reason = "periodic_healing_assist_component_has_caster_health_side_effect";
+        return estimate;
+    }
+
+    if (spellInfo->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT)) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "periodic_healing_assist_suppressed_by_core_spell_attribute";
+        return estimate;
+    }
+
+    // Core may update an existing reference but suppress creation of a new one.
+    // This component does not prove the healer reference already exists.
+    if (spellInfo->HasAttribute(SPELL_ATTR_EX_NO_THREAT)) {
+        estimate.reason = "periodic_healing_assist_no_new_threat_reference_unproven";
+        return estimate;
+    }
+
+    if (!effectiveHealing) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "periodic_healing_tick_has_no_effective_health_gain";
+        return estimate;
+    }
+
+    std::vector<std::pair<Guid, Unit*>> hostileReferences;
+    Guid const targetGuid = healedTarget->GetObjectGuid().GetRawValue();
+    HostileRefManager& hostileRefs = healedTarget->GetHostileRefManager();
+    for (HostileReference* reference = hostileRefs.getFirst();
+         reference; reference = reference->next()) {
+        Unit* hostileUnit = reference->getSourceUnit();
+        if (!hostileUnit || reference->getTarget() != healedTarget ||
+            reference->getUnitGuid().GetRawValue() != targetGuid ||
+            !hostileUnit->CanHaveThreatList() || !hostileUnit->IsAlive() ||
+            !hostileUnit->IsInWorld() || !hostileUnit->IsInMap(realCaster)) {
+            estimate.reason = "periodic_healing_assist_component_hostile_reference_unresolved";
+            return estimate;
+        }
+
+        Guid const hostileGuid = hostileUnit->GetObjectGuid().GetRawValue();
+        if (!hostileGuid || hostileGuid == realCaster->GetObjectGuid().GetRawValue() ||
+            std::any_of(hostileReferences.begin(), hostileReferences.end(),
+                [hostileGuid](std::pair<Guid, Unit*> const& existing) {
+                    return existing.first == hostileGuid;
+                })) {
+            estimate.reason = "periodic_healing_assist_component_duplicate_or_invalid_hostile";
+            return estimate;
+        }
+        hostileReferences.emplace_back(hostileGuid, hostileUnit);
+    }
+
+    if (hostileReferences.empty()) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "periodic_healing_assist_component_has_no_hostile_references";
+        return estimate;
+    }
+
+    // Core Aura::PeriodicTick always uses a 50% healer-assist coefficient,
+    // then HostileRefManager::threatAssist divides it by the full reference
+    // count before each ThreatManager applies this exact Core calculation.
+    float const spellThreatMultiplier = sSpellMgr.GetSpellThreatMultiplier(spellInfo);
+    float const totalAssistThreat =
+        static_cast<float>(effectiveHealing) * 0.5f * spellThreatMultiplier;
+    float const threatPerReference =
+        totalAssistThreat / static_cast<float>(hostileReferences.size());
+    if (!std::isfinite(spellThreatMultiplier) || spellThreatMultiplier < 0.0f ||
+        !std::isfinite(totalAssistThreat) || totalAssistThreat < 0.0f ||
+        !std::isfinite(threatPerReference) || threatPerReference < 0.0f) {
+        estimate.reason = "periodic_healing_assist_component_invalid_core_multiplier_or_fanout";
+        return estimate;
+    }
+
+    Guid const casterGuid = realCaster->GetObjectGuid().GetRawValue();
+    for (std::pair<Guid, Unit*> const& hostileReference : hostileReferences) {
+        Unit* hostileUnit = hostileReference.second;
+        bool const assistSuppressedByHardCC =
+            hostileUnit->HasUnitState(UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING | UNIT_STATE_ISOLATED) ||
+            (hostileUnit->HasUnitState(UNIT_STATE_STUNNED) &&
+             hostileUnit->HasBreakableByDamageAuraType(SPELL_AURA_MOD_STUN, 0));
+        float const coreInputThreat = assistSuppressedByHardCC ? 0.0f : threatPerReference;
+        float const threatPoints = ThreatCalcHelper::CalcThreat(
+            realCaster, coreInputThreat, false, spellInfo->GetSpellSchoolMask(), spellInfo);
+        if (!std::isfinite(threatPoints) || threatPoints < 0.0f) {
+            estimate.reason = "periodic_healing_assist_component_invalid_core_threat";
+            estimate.impacts.clear();
+            return estimate;
+        }
+
+        ThreatImpactEntry impact;
+        impact.threatOwnerGuid = casterGuid;
+        impact.hostileGuid = hostileReference.first;
+        impact.threatPoints = threatPoints;
+        impact.source = ThreatImpactSource::PeriodicHealAssist;
+        impact.bound = ThreatImpactBound::Exact;
+        estimate.impacts.push_back(impact);
+    }
+
+    return estimate;
+}
+
 } // namespace PartyBotEngine
 
 #endif

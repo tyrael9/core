@@ -338,3 +338,18 @@ The ordinary direct spell path was traced through the pinned Vanilla 5875 Core:
 The script inventory above was obtained by inspecting the registered class/item spell-script modules on the pinned branch. It is deliberately described as a concrete sample, not an exhaustive proof over all script bindings, proc-triggered spells, talents, item effects or encounter scripts.
 
 **Estimator boundary:** do not promote generic direct spell damage to `Complete` based only on `EffectBasePoints`, `CalculateSpellEffectValue` or the final damage formula. The pre-cast estimator must resolve the actual selected spell script, current random/state-dependent effect inputs, target-specific modifiers and mitigation bounds, OnHit changes, proc-trigger closure, flat spell-threat routing, and every hostile/actual threat-owner recipient. If any of those are unknown, stale or unbounded, the action remains `Unknown`. Existing applied-damage parity tests validate only the Core damage-to-threat calculation after damage is known; they do not establish a safe future-cast prediction.
+
+
+### Active proc-aura closure is part of the direct spell action
+
+`SpellCaster::ProcDamageAndSpell` dispatches through `ProcDamageAndSpell_real`. The latter scans the attacker's current aura holders with `ProcDamageAndSpellFor(false, ...)` and, for applicable non-instant processing, also scans the victim's current aura holders with `ProcDamageAndSpellFor(true, ...)`. Eligibility depends on current proc flags/outcome, spell-proc event filters, cooldown and charge state, aura apply time, and instant/delayed proc mode. With spell proc delay configured, instant-target procs are handled immediately while the remaining proc checks are queued and later re-resolve the victim GUID before dispatch. `HandleTriggers` then executes the collected proc list.
+
+The proc handler is not a simple fixed trigger lookup. For example, the inspected Vanilla code contains state-dependent handlers for:
+- Mage Persistent Shield, deriving a triggered absorb amount from the actual incoming amount;
+- Warlock Pyroclasm, selecting behavior and chance based on the triggering spell/tick count;
+- Priest Blessed Recovery, deriving custom heal base points from the triggering damage;
+- Hunter aspects, filtering on the actual triggering amount;
+- Paladin Seal of Righteousness (on older supported builds), deriving damage from weapon speed and seal amount, then additionally firing weapon combat procs;
+- Paladin Judgement of Light/Wisdom, where the actual attacker becomes the triggered heal/mana caster.
+
+These are examples, not an exhaustive proc catalog. The proc graph depends on both actors' active aura state and can produce more than one triggered action, so the primary spell ID alone cannot define a complete forecast. The estimator must account for attacker-side and victim-side procs, their timing, recursive/triggered spell behavior and actual caster/target identities. If it cannot prove the relevant proc closure is empty or bounded, the direct spell action remains `Unknown`.

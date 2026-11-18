@@ -497,6 +497,11 @@ void TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness() {
     complete.impacts.push_back(impact);
     assert(IsWellFormedThreatImpactEstimate(complete));
     assert(IsThreatImpactEstimateForSnapshot(complete, f.snapshot.epoch));
+    complete.reservationDurationMs = 0;
+    assert(!IsWellFormedThreatImpactEstimate(complete));
+    complete.reservationDurationMs = 0x80000000u;
+    assert(!IsWellFormedThreatImpactEstimate(complete));
+    complete.reservationDurationMs = 1000;
 
     complete.impacts[0].source = ThreatImpactSource::PeriodicDamage;
     assert(IsWellFormedThreatImpactEstimate(complete));
@@ -723,6 +728,31 @@ void TestEngineThreatBudgetRejectsUnknownAndOverBudgetCandidates() {
     assert(unknown->executeCount == 0 && overBudget->executeCount == 0);
 }
 
+void TestEngineReleasesThreatReservationWhenExecutionFails() {
+    Fixture f;
+    PrepareEngineThreatFixture(f);
+    PartyBotEngine::PartyBotEngine engine;
+    std::shared_ptr<TestAction> action = std::make_shared<TestAction>("failing_damage");
+    action->useThreatImpact = true;
+    action->threatImpact = MakeThreatEstimate(f.snapshot.epoch, f.bot.guid, 9001, 15.0f);
+    action->result = ActionResult::Failed;
+    assert(engine.RegisterAction(action));
+    auto trigger = std::make_shared<TestTrigger>("failing_threat_action");
+    trigger->generated.push_back(Candidate("failing_damage", 10.0f, ActionChannel::GlobalCooldown));
+    auto strategy = std::make_shared<Strategy>("damage_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    engine.ExecuteSelected(f.context, report);
+    CandidateEvaluation const& evaluation = report.candidates[report.selectedIndices.front()];
+    assert(evaluation.status == CandidateStatus::ExecutionFailed);
+    assert(action->executeCount == 1);
+    assert(f.coordinator.GetThreatReservationCount() == 0);
+    assert(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) == 0.0f);
+}
+
 void TestEngineThreatBudgetAccountsForHigherPriorityCandidates() {
     Fixture f;
     PrepareEngineThreatFixture(f);
@@ -879,6 +909,13 @@ void TestThreatBudgetUnknownAndCurrentVictimStates() {
     snapshot.hostiles[0].alive = false;
     ThreatBudgetAssessment deadHostile = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(deadHostile.unknownReason == ThreatBudgetUnknownReason::HostileNotAlive);
+
+    snapshot.hostiles[0].alive = true;
+    ConfigureThreat(snapshot.hostiles[0], tank.guid,
+                    std::numeric_limits<float>::max(), dps.guid, 50.0f, true);
+    ThreatBudgetAssessment overflow = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
+    assert(overflow.status == ThreatBudgetStatus::Unknown);
+    assert(overflow.unknownReason == ThreatBudgetUnknownReason::InvalidBudgetProjection);
 }
 
 }
@@ -900,6 +937,7 @@ int main() {
     TestEngineThreatBudgetSelectionAndExecutionReservations();
     TestEngineThreatBudgetRejectsUnknownAndOverBudgetCandidates();
     TestEngineThreatBudgetAccountsForHigherPriorityCandidates();
+    TestEngineReleasesThreatReservationWhenExecutionFails();
     TestThreatBudgetCoreThresholdProjection();
     TestThreatBudgetStrictCoreThresholdBoundaries();
     TestThreatBudgetUnknownAndCurrentVictimStates();

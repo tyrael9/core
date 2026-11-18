@@ -24,7 +24,11 @@ public:
         if (!useful) reason = "test_useless";
         return useful;
     }
-    ActionResult Execute(DecisionContext&, ActionCandidate const&) override { ++executeCount; return result; }
+    ActionResult Execute(DecisionContext&, ActionCandidate const& candidate) override {
+        ++executeCount;
+        lastThreatActionId = candidate.threatActionId;
+        return result;
+    }
     ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
                                                ActionCandidate const& candidate) const override {
         if (returnDefaultUnknown)
@@ -44,6 +48,7 @@ public:
     bool returnDefaultUnknown = false;
     ActionResult result = ActionResult::Success;
     ThreatImpactEstimate threatImpact;
+    ThreatActionId lastThreatActionId = 0;
     std::uint32_t executeCount = 0;
 private:
     std::string m_name;
@@ -203,6 +208,9 @@ void TestThreatReservationExpiryAndClockWrap() {
     assert(coordinator.TryReserveThreatImpact(reservation, 1000));
     assert(std::fabs(coordinator.GetReservedThreatImpact(30, 20, 0, 1499) - 8.25f) < 0.0001f);
     assert(coordinator.GetReservedThreatImpact(30, 20, 0, 1500) == 0.0f);
+    // Read-only budget queries ignore expired rows without mutating the coordinator.
+    assert(coordinator.GetThreatReservationCount() == 1);
+    coordinator.PruneExpired(1500);
     assert(coordinator.GetThreatReservationCount() == 0);
 
     reservation.actionId = coordinator.NextThreatActionId();
@@ -210,6 +218,9 @@ void TestThreatReservationExpiryAndClockWrap() {
     assert(coordinator.TryReserveThreatImpact(reservation, 0xfffffff0u));
     assert(std::fabs(coordinator.GetReservedThreatImpact(30, 20, 0, 0xffffffffu) - 8.25f) < 0.0001f);
     assert(coordinator.GetReservedThreatImpact(30, 20, 0, 0x10u) == 0.0f);
+    assert(coordinator.GetThreatReservationCount() == 1);
+    coordinator.PruneExpired(0x10u);
+    assert(coordinator.GetThreatReservationCount() == 0);
 }
 
 void TestThreatReservationValidationAndBoundedCapacity() {
@@ -689,6 +700,8 @@ void TestEngineThreatBudgetSelectionAndExecutionReservations() {
     assert(action->executeCount == 1);
     assert(selected.status == CandidateStatus::Executed);
     assert(selected.threatActionId != 0);
+    assert(action->lastThreatActionId == selected.threatActionId);
+    assert(selected.candidate.threatActionId == selected.threatActionId);
     assert(std::fabs(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) - 15.0f) < 0.0001f);
 
     f.coordinator.ReleaseThreatAction(selected.threatActionId);

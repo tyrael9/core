@@ -4924,6 +4924,209 @@ bool RunPeriodicManaLeechThreatFixture(Map& map)
     return true;
 }
 
+
+bool RunPeriodicLeechThreatFixture(Map& map)
+{
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic life leech fixture: begin.");
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor caster;
+    SimulatorActor hostileA;
+    SimulatorActor hostileB;
+    bool created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 72.0f, caster) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 72.0f, hostileA) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 4.0f, 72.0f, hostileB);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic life leech fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    caster.creature->SetLevel(60);
+    hostileA.creature->SetLevel(60);
+    hostileB.creature->SetLevel(60);
+    caster.creature->SetHealth(50000);
+
+    // Put two real hostile references on the self-healing caster. The damage
+    // portion of the same tick hits hostile A, while the heal-assist portion
+    // must fan out across both A and B.
+    uint32 const seedDamageA = caster.creature->DealDamage(
+        hostileA.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    uint32 const seedDamageB = caster.creature->DealDamage(
+        hostileB.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    caster.creature->SetInCombatWith(hostileA.creature);
+    caster.creature->SetInCombatWith(hostileB.creature);
+    hostileA.creature->SetInCombatWith(caster.creature);
+    hostileB.creature->SetInCombatWith(caster.creature);
+
+    uint32 hostileReferenceCount = 0;
+    for (HostileReference* reference = caster.creature->GetHostileRefManager().getFirst();
+         reference; reference = reference->next())
+        ++hostileReferenceCount;
+
+    std::vector<SpellEntry const*> candidates;
+    uint32 const maxSpellId = sSpellMgr.GetMaxSpellId();
+    for (uint32 spellId = 1; spellId < maxSpellId; ++spellId)
+    {
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
+        if (!spell || spell->Effect[0] != SPELL_EFFECT_APPLY_AURA ||
+            spell->EffectApplyAuraName[0] != SPELL_AURA_PERIODIC_LEECH ||
+            spell->Effect[1] || spell->Effect[2] || spell->ScriptId ||
+            spell->SpellVisual == 163 ||
+            spell->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT) ||
+            spell->HasAttribute(SPELL_ATTR_EX_NO_THREAT))
+            continue;
+        candidates.push_back(spell);
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic life leech fixture: refs=%u native candidates=%u.",
+             hostileReferenceCount, static_cast<uint32>(candidates.size()));
+
+    SpellEntry const* selectedSpell = nullptr;
+    Aura* aura = nullptr;
+    SpellCastResult castResult = SPELL_FAILED_SPELL_UNAVAILABLE;
+    for (SpellEntry const* candidate : candidates)
+    {
+        castResult = caster.creature->CastSpell(hostileA.creature, candidate, true);
+        aura = castResult == SPELL_CAST_OK
+            ? hostileA.creature->GetAura(candidate->Id, EFFECT_INDEX_0) : nullptr;
+        if (aura && aura->IsPeriodic() && !aura->GetAuraScript() &&
+            aura->GetAuraPeriodicTimer() > 0)
+        {
+            selectedSpell = candidate;
+            break;
+        }
+        hostileA.creature->RemoveAurasDueToSpell(candidate->Id);
+    }
+
+    if (!selectedSpell || !aura || seedDamageA != 1 || seedDamageB != 1 ||
+        hostileReferenceCount != 2)
+    {
+        bool const auraFound = aura != nullptr;
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic life leech fixture preconditions failed (cast=%u aura=%u seed=%u/%u refs=%u candidates=%u cleanup=%u).",
+                 static_cast<uint32>(castResult), auraFound ? 1u : 0u,
+                 seedDamageA, seedDamageB, hostileReferenceCount,
+                 static_cast<uint32>(candidates.size()), cleaned ? 1u : 0u);
+        return false;
+    }
+
+    uint32 const casterHealthBefore = caster.creature->GetHealth();
+    uint32 const hostileHealthBefore = hostileA.creature->GetHealth();
+    uint32 const ticksBefore = aura->GetAuraTicks();
+    float const threatABefore =
+        hostileA.creature->GetThreatManager().getThreat(caster.creature);
+    float const threatBBefore =
+        hostileB.creature->GetThreatManager().getThreat(caster.creature);
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic life leech fixture: selected native spell %u; awaiting Core Aura tick.",
+             selectedSpell->Id);
+
+    uint32 updates = 0;
+    for (; updates < 64; ++updates)
+    {
+        map.Update(250);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        aura = hostileA.creature->GetAura(selectedSpell->Id, EFFECT_INDEX_0);
+        if (!aura || aura->GetAuraTicks() > ticksBefore)
+            break;
+    }
+
+    uint32 const ticksAfter = aura ? aura->GetAuraTicks() : 0;
+    uint32 const casterHealthAfter = caster.creature->GetHealth();
+    uint32 const hostileHealthAfter = hostileA.creature->GetHealth();
+    uint32 const effectiveHealing = casterHealthAfter > casterHealthBefore
+        ? casterHealthAfter - casterHealthBefore : 0;
+    uint32 const appliedDamage = hostileHealthBefore > hostileHealthAfter
+        ? hostileHealthBefore - hostileHealthAfter : 0;
+    float const actualDeltaA =
+        hostileA.creature->GetThreatManager().getThreat(caster.creature) - threatABefore;
+    float const actualDeltaB =
+        hostileB.creature->GetThreatManager().getThreat(caster.creature) - threatBBefore;
+
+    ThreatImpactEstimate const damageEstimate = EstimateAppliedPeriodicDamageComponent(
+        caster.creature, hostileA.creature, appliedDamage, selectedSpell, 88005);
+    ThreatImpactEstimate const healEstimate = EstimateAppliedPeriodicHealingAssistComponent(
+        caster.creature, caster.creature, effectiveHealing, selectedSpell, 88006);
+
+    bool damageShape =
+        damageEstimate.completeness == ThreatImpactCompleteness::Unknown &&
+        damageEstimate.impacts.size() == 1 &&
+        damageEstimate.impacts[0].threatOwnerGuid == caster.creature->GetObjectGuid().GetRawValue() &&
+        damageEstimate.impacts[0].hostileGuid == hostileA.creature->GetObjectGuid().GetRawValue() &&
+        damageEstimate.impacts[0].source == ThreatImpactSource::PeriodicDamage &&
+        damageEstimate.impacts[0].bound == ThreatImpactBound::Exact;
+    bool healRowA = false, healRowB = false;
+    float estimatedDamageA = damageShape ? damageEstimate.impacts[0].threatPoints : -1.0f;
+    float estimatedHealA = -1.0f, estimatedHealB = -1.0f;
+    for (ThreatImpactEntry const& impact : healEstimate.impacts)
+    {
+        if (impact.threatOwnerGuid != caster.creature->GetObjectGuid().GetRawValue() ||
+            impact.source != ThreatImpactSource::PeriodicHealAssist ||
+            impact.bound != ThreatImpactBound::Exact)
+            continue;
+        if (impact.hostileGuid == hostileA.creature->GetObjectGuid().GetRawValue())
+        {
+            healRowA = true;
+            estimatedHealA = impact.threatPoints;
+        }
+        else if (impact.hostileGuid == hostileB.creature->GetObjectGuid().GetRawValue())
+        {
+            healRowB = true;
+            estimatedHealB = impact.threatPoints;
+        }
+    }
+
+    bool const healShape =
+        healEstimate.completeness == ThreatImpactCompleteness::Unknown &&
+        healEstimate.impacts.size() == 2 && healRowA && healRowB;
+    bool const matched = ticksAfter == ticksBefore + 1 &&
+        appliedDamage > 0 && effectiveHealing > 0 &&
+        damageShape && healShape &&
+        std::fabs(actualDeltaA - (estimatedDamageA + estimatedHealA)) < 0.01f &&
+        std::fabs(actualDeltaB - estimatedHealB) < 0.01f;
+
+    bool cleaned = true;
+    if (hostileA.creature->IsInWorld())
+        hostileA.creature->RemoveAurasDueToSpell(selectedSpell->Id);
+    cleaned = DestroySimulatorActor(map, hostileB);
+    cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+    cleaned = DestroySimulatorActor(map, caster) && cleaned;
+
+    sLog.Out(LOG_BASIC, matched && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Periodic life leech tick: spell=%u ticks=%u>%u updates=%u appliedDamage=%u effectiveHealing=%u damageEstimate=%.3f healAssistEstimate=%.3f/%.3f actualDelta=%.3f/%.3f damageShape=%u healShape=%u matched=%u cleanup=%u.",
+             selectedSpell->Id, ticksBefore, ticksAfter, updates, appliedDamage,
+             effectiveHealing, estimatedDamageA, estimatedHealA, estimatedHealB,
+             actualDeltaA, actualDeltaB, damageShape ? 1u : 0u,
+             healShape ? 1u : 0u, matched ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!matched || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core periodic life-leech threat fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: a real Core periodic life-leech tick matched both the hostile damage threat and the self-heal assist fan-out across two hostile ThreatManagers.");
+    return true;
+}
+
 bool RunNegativeFlatSpellThreatFixture(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -5149,6 +5352,10 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] Stage completed: periodic mana leech=%u.",
              periodicManaLeechPassed ? 1u : 0u);
+    bool const periodicLifeLeechPassed = RunPeriodicLeechThreatFixture(*map);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Stage completed: periodic life leech=%u.",
+             periodicLifeLeechPassed ? 1u : 0u);
     bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
@@ -5166,7 +5373,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     // and F9 multi-add threat path; do not create two Groups on the same Map.
     bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
-                              creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && periodicManaLeechPassed && engineExecutorPassed &&
+                              creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && periodicManaLeechPassed && periodicLifeLeechPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&

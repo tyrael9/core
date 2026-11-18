@@ -149,7 +149,7 @@ with open(destination, "w", encoding="utf-8") as output:
     output.write(config)
 PY
 
-echo "[PartyBotSimulator] Running one-shot Stages A-F11 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Running one-shot Stages A-F12 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
 set +e
 timeout --signal=TERM --kill-after=15s 10m "$MANGOSD_BIN" -c "$CONFIG_FILE" 2>&1 | tee -a "$LOG_FILE"
 simulator_status=${PIPESTATUS[0]}

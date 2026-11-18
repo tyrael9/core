@@ -25,6 +25,16 @@ struct ThreatReservation {
 
 enum class EncounterTransitionKind : std::uint8_t { None, Started, Ended };
 
+struct EncounterHeartbeat
+{
+    std::uint64_t encounterId = 0;
+    std::uint32_t sequence = 0;
+    std::uint32_t groupId = 0;
+    std::uint32_t mapId = 0;
+    std::uint32_t instanceId = 0;
+    std::uint32_t elapsedMs = 0;
+};
+
 struct EncounterTransition {
     EncounterTransitionKind kind = EncounterTransitionKind::None;
     std::uint64_t encounterId = 0;
@@ -59,6 +69,9 @@ public:
                                          std::uint32_t nowMs,
                                          std::uint32_t settleMs);
     EncounterTransition CloseEncounter(std::uint32_t nowMs, char const* reason);
+    // Emit one shared, interval-limited party snapshot heartbeat per active encounter.
+    bool TryBeginEncounterHeartbeat(std::uint32_t nowMs, std::uint32_t intervalMs,
+                                    EncounterHeartbeat& heartbeat);
     std::uint32_t NextEncounterSequence();
     std::uint64_t GetEncounterId() const { return m_encounterId; }
     bool HasActiveEncounter() const { return m_encounterActive; }
@@ -81,8 +94,10 @@ private:
     std::uint32_t m_encounterInstanceId = 0;
     std::uint32_t m_encounterStartedAtMs = 0;
     std::uint32_t m_lastCombatAtMs = 0;
+    std::uint32_t m_lastEncounterHeartbeatAtMs = 0;
     std::uint32_t m_nextSnapshotEpoch = 0;
     bool m_encounterActive = false;
+    bool m_hasEncounterHeartbeat = false;
     bool m_hasSnapshot = false;
 };
 

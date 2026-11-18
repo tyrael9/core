@@ -1061,6 +1061,8 @@ char const* ShadowCandidateStatusName(PartyBotEngine::CandidateStatus status)
         case CandidateStatus::RejectedUseless: return "rejected_useless";
         case CandidateStatus::RejectedMultiplier: return "rejected_multiplier";
         case CandidateStatus::RejectedInvalidPriority: return "rejected_invalid_priority";
+        case CandidateStatus::RejectedThreatUnknown: return "rejected_threat_unknown";
+        case CandidateStatus::RejectedThreatBudget: return "rejected_threat_budget";
         case CandidateStatus::NotSelected: return "not_selected";
         case CandidateStatus::Selected: return "selected";
         case CandidateStatus::Executed: return "executed";

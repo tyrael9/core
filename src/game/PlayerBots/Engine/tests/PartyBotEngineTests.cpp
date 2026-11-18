@@ -290,6 +290,7 @@ void ConfigureThreat(HostileSnapshot& hostile, Guid victimGuid, float victimThre
 }
 void TestThreatBudgetCoreThresholdProjection() {
     PartySnapshot snapshot;
+    snapshot.capturedAtMs = 1000;
     PartyMemberSnapshot tank, dps;
     ConfigureMember(tank, 101, PartyRole::Tank, 100, 100, true);
     ConfigureMember(dps, 202, PartyRole::RangedDamage, 100, 100);
@@ -298,7 +299,7 @@ void TestThreatBudgetCoreThresholdProjection() {
     snapshot.members = {tank, dps};
     snapshot.hostiles = {hostile};
 
-    ThreatBudgetAssessment melee = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment melee = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(melee.status == ThreatBudgetStatus::BudgetAvailable);
     assert(melee.unknownReason == ThreatBudgetUnknownReason::None);
     assert(melee.usesMeleeThreshold && melee.thresholdMultiplier == 1.1f);
@@ -317,6 +318,7 @@ void TestThreatBudgetCoreThresholdProjection() {
 }
 void TestThreatBudgetStrictCoreThresholdBoundaries() {
     PartySnapshot snapshot;
+    snapshot.capturedAtMs = 1000;
     PartyMemberSnapshot tank, dps;
     ConfigureMember(tank, 301, PartyRole::Tank, 100, 100, true);
     ConfigureMember(dps, 302, PartyRole::RangedDamage, 100, 100);
@@ -352,6 +354,30 @@ void TestThreatBudgetStrictCoreThresholdBoundaries() {
     assert(AssessThreatBudget(snapshot, hostile.guid, dps.guid).status ==
            ThreatBudgetStatus::AtOrOverBudget);
 }
+
+void TestThreatBudgetRejectsStaleSnapshotsAndHandlesClockWrap() {
+    PartySnapshot snapshot;
+    snapshot.capturedAtMs = 1000;
+    PartyMemberSnapshot tank, dps;
+    ConfigureMember(tank, 501, PartyRole::Tank, 100, 100, true);
+    ConfigureMember(dps, 502, PartyRole::RangedDamage, 100, 100);
+    HostileSnapshot hostile;
+    ConfigureThreat(hostile, tank.guid, 100.0f, dps.guid, 50.0f, true);
+    snapshot.members = {tank, dps};
+    snapshot.hostiles = {hostile};
+
+    ThreatBudgetAssessment stale = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1251, 250);
+    assert(stale.status == ThreatBudgetStatus::Unknown);
+    assert(stale.unknownReason == ThreatBudgetUnknownReason::StaleSnapshot);
+
+    snapshot.capturedAtMs = 0xfffffff0u;
+    ThreatBudgetAssessment wrappedFresh =
+        AssessThreatBudget(snapshot, hostile.guid, dps.guid, 10u, 26u);
+    assert(wrappedFresh.status == ThreatBudgetStatus::BudgetAvailable);
+    ThreatBudgetAssessment wrappedStale =
+        AssessThreatBudget(snapshot, hostile.guid, dps.guid, 11u, 26u);
+    assert(wrappedStale.unknownReason == ThreatBudgetUnknownReason::StaleSnapshot);
+}
 void TestThreatBudgetUnknownAndCurrentVictimStates() {
     PartySnapshot snapshot;
     PartyMemberSnapshot tank, dps;
@@ -362,7 +388,7 @@ void TestThreatBudgetUnknownAndCurrentVictimStates() {
     snapshot.members = {tank, dps};
     snapshot.hostiles = {hostile};
 
-    ThreatBudgetAssessment current = AssessThreatBudget(snapshot, hostile.guid, tank.guid);
+    ThreatBudgetAssessment current = AssessThreatBudget(snapshot, hostile.guid, tank.guid, 1000, 250);
     assert(current.status == ThreatBudgetStatus::CurrentVictim);
     assert(current.currentVictimGuid == tank.guid);
 
@@ -407,6 +433,7 @@ int main() {
     TestThreatBudgetCoreThresholdProjection();
     TestThreatBudgetStrictCoreThresholdBoundaries();
     TestThreatBudgetUnknownAndCurrentVictimStates();
+    TestThreatBudgetRejectsStaleSnapshotsAndHandlesClockWrap();
     std::cout << "PartyBotEngine tests passed\n";
     return 0;
 }

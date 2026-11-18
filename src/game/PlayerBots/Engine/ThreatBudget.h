@@ -15,6 +15,7 @@ enum class ThreatBudgetStatus : std::uint8_t {
 
 enum class ThreatBudgetUnknownReason : std::uint8_t {
     None,
+    StaleSnapshot,
     MissingOrDuplicateHostile,
     HostileNotAlive,
     MissingOrDuplicateMember,
@@ -101,11 +102,19 @@ inline ThreatEntrySnapshot const* FindUniqueThreatEntry(HostileSnapshot const& h
 // a replacement for ThreatContainer::selectNextVictim: it does not model
 // eligibility passes, threat-area checks, taunt, immunity or future threat.
 inline ThreatBudgetAssessment AssessThreatBudget(PartySnapshot const& snapshot,
-                                                  Guid hostileGuid, Guid memberGuid)
+                                                  Guid hostileGuid, Guid memberGuid,
+                                                  std::uint32_t nowMs, std::uint32_t maxAgeMs)
 {
     ThreatBudgetAssessment result;
     result.hostileGuid = hostileGuid;
     result.memberGuid = memberGuid;
+
+    // Match PartyCoordinator's wrap-safe freshness calculation. Never derive
+    // a threat budget from an expired cached snapshot.
+    if (static_cast<std::uint32_t>(nowMs - snapshot.capturedAtMs) > maxAgeMs) {
+        result.unknownReason = ThreatBudgetUnknownReason::StaleSnapshot;
+        return result;
+    }
 
     bool duplicate = false;
     HostileSnapshot const* hostile =

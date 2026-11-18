@@ -1,6 +1,7 @@
 #include "PartyBotEngine.h"
 #include "ShadowStrategies.h"
 #include "ThreatBudget.h"
+#include "ThreatBudgetPolicy.h"
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -24,8 +25,22 @@ public:
         return useful;
     }
     ActionResult Execute(DecisionContext&, ActionCandidate const&) override { ++executeCount; return result; }
-    bool possible = true, useful = true;
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override {
+        if (useThreatImpact) {
+            ThreatImpactEstimate estimate = threatImpact;
+            estimate.snapshotEpoch = context.snapshot.epoch;
+            return estimate;
+        }
+        ThreatImpactEstimate estimate;
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.snapshotEpoch = context.snapshot.epoch;
+        estimate.reason = "test_action_has_no_threat";
+        return estimate;
+    }
+    bool possible = true, useful = true, useThreatImpact = false;
     ActionResult result = ActionResult::Success;
+    ThreatImpactEstimate threatImpact;
     std::uint32_t executeCount = 0;
 private:
     std::string m_name;
@@ -471,6 +486,7 @@ void TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness() {
     complete.completeness = ThreatImpactCompleteness::Complete;
     complete.snapshotEpoch = f.snapshot.epoch;
     assert(!IsWellFormedThreatImpactEstimate(complete));
+    complete.reservationDurationMs = 1000;
     ThreatImpactEntry impact;
     impact.threatOwnerGuid = f.bot.guid;
     impact.hostileGuid = 9001;

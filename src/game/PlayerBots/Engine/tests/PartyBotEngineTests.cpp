@@ -522,6 +522,231 @@ void TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness() {
     assert(!IsWellFormedThreatImpactEstimate(missingEpoch));
 }
 
+ThreatImpactEstimate MakeThreatEstimate(std::uint32_t epoch, Guid threatOwnerGuid,
+                                             Guid hostileGuid, float threatPoints,
+                                             std::uint32_t reservationDurationMs = 1000) {
+    ThreatImpactEstimate estimate;
+    estimate.completeness = ThreatImpactCompleteness::Complete;
+    estimate.snapshotEpoch = epoch;
+    estimate.reservationDurationMs = reservationDurationMs;
+    estimate.reason = "test_complete_threat_estimate";
+    ThreatImpactEntry impact;
+    impact.threatOwnerGuid = threatOwnerGuid;
+    impact.hostileGuid = hostileGuid;
+    impact.threatPoints = threatPoints;
+    impact.source = ThreatImpactSource::DirectDamage;
+    impact.bound = ThreatImpactBound::UpperBound;
+    estimate.impacts.push_back(impact);
+    return estimate;
+}
+
+void TestThreatImpactBudgetUsesFanoutAndReservations() {
+    PartySnapshot snapshot;
+    snapshot.epoch = 90;
+    snapshot.capturedAtMs = 1000;
+    PartyMemberSnapshot tank, dps;
+    ConfigureMember(tank, 101, PartyRole::Tank, 100, 100, true);
+    ConfigureMember(dps, 202, PartyRole::RangedDamage, 100, 100);
+    snapshot.members = {tank, dps};
+
+    HostileSnapshot first, second;
+    ConfigureThreat(first, tank.guid, 100.0f, dps.guid, 90.0f, true);
+    first.guid = 9001;
+    ConfigureThreat(second, tank.guid, 100.0f, dps.guid, 95.0f, false);
+    second.guid = 9002;
+    snapshot.hostiles = {first, second};
+
+    PartyCoordinator coordinator;
+    ThreatImpactEstimate fanout;
+    fanout.completeness = ThreatImpactCompleteness::Complete;
+    fanout.snapshotEpoch = snapshot.epoch;
+    fanout.reservationDurationMs = 1000;
+    fanout.reason = "multi_hostile_fanout";
+    ThreatImpactEntry firstPart;
+    firstPart.threatOwnerGuid = dps.guid;
+    firstPart.hostileGuid = first.guid;
+    firstPart.threatPoints = 9.0f;
+    ThreatImpactEntry secondPart = firstPart;
+    secondPart.threatPoints = 8.0f;
+    ThreatImpactEntry secondHostile = firstPart;
+    secondHostile.hostileGuid = second.guid;
+    secondHostile.threatPoints = 20.0f;
+    fanout.impacts = {firstPart, secondPart, secondHostile};
+
+    ThreatImpactTotals localSelected;
+    ThreatImpactBudgetResult safe = AssessThreatImpactBudget(
+        snapshot, fanout, coordinator, 1000, 250, &localSelected);
+    assert(safe.status == ThreatImpactBudgetStatus::Safe);
+    assert(std::fabs(localSelected[ThreatImpactKey(first.guid, dps.guid)] - 17.0) < 0.0001);
+    assert(std::fabs(localSelected[ThreatImpactKey(second.guid, dps.guid)] - 20.0) < 0.0001);
+
+    ThreatImpactEstimate competing = MakeThreatEstimate(snapshot.epoch, dps.guid, first.guid, 4.0f);
+    ThreatImpactBudgetResult localConflict = AssessThreatImpactBudget(
+        snapshot, competing, coordinator, 1000, 250, &localSelected);
+    assert(localConflict.status == ThreatImpactBudgetStatus::Exceeded);
+    assert(localConflict.reason == "projected_threat_exceeds_core_headroom");
+
+    ThreatReservation inFlight;
+    inFlight.ownerGuid = 303;
+    inFlight.threatOwnerGuid = dps.guid;
+    inFlight.hostileGuid = first.guid;
+    inFlight.actionId = coordinator.NextThreatActionId();
+    inFlight.threatPoints = 3.0f;
+    inFlight.expiresAtMs = 1500;
+    assert(coordinator.TryReserveThreatImpact(inFlight, 1000));
+    ThreatImpactEstimate overReserved = MakeThreatEstimate(snapshot.epoch, dps.guid, first.guid, 18.0f);
+    ThreatImpactBudgetResult reservationConflict = AssessThreatImpactBudget(
+        snapshot, overReserved, coordinator, 1000, 250, nullptr);
+    assert(reservationConflict.status == ThreatImpactBudgetStatus::Exceeded);
+    assert(std::fabs(reservationConflict.alreadyReserved - 3.0f) < 0.0001f);
+    assert(std::fabs(reservationConflict.projectedThreat - 21.0) < 0.0001);
+}
+
+void TestThreatImpactBudgetUnknownAndCurrentVictimCases() {
+    PartySnapshot snapshot;
+    snapshot.epoch = 91;
+    snapshot.capturedAtMs = 1000;
+    PartyMemberSnapshot tank, dps;
+    ConfigureMember(tank, 101, PartyRole::Tank, 100, 100, true);
+    ConfigureMember(dps, 202, PartyRole::RangedDamage, 100, 100);
+    snapshot.members = {tank, dps};
+    HostileSnapshot hostile;
+    ConfigureThreat(hostile, tank.guid, 100.0f, dps.guid, 90.0f, true);
+    snapshot.hostiles = {hostile};
+    PartyCoordinator coordinator;
+
+    ThreatImpactEstimate unknown;
+    unknown.snapshotEpoch = snapshot.epoch;
+    unknown.reason = "periodic_and_flat_threat_not_enumerated";
+    ThreatImpactBudgetResult unknownResult = AssessThreatImpactBudget(
+        snapshot, unknown, coordinator, 1000, 250, nullptr);
+    assert(unknownResult.status == ThreatImpactBudgetStatus::Unknown);
+    assert(unknownResult.reason == "threat_impact_estimate_unknown");
+
+    ThreatImpactEstimate petImpact = MakeThreatEstimate(snapshot.epoch, 999, hostile.guid, 5.0f);
+    ThreatImpactBudgetResult missingPetSnapshot = AssessThreatImpactBudget(
+        snapshot, petImpact, coordinator, 1000, 250, nullptr);
+    assert(missingPetSnapshot.status == ThreatImpactBudgetStatus::Unknown);
+    assert(missingPetSnapshot.reason == "threat_budget_snapshot_unknown");
+
+    ThreatImpactEstimate tankImpact = MakeThreatEstimate(snapshot.epoch, tank.guid, hostile.guid, 500.0f);
+    ThreatImpactBudgetResult currentVictim = AssessThreatImpactBudget(
+        snapshot, tankImpact, coordinator, 1000, 250, nullptr);
+    assert(currentVictim.status == ThreatImpactBudgetStatus::Safe);
+    assert(currentVictim.reason == "projected_threat_within_core_headroom");
+
+    ThreatImpactEstimate noThreat;
+    noThreat.completeness = ThreatImpactCompleteness::NoThreat;
+    noThreat.snapshotEpoch = snapshot.epoch;
+    noThreat.reason = "movement_action_has_no_threat";
+    assert(AssessThreatImpactBudget(snapshot, noThreat, coordinator, 1000, 250, nullptr).status ==
+           ThreatImpactBudgetStatus::Safe);
+
+    ThreatImpactEstimate stale = MakeThreatEstimate(snapshot.epoch + 1, dps.guid, hostile.guid, 5.0f);
+    assert(AssessThreatImpactBudget(snapshot, stale, coordinator, 1000, 250, nullptr).status ==
+           ThreatImpactBudgetStatus::Unknown);
+}
+
+void PrepareEngineThreatFixture(Fixture& f) {
+    f.snapshot.capturedAtMs = 1000;
+    PartyMemberSnapshot tank;
+    ConfigureMember(tank, 101, PartyRole::Tank, 100, 100, true);
+    ConfigureMember(f.bot, 202, PartyRole::RangedDamage, 100, 100);
+    f.snapshot.members = {tank, f.bot};
+    HostileSnapshot hostile;
+    ConfigureThreat(hostile, tank.guid, 100.0f, f.bot.guid, 90.0f, true);
+    f.snapshot.hostiles = {hostile};
+}
+
+void TestEngineThreatBudgetSelectionAndExecutionReservations() {
+    Fixture f;
+    PrepareEngineThreatFixture(f);
+    PartyBotEngine::PartyBotEngine engine;
+    std::shared_ptr<TestAction> action = std::make_shared<TestAction>("damage");
+    action->useThreatImpact = true;
+    action->threatImpact = MakeThreatEstimate(f.snapshot.epoch, f.bot.guid, 9001, 15.0f);
+    assert(engine.RegisterAction(action));
+    auto trigger = std::make_shared<TestTrigger>("threat_action");
+    trigger->generated.push_back(Candidate("damage", 10.0f, ActionChannel::GlobalCooldown));
+    auto strategy = std::make_shared<Strategy>("damage_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    CandidateEvaluation& selected = report.candidates[report.selectedIndices.front()];
+    assert(selected.status == CandidateStatus::Selected);
+    engine.ExecuteSelected(f.context, report);
+    assert(action->executeCount == 1);
+    assert(selected.status == CandidateStatus::Executed);
+    assert(selected.threatActionId != 0);
+    assert(std::fabs(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) - 15.0f) < 0.0001f);
+
+    f.coordinator.ReleaseThreatAction(selected.threatActionId);
+    assert(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) == 0.0f);
+}
+
+void TestEngineThreatBudgetRejectsUnknownAndOverBudgetCandidates() {
+    Fixture f;
+    PrepareEngineThreatFixture(f);
+    PartyBotEngine::PartyBotEngine engine;
+    std::shared_ptr<TestAction> unknown = std::make_shared<TestAction>("unknown");
+    unknown->useThreatImpact = true;
+    unknown->threatImpact.snapshotEpoch = f.snapshot.epoch;
+    unknown->threatImpact.reason = "action_has_unmodelled_threat_sources";
+    std::shared_ptr<TestAction> overBudget = std::make_shared<TestAction>("over_budget");
+    overBudget->useThreatImpact = true;
+    overBudget->threatImpact = MakeThreatEstimate(f.snapshot.epoch, f.bot.guid, 9001, 15.0f);
+    assert(engine.RegisterAction(unknown));
+    assert(engine.RegisterAction(overBudget));
+
+    ThreatReservation existing;
+    existing.ownerGuid = 303;
+    existing.threatOwnerGuid = f.bot.guid;
+    existing.hostileGuid = 9001;
+    existing.actionId = f.coordinator.NextThreatActionId();
+    existing.threatPoints = 6.0f;
+    existing.expiresAtMs = 1500;
+    assert(f.coordinator.TryReserveThreatImpact(existing, 1000));
+
+    auto trigger = std::make_shared<TestTrigger>("unsafe_threat_actions");
+    trigger->generated.push_back(Candidate("unknown", 20.0f, ActionChannel::Utility));
+    trigger->generated.push_back(Candidate("over_budget", 10.0f, ActionChannel::Movement));
+    auto strategy = std::make_shared<Strategy>("damage_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.empty());
+    assert(report.candidates[0].status == CandidateStatus::RejectedThreatUnknown);
+    assert(report.candidates[1].status == CandidateStatus::RejectedThreatBudget);
+    assert(unknown->executeCount == 0 && overBudget->executeCount == 0);
+}
+
+void TestEngineThreatBudgetAccountsForHigherPriorityCandidates() {
+    Fixture f;
+    PrepareEngineThreatFixture(f);
+    PartyBotEngine::PartyBotEngine engine;
+    std::shared_ptr<TestAction> first = std::make_shared<TestAction>("first");
+    std::shared_ptr<TestAction> second = std::make_shared<TestAction>("second");
+    first->useThreatImpact = second->useThreatImpact = true;
+    first->threatImpact = MakeThreatEstimate(f.snapshot.epoch, f.bot.guid, 9001, 12.0f);
+    second->threatImpact = MakeThreatEstimate(f.snapshot.epoch, f.bot.guid, 9001, 12.0f);
+    assert(engine.RegisterAction(first) && engine.RegisterAction(second));
+
+    auto trigger = std::make_shared<TestTrigger>("simultaneous_channels");
+    trigger->generated.push_back(Candidate("first", 20.0f, ActionChannel::Movement));
+    trigger->generated.push_back(Candidate("second", 10.0f, ActionChannel::Utility));
+    auto strategy = std::make_shared<Strategy>("damage_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    assert(report.candidates[report.selectedIndices.front()].candidate.actionName == "first");
+    assert(report.candidates[1].status == CandidateStatus::RejectedThreatBudget);
+}
+
 void TestThreatBudgetCoreThresholdProjection() {
     PartySnapshot snapshot;
     snapshot.capturedAtMs = 1000;
@@ -670,6 +895,11 @@ int main() {
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();
     TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness();
+    TestThreatImpactBudgetUsesFanoutAndReservations();
+    TestThreatImpactBudgetUnknownAndCurrentVictimCases();
+    TestEngineThreatBudgetSelectionAndExecutionReservations();
+    TestEngineThreatBudgetRejectsUnknownAndOverBudgetCandidates();
+    TestEngineThreatBudgetAccountsForHigherPriorityCandidates();
     TestThreatBudgetCoreThresholdProjection();
     TestThreatBudgetStrictCoreThresholdBoundaries();
     TestThreatBudgetUnknownAndCurrentVictimStates();

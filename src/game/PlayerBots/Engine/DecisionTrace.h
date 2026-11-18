@@ -57,8 +57,9 @@ public:
                                   uint64 encounterId, uint32 sequence,
                                   uint32 elapsedMs, char const* role,
                                   char const* strategy, char const* action,
-                                  uint64 targetGuid, float priority,
-                                  char const* status, char const* reason) const;
+                                  uint64 targetGuid, uint32 spellId, uint32 channel,
+                                  float priority, char const* status,
+                                  char const* reason) const;
 
     // Record a bounded status when Shadow cannot produce an evaluation.
     void RecordShadowStatus(Player const* bot, char const* status,

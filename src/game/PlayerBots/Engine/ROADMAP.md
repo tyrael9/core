@@ -283,3 +283,13 @@ Implementation slice complete: the component-scoped negative flat-threat estimat
 - [x] Add a full Core simulator fixture using Rejuvenation rank 10 (spell 9841), two Core hostile references, real Aura application and normal Aura tick scheduling. Compare each actual ThreatManager delta with the component.
 - [x] Require the periodic-healing parity PASS marker in tools/partybot-simulator/run-ci.sh.
 - [x] Verify fixture-backed ARM64 runtime CI and inspect its artifact: CI #529 on 2d643f1513aa0fb9c4ef9ab632665d887afbbf35 passed; one real Rejuvenation tick healed 189, with two hostile ThreatManager deltas of 47.250 each matching the component estimate (`estimateShape=1`, `matched=1`, cleanup=1), followed by the full simulator `Runtime PASS` marker. Keep generic future-tick prediction, AuraScript/proc closure, leech/funnel and complete action-level estimates Unknown.
+
+
+
+## Applied periodic-power assist component and Core fixture (2026-11-18)
+
+- [x] Audit Core's two periodic resource-restoration branches. In 1.12, PERIODIC_ENERGIZE generates 50% assist threat from effective gains except when the resource is Mana or Happiness; OBS_MOD_MANA is a separate percent-of-max-Mana path that does generate 50% assist threat. PERIODIC_MANA_LEECH remains a distinct drain/transfer path.
+- [x] Add EstimateAppliedPeriodicPowerAssistComponent using actual ModifyPower gain, exact aura effect index/power type validation, Core spell-threat multiplier and ThreatCalcHelper, complete live hostile-reference fan-out, Core hard-CC assist suppression and 1.12 Mana/Happiness exemptions. The enclosing estimate stays Unknown.
+- [x] Add a Core simulator fixture for three real Aura branches using the loaded 5875 Rejuvenation spell template with only the aura effect type/resource metadata changed: energy PERIODIC_ENERGIZE, mana PERIODIC_ENERGIZE (NoThreat), and OBS_MOD_MANA. Each exercises real Core Aura scheduling/ModifyPower and two hostile ThreatManagers.
+- [x] Require a dedicated periodic-power PASS marker in tools/partybot-simulator/run-ci.sh.
+- [ ] Await fixture-backed ARM64 runtime CI and inspect the artifact. Only after all three branches match their actual ThreatManager values may the runtime slice be marked verified. Future-tick forecasts, PERIODIC_MANA_LEECH, leech/funnel and whole-action completeness remain separate work.

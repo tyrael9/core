@@ -35,7 +35,7 @@ public:
     ThreatActionId NextThreatActionId();
     bool TryReserveThreatImpact(ThreatReservation const& reservation, std::uint32_t nowMs);
     float GetReservedThreatImpact(Guid hostileGuid, Guid threatOwnerGuid,
-                                  ThreatActionId exceptActionId, std::uint32_t nowMs);
+                                  ThreatActionId exceptActionId, std::uint32_t nowMs) const;
     void ReleaseThreatAction(ThreatActionId actionId);
     std::size_t GetThreatReservationCount() const { return m_threatReservations.size(); }
 

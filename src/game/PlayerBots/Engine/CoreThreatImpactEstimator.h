@@ -3,6 +3,7 @@
 
 #include "Creature.h"
 #include "HostileRefManager.h"
+#include "Player.h"
 #include "PlayerBots/Engine/PartySnapshot.h"
 #include "PlayerBots/Engine/ThreatImpact.h"
 #include "SpellMgr.h"

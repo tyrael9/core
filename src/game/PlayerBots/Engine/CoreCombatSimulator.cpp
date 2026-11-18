@@ -4165,6 +4165,117 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
              "[PartyBotSimulator] PASS: real Creature updates, a Core-calculated applied-damage threat component matched the real ThreatManager increment, and Core retained its 110%% melee target switching.");
     return true;
 }
+
+bool RunNegativeFlatSpellThreatFixture(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor caster;
+    SimulatorActor hostile;
+    bool const created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 20.0f, caster) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 20.0f, hostile);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Negative flat spell-threat fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    caster.creature->SetLevel(60);
+    hostile.creature->SetLevel(60);
+    for (uint32 tick = 0; tick < 120 &&
+         (!caster.updateCount || !hostile.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!caster.updateCount || !hostile.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    bool matched = false;
+    bool mismatch = false;
+    uint32 selectedSpellId = 0;
+    uint32 attemptedSpells = 0;
+    float estimatedThreat = 0.0f;
+    float actualThreatDelta = 0.0f;
+    uint32 const healthBefore = hostile.creature->GetHealth();
+
+    // Pick a real database-backed harmful, single-effect aura spell with a
+    // flat spell_threat row. Aura-only effects avoid mixing direct-damage
+    // threat into the flat-threat parity assertion.
+    for (uint32 spellId = 1; spellId < 50000 && !matched && !mismatch; ++spellId)
+    {
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
+        SpellThreatEntry const* threatEntry = sSpellMgr.GetSpellThreatEntry(spellId);
+        if (!spell || !threatEntry || !threatEntry->threat ||
+            spell->Effect[0] != SPELL_EFFECT_APPLY_AURA ||
+            !spell->EffectApplyAuraName[0] ||
+            spell->Effect[1] || spell->Effect[2] ||
+            spell->EffectImplicitTargetA[0] == TARGET_UNIT_CASTER ||
+            spell->IsPositiveEffect(SpellEffectIndex(0)) ||
+            spell->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT) ||
+            spell->HasAttribute(SPELL_ATTR_EX_NO_THREAT) ||
+            !threatEntry->CanCauseThreatOnMask(0x01))
+            continue;
+
+        std::vector<NegativeFlatSpellThreatTarget> successfulTargets;
+        successfulTargets.push_back({hostile.creature, 0x01});
+        ThreatImpactEstimate const estimate = EstimateNegativeFlatSpellThreatComponent(
+            caster.creature, spell, threatEntry, successfulTargets, true, 77001);
+        if (estimate.completeness != ThreatImpactCompleteness::Unknown ||
+            estimate.impacts.size() != 1 ||
+            estimate.impacts[0].threatOwnerGuid != caster.creature->GetObjectGuid().GetRawValue() ||
+            estimate.impacts[0].hostileGuid != hostile.creature->GetObjectGuid().GetRawValue() ||
+            estimate.impacts[0].source != ThreatImpactSource::FlatSpellThreat ||
+            estimate.impacts[0].bound != ThreatImpactBound::Exact)
+            continue;
+
+        ++attemptedSpells;
+        SpellCastResult const castResult = caster.creature->CastSpell(
+            hostile.creature, spell, true);
+        if (castResult != SPELL_CAST_OK)
+            continue;
+
+        float const before = hostile.creature->GetThreatManager().getThreat(caster.creature);
+        map.Update(50);
+        float const after = hostile.creature->GetThreatManager().getThreat(caster.creature);
+        float const delta = after - before;
+        if (delta <= 0.0f)
+            continue;
+
+        selectedSpellId = spellId;
+        estimatedThreat = estimate.impacts[0].threatPoints;
+        actualThreatDelta = delta;
+        matched = std::fabs(delta - estimatedThreat) < 0.01f &&
+                  hostile.creature->GetHealth() == healthBefore;
+        mismatch = !matched;
+    }
+
+    bool cleaned = DestroySimulatorActor(map, hostile);
+    cleaned = DestroySimulatorActor(map, caster) && cleaned;
+    bool const passed = matched && !mismatch && cleaned;
+    sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Negative flat spell threat: spell=%u attempts=%u estimated=%.3f actualDelta=%.3f matched=%u cleanup=%u.",
+             selectedSpellId, attemptedSpells, estimatedThreat, actualThreatDelta,
+             matched ? 1u : 0u, cleaned ? 1u : 0u);
+    if (!passed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Negative flat spell-threat Core cast parity fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: a real harmful Core aura spell routed negative flat spell_threat to its affected hostile and matched the estimator against the actual ThreatManager delta.");
+    return true;
+}
+
 } // namespace
 
 bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
@@ -4201,6 +4312,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     // Run every stage independently so one failure does not suppress the
     // remaining diagnostics; the final result still requires every stage.
     bool const creatureCombatPassed = RunCoreCombatThreatSmokeTest(*map);
+    bool const negativeFlatSpellThreatPassed = RunNegativeFlatSpellThreatFixture(*map);
     bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
@@ -4218,7 +4330,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     // and F9 multi-add threat path; do not create two Groups on the same Map.
     bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
-                              creatureCombatPassed && engineExecutorPassed &&
+                              creatureCombatPassed && negativeFlatSpellThreatPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&

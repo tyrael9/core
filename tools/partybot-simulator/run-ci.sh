@@ -38,11 +38,23 @@ command -v docker >/dev/null
 command -v python3 >/dev/null
 
 DATA_ARCHIVE="$PWD/partybot-simulator-extracted-data.tar.gz"
-GDOWN_VENV="$PWD/.partybot-gdown-venv"
-echo "[PartyBotSimulator] Downloading the complete Google Drive 5875 extracted-data fixture." | tee -a "$LOG_FILE"
-python3 -m venv "$GDOWN_VENV"
-"$GDOWN_VENV/bin/python" -m pip install --disable-pip-version-check --quiet "gdown==6.5.1"
-"$GDOWN_VENV/bin/gdown" --continue --retries 3 --timeout 60 "$PARTYBOT_SIMULATOR_DATA_URL" --output "$DATA_ARCHIVE"
+if [[ "$PARTYBOT_SIMULATOR_DATA_URL" == *"drive.google.com"* || "$PARTYBOT_SIMULATOR_DATA_URL" == *"docs.google.com"* ]]; then
+    echo "[PartyBotSimulator] Downloading the 5875 extracted-data fixture from Google Drive." | tee -a "$LOG_FILE"
+    GDOWN_VENV="$PWD/.partybot-gdown-venv"
+    python3 -m venv "$GDOWN_VENV"
+    "$GDOWN_VENV/bin/python" -m pip install --disable-pip-version-check --quiet "gdown==6.5.1"
+    "$GDOWN_VENV/bin/gdown" --continue --retries 3 --timeout 60 "$PARTYBOT_SIMULATOR_DATA_URL" --output "$DATA_ARCHIVE"
+else
+    # Supports HTTPS object URLs such as an OCI Object Storage pre-authenticated
+    # request (PAR). Keep the bucket private; the URL itself grants read-only
+    # access to this single immutable archive. Never print the signed URL.
+    echo "[PartyBotSimulator] Downloading the 5875 extracted-data fixture from a direct HTTPS source." | tee -a "$LOG_FILE"
+    command -v curl >/dev/null
+    curl --fail --location --show-error \
+        --retry 5 --retry-all-errors --retry-delay 5 \
+        --connect-timeout 30 --max-time 1800 \
+        "$PARTYBOT_SIMULATOR_DATA_URL" --output "$DATA_ARCHIVE"
+fi
 printf '%s  %s\n' "$(printf '%s' "$PARTYBOT_SIMULATOR_DATA_SHA256" | tr '[:upper:]' '[:lower:]')" "$DATA_ARCHIVE" | sha256sum --check
 
 rm -rf "$DATA_DIR"

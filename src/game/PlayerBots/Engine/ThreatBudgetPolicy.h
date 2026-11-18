@@ -41,7 +41,7 @@ using ThreatImpactTotals = std::map<ThreatImpactKey, double>;
 inline ThreatImpactBudgetResult AssessThreatImpactBudget(
     PartySnapshot const& snapshot,
     ThreatImpactEstimate const& estimate,
-    PartyCoordinator& coordinator,
+    PartyCoordinator const& coordinator,
     std::uint32_t nowMs,
     std::uint32_t maxSnapshotAgeMs,
     ThreatImpactTotals* alreadySelectedInReport = nullptr)
@@ -115,9 +115,12 @@ inline ThreatImpactBudgetResult AssessThreatImpactBudget(
 
         float const reserved = coordinator.GetReservedThreatImpact(
             hostileGuid, threatOwnerGuid, 0, nowMs);
-        double const localReserved = alreadySelectedInReport
-            ? (*alreadySelectedInReport)[entry.first]
-            : 0.0;
+        double localReserved = 0.0;
+        if (alreadySelectedInReport) {
+            auto const local = alreadySelectedInReport->find(entry.first);
+            if (local != alreadySelectedInReport->end())
+                localReserved = local->second;
+        }
         double const projected = static_cast<double>(reserved) +
             localReserved + entry.second;
 

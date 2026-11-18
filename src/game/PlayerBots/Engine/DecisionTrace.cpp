@@ -12,6 +12,11 @@
 #include "SpellEntry.h"
 #include "World.h"
 
+#include "Engine/PartyCoordinator.h"
+#include "Engine/PartySnapshot.h"
+
+#include <sstream>
+
 namespace
 {
     uint32 const MAX_RECORDS_PER_TICK = 12;
@@ -82,6 +87,96 @@ void DecisionTrace::RecordEncounterBoundary(Player const* bot, char const* event
              static_cast<unsigned long long>(encounterId), sequence,
              event ? event : "unknown", groupId, mapId, instanceId,
              bot->GetGUIDLow(), elapsedMs, reason ? reason : "unspecified");
+}
+
+void DecisionTrace::RecordPartyHeartbeat(Player const* bot,
+                                       PartySnapshot const& snapshot,
+                                       EncounterHeartbeat const& heartbeat) const
+{
+    if (!m_enabled || !bot || !heartbeat.encounterId || !heartbeat.sequence)
+        return;
+
+    // A party snapshot is a single, coordinator-throttled line. Keep each
+    // entity class bounded and make omissions/truncation explicit.
+    std::ostringstream facts;
+    std::size_t const memberLimit = 5;
+    std::size_t const companionLimit = 5;
+    std::size_t const hostileLimit = 8;
+
+    facts << "members=";
+    std::size_t emitted = std::min(snapshot.members.size(), memberLimit);
+    for (std::size_t i = 0; i < emitted; ++i)
+    {
+        PartyMemberSnapshot const& member = snapshot.members[i];
+        if (i)
+            facts << '|';
+        facts << member.guid << ',' << static_cast<uint32>(member.classId)
+              << ',' << static_cast<uint32>(member.roleId)
+              << ',' << (member.isMainTank ? 1 : 0)
+              << ',' << (member.online ? 1 : 0)
+              << ',' << (member.alive ? 1 : 0)
+              << ',' << (member.inCombat ? 1 : 0)
+              << ',' << member.health << '/' << member.maxHealth
+              << ',' << static_cast<uint32>(member.powerType)
+              << ':' << member.power << '/' << member.maxPower
+              << ',' << member.victimGuid;
+    }
+
+    facts << ";companions=";
+    emitted = std::min(snapshot.companions.size(), companionLimit);
+    for (std::size_t i = 0; i < emitted; ++i)
+    {
+        PartyCompanionSnapshot const& companion = snapshot.companions[i];
+        if (i)
+            facts << '|';
+        facts << companion.guid << ',' << companion.ownerGuid
+              << ',' << (companion.online ? 1 : 0)
+              << ',' << (companion.alive ? 1 : 0)
+              << ',' << (companion.inCombat ? 1 : 0)
+              << ',' << companion.health << '/' << companion.maxHealth
+              << ',' << companion.victimGuid;
+    }
+
+    facts << ";hostiles=";
+    emitted = std::min(snapshot.hostiles.size(), hostileLimit);
+    for (std::size_t i = 0; i < emitted; ++i)
+    {
+        HostileSnapshot const& hostile = snapshot.hostiles[i];
+        if (i)
+            facts << '|';
+        facts << hostile.guid << ',' << (hostile.alive ? 1 : 0)
+              << ',' << (hostile.crowdControlProtected ? 1 : 0)
+              << ',' << hostile.health << '/' << hostile.maxHealth
+              << ',' << hostile.victimGuid;
+    }
+
+    std::string payload = facts.str();
+    bool truncated = snapshot.members.size() > memberLimit ||
+                     snapshot.companions.size() > companionLimit ||
+                     snapshot.hostiles.size() > hostileLimit;
+    // Bound the complete facts field so this remains one compact log record.
+    std::size_t const maxFactsLength = 1600;
+    if (payload.size() > maxFactsLength)
+    {
+        payload.resize(maxFactsLength);
+        truncated = true;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=party_snapshot group=%u map=%u instance=%u bot=%u elapsed_ms=%u snapshot_epoch=%u member_count=%u companion_count=%u hostile_count=%u members_omitted=%u companions_omitted=%u hostiles_omitted=%u facts=%s truncated=%u",
+             static_cast<unsigned long long>(heartbeat.encounterId),
+             heartbeat.sequence, heartbeat.groupId, heartbeat.mapId,
+             heartbeat.instanceId, bot->GetGUIDLow(), heartbeat.elapsedMs,
+             snapshot.epoch, static_cast<uint32>(snapshot.members.size()),
+             static_cast<uint32>(snapshot.companions.size()),
+             static_cast<uint32>(snapshot.hostiles.size()),
+             static_cast<uint32>(snapshot.members.size() > memberLimit
+                 ? snapshot.members.size() - memberLimit : 0),
+             static_cast<uint32>(snapshot.companions.size() > companionLimit
+                 ? snapshot.companions.size() - companionLimit : 0),
+             static_cast<uint32>(snapshot.hostiles.size() > hostileLimit
+                 ? snapshot.hostiles.size() - hostileLimit : 0),
+             payload.c_str(), truncated ? 1u : 0u);
 }
 
 void DecisionTrace::RecordShadowStatus(Player const* bot, char const* status,

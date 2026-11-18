@@ -4200,6 +4200,7 @@ bool RunNegativeFlatSpellThreatFixture(Map& map)
 
     bool matched = false;
     bool mismatch = false;
+    bool failClosedChecksPassed = false;
     uint32 selectedSpellId = 0;
     uint32 attemptedSpells = 0;
     float estimatedThreat = 0.0f;
@@ -4282,9 +4283,9 @@ bool RunNegativeFlatSpellThreatFixture(Map& map)
             mixedSignEstimate.completeness == ThreatImpactCompleteness::NoThreat &&
             mixedSignEstimate.impacts.empty();
 
-        bool const failClosedPassed = incompleteRejected && invalidMaskRejected &&
+        failClosedChecksPassed = incompleteRejected && invalidMaskRejected &&
             duplicateRejected && unresolvedRejected && mixedSignRejected;
-        if (!failClosedPassed)
+        if (!failClosedChecksPassed)
         {
             mismatch = true;
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
@@ -4318,7 +4319,7 @@ bool RunNegativeFlatSpellThreatFixture(Map& map)
 
     bool cleaned = DestroySimulatorActor(map, hostile);
     cleaned = DestroySimulatorActor(map, caster) && cleaned;
-    bool const passed = matched && !mismatch && cleaned;
+    bool const passed = matched && failClosedChecksPassed && !mismatch && cleaned;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
              "[PartyBotSimulator] Negative flat spell threat: spell=%u attempts=%u estimated=%.3f actualDelta=%.3f matched=%u cleanup=%u.",
              selectedSpellId, attemptedSpells, estimatedThreat, actualThreatDelta,
@@ -4330,6 +4331,8 @@ bool RunNegativeFlatSpellThreatFixture(Map& map)
         return false;
     }
 
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: negative flat spell-threat estimator rejected incomplete target sets, invalid masks, duplicate/unresolved targets and mixed-sign spells without emitting impacts.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: a real harmful Core aura spell routed negative flat spell_threat to its affected hostile and matched the estimator against the actual ThreatManager delta.");
     return true;

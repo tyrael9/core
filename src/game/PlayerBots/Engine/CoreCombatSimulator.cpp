@@ -2662,8 +2662,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     if (membersAdded && mainTankAssigned && allPlayersOnSameMap &&
         initialSnapshotValid && initialRosterResolved && initialValuesCopied &&
         initialRolesUnknown && initialCacheRetained)
+        // Keep the first hostile within Core melee reach of Tank and Healer,
+        // while the second remains outside reach of both. The same four
+        // references therefore exercise both true and false snapshot values.
         actorsCreated =
-            CreateSimulatorActor(map, *info, hostileFaction, 14.0f, 6.0f, hostiles[0]) &&
+            CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 10.0f, hostiles[0]) &&
             CreateSimulatorActor(map, *info, hostileFaction, 16.0f, 6.0f, hostiles[1]);
 
     if (!actorsCreated)
@@ -2817,7 +2820,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool const registeredBeforeCleanup = groupRegistered &&
         sObjectMgr.GetGroupById(groupId) == group.get();
     uint32 meleeReachabilityChecks = 0;
-    auto snapshotMeleeReachabilityMatchesCore = [&meleeReachabilityChecks](
+    uint32 meleeReachableChecks = 0;
+    uint32 meleeUnreachableChecks = 0;
+    auto snapshotMeleeReachabilityMatchesCore = [&meleeReachabilityChecks,
+        &meleeReachableChecks, &meleeUnreachableChecks](
         HostileSnapshot const* hostileSnapshot, Unit* hostileUnit, ObjectGuid memberGuid)
     {
         if (!hostileSnapshot || !hostileUnit)
@@ -2830,7 +2836,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             bool const matches = member && entry.meleeReachable ==
                 hostileUnit->CanReachWithMeleeAutoAttack(member);
             if (matches)
+            {
                 ++meleeReachabilityChecks;
+                if (entry.meleeReachable)
+                    ++meleeReachableChecks;
+                else
+                    ++meleeUnreachableChecks;
+            }
             return matches;
         }
         return false;
@@ -2839,7 +2851,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         snapshotMeleeReachabilityMatchesCore(bossSnapshot, hostiles[0].creature, tankGuid) &&
         snapshotMeleeReachabilityMatchesCore(bossSnapshot, hostiles[0].creature, healerGuid) &&
         snapshotMeleeReachabilityMatchesCore(addSnapshot, hostiles[1].creature, tankGuid) &&
-        snapshotMeleeReachabilityMatchesCore(addSnapshot, hostiles[1].creature, healerGuid);
+        snapshotMeleeReachabilityMatchesCore(addSnapshot, hostiles[1].creature, healerGuid) &&
+        meleeReachabilityChecks == 4 && meleeReachableChecks == 2 &&
+        meleeUnreachableChecks == 2;
 
     bool const f9ChecksPassed = hostileAIReady && membersAdded && mainTankAssigned &&
         allPlayersOnSameMap && initialSnapshotValid && initialRosterResolved &&
@@ -2849,7 +2863,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         snapshotValid && rosterRoleStateValid && bothAddsResolved && threatValuesCopied && coreReachabilityCopied;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u meleeReachability=%u/4.",
+             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u meleeReachability=%u/4 reachable=%u unreachable=%u.",
              hostileAIReady ? 1u : 0u, membersAdded ? 1u : 0u,
              mainTankAssigned ? 1u : 0u, allPlayersOnSameMap ? 1u : 0u,
              initialSnapshotValid ? 1u : 0u, initialRosterResolved ? 1u : 0u,
@@ -2866,11 +2880,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
              selectedAfterAssist1 == healer ? 1u : 0u,
              snapshotValid ? 1u : 0u, rosterRoleStateValid ? 1u : 0u,
              bothAddsResolved ? 1u : 0u, threatValuesCopied ? 1u : 0u,
-             meleeReachabilityChecks);
+             meleeReachabilityChecks, meleeReachableChecks, meleeUnreachableChecks);
 
     if (f9ChecksPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat values and per-reference melee reachability matched Core, and all Group/session cleanup succeeded.");
+                 "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat values and both reachable/unreachable per-reference melee states matched Core, and all Group/session cleanup succeeded.");
 
     // F10: the living DPS establishes lower real damage-threat on both adds.
     // It must not steal aggro from the healer (212+) while it is alive.

@@ -418,3 +418,12 @@ Runtime CI `#44167535205` on `e52bea6` passed. The stale-nearby snapshot/60-yard
 
 Runtime CI `#44163805016` on commit `cfdda0c` passed: `aiReady=1`, `registered=1`, `initialSelected=1`, `initialFollow=1`, `initialCaughtUp=1`, `handoffSelected=1`, `handoffExecuted=1`, `handoffTargetChanged=1`, both leader movement generators started and reached destination, `followerTrackedNewLeader=1`, `oldLeaderRemoved=1`, `recoverySelected=1`, `recoveryExecuted=1`, `recoveryTargetRestored=1`, `recoveredToAvailableLeader=1`, final separation `4.55`, `followGenerator=1`, `cleanup=1`.
 
+
+
+### Stage F11 — Core melee reachability on each threat reference
+
+The production snapshot builder copies `HostileReference::getTarget()` reachability by calling the hostile Creature's native `Unit::CanReachWithMeleeAutoAttack`; it does not derive reachability from scalar distance or party-member-to-member geometry. Each `ThreatEntrySnapshot` keeps only the target GUID, Core threat value/status flags, and the Core-computed melee-reachability bit.
+
+The F11 runtime fixture exercises the same four Main Tank/Healer references across two hostile Creatures. The first hostile is placed close enough for both Players to be melee-reachable; the second stays well outside melee reach. The simulator re-resolves each GUID from the hostile's Map and compares the copied snapshot bit with a fresh direct Core API call. Acceptance now requires exactly four parity matches with the expected coverage split: two reachable and two unreachable. The CI harness separately greps the explicit coverage counters, so a fixture that accidentally places all samples in one state cannot pass.
+
+Runtime acceptance for this expanded coverage is pending; do not mark F11 complete until the ARM64 Core-backed runtime run reports `meleeReachability=4/4 reachable=2 unreachable=2` and the final Runtime PASS.

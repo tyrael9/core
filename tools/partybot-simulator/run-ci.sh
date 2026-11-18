@@ -219,13 +219,13 @@ if ! grep -Fq "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank an
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat values and per-reference melee reachability matched Core, and all Group/session cleanup succeeded." "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat values and both reachable/unreachable per-reference melee states matched Core, and all Group/session cleanup succeeded." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The combined five-Player Group and multi-add/healer-threat PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 
-if ! grep -Fq "meleeReachability=4/4" "$LOG_FILE"; then
-    echo "[PartyBotSimulator] The four per-reference melee-reachability parity checks did not all pass." | tee -a "$LOG_FILE"
+if ! grep -Fq "meleeReachability=4/4 reachable=2 unreachable=2" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] Expected two reachable and two unreachable per-reference melee-reachability parity checks." | tee -a "$LOG_FILE"
     exit 1
 fi
 

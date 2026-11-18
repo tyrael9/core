@@ -15,6 +15,7 @@
 #include "PlayerBots/Engine/PartyCoordinator.h"
 #include "PlayerBots/Engine/PartySnapshot.h"
 #include "PlayerBots/Engine/CoreThreatImpactEstimator.h"
+#include "PlayerBots/Engine/ThreatBudgetPolicy.h"
 #include "PlayerBots/Engine/Strategy.h"
 #include "PlayerBots/Engine/Trigger.h"
 #include "ObjectAccessor.h"
@@ -212,6 +213,106 @@ bool DestroySimulatorActor(Map& map, SimulatorActor& actor)
     return true;
 }
 
+
+class SimulatorThreatBudgetProbeAction final : public Action
+{
+public:
+    explicit SimulatorThreatBudgetProbeAction(Map& map) : m_map(map) {}
+    std::string const& GetName() const override { return m_name; }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        Unit* attacker = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* target = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        Creature* hostile = target ? target->ToCreature() : nullptr;
+        if (!attacker || !hostile || !attacker->IsAlive() || !hostile->IsAlive() ||
+            !attacker->IsHostileTo(hostile) || !hostile->CanHaveThreatList() ||
+            !candidate.spellId)
+        {
+            reason = "threat_budget_probe_actor_or_damage_invalid";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const&, ActionCandidate const&, std::string&) const override
+    {
+        return true;
+    }
+
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                                ActionCandidate const& candidate) const override
+    {
+        Unit* attacker = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* target = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        Creature* hostile = target ? target->ToCreature() : nullptr;
+
+        // This isolated test action has exactly one spell-less direct-damage
+        // effect and no proc, pet, periodic, flat-spell or assist side effects.
+        // Use the pinned Core ThreatCalcHelper for the forecast; the runtime
+        // test applies the same DealDamage input and compares actual threat.
+        ThreatImpactEstimate estimate = EstimateAppliedDirectDamageComponent(
+            attacker, hostile, candidate.spellId, SPELL_SCHOOL_MASK_NORMAL,
+            context.snapshot.epoch, ThreatImpactBound::Exact);
+        if (estimate.impacts.size() != 1)
+            return estimate;
+
+        estimate.completeness = ThreatImpactCompleteness::Complete;
+        estimate.reservationDurationMs = 5000;
+        estimate.reason = "isolated_core_spell_less_direct_damage_action";
+        return estimate;
+    }
+
+    ActionResult Execute(DecisionContext&, ActionCandidate const& candidate) override
+    {
+        // Model an accepted pending action. The fixture then completes it by
+        // calling Core DealDamage and releases this action ID as its completion
+        // callback would. Execute itself must not change Core threat or victim.
+        m_lastThreatActionId = candidate.threatActionId;
+        m_lastDamage = candidate.spellId;
+        ++m_executeCount;
+        return m_lastThreatActionId && m_lastDamage
+            ? ActionResult::Success : ActionResult::Failed;
+    }
+
+    ThreatActionId GetLastThreatActionId() const { return m_lastThreatActionId; }
+    uint32 GetLastDamage() const { return m_lastDamage; }
+    uint32 GetExecuteCount() const { return m_executeCount; }
+
+private:
+    Map& m_map;
+    std::string m_name = "core_threat_budget_probe";
+    ThreatActionId m_lastThreatActionId = 0;
+    uint32 m_lastDamage = 0;
+    uint32 m_executeCount = 0;
+};
+
+class SimulatorThreatBudgetProbeTrigger final : public Trigger
+{
+public:
+    SimulatorThreatBudgetProbeTrigger(Guid hostileGuid, uint32 damage)
+        : m_hostileGuid(hostileGuid), m_damage(damage) {}
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && m_hostileGuid && m_damage;
+    }
+    void CollectCandidates(DecisionContext const&, std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_threat_budget_probe";
+        candidate.targetGuid = m_hostileGuid;
+        candidate.spellId = m_damage; // Test-only: exact spell-less DealDamage input.
+        candidate.basePriority = 100.0f;
+        candidate.channel = ActionChannel::GlobalCooldown;
+        candidates.push_back(candidate);
+    }
+private:
+    Guid m_hostileGuid = 0;
+    uint32 m_damage = 0;
+    std::string m_name = "simulator_core_threat_budget_probe";
+};
 
 class SimulatorCoreAttackAction final : public Action
 {
@@ -3451,6 +3552,317 @@ bool RunEngineCoreExecutorSmokeTest(Map& map)
     return true;
 }
 
+bool RunEngineCoreThreatBudgetAdmissionSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    std::vector<std::unique_ptr<WorldSession>> sessions;
+    std::vector<Player*> players;
+    std::unique_ptr<Group> group(new Group());
+    bool groupRegistered = false;
+    SimulatorActor hostileActor;
+
+    auto cleanup = [&]() -> bool
+    {
+        bool actorsCleaned = DestroySimulatorActor(map, hostileActor);
+        bool ungrouped = true;
+        if (group && group->GetId())
+        {
+            ObjectGuid initiator = players.empty()
+                ? ObjectGuid() : players.front()->GetObjectGuid();
+            group->Disband(true, initiator);
+            for (Player* player : players)
+                if (player && player->GetGroup())
+                    ungrouped = false;
+            if (groupRegistered)
+            {
+                sObjectMgr.RemoveGroup(group.get());
+                groupRegistered = false;
+            }
+            group.reset();
+        }
+
+        bool sessionsCleaned = true;
+        for (std::unique_ptr<WorldSession>& session : sessions)
+        {
+            if (session && session->GetPlayer())
+                session->LogoutPlayer(false);
+            if (session && session->GetPlayer())
+                sessionsCleaned = false;
+        }
+        bool playersDetached = true;
+        for (Player* player : players)
+            if (player && map.GetUnit(player->GetObjectGuid()))
+                playersDetached = false;
+        players.clear();
+        sessions.clear();
+        return actorsCleaned && ungrouped && sessionsCleaned && playersDetached;
+    };
+
+    // Three real Core Players: Main Tank, damage bot and a second bot that
+    // owns an independent in-flight action reservation.
+    for (uint32 index = 0; index < 3; ++index)
+    {
+        std::unique_ptr<WorldSession> session(
+            new WorldSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS));
+        Player* player = nullptr;
+        bool const created = CreateSimulatorPlayer(
+            map, partyFaction, *session, player,
+            static_cast<float>(index) * 2.0f, 6.0f, 0.0f);
+        sessions.push_back(std::move(session));
+        if (player)
+            players.push_back(player);
+        if (!created || !player || !player->IsInWorld())
+        {
+            bool const cleaned = cleanup();
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                     "[PartyBotSimulator] Threat budget Player creation failed at %u (cleanup=%u).",
+                     index, cleaned ? 1u : 0u);
+            return false;
+        }
+    }
+
+    bool groupCreated = group->Create(players[0]->GetObjectGuid(), players[0]->GetName());
+    if (groupCreated)
+    {
+        sObjectMgr.AddGroup(group.get());
+        groupRegistered = true;
+    }
+    bool membersAdded = groupCreated && group->GetMembersCount() == 1;
+    for (std::size_t index = 1; membersAdded && index < players.size(); ++index)
+    {
+        bool const added = group->AddMember(players[index]->GetObjectGuid(), players[index]->GetName());
+        membersAdded = membersAdded && added && players[index]->GetGroup() == group.get();
+    }
+    if (membersAdded)
+    {
+        group->ConvertToRaid();
+        group->SetMainTank(players[0]->GetObjectGuid());
+    }
+    bool const mainTankAssigned = membersAdded &&
+        group->GetMainTankGuid() == players[0]->GetObjectGuid();
+
+    bool const hostileCreated = CreateSimulatorActor(
+        map, *info, hostileFaction, 1.0f, 6.0f, hostileActor);
+    if (!mainTankAssigned || !hostileCreated)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Threat budget fixture setup failed (group=%u tank=%u hostile=%u cleanup=%u).",
+                 membersAdded ? 1u : 0u, mainTankAssigned ? 1u : 0u,
+                 hostileCreated ? 1u : 0u, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120 && !hostileActor.updateCount; ++tick)
+    {
+        map.Update(50);
+        if (!hostileActor.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    Player* tank = players[0];
+    Player* dps = players[1];
+    Player* reservationOwner = players[2];
+    ObjectGuid const tankGuid = tank->GetObjectGuid();
+    ObjectGuid const dpsGuid = dps->GetObjectGuid();
+    Guid const hostileGuid = hostileActor.creature->GetObjectGuid().GetRawValue();
+
+    if (hostileActor.updateCount)
+        hostileActor.creature->AI()->AttackStart(tank);
+    uint32 const tankDamage = hostileActor.updateCount
+        ? tank->DealDamage(hostileActor.creature, 400, nullptr, DIRECT_DAMAGE,
+                           SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    uint32 const dpsDamage = hostileActor.updateCount
+        ? dps->DealDamage(hostileActor.creature, 100, nullptr, DIRECT_DAMAGE,
+                           SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+
+    float const tankThreat = hostileActor.creature->GetThreatManager().getThreat(tank);
+    float const dpsThreatBefore = hostileActor.creature->GetThreatManager().getThreat(dps);
+    Unit* const victimBefore = hostileActor.creature->GetThreatManager().getHostileTarget();
+
+    PartyCoordinator coordinator;
+    uint32 constexpr SNAPSHOT_TIME = 30000;
+    PartySnapshot const* builtSnapshot =
+        PartySnapshotBuilder::GetOrBuild(tank, coordinator, SNAPSHOT_TIME, 250);
+    PartySnapshot snapshot = builtSnapshot ? *builtSnapshot : PartySnapshot();
+    HostileSnapshot const* hostileSnapshot = snapshot.FindHostile(hostileGuid);
+    PartyMemberSnapshot const* dpsSnapshot = snapshot.FindMember(dpsGuid.GetRawValue());
+    PartyMemberSnapshot const* tankSnapshot = snapshot.FindMember(tankGuid.GetRawValue());
+    bool const snapshotMatchesCore = builtSnapshot &&
+        snapshot.groupId == group->GetId() && snapshot.members.size() == players.size() &&
+        hostileSnapshot && hostileSnapshot->alive && hostileSnapshot->victimGuid == tankGuid.GetRawValue() &&
+        tankSnapshot && dpsSnapshot &&
+        std::fabs(hostileActor.creature->GetThreatManager().getThreat(tank) - tankSnapshot->guid * 0.0f -
+                  tankThreat) < 0.01f;
+
+    ThreatBudgetAssessment const initialBudget = snapshotMatchesCore
+        ? AssessThreatBudget(snapshot, hostileGuid, dpsGuid.GetRawValue(), SNAPSHOT_TIME, 250)
+        : ThreatBudgetAssessment();
+    float const threatPerDamage = EstimateAppliedDirectDamageComponent(
+        dps, hostileActor.creature, 1, SPELL_SCHOOL_MASK_NORMAL,
+        snapshot.epoch, ThreatImpactBound::Exact).impacts.empty()
+            ? 0.0f
+            : EstimateAppliedDirectDamageComponent(
+                dps, hostileActor.creature, 1, SPELL_SCHOOL_MASK_NORMAL,
+                snapshot.epoch, ThreatImpactBound::Exact).impacts[0].threatPoints;
+
+    bool const budgetAvailable = initialBudget.status == ThreatBudgetStatus::BudgetAvailable &&
+        std::isfinite(threatPerDamage) && threatPerDamage > 0.0f;
+    uint32 const initialExternalReservation = 10;
+    ThreatActionId externalActionId = 0;
+    if (budgetAvailable)
+    {
+        externalActionId = coordinator.NextThreatActionId();
+        ThreatReservation external;
+        external.ownerGuid = reservationOwner->GetObjectGuid().GetRawValue();
+        external.threatOwnerGuid = dpsGuid.GetRawValue();
+        external.hostileGuid = hostileGuid;
+        external.actionId = externalActionId;
+        external.threatPoints = static_cast<float>(initialExternalReservation);
+        external.expiresAtMs = SNAPSHOT_TIME + 5000;
+        coordinator.TryReserveThreatImpact(external, SNAPSHOT_TIME);
+    }
+
+    double const initialAvailableAfterReservation =
+        static_cast<double>(initialBudget.rawHeadroom) - initialExternalReservation;
+    uint32 safeDamage = budgetAvailable && initialAvailableAfterReservation > 0.0
+        ? static_cast<uint32>(std::floor(initialAvailableAfterReservation / threatPerDamage * 0.25))
+        : 0;
+    if (safeDamage == 0)
+        safeDamage = 1;
+
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorThreatBudgetProbeAction> action(
+        new SimulatorThreatBudgetProbeAction(map));
+    bool const actionRegistered = engine.RegisterAction(action);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_threat_budget"));
+    strategy->AddTrigger(std::make_shared<SimulatorThreatBudgetProbeTrigger>(hostileGuid, safeDamage));
+    engine.AddStrategy(strategy);
+
+    DecisionContext context(snapshot, dpsSnapshot ? *dpsSnapshot : snapshot.members.front(),
+                            coordinator, SNAPSHOT_TIME);
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected &&
+        report.candidates[report.selectedIndices[0]].threatImpact.completeness ==
+            ThreatImpactCompleteness::Complete;
+    bool const evaluateDidNotMutateCore =
+        std::fabs(hostileActor.creature->GetThreatManager().getThreat(dps) - dpsThreatBefore) < 0.01f &&
+        hostileActor.creature->GetThreatManager().getHostileTarget() == victimBefore &&
+        coordinator.GetThreatReservationCount() == 1;
+
+    engine.ExecuteSelected(context, report);
+    bool const actionAccepted = selected && !report.selectedIndices.empty() &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
+        action->GetExecuteCount() == 1 && action->GetLastThreatActionId() != 0;
+    bool const executionDidNotMutateCore =
+        std::fabs(hostileActor.creature->GetThreatManager().getThreat(dps) - dpsThreatBefore) < 0.01f &&
+        hostileActor.creature->GetThreatManager().getHostileTarget() == victimBefore;
+    float const forecastThreat = !report.selectedIndices.empty()
+        ? report.candidates[report.selectedIndices[0]].threatImpact.impacts[0].threatPoints
+        : 0.0f;
+    float const reservedAfterAccept = coordinator.GetReservedThreatImpact(
+        hostileGuid, dpsGuid.GetRawValue(), 0, SNAPSHOT_TIME);
+
+    uint32 const appliedDamage = actionAccepted
+        ? dps->DealDamage(hostileActor.creature, safeDamage, nullptr, DIRECT_DAMAGE,
+                          SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    float const dpsThreatAfterDamage = hostileActor.creature->GetThreatManager().getThreat(dps);
+    float const appliedThreatDelta = dpsThreatAfterDamage - dpsThreatBefore;
+    coordinator.ReleaseThreatAction(action->GetLastThreatActionId());
+    float const reservationAfterCompletion = coordinator.GetReservedThreatImpact(
+        hostileGuid, dpsGuid.GetRawValue(), 0, SNAPSHOT_TIME + 1);
+    bool const coreThreatMatchedForecast = appliedDamage == safeDamage &&
+        std::fabs(appliedThreatDelta - forecastThreat) < 0.01f &&
+        std::fabs(reservedAfterAccept - (initialExternalReservation + forecastThreat)) < 0.01f &&
+        std::fabs(reservationAfterCompletion - initialExternalReservation) < 0.01f;
+
+    // Refresh the production snapshot after the actual Core damage event.
+    // The next action is sized one threat point beyond the remaining headroom
+    // after the independent pending reservation.
+    uint32 constexpr REFRESHED_SNAPSHOT_TIME = SNAPSHOT_TIME + 300;
+    PartySnapshot const* refreshedBuilt =
+        PartySnapshotBuilder::GetOrBuild(tank, coordinator, REFRESHED_SNAPSHOT_TIME, 250);
+    PartySnapshot refreshed = refreshedBuilt ? *refreshedBuilt : PartySnapshot();
+    PartyMemberSnapshot const* refreshedDps = refreshed.FindMember(dpsGuid.GetRawValue());
+    HostileSnapshot const* refreshedHostile = refreshed.FindHostile(hostileGuid);
+    ThreatBudgetAssessment const refreshedBudget = refreshedBuilt && refreshedDps && refreshedHostile
+        ? AssessThreatBudget(refreshed, hostileGuid, dpsGuid.GetRawValue(),
+                             REFRESHED_SNAPSHOT_TIME, 250)
+        : ThreatBudgetAssessment();
+    float const remainingReservation = coordinator.GetReservedThreatImpact(
+        hostileGuid, dpsGuid.GetRawValue(), 0, REFRESHED_SNAPSHOT_TIME);
+    uint32 overBudgetDamage = 0;
+    if (refreshedBudget.status == ThreatBudgetStatus::BudgetAvailable &&
+        std::isfinite(threatPerDamage) && threatPerDamage > 0.0f)
+    {
+        double const remainingHeadroom =
+            static_cast<double>(refreshedBudget.rawHeadroom) - remainingReservation;
+        if (remainingHeadroom >= 0.0)
+            overBudgetDamage = static_cast<uint32>(std::floor(remainingHeadroom / threatPerDamage)) + 1;
+    }
+
+    PartyBotEngine overBudgetEngine;
+    std::shared_ptr<SimulatorThreatBudgetProbeAction> overBudgetAction(
+        new SimulatorThreatBudgetProbeAction(map));
+    bool const overBudgetRegistered = overBudgetEngine.RegisterAction(overBudgetAction);
+    std::shared_ptr<Strategy> overBudgetStrategy(new Strategy("simulator_over_budget_threat"));
+    overBudgetStrategy->AddTrigger(
+        std::make_shared<SimulatorThreatBudgetProbeTrigger>(hostileGuid, overBudgetDamage));
+    overBudgetEngine.AddStrategy(overBudgetStrategy);
+    DecisionContext refreshedContext(
+        refreshed, refreshedDps ? *refreshedDps : refreshed.members.front(),
+        coordinator, REFRESHED_SNAPSHOT_TIME);
+    float const threatBeforeRejectedCandidate =
+        hostileActor.creature->GetThreatManager().getThreat(dps);
+    Unit* const victimBeforeRejectedCandidate =
+        hostileActor.creature->GetThreatManager().getHostileTarget();
+    DecisionReport overBudgetReport = overBudgetEngine.Evaluate(refreshedContext);
+    bool const overBudgetRejected = overBudgetReport.selectedIndices.empty() &&
+        overBudgetReport.candidates.size() == 1 &&
+        overBudgetReport.candidates[0].status == CandidateStatus::RejectedThreatBudget &&
+        overBudgetAction->GetExecuteCount() == 0 &&
+        std::fabs(hostileActor.creature->GetThreatManager().getThreat(dps) -
+                  threatBeforeRejectedCandidate) < 0.01f &&
+        hostileActor.creature->GetThreatManager().getHostileTarget() ==
+            victimBeforeRejectedCandidate;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] Core threat budget admission: group=%u snapshot=%u victimTank=%u tankThreat=%.1f dpsThreat=%.1f headroom=%.1f melee=%u reserved=%.1f safeDamage=%u selected=%u evalReadOnly=%u accepted=%u executeReadOnly=%u forecast=%.1f applied=%u actualDelta=%.1f reservationAfter=%0.1f completionRelease=%0.1f overDamage=%u overBudgetRejected=%u.",
+        group->GetId(), snapshot.epoch, victimBefore == tank ? 1u : 0u,
+        tankThreat, dpsThreatBefore, initialBudget.rawHeadroom,
+        initialBudget.usesMeleeThreshold ? 1u : 0u,
+        initialExternalReservation, safeDamage, selected ? 1u : 0u,
+        evaluateDidNotMutateCore ? 1u : 0u, actionAccepted ? 1u : 0u,
+        executionDidNotMutateCore ? 1u : 0u, forecastThreat, appliedDamage,
+        appliedThreatDelta, reservedAfterAccept, reservationAfterCompletion,
+        overBudgetDamage, overBudgetRejected ? 1u : 0u);
+
+    bool const cleaned = cleanup();
+    bool const passed = hostileActor.updateCount && tankDamage == 400 && dpsDamage == 100 &&
+        tankThreat > dpsThreatBefore && victimBefore == tank &&
+        snapshotMatchesCore && budgetAvailable && actionRegistered && selected &&
+        evaluateDidNotMutateCore && actionAccepted && executionDidNotMutateCore &&
+        coreThreatMatchedForecast && refreshedBudget.status == ThreatBudgetStatus::BudgetAvailable &&
+        overBudgetRegistered && overBudgetDamage > 0 && overBudgetRejected && cleaned;
+
+    if (!passed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core threat budget admission failed (group=%u cleanup=%u).",
+                 group->GetId(), cleaned ? 1u : 0u);
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] PASS: PartyBot admission matched the pinned Core threat calculation, reserved before action dispatch, preserved Core state during Evaluate/Execute, released after Core damage completion, and rejected a threshold-crossing candidate without Core side effects.");
+    return true;
+}
+
 bool RunCoreCombatThreatSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -3654,6 +4066,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     // One five-Player Group fixture covers both the F8 roster/cache lifecycle
     // and F9 multi-add threat path; do not create two Groups on the same Map.
     bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
+    bool const threatBudgetAdmissionPassed = RunEngineCoreThreatBudgetAdmissionSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
@@ -3661,7 +4074,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&
                               movePointControlSafetyPassed && movementInterruptPassed &&
-                              realGroupThreatSnapshotPassed;
+                              realGroupThreatSnapshotPassed && threatBudgetAdmissionPassed;
 
     sMapMgr.DeleteTestMap(map);
 

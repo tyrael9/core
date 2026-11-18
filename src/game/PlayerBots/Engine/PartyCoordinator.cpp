@@ -1,5 +1,7 @@
 #include "PartyCoordinator.h"
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <tuple>
@@ -9,6 +11,7 @@ namespace PartyBotEngine {
 namespace {
 using RegistryKey = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>;
 using Registry = std::map<RegistryKey, std::weak_ptr<PartyCoordinator>>;
+constexpr std::size_t MaxThreatReservations = 128;
 
 Registry& GetRegistry() {
     static Registry registry;
@@ -37,6 +40,9 @@ bool PartyCoordinator::IsExpired(std::uint32_t nowMs, std::uint32_t expiresAtMs)
 void PartyCoordinator::PruneExpired(std::uint32_t nowMs) {
     m_reservations.erase(std::remove_if(m_reservations.begin(), m_reservations.end(),
         [nowMs](Reservation const& r) { return IsExpired(nowMs, r.expiresAtMs); }), m_reservations.end());
+    m_threatReservations.erase(std::remove_if(m_threatReservations.begin(), m_threatReservations.end(),
+        [nowMs](ThreatReservation const& r) { return IsExpired(nowMs, r.expiresAtMs); }),
+        m_threatReservations.end());
 }
 
 bool PartyCoordinator::TryReserve(Reservation const& reservation, std::uint32_t nowMs) {
@@ -84,6 +90,93 @@ void PartyCoordinator::ReleaseOwner(Guid ownerGuid) {
     m_reservations.erase(std::remove_if(m_reservations.begin(), m_reservations.end(),
         [ownerGuid](Reservation const& reservation) { return reservation.ownerGuid == ownerGuid; }),
         m_reservations.end());
+    // The logical action owner can differ from the threat recipient (for example a pet).
+    m_threatReservations.erase(std::remove_if(m_threatReservations.begin(), m_threatReservations.end(),
+        [ownerGuid](ThreatReservation const& reservation) { return reservation.ownerGuid == ownerGuid; }),
+        m_threatReservations.end());
+}
+
+ThreatActionId PartyCoordinator::NextThreatActionId() {
+    // At most 128 IDs can be retained, so a free nonzero ID is guaranteed within
+    // one pass unless the uint64_t namespace is pathologically exhausted.
+    for (std::size_t attempt = 0; attempt <= m_threatReservations.size(); ++attempt) {
+        ++m_nextThreatActionId;
+        if (m_nextThreatActionId == 0)
+            ++m_nextThreatActionId;
+
+        bool inUse = false;
+        for (ThreatReservation const& reservation : m_threatReservations) {
+            if (reservation.actionId == m_nextThreatActionId) {
+                inUse = true;
+                break;
+            }
+        }
+        if (!inUse)
+            return m_nextThreatActionId;
+    }
+    return 0;
+}
+
+bool PartyCoordinator::TryReserveThreatImpact(ThreatReservation const& reservation,
+                                               std::uint32_t nowMs) {
+    PruneExpired(nowMs);
+
+    // Deadlines use the same wrap-safe monotonic millisecond domain as GetMSTime.
+    // Require a positive signed delta, which also rejects unsupported deadlines
+    // more than INT32_MAX milliseconds into the future.
+    if (!reservation.ownerGuid || !reservation.threatOwnerGuid || !reservation.hostileGuid ||
+        !reservation.actionId || !std::isfinite(reservation.threatPoints) ||
+        reservation.threatPoints <= 0.0f ||
+        static_cast<std::int32_t>(reservation.expiresAtMs - nowMs) <= 0)
+        return false;
+
+    // One row represents one (action, hostile, actual threat-owner) impact.
+    // Re-submitting the same row replaces it, so retries are idempotent.
+    for (ThreatReservation& existing : m_threatReservations) {
+        if (existing.ownerGuid == reservation.ownerGuid &&
+            existing.actionId == reservation.actionId &&
+            existing.hostileGuid == reservation.hostileGuid &&
+            existing.threatOwnerGuid == reservation.threatOwnerGuid) {
+            existing = reservation;
+            return true;
+        }
+    }
+
+    // Fail closed at capacity: never evict another in-flight action's budget.
+    if (m_threatReservations.size() >= MaxThreatReservations)
+        return false;
+
+    m_threatReservations.push_back(reservation);
+    return true;
+}
+
+float PartyCoordinator::GetReservedThreatImpact(Guid hostileGuid, Guid threatOwnerGuid,
+                                                 ThreatActionId exceptActionId,
+                                                 std::uint32_t nowMs) {
+    PruneExpired(nowMs);
+    if (!hostileGuid || !threatOwnerGuid)
+        return 0.0f;
+
+    double total = 0.0;
+    for (ThreatReservation const& reservation : m_threatReservations) {
+        if (reservation.hostileGuid == hostileGuid &&
+            reservation.threatOwnerGuid == threatOwnerGuid &&
+            (!exceptActionId || reservation.actionId != exceptActionId))
+            total += static_cast<double>(reservation.threatPoints);
+    }
+
+    // The bounded list and finite inputs keep the double sum safe; saturate the
+    // public float result rather than allowing overflow to become a negative/NaN budget.
+    double const maxFloat = static_cast<double>(std::numeric_limits<float>::max());
+    return static_cast<float>(std::min(total, maxFloat));
+}
+
+void PartyCoordinator::ReleaseThreatAction(ThreatActionId actionId) {
+    if (!actionId)
+        return;
+    m_threatReservations.erase(std::remove_if(m_threatReservations.begin(), m_threatReservations.end(),
+        [actionId](ThreatReservation const& reservation) { return reservation.actionId == actionId; }),
+        m_threatReservations.end());
 }
 
 std::uint32_t PartyCoordinator::NextSnapshotEpoch() {

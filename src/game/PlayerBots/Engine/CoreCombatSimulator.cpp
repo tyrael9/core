@@ -5149,9 +5149,6 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] Stage completed: periodic mana leech=%u.",
              periodicManaLeechPassed ? 1u : 0u);
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Stage completed: periodic power=%u.",
-             periodicPowerPassed ? 1u : 0u);
     bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);

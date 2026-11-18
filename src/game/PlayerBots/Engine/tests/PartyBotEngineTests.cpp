@@ -288,6 +288,40 @@ void ConfigureThreat(HostileSnapshot& hostile, Guid victimGuid, float victimThre
     member.meleeReachable = meleeReachable;
     hostile.threat = {victim, member};
 }
+void TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness() {
+    Fixture f;
+    TestAction action("damage");
+    ActionCandidate candidate = Candidate("damage", 10.0f, ActionChannel::GlobalCooldown);
+
+    ThreatImpactEstimate unknown = action.EstimateThreatImpact(f.context, candidate);
+    assert(unknown.completeness == ThreatImpactCompleteness::Unknown);
+    assert(unknown.snapshotEpoch == f.snapshot.epoch);
+    assert(unknown.reason == "action_threat_impact_not_implemented");
+    assert(IsWellFormedThreatImpactEstimate(unknown));
+
+    ThreatImpactEstimate noThreat;
+    noThreat.completeness = ThreatImpactCompleteness::NoThreat;
+    noThreat.snapshotEpoch = f.snapshot.epoch;
+    assert(IsWellFormedThreatImpactEstimate(noThreat));
+    noThreat.impacts.push_back(ThreatImpactEntry());
+    assert(!IsWellFormedThreatImpactEstimate(noThreat));
+
+    ThreatImpactEstimate complete;
+    complete.completeness = ThreatImpactCompleteness::Complete;
+    complete.snapshotEpoch = f.snapshot.epoch;
+    assert(!IsWellFormedThreatImpactEstimate(complete));
+    ThreatImpactEntry impact;
+    impact.threatOwnerGuid = f.bot.guid;
+    impact.hostileGuid = 9001;
+    impact.threatPoints = 12.5f;
+    impact.source = ThreatImpactSource::DirectHealAssist;
+    impact.bound = ThreatImpactBound::UpperBound;
+    complete.impacts.push_back(impact);
+    assert(IsWellFormedThreatImpactEstimate(complete));
+    complete.impacts[0].threatPoints = std::nanf("");
+    assert(!IsWellFormedThreatImpactEstimate(complete));
+}
+
 void TestThreatBudgetCoreThresholdProjection() {
     PartySnapshot snapshot;
     snapshot.capturedAtMs = 1000;
@@ -431,6 +465,7 @@ int main() {
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();
+    TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness();
     TestThreatBudgetCoreThresholdProjection();
     TestThreatBudgetStrictCoreThresholdBoundaries();
     TestThreatBudgetUnknownAndCurrentVictimStates();

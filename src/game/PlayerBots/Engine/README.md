@@ -14,6 +14,7 @@ The target is a complete independent PartyBot AI for Vanilla 1.12.1 / client bui
 - CORE-COMBAT-SIMULATOR.md: headless Core-backed combat simulator design and API feasibility audit.
 - THREAT-BUDGETS.md: Core-authoritative aggro thresholds, snapshot semantics and action-specific threat-impact requirements.
 - ThreatBudget.h: pure snapshot-only current-victim threshold/headroom assessment; not an action-impact estimator or Core target selector.
+- ThreatImpact.h: GUID/scalar-only action threat-impact contract; unimplemented estimates default to Unknown rather than zero.
 
 Update relevant source and design/testing documents in the same change.
 

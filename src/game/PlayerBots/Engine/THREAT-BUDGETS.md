@@ -107,7 +107,9 @@ The pinned Core source has several independent threat-producing paths. An action
 
 ### Action-impact contract requirements
 
-The next interface should return a bounded list of per-hostile impacts, each carrying:
+The initial interface is now `ThreatImpact.h`, exposed through `Action::EstimateThreatImpact`. The default implementation returns `Unknown` with the current snapshot epoch, so an action cannot silently become a zero-threat action by omitting an estimator. `ThreatImpactEstimate` distinguishes `Complete`, `NoThreat` and `Unknown`; `Unknown` may retain partial known rows, while `NoThreat` must have no rows and `Complete` must enumerate at least one. `IsWellFormedThreatImpactEstimate` validates GUIDs and finite non-negative threat-point values.
+
+The eventual action estimator must return a bounded list of per-hostile impacts, each carrying:
 - acting threat owner GUID (Player, Pet or other actual Core actor);
 - recipient hostile GUID;
 - impact amount in **threat points**, not damage/healing units;

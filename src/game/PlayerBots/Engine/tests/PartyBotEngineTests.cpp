@@ -384,12 +384,12 @@ void TestHealingTriageShadowStrategy() {
 
     DecisionReport report = engine.Evaluate(context);
     assert(report.candidates.size() == 2);
-    assert(report.selectedIndices.size() == 1);
-    CandidateEvaluation const& selected = report.candidates[report.selectedIndices.front()];
-    assert(selected.candidate.actionName == "shadow_heal_triage");
-    assert(selected.candidate.strategyName == "healing_triage");
-    assert(selected.candidate.targetGuid == damage.guid);
-    assert(selected.status == CandidateStatus::Selected);
+    assert(report.selectedIndices.empty());
+    for (CandidateEvaluation const& candidate : report.candidates) {
+        assert(candidate.candidate.actionName == "shadow_heal_triage");
+        assert(candidate.status == CandidateStatus::RejectedThreatUnknown);
+        assert(candidate.reason == "threat_impact_estimate_unknown");
+    }
 }
 void TestTankPeelTargetShadowStrategy() {
     PartySnapshot snapshot; snapshot.epoch = 82;
@@ -410,10 +410,10 @@ void TestTankPeelTargetShadowStrategy() {
 
     DecisionReport report = engine.Evaluate(context);
     assert(report.candidates.size() == 1);
-    assert(report.selectedIndices.size() == 1);
-    CandidateEvaluation const& selected = report.candidates[report.selectedIndices.front()];
-    assert(selected.candidate.strategyName == "tank_target");
-    assert(selected.candidate.targetGuid == attackingHealer.guid);
+    assert(report.selectedIndices.empty());
+    assert(report.candidates[0].candidate.strategyName == "tank_target");
+    assert(report.candidates[0].candidate.targetGuid == attackingHealer.guid);
+    assert(report.candidates[0].status == CandidateStatus::RejectedThreatUnknown);
 }
 void TestDpsAssistTargetShadowStrategy() {
     PartySnapshot snapshot; snapshot.epoch = 83;
@@ -435,10 +435,11 @@ void TestDpsAssistTargetShadowStrategy() {
 
     DecisionReport report = engine.Evaluate(context);
     assert(report.candidates.size() == 2);
-    assert(report.selectedIndices.size() == 1);
-    CandidateEvaluation const& selected = report.candidates[report.selectedIndices.front()];
-    assert(selected.candidate.strategyName == "dps_target");
-    assert(selected.candidate.targetGuid == mainTankTarget.guid);
+    assert(report.selectedIndices.empty());
+    for (CandidateEvaluation const& candidate : report.candidates) {
+        assert(candidate.candidate.strategyName == "dps_target");
+        assert(candidate.status == CandidateStatus::RejectedThreatUnknown);
+    }
 }
 
 

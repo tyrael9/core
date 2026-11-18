@@ -1272,7 +1272,8 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
                     m_partyCoordinator->GetEncounterElapsedMs(nowMs),
                     ShadowRoleName(botSnapshot->roleId),
                     candidate.strategyName.c_str(), candidate.actionName.c_str(),
-                    candidate.targetGuid, candidate.finalPriority,
+                    candidate.targetGuid, candidate.spellId,
+                    static_cast<uint32>(candidate.channel), candidate.finalPriority,
                     ShadowCandidateStatusName(evaluation.status),
                     evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
             }

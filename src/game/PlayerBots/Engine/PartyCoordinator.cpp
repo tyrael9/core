@@ -199,7 +199,7 @@ EncounterTransition PartyCoordinator::ObserveEncounter(PartySnapshot const& snap
                                                                       std::uint32_t settleMs)
 {
     EncounterTransition transition;
-    if (!snapshot.groupId || !snapshot.mapId || !snapshot.epoch)
+    if (!snapshot.groupId || !snapshot.epoch)
         return transition;
 
     bool combatObserved = false;
@@ -234,6 +234,9 @@ EncounterTransition PartyCoordinator::ObserveEncounter(PartySnapshot const& snap
             m_encounterActive = true;
             m_encounterId = encounterId;
             m_encounterSequence = 1;
+            m_encounterGroupId = snapshot.groupId;
+            m_encounterMapId = snapshot.mapId;
+            m_encounterInstanceId = snapshot.instanceId;
             m_encounterStartedAtMs = nowMs;
             m_lastCombatAtMs = nowMs;
 
@@ -269,12 +272,18 @@ EncounterTransition PartyCoordinator::CloseEncounter(std::uint32_t nowMs, char c
     transition.kind = EncounterTransitionKind::Ended;
     transition.encounterId = m_encounterId;
     transition.sequence = NextEncounterSequence();
+    transition.groupId = m_encounterGroupId;
+    transition.mapId = m_encounterMapId;
+    transition.instanceId = m_encounterInstanceId;
     transition.elapsedMs = nowMs - m_encounterStartedAtMs;
     transition.reason = reason ? reason : "explicit_end";
 
     m_encounterActive = false;
     m_encounterId = 0;
     m_encounterSequence = 0;
+    m_encounterGroupId = 0;
+    m_encounterMapId = 0;
+    m_encounterInstanceId = 0;
     m_encounterStartedAtMs = 0;
     m_lastCombatAtMs = 0;
     return transition;

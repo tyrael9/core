@@ -4236,6 +4236,65 @@ bool RunNegativeFlatSpellThreatFixture(Map& map)
             estimate.impacts[0].bound != ThreatImpactBound::Exact)
             continue;
 
+        // Fail-closed contract tests use the same loaded spell/target as the
+        // parity case. Invalid or incomplete caller facts must never produce
+        // partial impact rows that a caller could mistake for a complete set.
+        auto isUnknownWithoutRows = [](ThreatImpactEstimate const& value)
+        {
+            return value.completeness == ThreatImpactCompleteness::Unknown &&
+                   value.impacts.empty();
+        };
+        std::vector<NegativeFlatSpellThreatTarget> incompleteTargets;
+        incompleteTargets.push_back({hostile.creature, 0x01});
+        bool const incompleteRejected = isUnknownWithoutRows(
+            EstimateNegativeFlatSpellThreatComponent(
+                caster.creature, spell, threatEntry, incompleteTargets, false, 77001));
+
+        std::vector<NegativeFlatSpellThreatTarget> invalidMaskTargets;
+        invalidMaskTargets.push_back({hostile.creature, 0x80});
+        bool const invalidMaskRejected = isUnknownWithoutRows(
+            EstimateNegativeFlatSpellThreatComponent(
+                caster.creature, spell, threatEntry, invalidMaskTargets, true, 77001));
+
+        std::vector<NegativeFlatSpellThreatTarget> duplicateTargets;
+        duplicateTargets.push_back({hostile.creature, 0x01});
+        duplicateTargets.push_back({hostile.creature, 0x01});
+        bool const duplicateRejected = isUnknownWithoutRows(
+            EstimateNegativeFlatSpellThreatComponent(
+                caster.creature, spell, threatEntry, duplicateTargets, true, 77001));
+
+        std::vector<NegativeFlatSpellThreatTarget> unresolvedTargets;
+        unresolvedTargets.push_back({nullptr, 0x01});
+        bool const unresolvedRejected = isUnknownWithoutRows(
+            EstimateNegativeFlatSpellThreatComponent(
+                caster.creature, spell, threatEntry, unresolvedTargets, true, 77001));
+
+        SpellEntry mixedSignSpell = *spell;
+        mixedSignSpell.Effect[1] = SPELL_EFFECT_HEAL;
+        mixedSignSpell.EffectImplicitTargetA[1] = TARGET_UNIT_CASTER;
+        std::vector<NegativeFlatSpellThreatTarget> mixedSignTargets;
+        mixedSignTargets.push_back({hostile.creature, 0x03});
+        ThreatImpactEstimate const mixedSignEstimate =
+            EstimateNegativeFlatSpellThreatComponent(
+                caster.creature, &mixedSignSpell, threatEntry,
+                mixedSignTargets, true, 77001);
+        bool const mixedSignRejected =
+            mixedSignEstimate.completeness == ThreatImpactCompleteness::NoThreat &&
+            mixedSignEstimate.impacts.empty();
+
+        bool const failClosedPassed = incompleteRejected && invalidMaskRejected &&
+            duplicateRejected && unresolvedRejected && mixedSignRejected;
+        if (!failClosedPassed)
+        {
+            mismatch = true;
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                     "[PartyBotSimulator] Negative flat spell-threat fail-closed checks failed (incomplete=%u invalidMask=%u duplicate=%u unresolved=%u mixedSign=%u).",
+                     incompleteRejected ? 1u : 0u, invalidMaskRejected ? 1u : 0u,
+                     duplicateRejected ? 1u : 0u, unresolvedRejected ? 1u : 0u,
+                     mixedSignRejected ? 1u : 0u);
+            break;
+        }
+
         ++attemptedSpells;
         float const before = hostile.creature->GetThreatManager().getThreat(caster.creature);
         SpellCastResult const castResult = caster.creature->CastSpell(

@@ -3118,10 +3118,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         }
     }
 
-    // The healer performs a normal non-triggered Lesser Heal. The follow-up
-    // assist is an explicit scripted event through Core's native
-    // HostileRefManager::threatAssist API; the simulator does not implement
-    // healing-threat arithmetic or mutate either ThreatManager directly.
+    // The healer performs a normal non-triggered Lesser Heal. Before the cast,
+    // estimate only its direct healing-assist component from the real Core
+    // HostileRefManager fan-out and ThreatCalcHelper. The maximum possible
+    // health gain is bounded by the target's maximum health; this intentionally
+    // conservative component does not claim to cover flat spell threat/procs.
     uint32 const patientHealthBeforeDamage = tank->GetHealth();
     uint32 const scriptedTankDamage = std::max<uint32>(1u, tank->GetMaxHealth() / 5u);
     hostiles[0].creature->DealDamage(
@@ -3131,6 +3132,33 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         patientHealthBeforeHeal < patientHealthBeforeDamage;
     uint32 const healerManaBefore = healer->GetPower(POWER_MANA);
     SpellEntry const* const healSpell = sSpellMgr.GetSpellEntry(SIMULATOR_HEAL_SPELL_ID);
+    coordinator.InvalidateSnapshot();
+    PartySnapshot const* healAssistSnapshot =
+        PartySnapshotBuilder::GetOrBuild(tank, coordinator, 15600, 250);
+    ThreatImpactEstimate const healAssistComponent =
+        healAssistSnapshot && healSpell
+            ? EstimateDirectHealingAssistComponent(
+                  healer, tank, static_cast<float>(tank->GetMaxHealth()),
+                  healSpell, *healAssistSnapshot)
+            : ThreatImpactEstimate();
+    auto findHealAssistBound = [&](Guid hostileGuid) -> float
+    {
+        for (ThreatImpactEntry const& impact : healAssistComponent.impacts)
+            if (impact.threatOwnerGuid == healerGuid.GetRawValue() &&
+                impact.hostileGuid == hostileGuid &&
+                impact.source == ThreatImpactSource::DirectHealAssist &&
+                impact.bound == ThreatImpactBound::UpperBound)
+                return impact.threatPoints;
+        return -1.0f;
+    };
+    float const healAssistUpperBound0 =
+        findHealAssistBound(hostiles[0].creature->GetObjectGuid().GetRawValue());
+    float const healAssistUpperBound1 =
+        findHealAssistBound(hostiles[1].creature->GetObjectGuid().GetRawValue());
+    float const healerThreatBeforeHeal0 =
+        hostiles[0].creature->GetThreatManager().getThreat(healer);
+    float const healerThreatBeforeHeal1 =
+        hostiles[1].creature->GetThreatManager().getThreat(healer);
     healer->SetFacingToObject(tank);
     SpellCastResult const healCastResult = healSpell && tankAliveAndInjured
         ? healer->CastSpell(tank, healSpell, false) : SPELL_FAILED_UNKNOWN;
@@ -3146,6 +3174,22 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         tank->IsAlive() && !healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
         patientHealthAfterHeal > patientHealthBeforeHeal &&
         healerManaAfter < healerManaBefore;
+    float const healThreatDelta0 =
+        hostiles[0].creature->GetThreatManager().getThreat(healer) - healerThreatBeforeHeal0;
+    float const healThreatDelta1 =
+        hostiles[1].creature->GetThreatManager().getThreat(healer) - healerThreatBeforeHeal1;
+    SpellThreatEntry const* const healThreatEntry =
+        healSpell ? sSpellMgr.GetSpellThreatEntry(healSpell->Id) : nullptr;
+    bool const noFlatSpellThreat = !healThreatEntry || healThreatEntry->threat == 0.0f;
+    bool const healAssistBoundValid = healCompleted && noFlatSpellThreat &&
+        healAssistSnapshot && healAssistComponent.completeness == ThreatImpactCompleteness::Unknown &&
+        IsThreatImpactEstimateForSnapshot(healAssistComponent, healAssistSnapshot->epoch) &&
+        healAssistComponent.impacts.size() == 2 &&
+        healAssistUpperBound0 >= 0.0f && healAssistUpperBound1 >= 0.0f &&
+        patientHealthAfterHeal - patientHealthBeforeHeal <= tank->GetMaxHealth() &&
+        healThreatDelta0 >= -0.01f && healThreatDelta1 >= -0.01f &&
+        healThreatDelta0 <= healAssistUpperBound0 + 0.01f &&
+        healThreatDelta1 <= healAssistUpperBound1 + 0.01f;
 
     uint32 hostileRefsOnTank = 0;
     for (HostileReference* reference = tank->GetHostileRefManager().getFirst();
@@ -3264,11 +3308,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         threatBudgetSnapshotValid && overBudgetRejected && executionReservationRaceRejected &&
         safeBudgetSelectedAndReserved && enginePreservedCoreThreatState &&
         enginePreservedCoreVictims && reservationReleased &&
-        tankAliveAndInjured && healCompleted && healerPulledBothAdds &&
+        tankAliveAndInjured && healCompleted && healAssistBoundValid && healerPulledBothAdds &&
         snapshotValid && rosterRoleStateValid && bothAddsResolved && threatValuesCopied && coreReachabilityCopied;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u budgetSnapshot=%u overBudgetRejected=%u executionRaceRejected=%u safeSelectedReserved=%u threatUnchanged=%u victimUnchanged=%u reservationReleased=%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u meleeReachability=%u/4 reachable=%u unreachable=%u.",
+             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u budgetSnapshot=%u overBudgetRejected=%u executionRaceRejected=%u safeSelectedReserved=%u threatUnchanged=%u victimUnchanged=%u reservationReleased=%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u healAssistBound=%u upper=%.1f/%.1f delta=%.1f/%.1f assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u meleeReachability=%u/4 reachable=%u unreachable=%u.",
              hostileAIReady ? 1u : 0u, membersAdded ? 1u : 0u,
              mainTankAssigned ? 1u : 0u, allPlayersOnSameMap ? 1u : 0u,
              initialSnapshotValid ? 1u : 0u, initialRosterResolved ? 1u : 0u,
@@ -3284,7 +3328,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
              enginePreservedCoreVictims ? 1u : 0u, reservationReleased ? 1u : 0u,
              hostileRefsOnTank, static_cast<uint32>(healCastResult),
              patientHealthBeforeHeal, patientHealthAfterHeal,
-             healerManaBefore, healerManaAfter, kScriptedAssistThreat,
+             healerManaBefore, healerManaAfter,
+             healAssistBoundValid ? 1u : 0u,
+             healAssistUpperBound0, healAssistUpperBound1,
+             healThreatDelta0, healThreatDelta1, kScriptedAssistThreat,
              healerThreat0, healerThreat1,
              selectedAfterAssist0 == healer ? 1u : 0u,
              selectedAfterAssist1 == healer ? 1u : 0u,

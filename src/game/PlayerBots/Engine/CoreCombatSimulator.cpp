@@ -4249,7 +4249,9 @@ bool RunPeriodicDamageThreatFixture(Map& map)
     for (; updates < 64; ++updates)
     {
         map.Update(250);
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        // Map/Unit active-object updates are wall-clock throttled; tiny sleeps
+        // do not advance Aura's periodic timer by the synthetic Map::Update diff.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         aura = hostile.creature->GetAura(spellId, EFFECT_INDEX_0);
         if (!aura || aura->GetAuraTicks() > ticksBefore)
             break;

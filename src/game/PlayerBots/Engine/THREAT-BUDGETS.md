@@ -220,3 +220,22 @@ Core `ThreatCalcHelper::CalcThreat` applies spell threat modifiers, critical-thr
 ## Stage P7.1 validation note
 
 CI `#44217682323` on commit `705f7f3` passed the standalone PartyBotEngine test step (including stale snapshot and uint32 wraparound cases), CMake configure, full Linux ARM64 Core/server build and simulator harness syntax validation. The optional Core-backed runtime step failed before starting `mangosd`: Google Drive returned its download quota/rate-limit message for the extracted-data fixture. This is an external fixture-hosting failure, not a simulator assertion or a runtime pass. Do not count this run as Core runtime evidence. The previous F12 runtime evidence remains CI `#44215877767`.
+
+
+## Stage P7.3c — bounded floating-point threat reservations
+
+ThreatReservation is a GUID/scalar-only record. It keeps three identities separate:
+
+- ownerGuid: the bot that owns the pending action and is responsible for cleanup;
+- threatOwnerGuid: the exact Player/Pet/guardian Unit whose hostile ThreatManager reference will receive the threat;
+- hostileGuid: the hostile whose threat budget is being reserved.
+
+A coordinator-local nonzero ThreatActionId groups all rows produced by one logical action. One action can reserve several hostile/recipient pairs (for example, an AoE or a healing-assist fan-out). Re-submitting the same (owner, action, hostile, threat-owner) row replaces the old value, so retrying an estimate does not double-count it. GetReservedThreatImpact sums pending points by the exact (hostile, threatOwner) pair and can exclude one action while evaluating that action's own reservation.
+
+Reservations accept only finite positive threat points and a future monotonic millisecond deadline. Deadline deltas must be positive and fit within the signed half-range, matching the wrap-safe GetMSTime comparison already used by the coordinator. PruneExpired removes expired threat rows alongside the existing generic reservations. Action completion calls ReleaseThreatAction(actionId) to remove every row in that action's fan-out; bot teardown calls ReleaseOwner(ownerGuid), which also removes rows whose actual threat recipient is a pet. Both paths are deterministic and do not retain Core object pointers.
+
+The threat-reservation collection is capped at 128 rows per group/map/instance coordinator. At capacity, a new action is rejected rather than evicting another in-flight action; refreshing an existing row remains allowed. The sum uses double accumulation and saturates at the largest finite float.
+
+This stage adds coordination primitives only. It does not yet alter candidate eligibility/priority or execute any new combat policy; that integration belongs to P7.3d. Core ThreatManager and victim selection remain authoritative.
+
+Standalone tests cover multiple hostiles and actual threat owners per action, idempotent refresh, concurrent action aggregation, action release, bot-owner cleanup across pet GUIDs, normal and wraparound expiry, invalid identity/value/deadline rejection, the 128-row cap and fail-closed capacity behavior.

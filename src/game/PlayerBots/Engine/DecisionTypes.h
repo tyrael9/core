@@ -7,10 +7,56 @@
 namespace PartyBotEngine {
 using Guid = std::uint64_t;
 using ThreatActionId = std::uint64_t;
+
+enum class ThreatImpactCompleteness : std::uint8_t {
+    Unknown,
+    Complete,
+    NoThreat
+};
+enum class ThreatImpactSource : std::uint8_t {
+    DirectDamage,
+    PeriodicDamage,
+    DirectHealAssist,
+    PeriodicHealAssist,
+    PeriodicPowerAssist,
+    FlatSpellThreat
+};
+enum class ThreatImpactBound : std::uint8_t {
+    Exact,
+    UpperBound
+};
+struct ThreatImpactEntry {
+    Guid threatOwnerGuid = 0;
+    Guid hostileGuid = 0;
+    float threatPoints = 0.0f;
+    ThreatImpactSource source = ThreatImpactSource::DirectDamage;
+    ThreatImpactBound bound = ThreatImpactBound::UpperBound;
+};
+struct ThreatImpactEstimate {
+    ThreatImpactCompleteness completeness = ThreatImpactCompleteness::Unknown;
+    std::uint32_t snapshotEpoch = 0;
+    // Pending threat is kept reserved until this bounded duration expires or
+    // the owning action is explicitly released.
+    std::uint32_t reservationDurationMs = 0;
+    std::vector<ThreatImpactEntry> impacts;
+    std::string reason = "threat_impact_not_estimated";
+};
 enum class PartyRole : std::uint8_t { Unknown, Tank, MainTank, Healer, RangedDamage, MeleeDamage, Support };
 enum class ActionChannel : std::uint8_t { GlobalCooldown, Movement, Targeting, Utility };
 enum class ActionResult : std::uint8_t { NotAttempted, Success, Impossible, Useless, Failed, Skipped };
-enum class CandidateStatus : std::uint8_t { RejectedMissingAction, RejectedImpossible, RejectedUseless, RejectedMultiplier, RejectedInvalidPriority, NotSelected, Selected, Executed, ExecutionFailed };
+enum class CandidateStatus : std::uint8_t {
+    RejectedMissingAction,
+    RejectedImpossible,
+    RejectedUseless,
+    RejectedMultiplier,
+    RejectedInvalidPriority,
+    RejectedThreatUnknown,
+    RejectedThreatBudget,
+    NotSelected,
+    Selected,
+    Executed,
+    ExecutionFailed
+};
 enum class ReservationType : std::uint8_t { Heal, CrowdControl, Interrupt, Target, Dispel, Resurrection };
 struct ActionCandidate {
     std::string strategyName;
@@ -27,6 +73,8 @@ struct CandidateEvaluation {
     ActionCandidate candidate;
     CandidateStatus status = CandidateStatus::NotSelected;
     ActionResult actionResult = ActionResult::NotAttempted;
+    ThreatImpactEstimate threatImpact;
+    ThreatActionId threatActionId = 0;
     std::string reason;
 };
 struct DecisionReport {

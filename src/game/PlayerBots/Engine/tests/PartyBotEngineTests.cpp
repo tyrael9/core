@@ -649,6 +649,56 @@ void TestThreatImpactBudgetUnknownAndCurrentVictimCases() {
     assert(missingPetSnapshot.status == ThreatImpactBudgetStatus::Unknown);
     assert(missingPetSnapshot.reason == "threat_budget_snapshot_unknown");
 
+    // Pet GUID remains the actual threat owner. The Player owner is an
+    // identity/cleanup relationship, not a replacement threat recipient.
+    PartyCompanionSnapshot pet;
+    pet.guid = 999;
+    pet.ownerGuid = dps.guid;
+    pet.online = true;
+    pet.alive = true;
+    pet.mapId = snapshot.mapId;
+    pet.instanceId = snapshot.instanceId;
+    snapshot.companions.push_back(pet);
+    ThreatEntrySnapshot petThreat;
+    petThreat.unitGuid = pet.guid;
+    petThreat.threat = 30.0f;
+    petThreat.online = true;
+    petThreat.accessible = true;
+    petThreat.meleeReachable = false;
+    snapshot.hostiles[0].threat.push_back(petThreat);
+
+    ThreatBudgetAssessment petBudget =
+        AssessThreatBudget(snapshot, hostile.guid, pet.guid, 1000, 250);
+    assert(petBudget.status == ThreatBudgetStatus::BudgetAvailable);
+    assert(std::fabs(petBudget.thresholdMultiplier - 1.3f) < 0.0001f);
+    assert(std::fabs(petBudget.memberThreat - 30.0f) < 0.0001f);
+    assert(std::fabs(petBudget.rawHeadroom - 100.0f) < 0.0001f);
+
+    ThreatImpactBudgetResult petImpactSafe = AssessThreatImpactBudget(
+        snapshot, petImpact, coordinator, 1000, 250, nullptr);
+    assert(petImpactSafe.status == ThreatImpactBudgetStatus::Safe);
+    assert(petImpactSafe.threatOwnerGuid == pet.guid);
+
+    PartySnapshot duplicatePet = snapshot;
+    duplicatePet.companions.push_back(pet);
+    assert(AssessThreatBudget(duplicatePet, hostile.guid, pet.guid, 1000, 250)
+        .unknownReason == ThreatBudgetUnknownReason::MissingOrDuplicateCompanion);
+
+    PartySnapshot missingPetOwner = snapshot;
+    missingPetOwner.members = {tank};
+    assert(AssessThreatBudget(missingPetOwner, hostile.guid, pet.guid, 1000, 250)
+        .unknownReason == ThreatBudgetUnknownReason::MissingOrDuplicateCompanionOwner);
+
+    PartySnapshot offlinePet = snapshot;
+    offlinePet.companions[0].online = false;
+    assert(AssessThreatBudget(offlinePet, hostile.guid, pet.guid, 1000, 250)
+        .unknownReason == ThreatBudgetUnknownReason::CompanionNotOnlineOrAlive);
+
+    PartySnapshot petVictimSnapshot = snapshot;
+    petVictimSnapshot.hostiles[0].victimGuid = pet.guid;
+    assert(AssessThreatBudget(petVictimSnapshot, hostile.guid, pet.guid, 1000, 250)
+        .status == ThreatBudgetStatus::CurrentVictim);
+
     ThreatImpactEstimate tankImpact = MakeThreatEstimate(snapshot.epoch, tank.guid, hostile.guid, 500.0f);
     ThreatImpactBudgetResult currentVictim = AssessThreatImpactBudget(
         snapshot, tankImpact, coordinator, 1000, 250, nullptr);
@@ -676,6 +726,57 @@ void PrepareEngineThreatFixture(Fixture& f) {
     HostileSnapshot hostile;
     ConfigureThreat(hostile, tank.guid, 100.0f, f.bot.guid, 90.0f, true);
     f.snapshot.hostiles = {hostile};
+}
+
+void TestEngineThreatBudgetPetRecipientReservation() {
+    Fixture f;
+    f.snapshot.capturedAtMs = 1000;
+    f.bot.guid = 11;
+    f.bot.online = true;
+    f.bot.alive = true;
+
+    PartyMemberSnapshot tank;
+    ConfigureMember(tank, 22, PartyRole::Tank, 100, 100, true);
+    f.snapshot.members = {f.bot, tank};
+
+    PartyCompanionSnapshot pet;
+    pet.guid = 33;
+    pet.ownerGuid = f.bot.guid;
+    pet.online = true;
+    pet.alive = true;
+    pet.mapId = f.snapshot.mapId;
+    pet.instanceId = f.snapshot.instanceId;
+    f.snapshot.companions = {pet};
+
+    HostileSnapshot hostile;
+    ConfigureThreat(hostile, tank.guid, 100.0f, pet.guid, 30.0f, false);
+    f.snapshot.hostiles = {hostile};
+
+    auto action = std::make_shared<TestAction>("pet_damage");
+    action->useThreatImpact = true;
+    action->threatImpact = MakeThreatEstimate(
+        f.snapshot.epoch, pet.guid, hostile.guid, 10.0f);
+    PartyBotEngine::PartyBotEngine engine;
+    assert(engine.RegisterAction(action));
+    auto trigger = std::make_shared<TestTrigger>("pet_damage_trigger");
+    trigger->generated.push_back(Candidate("pet_damage", 10.0f, ActionChannel::GlobalCooldown));
+    auto strategy = std::make_shared<Strategy>("pet_damage_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    assert(report.candidates[0].status == CandidateStatus::Selected);
+    engine.ExecuteSelected(f.context, report);
+    assert(report.candidates[0].status == CandidateStatus::Executed);
+    assert(std::fabs(f.coordinator.GetReservedThreatImpact(
+        hostile.guid, pet.guid, 0, 1000) - 10.0f) < 0.0001f);
+    assert(f.coordinator.GetReservedThreatImpact(
+        hostile.guid, f.bot.guid, 0, 1000) == 0.0f);
+
+    f.coordinator.ReleaseOwner(f.bot.guid);
+    assert(f.coordinator.GetReservedThreatImpact(
+        hostile.guid, pet.guid, 0, 1000) == 0.0f);
 }
 
 void TestEngineThreatBudgetSelectionAndExecutionReservations() {
@@ -1045,6 +1146,7 @@ int main() {
     TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness();
     TestThreatImpactBudgetUsesFanoutAndReservations();
     TestThreatImpactBudgetUnknownAndCurrentVictimCases();
+    TestEngineThreatBudgetPetRecipientReservation();
     TestEngineThreatBudgetSelectionAndExecutionReservations();
     TestEngineThreatBudgetRejectsUnknownAndOverBudgetCandidates();
     TestEngineThreatBudgetAccountsForHigherPriorityCandidates();

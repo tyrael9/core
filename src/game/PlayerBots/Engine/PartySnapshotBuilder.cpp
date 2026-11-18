@@ -2,6 +2,7 @@
 #include "CombatBotBaseAI.h"
 #include "Group.h"
 #include "Map.h"
+#include "Pet.h"
 #include "Player.h"
 #include "ThreatManager.h"
 #include "Unit.h"
@@ -164,6 +165,41 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         memberData.alive = member->IsAlive();
         memberData.inCombat = member->IsInCombat();
         snapshot.members.push_back(memberData);
+
+        // Record the Player's primary controlled pet as a distinct threat actor.
+        // Keep its GUID as the actual Core threat owner; ownerGuid proves party
+        // membership and is used only for coordinator reservation cleanup.
+        if (Pet* pet = member->GetPet()) {
+            if (pet->IsInWorld() && pet->GetMap() == map &&
+                pet->GetMapId() == snapshot.mapId &&
+                pet->GetInstanceId() == snapshot.instanceId &&
+                pet->GetOwnerGuid() == member->GetObjectGuid()) {
+                PartyCompanionSnapshot companion;
+                companion.guid = pet->GetObjectGuid().GetRawValue();
+                companion.ownerGuid = memberData.guid;
+                companion.mapId = pet->GetMapId();
+                companion.instanceId = pet->GetInstanceId();
+                companion.health = pet->GetHealth();
+                companion.maxHealth = pet->GetMaxHealth();
+                companion.victimGuid = pet->GetVictim()
+                    ? pet->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+                companion.x = pet->GetPositionX();
+                companion.y = pet->GetPositionY();
+                companion.z = pet->GetPositionZ();
+                companion.online = pet->IsInWorld();
+                companion.alive = pet->IsAlive();
+                companion.inCombat = pet->IsInCombat();
+                snapshot.companions.push_back(companion);
+
+                // Discover hostile references held by or targeting the pet too.
+                addHostile(pet->GetVictim());
+                for (Unit* attacker : pet->GetAttackers())
+                    addHostile(attacker);
+                for (HostileReference* reference = pet->GetHostileRefManager().getFirst();
+                     reference; reference = reference->next())
+                    addHostileReference(reference);
+            }
+        }
 
         // Include current attackers and targets, plus every hostile that
         // holds a reference to this member. Healing/assist threat traverses

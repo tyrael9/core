@@ -20,6 +20,10 @@ enum class ThreatBudgetUnknownReason : std::uint8_t {
     HostileNotAlive,
     MissingOrDuplicateMember,
     MemberNotOnlineOrAlive,
+    MissingOrDuplicateCompanion,
+    CompanionNotOnlineOrAlive,
+    MissingOrDuplicateCompanionOwner,
+    CompanionOwnerNotOnlineOrAlive,
     MissingCurrentVictim,
     MissingOrDuplicateVictimThreat,
     VictimThreatOffline,
@@ -80,6 +84,23 @@ inline PartyMemberSnapshot const* FindUniqueMember(PartySnapshot const& snapshot
     return found;
 }
 
+inline PartyCompanionSnapshot const* FindUniqueCompanion(PartySnapshot const& snapshot,
+                                                       Guid companionGuid, bool& duplicate)
+{
+    PartyCompanionSnapshot const* found = nullptr;
+    duplicate = false;
+    for (PartyCompanionSnapshot const& companion : snapshot.companions) {
+        if (companion.guid != companionGuid)
+            continue;
+        if (found) {
+            duplicate = true;
+            return nullptr;
+        }
+        found = &companion;
+    }
+    return found;
+}
+
 inline ThreatEntrySnapshot const* FindUniqueThreatEntry(HostileSnapshot const& hostile,
                                                          Guid unitGuid, bool& duplicate)
 {
@@ -131,13 +152,42 @@ inline ThreatBudgetAssessment AssessThreatBudget(PartySnapshot const& snapshot,
 
     PartyMemberSnapshot const* member =
         detail::FindUniqueMember(snapshot, memberGuid, duplicate);
-    if (!member || duplicate) {
+    if (duplicate) {
         result.unknownReason = ThreatBudgetUnknownReason::MissingOrDuplicateMember;
         return result;
     }
-    if (!member->online || !member->alive) {
-        result.unknownReason = ThreatBudgetUnknownReason::MemberNotOnlineOrAlive;
-        return result;
+
+    if (member) {
+        if (!member->online || !member->alive) {
+            result.unknownReason = ThreatBudgetUnknownReason::MemberNotOnlineOrAlive;
+            return result;
+        }
+    } else {
+        PartyCompanionSnapshot const* companion =
+            detail::FindUniqueCompanion(snapshot, memberGuid, duplicate);
+        if (!companion || duplicate) {
+            result.unknownReason = ThreatBudgetUnknownReason::MissingOrDuplicateCompanion;
+            return result;
+        }
+        if (!companion->online || !companion->alive ||
+            companion->mapId != snapshot.mapId ||
+            companion->instanceId != snapshot.instanceId) {
+            result.unknownReason = ThreatBudgetUnknownReason::CompanionNotOnlineOrAlive;
+            return result;
+        }
+
+        PartyMemberSnapshot const* owner =
+            detail::FindUniqueMember(snapshot, companion->ownerGuid, duplicate);
+        if (!owner || duplicate) {
+            result.unknownReason = ThreatBudgetUnknownReason::MissingOrDuplicateCompanionOwner;
+            return result;
+        }
+        if (!owner->online || !owner->alive ||
+            owner->mapId != snapshot.mapId ||
+            owner->instanceId != snapshot.instanceId) {
+            result.unknownReason = ThreatBudgetUnknownReason::CompanionOwnerNotOnlineOrAlive;
+            return result;
+        }
     }
     if (!hostile->victimGuid) {
         result.unknownReason = ThreatBudgetUnknownReason::MissingCurrentVictim;

@@ -11,6 +11,13 @@ struct PartyMemberSnapshot {
     float x = 0.0f, y = 0.0f, z = 0.0f;
     bool online = false, alive = false, inCombat = false, isMainTank = false;
 };
+struct PartyCompanionSnapshot {
+    Guid guid = 0, ownerGuid = 0, victimGuid = 0;
+    std::uint32_t mapId = 0, instanceId = 0;
+    std::uint32_t health = 0, maxHealth = 0;
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    bool online = false, alive = false, inCombat = false;
+};
 struct ThreatEntrySnapshot {
     Guid unitGuid = 0;
     float threat = 0.0f;
@@ -26,9 +33,14 @@ struct HostileSnapshot {
 struct PartySnapshot {
     std::uint32_t groupId = 0, mapId = 0, instanceId = 0, epoch = 0, capturedAtMs = 0;
     std::vector<PartyMemberSnapshot> members;
+    std::vector<PartyCompanionSnapshot> companions;
     std::vector<HostileSnapshot> hostiles;
     PartyMemberSnapshot const* FindMember(Guid guid) const {
         for (auto const& member : members) if (member.guid == guid) return &member;
+        return nullptr;
+    }
+    PartyCompanionSnapshot const* FindCompanion(Guid guid) const {
+        for (auto const& companion : companions) if (companion.guid == guid) return &companion;
         return nullptr;
     }
     HostileSnapshot const* FindHostile(Guid guid) const {

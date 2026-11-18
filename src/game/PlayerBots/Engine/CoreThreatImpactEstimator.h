@@ -748,6 +748,115 @@ inline ThreatImpactEstimate EstimateAppliedPeriodicPowerAssistComponent(
     return estimate;
 }
 
+
+
+// Estimate only the direct threat component of one already-applied
+// SPELL_AURA_PERIODIC_MANA_LEECH tick. Core threat is based on the caster's
+// *effective* ModifyPower gain, not the raw amount drained from the target.
+// The effect adds that amount directly to the leeched hostile's ThreatManager;
+// it is not HostileRefManager assist fan-out.
+inline ThreatImpactEstimate EstimateAppliedPeriodicManaLeechComponent(
+    Unit* realCaster, Unit* leechedTarget, std::uint32_t effectiveCasterPowerGain,
+    Powers powerType, SpellEntry const* spellInfo, SpellEffectIndex effectIndex,
+    std::uint32_t snapshotEpoch)
+{
+    ThreatImpactEstimate estimate;
+    estimate.snapshotEpoch = snapshotEpoch;
+    estimate.reason = "periodic_mana_leech_component_only";
+
+    bool const validEffectIndex = effectIndex >= EFFECT_INDEX_0 &&
+        effectIndex < MAX_EFFECT_INDEX;
+    bool const periodicManaLeech = spellInfo && validEffectIndex &&
+        spellInfo->Effect[effectIndex] == SPELL_EFFECT_APPLY_AURA &&
+        spellInfo->EffectApplyAuraName[effectIndex] == SPELL_AURA_PERIODIC_MANA_LEECH;
+
+    if (!snapshotEpoch || !realCaster || !leechedTarget || !spellInfo ||
+        !validEffectIndex || !periodicManaLeech ||
+        !realCaster->IsAlive() || !leechedTarget->IsAlive() ||
+        !realCaster->IsInWorld() || !leechedTarget->IsInWorld() ||
+        !realCaster->IsInMap(leechedTarget) ||
+        powerType < POWER_MANA || powerType >= MAX_POWERS ||
+        spellInfo->EffectMiscValue[effectIndex] != static_cast<int32>(powerType) ||
+        leechedTarget->GetPowerType() != powerType) {
+        estimate.reason = "periodic_mana_leech_component_missing_or_ineligible_core_state";
+        return estimate;
+    }
+
+    // Unit::AddThreat returns before ThreatManager::addThreat for targets that
+    // cannot own a hostile threat list, and for EX4_NO_HARMFUL_THREAT spells.
+    if (!leechedTarget->CanHaveThreatList() ||
+        spellInfo->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT)) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "periodic_mana_leech_core_add_threat_suppressed";
+        return estimate;
+    }
+
+    // EX_NO_THREAT means addThreatDirectly may only update an existing online
+    // or offline reference. This component cannot prove that full lookup set
+    // from a scalar snapshot, so it must not invent a new reference.
+    if (spellInfo->HasAttribute(SPELL_ATTR_EX_NO_THREAT)) {
+        estimate.reason = "periodic_mana_leech_no_new_threat_reference_unproven";
+        return estimate;
+    }
+
+    if (realCaster->GetTypeId() == TYPEID_PLAYER &&
+        static_cast<Player*>(realCaster)->IsGameMaster()) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "periodic_mana_leech_core_rejects_gm_threat_owner";
+        return estimate;
+    }
+
+    if (!effectiveCasterPowerGain) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "periodic_mana_leech_has_no_effective_caster_power_gain";
+        return estimate;
+    }
+
+    float const spellThreatMultiplier = sSpellMgr.GetSpellThreatMultiplier(spellInfo);
+    float const threatBeforeCoreModifiers =
+        static_cast<float>(effectiveCasterPowerGain) * 0.5f * spellThreatMultiplier;
+    if (!std::isfinite(spellThreatMultiplier) || spellThreatMultiplier < 0.0f ||
+        !std::isfinite(threatBeforeCoreModifiers) || threatBeforeCoreModifiers < 0.0f) {
+        estimate.reason = "periodic_mana_leech_invalid_core_spell_multiplier";
+        return estimate;
+    }
+
+    Guid const casterGuid = realCaster->GetObjectGuid().GetRawValue();
+    Guid const hostileGuid = leechedTarget->GetObjectGuid().GetRawValue();
+    if (!casterGuid || !hostileGuid || casterGuid == hostileGuid) {
+        estimate.reason = "periodic_mana_leech_invalid_actor_guids";
+        return estimate;
+    }
+
+    float const threatPoints = ThreatCalcHelper::CalcThreat(
+        realCaster, threatBeforeCoreModifiers, false,
+        spellInfo->GetSpellSchoolMask(), spellInfo);
+    if (!std::isfinite(threatPoints) || threatPoints < 0.0f) {
+        estimate.reason = "periodic_mana_leech_invalid_core_threat";
+        return estimate;
+    }
+
+    ThreatImpactEntry impact;
+    impact.threatOwnerGuid = casterGuid;
+    impact.hostileGuid = hostileGuid;
+    impact.threatPoints = threatPoints;
+    impact.source = ThreatImpactSource::PeriodicManaLeech;
+    impact.bound = ThreatImpactBound::Exact;
+    estimate.impacts.push_back(impact);
+
+    // Mark of Kazzak's final-mana explosion and Improved Drain Mana's
+    // additional periodic damage are separate Core side effects. Keep the
+    // enclosing estimate Unknown even though this applied mana-gain component
+    // is exact; callers must model or conservatively block those extra rows.
+    if (spellInfo->Id == 21056 ||
+        realCaster->HasAura(17864, EFFECT_INDEX_0) ||
+        realCaster->HasAura(18393, EFFECT_INDEX_0)) {
+        estimate.reason = "periodic_mana_leech_has_additional_core_explosion_or_damage_side_effect";
+    }
+
+    return estimate;
+}
+
 } // namespace PartyBotEngine
 
 #endif

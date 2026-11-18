@@ -3463,6 +3463,8 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
     uint32 additionalDamage = 0;
     float tankThreat = 0.0f;
     float dpsThreat = 0.0f;
+    float estimatedTankThreat = 0.0f;
+    bool tankImpactMatchesCore = false;
     uint32 selectedAfterTankGuid = 0;
     uint32 selectedBelowThresholdGuid = 0;
     uint32 selectedAboveThresholdGuid = 0;
@@ -3478,12 +3480,12 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
             tankDamageImpact.snapshotEpoch == 1 && tankDamageImpact.impacts.size() == 1 &&
             tankDamageImpact.impacts[0].source == ThreatImpactSource::DirectDamage &&
             tankDamageImpact.impacts[0].bound == ThreatImpactBound::Exact;
-        float const estimatedTankThreat = tankImpactShapeValid
+        estimatedTankThreat = tankImpactShapeValid
             ? tankDamageImpact.impacts[0].threatPoints : -1.0f;
         tankDamage = tank.creature->DealDamage(
             boss.creature, 100, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
         tankThreat = boss.creature->GetThreatManager().getThreat(tank.creature);
-        bool const tankImpactMatchesCore = tankImpactShapeValid && tankDamage == 100 &&
+        tankImpactMatchesCore = tankImpactShapeValid && tankDamage == 100 &&
             std::fabs(estimatedTankThreat - tankThreat) < 0.01f;
         healthAfterTank = boss.creature->GetHealth();
 

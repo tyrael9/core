@@ -201,7 +201,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: Core PERIODIC_ENERGIZE granted assist t
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: a real Core periodic mana-leech tick drained target Mana, credited the caster's effective Mana gain and matched the target ThreatManager delta with the direct 50%-assist component." "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: a real Core periodic mana-leech tick drained target Mana, credited the caster's effective Mana gain and matched the target ThreatManager delta with the direct 50-percent assist component." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Core periodic mana-leech threat parity marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi

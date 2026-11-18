@@ -210,8 +210,17 @@ inline ThreatImpactEstimate EstimateDirectHealingAssistComponent(
         if (spellInfo->Effect[i])
             effectMask |= static_cast<std::uint8_t>(1u << i);
 
+    bool positiveForFlatThreat = spellInfo->IsPositiveSpell();
+    for (std::uint8_t i = 0; i < MAX_EFFECT_INDEX; ++i) {
+        // Spell's constructor adds this effect to m_negativeEffectMask even
+        // when SpellEntry::IsPositiveEffect regards the self-damage as positive.
+        if (spellInfo->Effect[i] == SPELL_EFFECT_SCHOOL_DAMAGE &&
+            spellInfo->EffectImplicitTargetA[i] == TARGET_UNIT_CASTER)
+            positiveForFlatThreat = false;
+    }
+
     if (flatThreatEntry && flatThreatEntry->threat &&
-        spellInfo->IsPositiveSpell() && effectMask &&
+        positiveForFlatThreat && effectMask &&
         flatThreatEntry->CanCauseThreatOnMask(effectMask)) {
         float const flatThreatPerReference = static_cast<float>(
             flatThreatEntry->threat / static_cast<double>(hostileGuids.size()));

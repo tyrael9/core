@@ -239,3 +239,18 @@ The threat-reservation collection is capped at 128 rows per group/map/instance c
 This stage adds coordination primitives only. It does not yet alter candidate eligibility/priority or execute any new combat policy; that integration belongs to P7.3d. Core ThreatManager and victim selection remain authoritative.
 
 Standalone tests cover multiple hostiles and actual threat owners per action, idempotent refresh, concurrent action aggregation, action release, bot-owner cleanup across pet GUIDs, normal and wraparound expiry, invalid identity/value/deadline rejection, the 128-row cap and fail-closed capacity behavior.
+
+
+## Stage P7.3d — action admission and execution reservations (partial)
+
+The Engine now consumes the action estimate contract rather than treating missing estimates as zero:
+
+- Action::EstimateThreatImpact defaults to Unknown. An action must explicitly declare NoThreat or provide a well-formed Complete estimate for the exact snapshot epoch. A positive complete estimate must also declare a bounded reservation duration (1..INT32_MAX milliseconds).
+- Candidate arbitration runs in descending priority order. Each complete estimate is aggregated by (hostileGuid, threatOwnerGuid), then checked against the current Core-derived headroom, all still-live coordinator reservations and higher-priority candidates already admitted in the same decision report.
+- CurrentVictim rows do not use the DPS/healer aggro-headroom veto. Missing, offline, stale, duplicate, pet-only or otherwise unresolvable references remain Unknown and fail closed. In particular, pets are not yet copied as independent party members in the current snapshot, so pet-owned threat estimates are intentionally rejected until that snapshot support is added.
+- ExecuteSelected repeats the budget check immediately before the action. For a complete positive estimate it creates one action ID, aggregates duplicate rows, reserves the entire hostile/recipient fan-out before calling the executor, and rolls back every row if reservation or action execution fails. Successful reservations remain until the estimate's declared duration expires; an action with an explicit completion hook may release them earlier using the returned CandidateEvaluation::threatActionId.
+- Candidate reports and Shadow diagnostics distinguish RejectedThreatUnknown from RejectedThreatBudget. The current Shadow target/heal placeholders have no actual spell/action threat model, so they now report Unknown rather than being selected as free-threat actions. Shadow still only calls Evaluate; it does not execute or mutate Core combat state.
+
+This is an initial generic policy integration, not complete combat coverage. There are not yet production combat Actions that return Complete pre-action threat forecasts. The existing Core-backed spell-less direct-damage helper validates a component from damage already applied by Core; it is parity evidence for the formula, not a prediction for a future cast. Direct/periodic healing assist, DoTs/HoTs, flat spell-table threat, pet/guardian ownership, threat suppression and mixed-source spells must remain Unknown until their complete source set and bound can be audited. The Core-backed P7.3d threshold/race runtime matrix is also still pending.
+
+Pure tests now cover multi-hostile fan-out aggregation, coordinator reservations, higher-priority local budget consumption, unknown/pet fail-closed behavior, current-victim handling, TTL validation, pre-execution reservation, rollback after failed execution, and projection overflow. The latest P7.3d CI result will be recorded after the branch's full ARM64 workflow completes.

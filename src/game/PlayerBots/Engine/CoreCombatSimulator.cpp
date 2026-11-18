@@ -2499,6 +2499,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     std::vector<Player*> players;
     std::vector<ObjectGuid> playerGuids;
     SimulatorActor hostiles[2];
+    SimulatorActor outsideGroupVictim;
     std::unique_ptr<Group> group(new Group());
     bool groupRegistered = false;
 
@@ -2506,6 +2507,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     {
         bool actorsCleaned = DestroySimulatorActor(map, hostiles[0]);
         actorsCleaned = DestroySimulatorActor(map, hostiles[1]) && actorsCleaned;
+        actorsCleaned = DestroySimulatorActor(map, outsideGroupVictim) && actorsCleaned;
 
         bool ungrouped = true;
         if (group && group->GetId())
@@ -2667,7 +2669,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         // references therefore exercise both true and false snapshot values.
         actorsCreated =
             CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 10.0f, hostiles[0]) &&
-            CreateSimulatorActor(map, *info, hostileFaction, 16.0f, 6.0f, hostiles[1]);
+            CreateSimulatorActor(map, *info, hostileFaction, 16.0f, 6.0f, hostiles[1]) &&
+            CreateSimulatorActor(map, *info, partyFaction, 40.0f, 6.0f, outsideGroupVictim);
 
     if (!actorsCreated)
     {
@@ -2680,13 +2683,16 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     }
 
     for (uint32 tick = 0; tick < 120 &&
-         (!hostiles[0].updateCount || !hostiles[1].updateCount); ++tick)
+         (!hostiles[0].updateCount || !hostiles[1].updateCount ||
+          !outsideGroupVictim.updateCount); ++tick)
     {
         map.Update(50);
-        if (!hostiles[0].updateCount || !hostiles[1].updateCount)
+        if (!hostiles[0].updateCount || !hostiles[1].updateCount ||
+            !outsideGroupVictim.updateCount)
             std::this_thread::sleep_for(std::chrono::milliseconds(25));
     }
-    bool const hostileAIReady = hostiles[0].updateCount && hostiles[1].updateCount;
+    bool const hostileAIReady = hostiles[0].updateCount && hostiles[1].updateCount &&
+        outsideGroupVictim.updateCount;
 
     Player* tank = players[0];
     Player* healer = players[1];
@@ -2886,6 +2892,108 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat values and both reachable/unreachable per-reference melee states matched Core, and all Group/session cleanup succeeded.");
 
+    // F12: a hostile can still hold threat references to a party member
+    // without currently attacking any group member. It must be discovered
+    // through that member's HostileRefManager, including offline references.
+    bool const f12CanProbe = f9ChecksPassed && outsideGroupVictim.creature &&
+        outsideGroupVictim.creature->IsInWorld();
+    bool hostileVictimOutsideGroup = false;
+    bool noPartyMemberCurrentlyAttacked = false;
+    bool tankReferenceFound = false;
+    bool offlineReferenceCopied = false;
+    bool nonVictimHostileDiscovered = false;
+    bool victimRestored = false;
+    float healerThreat1AfterReferenceProbe = healerThreat1;
+
+    if (f12CanProbe)
+    {
+        hostiles[1].creature->AI()->AttackStart(outsideGroupVictim.creature);
+        hostileVictimOutsideGroup =
+            hostiles[1].creature->GetVictim() == outsideGroupVictim.creature;
+
+        noPartyMemberCurrentlyAttacked = true;
+        for (Player* member : players)
+            for (Unit* attacker : member->GetAttackers())
+                if (attacker == hostiles[1].creature)
+                    noPartyMemberCurrentlyAttacked = false;
+
+        HostileReference* tankThreatReference = nullptr;
+        for (HostileReference* reference = tank->GetHostileRefManager().getFirst();
+             reference; reference = reference->next())
+        {
+            if (reference->getSource() &&
+                reference->getSource()->getOwner() == hostiles[1].creature)
+            {
+                tankThreatReference = reference;
+                tankReferenceFound = true;
+                break;
+            }
+        }
+
+        if (tankThreatReference)
+            tankThreatReference->setOnlineOfflineState(false);
+
+        PartySnapshot const* referenceSnapshot =
+            PartySnapshotBuilder::GetOrBuild(tank, coordinator, 25000, 250);
+        HostileSnapshot const* nonVictimHostileSnapshot = referenceSnapshot
+            ? referenceSnapshot->FindHostile(hostiles[1].creature->GetObjectGuid().GetRawValue())
+            : nullptr;
+        bool offlineEntryMatches = false;
+        if (nonVictimHostileSnapshot)
+        {
+            for (ThreatEntrySnapshot const& entry : nonVictimHostileSnapshot->threat)
+            {
+                if (entry.unitGuid != tankGuid.GetRawValue())
+                    continue;
+                offlineEntryMatches = !entry.online && !entry.accessible &&
+                    std::fabs(entry.threat - tankThreat1) < 0.01f;
+                break;
+            }
+        }
+
+        bool const tankThreatInOfflineContainer =
+            hostiles[1].creature->GetThreatManager().getThreat(tank, false) == 0.0f &&
+            std::fabs(hostiles[1].creature->GetThreatManager().getThreat(tank, true) -
+                      tankThreat1) < 0.01f;
+        offlineReferenceCopied = tankThreatReference && !tankThreatReference->isOnline() &&
+            offlineEntryMatches && tankThreatInOfflineContainer;
+
+        nonVictimHostileDiscovered = hostileVictimOutsideGroup &&
+            noPartyMemberCurrentlyAttacked && tankReferenceFound &&
+            referenceSnapshot && referenceSnapshot->hostiles.size() == 2 &&
+            nonVictimHostileSnapshot &&
+            nonVictimHostileSnapshot->victimGuid ==
+                outsideGroupVictim.creature->GetObjectGuid().GetRawValue() &&
+            offlineReferenceCopied;
+
+        // Restore Core reference state and the previous hostile target before
+        // F10 death/recovery checks continue.
+        if (tankThreatReference)
+        {
+            tankThreatReference->setOnlineOfflineState(true);
+            tankThreatReference->setAccessibleState(true);
+        }
+        hostiles[1].creature->AI()->AttackStart(healer);
+        healerThreat1AfterReferenceProbe =
+            hostiles[1].creature->GetThreatManager().getThreat(healer);
+        victimRestored = hostiles[1].creature->GetVictim() == healer;
+    }
+
+    bool const f12ChecksPassed = f12CanProbe && hostileVictimOutsideGroup &&
+        noPartyMemberCurrentlyAttacked && tankReferenceFound &&
+        offlineReferenceCopied && nonVictimHostileDiscovered && victimRestored;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] HostileRefManager discovery: outsideVictim=%u noPartyAttacker=%u tankRef=%u offlineSnapshot=%u nonVictimHostile=%u restored=%u cleanupPending=1.",
+             hostileVictimOutsideGroup ? 1u : 0u,
+             noPartyMemberCurrentlyAttacked ? 1u : 0u,
+             tankReferenceFound ? 1u : 0u,
+             offlineReferenceCopied ? 1u : 0u,
+             nonVictimHostileDiscovered ? 1u : 0u,
+             victimRestored ? 1u : 0u);
+    if (f12ChecksPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: PartySnapshotBuilder discovered a non-current-victim hostile through a party member HostileRefManager and copied its offline threat reference state.");
+
     // F10: the living DPS establishes lower real damage-threat on both adds.
     // It must not steal aggro from the healer (212+) while it is alive.
     Player* dps = players[2];
@@ -2947,7 +3055,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         tankDeathBossSnapshot->victimGuid == healerGuid.GetRawValue() &&
         tankDeathAddSnapshot->victimGuid == healerGuid.GetRawValue() &&
         containsThreat(tankDeathBossSnapshot, healerGuid.GetRawValue(), healerThreat0) &&
-        containsThreat(tankDeathAddSnapshot, healerGuid.GetRawValue(), healerThreat1) &&
+        containsThreat(tankDeathAddSnapshot, healerGuid.GetRawValue(), healerThreat1AfterReferenceProbe) &&
         !containsThreat(tankDeathBossSnapshot, tankGuid.GetRawValue(), tankThreat0) &&
         !containsThreat(tankDeathAddSnapshot, tankGuid.GetRawValue(), tankThreat1);
 
@@ -3001,7 +3109,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         !containsThreat(healerDeathBossSnapshot, healerGuid.GetRawValue(), healerThreat0) &&
         !containsThreat(healerDeathAddSnapshot, healerGuid.GetRawValue(), healerThreat1);
 
-    bool const f10ChecksPassed = f9ChecksPassed && healerHoldsAggroOverDps &&
+    bool const f10ChecksPassed = f9ChecksPassed && f12ChecksPassed && healerHoldsAggroOverDps &&
         tankDied && tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&
@@ -3029,10 +3137,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
              registeredBeforeCleanup ? 1u : 0u, groupRemoved ? 1u : 0u,
              cleanupPassed ? 1u : 0u);
 
-    if (!f9ChecksPassed || !groupStillRegistered)
+    if (!f9ChecksPassed || !f12ChecksPassed || !groupStillRegistered)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Combined Group F8/F9 scenario failed before death recovery.");
+                 "[PartyBotSimulator] Combined Group F8/F9/F12 threat-reference scenario failed before death recovery.");
         return false;
     }
 

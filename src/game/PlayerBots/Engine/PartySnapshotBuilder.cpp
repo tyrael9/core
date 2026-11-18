@@ -57,17 +57,17 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
 
     // All data is copied into GUID/scalar values. Live pointers remain local to
     // this map update and never enter the cached PartySnapshot.
-    auto addHostile = [&](Unit* hostileUnit)
+    auto addHostile = [&](Unit* hostileUnit) -> HostileSnapshot*
     {
         if (!hostileUnit || !hostileUnit->IsInWorld() ||
             hostileUnit->GetMap() != map ||
             group->IsMember(hostileUnit->GetObjectGuid()))
-            return;
+            return nullptr;
 
         Guid const hostileGuid = hostileUnit->GetObjectGuid().GetRawValue();
         auto inserted = hostiles.emplace(hostileGuid, HostileSnapshot());
         if (!inserted.second)
-            return;
+            return &inserted.first->second;
 
         HostileSnapshot& hostile = inserted.first->second;
         hostile.guid = hostileGuid;
@@ -92,6 +92,40 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
                 hostileUnit->CanReachWithMeleeAutoAttack(threatTarget);
             hostile.threat.push_back(threat);
         }
+        return &hostile;
+    };
+
+    auto addHostileReference = [&](HostileReference* reference)
+    {
+        if (!reference || !reference->getSource() || !reference->getTarget())
+            return;
+
+        ThreatManager* source = reference->getSource();
+        Unit* hostileUnit = source->getOwner();
+        HostileSnapshot* hostile = addHostile(hostileUnit);
+        if (!hostile)
+            return;
+
+        Guid const targetGuid = reference->getUnitGuid().GetRawValue();
+        if (reference->getTarget()->GetObjectGuid().GetRawValue() != targetGuid)
+            return;
+
+        // The online threat list was copied by addHostile. This path also
+        // preserves references held by the party member when Core has moved
+        // them to the hostile's offline threat container.
+        for (ThreatEntrySnapshot const& existing : hostile->threat)
+            if (existing.unitGuid == targetGuid)
+                return;
+
+        ThreatEntrySnapshot threat;
+        threat.unitGuid = targetGuid;
+        threat.threat = reference->getThreat();
+        threat.online = reference->isOnline();
+        threat.accessible = reference->isAccessable();
+        Unit* threatTarget = reference->getTarget();
+        threat.meleeReachable = threatTarget &&
+            hostileUnit->CanReachWithMeleeAutoAttack(threatTarget);
+        hostile->threat.push_back(threat);
     };
 
     // Group reads are safe in PACKET_PROCESS_MAP. Resolve only GUIDs on this
@@ -131,11 +165,15 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         memberData.inCombat = member->IsInCombat();
         snapshot.members.push_back(memberData);
 
-        // Include mobs currently attacking a party member and mobs that party
-        // members are attacking, giving both peel and assist strategies targets.
+        // Include current attackers and targets, plus every hostile that
+        // holds a reference to this member. Healing/assist threat traverses
+        // HostileRefManager, so the current victim alone is not a complete set.
         addHostile(member->GetVictim());
         for (Unit* attacker : member->GetAttackers())
             addHostile(attacker);
+        for (HostileReference* reference = member->GetHostileRefManager().getFirst();
+             reference; reference = reference->next())
+            addHostileReference(reference);
     }
 
     if (snapshot.members.empty())

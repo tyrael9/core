@@ -64,10 +64,13 @@ Verified Unit APIs:
 - Unit::GetAttackerForHelper() can return the current victim or an attacker.
 
 Verified ThreatManager/HostileReference APIs:
-- ThreatManager::getThreat(Unit*, bool) reads threat for a unit.
-- ThreatManager::getThreatList() returns a const ThreatList.
+- ThreatManager::getThreat(Unit*, bool) reads threat for a unit and optionally searches the offline container.
+- ThreatManager::getThreatList() returns the active online ThreatList; the offline container is private.
 - ThreatManager::getCurrentVictim() returns the current hostile reference.
-- HostileReference exposes `getThreat()`, `getUnitGuid()`, `isOnline()` and `isAccessable()`. `getThreat()` returns the reference's current threat value, including any temporary threat modification currently applied by taunt. `isOnline()` and `isAccessable()` are distinct: the header documents cases where a target is online but inaccessible to melee movement while still attackable by range.
+- HostileReference exposes `getThreat()`, `getUnitGuid()`, `isOnline()`, `isAccessable()`, `getTarget()`, `getSource()` and `next()`.
+- Unit::GetHostileRefManager() exposes the unit-side `HostileRefManager`; its `getFirst()` chain links every hostile source that currently holds a threat reference to the unit.
+- `HostileReference::getSource()->getOwner()` resolves the hostile source Unit; `ThreatManager::getThreat(Unit*, true)` includes offline references.
+- `HostileRefManager::threatAssist` divides the supplied amount by the reference count unless `pSingleTarget` is set, then calls `addThreat(..., isAssistThreat=true)` for every linked hostile source. Healing/assist impact therefore spans the entire member-side reference list, not just the current attacker. `getThreat()` returns the reference's current threat value, including any temporary threat modification currently applied by taunt. `isOnline()` and `isAccessable()` are distinct: the header documents cases where a target is online but inaccessible to melee movement while still attackable by range.
 
 `Unit::CanReachWithMeleeAutoAttack(Unit const*)` is a public Core API. The implementation delegates to `CanReachWithMeleeAutoAttackAtPosition` and uses the hostile's combat reach, target combat reach, `BASE_MELEERANGE_OFFSET`, minimum `ATTACK_DISTANCE`, leeway and melee Z reach. PartySnapshotBuilder now calls this API on the hostile Creature for each online threat reference and copies only the resulting boolean; Stage F11 runtime CI validates both true and false cases.
 

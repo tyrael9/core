@@ -15,6 +15,7 @@
 #include "Engine/PartyCoordinator.h"
 #include "Engine/PartySnapshot.h"
 
+#include <algorithm>
 #include <sstream>
 
 namespace

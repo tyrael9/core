@@ -364,6 +364,75 @@ private:
     std::string m_name = "core_attack";
 };
 
+class SimulatorThreatBudgetProbeAction final : public Action
+{
+public:
+    explicit SimulatorThreatBudgetProbeAction(std::vector<ThreatImpactEntry> impacts)
+        : m_impacts(std::move(impacts)) {}
+
+    std::string const& GetName() const override { return m_name; }
+
+    bool IsPossible(DecisionContext const&, ActionCandidate const&, std::string&) const override
+    {
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const&, ActionCandidate const&, std::string&) const override
+    {
+        return true;
+    }
+
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        ThreatImpactEstimate estimate;
+        estimate.completeness = ThreatImpactCompleteness::Complete;
+        estimate.snapshotEpoch = context.snapshot.epoch;
+        estimate.reservationDurationMs = 2000;
+        estimate.impacts = m_impacts;
+        estimate.reason = "simulator_core_snapshot_threat_budget_probe";
+        return estimate;
+    }
+
+    ActionResult Execute(DecisionContext&, ActionCandidate const&) override
+    {
+        ++m_executeCount;
+        return ActionResult::Success;
+    }
+
+    uint32 GetExecuteCount() const { return m_executeCount; }
+
+private:
+    std::vector<ThreatImpactEntry> m_impacts;
+    std::string m_name = "simulator_threat_budget_probe";
+    uint32 m_executeCount = 0;
+};
+
+class SimulatorThreatBudgetProbeTrigger final : public Trigger
+{
+public:
+    explicit SimulatorThreatBudgetProbeTrigger(Guid hostileGuid)
+        : m_hostileGuid(hostileGuid) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const&) const override { return true; }
+
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "simulator_threat_budget_probe";
+        candidate.targetGuid = m_hostileGuid;
+        candidate.basePriority = 100.0f;
+        candidate.channel = ActionChannel::GlobalCooldown;
+        candidates.push_back(candidate);
+    }
+
+private:
+    Guid m_hostileGuid = 0;
+    std::string m_name = "simulator_threat_budget_probe";
+};
+
 class SimulatorTankAssistTrigger final : public Trigger
 {
 public:
@@ -2879,6 +2948,141 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         initialVictim0 == tank && initialVictim1 == tank &&
         tankThreat0 > 0.0f && tankThreat1 > 0.0f;
 
+    // Give the Healer a real, deliberately tiny assist-threat reference on
+    // each add. The resulting snapshot has a current victim plus a non-victim
+    // threat owner, so the Engine can assess both 110%/130% Core headrooms.
+    float healerThreatBeforeBudget0 = 0.0f;
+    float healerThreatBeforeBudget1 = 0.0f;
+    bool threatBudgetSnapshotValid = false;
+    bool overBudgetRejected = false;
+    bool safeBudgetSelectedAndReserved = false;
+    bool enginePreservedCoreThreatState = false;
+    bool enginePreservedCoreVictims = false;
+    bool reservationReleased = false;
+
+    if (bothHostilesInitiallyTargetTank)
+    {
+        tank->GetHostileRefManager().threatAssist(healer, 1.0f);
+        healerThreatBeforeBudget0 = hostiles[0].creature->GetThreatManager().getThreat(healer);
+        healerThreatBeforeBudget1 = hostiles[1].creature->GetThreatManager().getThreat(healer);
+
+        coordinator.InvalidateSnapshot();
+        PartySnapshot const* budgetSnapshot =
+            PartySnapshotBuilder::GetOrBuild(tank, coordinator, 15500, 250);
+        PartyMemberSnapshot const* healerForBudget = budgetSnapshot
+            ? budgetSnapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
+        HostileSnapshot const* firstForBudget = budgetSnapshot
+            ? budgetSnapshot->FindHostile(hostiles[0].creature->GetObjectGuid().GetRawValue()) : nullptr;
+        HostileSnapshot const* secondForBudget = budgetSnapshot
+            ? budgetSnapshot->FindHostile(hostiles[1].creature->GetObjectGuid().GetRawValue()) : nullptr;
+
+        ThreatBudgetAssessment const firstAssessment = budgetSnapshot && healerForBudget
+            ? AssessThreatBudget(*budgetSnapshot, hostiles[0].creature->GetObjectGuid().GetRawValue(),
+                                 healerGuid.GetRawValue(), 15500, 250)
+            : ThreatBudgetAssessment();
+        ThreatBudgetAssessment const secondAssessment = budgetSnapshot && healerForBudget
+            ? AssessThreatBudget(*budgetSnapshot, hostiles[1].creature->GetObjectGuid().GetRawValue(),
+                                 healerGuid.GetRawValue(), 15500, 250)
+            : ThreatBudgetAssessment();
+
+        threatBudgetSnapshotValid = budgetSnapshot && budgetSnapshot->epoch &&
+            budgetSnapshot->members.size() == MAX_GROUP_SIZE &&
+            budgetSnapshot->hostiles.size() == 2 && healerForBudget &&
+            healerForBudget->online && healerForBudget->alive &&
+            firstForBudget && secondForBudget &&
+            firstAssessment.status == ThreatBudgetStatus::BudgetAvailable &&
+            secondAssessment.status == ThreatBudgetStatus::BudgetAvailable &&
+            std::fabs(firstAssessment.memberThreat - healerThreatBeforeBudget0) < 0.01f &&
+            std::fabs(secondAssessment.memberThreat - healerThreatBeforeBudget1) < 0.01f &&
+            std::fabs(firstAssessment.currentVictimThreat - tankThreat0) < 0.01f &&
+            std::fabs(secondAssessment.currentVictimThreat - tankThreat1) < 0.01f;
+
+        if (threatBudgetSnapshotValid)
+        {
+            std::vector<ThreatImpactEntry> overBudgetImpacts;
+            ThreatImpactEntry overFirst;
+            overFirst.threatOwnerGuid = healerGuid.GetRawValue();
+            overFirst.hostileGuid = hostiles[0].creature->GetObjectGuid().GetRawValue();
+            overFirst.threatPoints = firstAssessment.rawHeadroom + 1.0f;
+            overFirst.source = ThreatImpactSource::DirectDamage;
+            overFirst.bound = ThreatImpactBound::UpperBound;
+            ThreatImpactEntry overSecond = overFirst;
+            overSecond.hostileGuid = hostiles[1].creature->GetObjectGuid().GetRawValue();
+            overSecond.threatPoints = secondAssessment.rawHeadroom + 1.0f;
+            overBudgetImpacts = {overFirst, overSecond};
+
+            DecisionContext budgetContext(*budgetSnapshot, *healerForBudget, coordinator, 15500);
+            PartyBotEngine overBudgetEngine;
+            std::shared_ptr<SimulatorThreatBudgetProbeAction> overBudgetAction(
+                new SimulatorThreatBudgetProbeAction(overBudgetImpacts));
+            bool const overRegistered = overBudgetEngine.RegisterAction(overBudgetAction);
+            std::shared_ptr<Strategy> overStrategy(new Strategy("simulator_over_budget_probe"));
+            overStrategy->AddTrigger(std::make_shared<SimulatorThreatBudgetProbeTrigger>(
+                hostiles[0].creature->GetObjectGuid().GetRawValue()));
+            overBudgetEngine.AddStrategy(overStrategy);
+            DecisionReport overReport = overBudgetEngine.Evaluate(budgetContext);
+            overBudgetRejected = overRegistered && overReport.selectedIndices.empty() &&
+                overReport.candidates.size() == 1 &&
+                overReport.candidates[0].status == CandidateStatus::RejectedThreatBudget &&
+                overBudgetAction->GetExecuteCount() == 0;
+
+            float const safeFirstPoints = std::min(1.0f, firstAssessment.rawHeadroom * 0.25f);
+            float const safeSecondPoints = std::min(1.0f, secondAssessment.rawHeadroom * 0.25f);
+            std::vector<ThreatImpactEntry> safeImpacts;
+            ThreatImpactEntry safeFirst = overFirst;
+            safeFirst.threatPoints = safeFirstPoints;
+            ThreatImpactEntry safeSecond = overSecond;
+            safeSecond.threatPoints = safeSecondPoints;
+            safeImpacts = {safeFirst, safeSecond};
+
+            PartyBotEngine safeBudgetEngine;
+            std::shared_ptr<SimulatorThreatBudgetProbeAction> safeBudgetAction(
+                new SimulatorThreatBudgetProbeAction(safeImpacts));
+            bool const safeRegistered = safeBudgetEngine.RegisterAction(safeBudgetAction);
+            std::shared_ptr<Strategy> safeStrategy(new Strategy("simulator_safe_budget_probe"));
+            safeStrategy->AddTrigger(std::make_shared<SimulatorThreatBudgetProbeTrigger>(
+                hostiles[0].creature->GetObjectGuid().GetRawValue()));
+            safeBudgetEngine.AddStrategy(safeStrategy);
+            DecisionReport safeReport = safeBudgetEngine.Evaluate(budgetContext);
+            bool const safeSelected = safeRegistered && safeReport.selectedIndices.size() == 1 &&
+                safeReport.candidates[safeReport.selectedIndices[0]].status == CandidateStatus::Selected;
+            safeBudgetEngine.ExecuteSelected(budgetContext, safeReport);
+            CandidateEvaluation const* safeEvaluation = safeReport.candidates.empty()
+                ? nullptr : &safeReport.candidates[0];
+            safeBudgetSelectedAndReserved = safeSelected && safeEvaluation &&
+                safeEvaluation->status == CandidateStatus::Executed &&
+                safeBudgetAction->GetExecuteCount() == 1 &&
+                safeEvaluation->threatActionId != 0 &&
+                safeEvaluation->candidate.threatActionId == safeEvaluation->threatActionId &&
+                std::fabs(coordinator.GetReservedThreatImpact(
+                    safeFirst.hostileGuid, safeFirst.threatOwnerGuid, 0, 15500) - safeFirstPoints) < 0.01f &&
+                std::fabs(coordinator.GetReservedThreatImpact(
+                    safeSecond.hostileGuid, safeSecond.threatOwnerGuid, 0, 15500) - safeSecondPoints) < 0.01f;
+
+            if (safeEvaluation && safeEvaluation->threatActionId)
+            {
+                coordinator.ReleaseThreatAction(safeEvaluation->threatActionId);
+                reservationReleased = coordinator.GetReservedThreatImpact(
+                    safeFirst.hostileGuid, safeFirst.threatOwnerGuid, 0, 15500) == 0.0f &&
+                    coordinator.GetReservedThreatImpact(
+                    safeSecond.hostileGuid, safeSecond.threatOwnerGuid, 0, 15500) == 0.0f;
+            }
+
+            float const healerThreatAfterBudget0 =
+                hostiles[0].creature->GetThreatManager().getThreat(healer);
+            float const healerThreatAfterBudget1 =
+                hostiles[1].creature->GetThreatManager().getThreat(healer);
+            enginePreservedCoreThreatState =
+                std::fabs(healerThreatAfterBudget0 - healerThreatBeforeBudget0) < 0.01f &&
+                std::fabs(healerThreatAfterBudget1 - healerThreatBeforeBudget1) < 0.01f &&
+                std::fabs(hostiles[0].creature->GetThreatManager().getThreat(tank) - tankThreat0) < 0.01f &&
+                std::fabs(hostiles[1].creature->GetThreatManager().getThreat(tank) - tankThreat1) < 0.01f;
+            enginePreservedCoreVictims =
+                hostiles[0].creature->GetThreatManager().getHostileTarget() == tank &&
+                hostiles[1].creature->GetThreatManager().getHostileTarget() == tank;
+        }
+    }
+
     // The healer performs a normal non-triggered Lesser Heal. The follow-up
     // assist is an explicit scripted event through Core's native
     // HostileRefManager::threatAssist API; the simulator does not implement
@@ -3022,11 +3226,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         allPlayersOnSameMap && initialSnapshotValid && initialRosterResolved &&
         initialValuesCopied && initialRolesUnknown && initialCacheRetained &&
         registeredBeforeCleanup && bothHostilesInitiallyTargetTank &&
+        threatBudgetSnapshotValid && overBudgetRejected && safeBudgetSelectedAndReserved &&
+        enginePreservedCoreThreatState && enginePreservedCoreVictims && reservationReleased &&
         tankAliveAndInjured && healCompleted && healerPulledBothAdds &&
         snapshotValid && rosterRoleStateValid && bothAddsResolved && threatValuesCopied && coreReachabilityCopied;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u meleeReachability=%u/4 reachable=%u unreachable=%u.",
+             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u budgetSnapshot=%u overBudgetRejected=%u safeSelectedReserved=%u threatUnchanged=%u victimUnchanged=%u reservationReleased=%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u meleeReachability=%u/4 reachable=%u unreachable=%u.",
              hostileAIReady ? 1u : 0u, membersAdded ? 1u : 0u,
              mainTankAssigned ? 1u : 0u, allPlayersOnSameMap ? 1u : 0u,
              initialSnapshotValid ? 1u : 0u, initialRosterResolved ? 1u : 0u,
@@ -3035,6 +3241,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
              tankDamage0, tankDamage1, patientHealthBeforeDamage,
              scriptedTankDamage, patientHealthBeforeHeal, tankThreat0, tankThreat1,
              initialVictim0 == tank ? 1u : 0u, initialVictim1 == tank ? 1u : 0u,
+             threatBudgetSnapshotValid ? 1u : 0u, overBudgetRejected ? 1u : 0u,
+             safeBudgetSelectedAndReserved ? 1u : 0u,
+             enginePreservedCoreThreatState ? 1u : 0u,
+             enginePreservedCoreVictims ? 1u : 0u, reservationReleased ? 1u : 0u,
              hostileRefsOnTank, static_cast<uint32>(healCastResult),
              patientHealthBeforeHeal, patientHealthAfterHeal,
              healerManaBefore, healerManaAfter, kScriptedAssistThreat,

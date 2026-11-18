@@ -16,6 +16,12 @@ class SpellEntry;
 
 namespace PartyBotEngine
 {
+struct PartySnapshot;
+struct EncounterHeartbeat;
+}
+
+namespace PartyBotEngine
+{
 
 class DecisionTrace
 {
@@ -24,6 +30,7 @@ public:
 
     // Begin a bounded trace window for one PartyBot AI update.
     void BeginTick() const;
+    bool IsEnabled() const { return m_enabled; }
 
     // Record one eligibility rejection or spell execution result.
     void Record(Player const* bot, char const* event, Unit const* target,
@@ -34,6 +41,10 @@ public:
                                   uint32 groupId, uint32 mapId, uint32 instanceId,
                                   uint64 encounterId, uint32 sequence,
                                   uint32 elapsedMs, char const* reason) const;
+
+    // One coordinator-throttled, bounded roster/hostile snapshot per encounter heartbeat.
+    void RecordPartyHeartbeat(Player const* bot, PartySnapshot const& snapshot,
+                              EncounterHeartbeat const& heartbeat) const;
 
     // Record a bounded status when Shadow cannot produce an evaluation.
     void RecordShadowStatus(Player const* bot, char const* status,

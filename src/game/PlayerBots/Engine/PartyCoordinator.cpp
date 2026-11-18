@@ -152,14 +152,14 @@ bool PartyCoordinator::TryReserveThreatImpact(ThreatReservation const& reservati
 
 float PartyCoordinator::GetReservedThreatImpact(Guid hostileGuid, Guid threatOwnerGuid,
                                                  ThreatActionId exceptActionId,
-                                                 std::uint32_t nowMs) {
-    PruneExpired(nowMs);
+                                                 std::uint32_t nowMs) const {
     if (!hostileGuid || !threatOwnerGuid)
         return 0.0f;
 
     double total = 0.0;
     for (ThreatReservation const& reservation : m_threatReservations) {
-        if (reservation.hostileGuid == hostileGuid &&
+        if (!IsExpired(nowMs, reservation.expiresAtMs) &&
+            reservation.hostileGuid == hostileGuid &&
             reservation.threatOwnerGuid == threatOwnerGuid &&
             (!exceptActionId || reservation.actionId != exceptActionId))
             total += static_cast<double>(reservation.threatPoints);

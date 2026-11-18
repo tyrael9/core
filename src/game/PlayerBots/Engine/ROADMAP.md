@@ -155,7 +155,7 @@ All classes and roles are composed within one PartyBotEngine queue; this is not 
   - [~] Stage P7.3: connect action-specific impact estimates, reservations and budget policy without duplicating Core target selection.
     - [x] P7.3a: extend the typed impact taxonomy to distinguish periodic damage and periodic power assist; validate source/bound enums, finite nonnegative threat points, nonzero GUIDs/reason/epoch and exact snapshot-epoch matching with pure tests.
     - [~] P7.3b: begin Core-backed per-action estimation with a spell-less applied-direct-damage component using Core's own threat multiplier and `ThreatCalcHelper`. Runtime parity is pending; the component intentionally remains Unknown until the whole Action's other threat sources are enumerated.
-    - [ ] P7.3c: add bounded floating-point reservations keyed by hostile and actual threat owner, with action/tick expiry and complete owner/action cleanup.
+    - [x] P7.3c: add bounded floating-point reservations keyed by hostile and actual threat owner, with wrap-safe map-tick expiry, idempotent action rows, and complete action/bot-owner cleanup. Pure tests cover fan-out aggregation, pet threat ownership, expiry, invalid values and capacity; CI validation is pending.
     - [ ] P7.3d: integrate per-hostile headroom and reservations into action eligibility/priority, then validate against actual Core-generated threat and prove the Engine never mutates Core threat/victim state.
 - [ ] Healing triage with incoming heals, HoTs, shields, effective healing and reservations.
 - [ ] CC assignment, protection and break recovery.

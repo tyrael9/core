@@ -26,7 +26,9 @@ public:
     }
     ActionResult Execute(DecisionContext&, ActionCandidate const&) override { ++executeCount; return result; }
     ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
-                                               ActionCandidate const&) const override {
+                                               ActionCandidate const& candidate) const override {
+        if (returnDefaultUnknown)
+            return Action::EstimateThreatImpact(context, candidate);
         if (useThreatImpact) {
             ThreatImpactEstimate estimate = threatImpact;
             estimate.snapshotEpoch = context.snapshot.epoch;
@@ -39,6 +41,7 @@ public:
         return estimate;
     }
     bool possible = true, useful = true, useThreatImpact = false;
+    bool returnDefaultUnknown = false;
     ActionResult result = ActionResult::Success;
     ThreatImpactEstimate threatImpact;
     std::uint32_t executeCount = 0;
@@ -464,6 +467,7 @@ void ConfigureThreat(HostileSnapshot& hostile, Guid victimGuid, float victimThre
 void TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness() {
     Fixture f;
     TestAction action("damage");
+    action.returnDefaultUnknown = true;
     ActionCandidate candidate = Candidate("damage", 10.0f, ActionChannel::GlobalCooldown);
 
     ThreatImpactEstimate unknown = action.EstimateThreatImpact(f.context, candidate);

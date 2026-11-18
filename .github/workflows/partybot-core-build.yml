@@ -80,9 +80,9 @@ jobs:
           PARTYBOT_SIMULATOR_DATA_SHA256: ${{ secrets.PARTYBOT_SIMULATOR_DATA_SHA256 }}
         run: |
           if [[ -n "$PARTYBOT_SIMULATOR_DATA_URL" ]]; then
-            echo "[PartyBotSimulator] Google Drive URL secret: present"
+            echo "[PartyBotSimulator] Fixture URL secret: present"
           else
-            echo "[PartyBotSimulator] Google Drive URL secret: MISSING"
+            echo "[PartyBotSimulator] Fixture URL secret: MISSING"
           fi
           if [[ -n "$PARTYBOT_SIMULATOR_DATA_SHA256" ]]; then
             echo "[PartyBotSimulator] SHA256 secret: present"

@@ -3121,7 +3121,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     // The healer performs a normal non-triggered Lesser Heal. Before the cast,
     // estimate only its direct healing-assist component from the real Core
     // HostileRefManager fan-out and ThreatCalcHelper. The maximum possible
-    // health gain is bounded by the target's maximum health; this intentionally
+    // health gain is bounded by the target's currently missing health; this intentionally
     // conservative component does not claim to cover flat spell threat/procs.
     uint32 const patientHealthBeforeDamage = tank->GetHealth();
     uint32 const scriptedTankDamage = std::max<uint32>(1u, tank->GetMaxHealth() / 5u);
@@ -3138,7 +3138,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     ThreatImpactEstimate const healAssistComponent =
         healAssistSnapshot && healSpell
             ? EstimateDirectHealingAssistComponent(
-                  healer, tank, static_cast<float>(tank->GetMaxHealth()),
+                  healer, tank,
+                  static_cast<float>(tank->GetMaxHealth() - patientHealthBeforeHeal),
                   healSpell, *healAssistSnapshot)
             : ThreatImpactEstimate();
     auto findHealAssistBound = [&](Guid hostileGuid) -> float

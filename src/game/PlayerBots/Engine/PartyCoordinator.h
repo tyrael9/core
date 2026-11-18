@@ -22,6 +22,20 @@ struct ThreatReservation {
     float threatPoints = 0.0f;
     std::uint32_t expiresAtMs = 0;
 };
+
+enum class EncounterTransitionKind : std::uint8_t { None, Started, Ended };
+
+struct EncounterTransition {
+    EncounterTransitionKind kind = EncounterTransitionKind::None;
+    std::uint64_t encounterId = 0;
+    std::uint32_t sequence = 0;
+    std::uint32_t groupId = 0;
+    std::uint32_t mapId = 0;
+    std::uint32_t instanceId = 0;
+    std::uint32_t elapsedMs = 0;
+    char const* reason = "none";
+};
+
 class PartyCoordinator {
 public:
     bool TryReserve(Reservation const& reservation, std::uint32_t nowMs);
@@ -39,6 +53,16 @@ public:
     void ReleaseThreatAction(ThreatActionId actionId);
     std::size_t GetThreatReservationCount() const { return m_threatReservations.size(); }
 
+    // One map/instance-scoped encounter lifecycle shared by every bot in the party.
+    // Calls consume value-only snapshots; no Core object pointers are retained.
+    EncounterTransition ObserveEncounter(PartySnapshot const& snapshot,
+                                         std::uint32_t nowMs,
+                                         std::uint32_t settleMs);
+    EncounterTransition CloseEncounter(std::uint32_t nowMs, char const* reason);
+    std::uint32_t NextEncounterSequence();
+    std::uint64_t GetEncounterId() const { return m_encounterId; }
+    bool HasActiveEncounter() const { return m_encounterActive; }
+
     std::uint32_t NextSnapshotEpoch();
     void SetSnapshot(PartySnapshot snapshot);
     void InvalidateSnapshot() { m_hasSnapshot = false; }
@@ -50,7 +74,12 @@ private:
     std::vector<ThreatReservation> m_threatReservations;
     PartySnapshot m_snapshot;
     ThreatActionId m_nextThreatActionId = 0;
+    std::uint64_t m_encounterId = 0;
+    std::uint32_t m_encounterSequence = 0;
+    std::uint32_t m_encounterStartedAtMs = 0;
+    std::uint32_t m_lastCombatAtMs = 0;
     std::uint32_t m_nextSnapshotEpoch = 0;
+    bool m_encounterActive = false;
     bool m_hasSnapshot = false;
 };
 

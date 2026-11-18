@@ -472,20 +472,22 @@ inline ThreatImpactEstimate EstimateAppliedPeriodicHealingAssistComponent(
     estimate.snapshotEpoch = snapshotEpoch;
     estimate.reason = "periodic_healing_assist_component_only";
 
-    bool periodicHealEffect = false;
+    bool periodicHealAssistEffect = false;
     if (spellInfo) {
         for (std::uint8_t i = 0; i < MAX_EFFECT_INDEX; ++i) {
             if (spellInfo->Effect[i] == SPELL_EFFECT_APPLY_AURA &&
                 (spellInfo->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_HEAL ||
-                 spellInfo->EffectApplyAuraName[i] == SPELL_AURA_OBS_MOD_HEALTH)) {
-                periodicHealEffect = true;
+                 spellInfo->EffectApplyAuraName[i] == SPELL_AURA_OBS_MOD_HEALTH ||
+                 spellInfo->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_LEECH ||
+                 spellInfo->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_HEALTH_FUNNEL)) {
+                periodicHealAssistEffect = true;
                 break;
             }
         }
     }
 
     if (!snapshotEpoch || !realCaster || !healedTarget || !spellInfo ||
-        !periodicHealEffect || !realCaster->IsAlive() || !healedTarget->IsAlive() ||
+        !periodicHealAssistEffect || !realCaster->IsAlive() || !healedTarget->IsAlive() ||
         !realCaster->IsInWorld() || !healedTarget->IsInWorld() ||
         !realCaster->IsInMap(healedTarget)) {
         estimate.reason = "periodic_healing_assist_component_missing_or_ineligible_core_state";

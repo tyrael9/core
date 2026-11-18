@@ -4829,20 +4829,25 @@ bool RunPeriodicManaLeechThreatFixture(Map& map)
         hostile.creature->RemoveAurasDueToSpell(candidate->Id);
     }
 
-    if (!selectedSpell || !aura || !hostile.creature->CanHaveThreatList() ||
-        caster.creature->HasAura(17864, EFFECT_INDEX_0) ||
-        caster.creature->HasAura(18393, EFFECT_INDEX_0))
+    bool const auraFound = aura != nullptr;
+    bool const hostileCanHaveThreatList =
+        hostile.creature && hostile.creature->CanHaveThreatList();
+    bool const improvedDrainMana1 =
+        caster.creature && caster.creature->HasAura(17864, EFFECT_INDEX_0);
+    bool const improvedDrainMana2 =
+        caster.creature && caster.creature->HasAura(18393, EFFECT_INDEX_0);
+    if (!selectedSpell || !aura || !hostileCanHaveThreatList ||
+        improvedDrainMana1 || improvedDrainMana2)
     {
         bool cleaned = DestroySimulatorActor(map, hostile);
         cleaned = DestroySimulatorActor(map, caster) && cleaned;
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Periodic mana leech fixture preconditions failed (cast=%u aura=%u candidates=%u threatList=%u improvedA=%u improvedB=%u cleanup=%u).",
-                 static_cast<uint32>(castResult), aura ? 1u : 0u,
+                 static_cast<uint32>(castResult), auraFound ? 1u : 0u,
                  static_cast<uint32>(candidates.size()),
-                 hostile.creature->CanHaveThreatList() ? 1u : 0u,
-                 caster.creature->HasAura(17864, EFFECT_INDEX_0) ? 1u : 0u,
-                 caster.creature->HasAura(18393, EFFECT_INDEX_0) ? 1u : 0u,
-                 cleaned ? 1u : 0u);
+                 hostileCanHaveThreatList ? 1u : 0u,
+                 improvedDrainMana1 ? 1u : 0u,
+                 improvedDrainMana2 ? 1u : 0u, cleaned ? 1u : 0u);
         return false;
     }
 

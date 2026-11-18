@@ -76,6 +76,9 @@ private:
     ThreatActionId m_nextThreatActionId = 0;
     std::uint64_t m_encounterId = 0;
     std::uint32_t m_encounterSequence = 0;
+    std::uint32_t m_encounterGroupId = 0;
+    std::uint32_t m_encounterMapId = 0;
+    std::uint32_t m_encounterInstanceId = 0;
     std::uint32_t m_encounterStartedAtMs = 0;
     std::uint32_t m_lastCombatAtMs = 0;
     std::uint32_t m_nextSnapshotEpoch = 0;

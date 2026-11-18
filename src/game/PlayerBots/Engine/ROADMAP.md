@@ -254,3 +254,11 @@ Next implementation slice: add a component-scoped negative flat-threat estimator
 - [x] Add a component-scoped Core estimator for negative `spell_threat` routing. It requires a caller-proven complete successful target set and exact per-target effect masks; reproduces Core's negative-effect classification, mixed-sign rejection, harmful-threat suppression, `CanCauseThreatOnMask` filter and `ThreatCalcHelper` modifier; emits caster-owned threat rows on the affected hostile.
 - [ ] Add a real Core cast fixture comparing the estimate with the actual ThreatManager delta, plus fail-closed tests for incomplete target sets, mixed-sign effects, masked effects and unresolved targets.
 - [ ] Keep the enclosing action `Unknown` until SpellScript/proc/other effect closure is separately proven.
+
+
+## Negative flat spell-threat Core cast fixture (2026-11-18)
+
+- [x] Add a Core-backed runtime fixture that discovers a real harmful single-effect aura spell with a loaded `spell_threat` row, evaluates the component using the exact one-target effect mask, performs the real triggered Core cast, and compares the hostile ThreatManager delta to the estimate. The fixture also asserts no direct health damage, so the measured delta isolates the flat spell-threat route.
+- [x] Make the runtime CI script require the new PASS marker; the fixture is no longer an optional diagnostic that can silently be omitted.
+- [ ] Await ARM64 runtime CI for this commit. If the data fixture has no eligible spell or the real cast does not produce the expected delta, fix the fixture/estimator from the captured logs rather than weakening the assertion.
+- [ ] Add negative-path coverage for incomplete target sets, invalid masks, mixed-sign effects, and unresolved targets.

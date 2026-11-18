@@ -353,3 +353,16 @@ The proc handler is not a simple fixed trigger lookup. For example, the inspecte
 - Paladin Judgement of Light/Wisdom, where the actual attacker becomes the triggered heal/mana caster.
 
 These are examples, not an exhaustive proc catalog. The proc graph depends on both actors' active aura state and can produce more than one triggered action, so the primary spell ID alone cannot define a complete forecast. The estimator must account for attacker-side and victim-side procs, their timing, recursive/triggered spell behavior and actual caster/target identities. If it cannot prove the relevant proc closure is empty or bounded, the direct spell action remains `Unknown`.
+
+
+### Negative flat spell-threat routing audit (2026-11-18)
+
+The pinned Core implementation is `Spell::HandleThreatSpells` in `src/game/Spells/Spell.cpp`. It runs from `Spell::_handle_immediate_phase` after target-list construction and before per-target effect execution. The estimator must therefore model the already-resolved successful target/effect-mask set, not infer recipients from the spell's primary target alone.
+
+Core classifies the spell using the same constructor rule used to populate `m_negativeEffectMask`: for every effect index, a non-positive `SpellEntry::IsPositiveEffect` marks that bit negative, and self-targeted `SPELL_EFFECT_SCHOOL_DAMAGE` is also marked negative. It then builds the active effect mask from non-empty effects. If any active bit is negative but not all active bits are negative, Core ignores the flat threat entry entirely. Otherwise the entry is positive or negative as a whole.
+
+For each successful target, Core additionally requires `SpellThreatEntry::CanCauseThreatOnMask(ihit.effectMask)`. Positive threat calls the target's `HostileRefManager::threatAssist`, distributing the event over every hostile reference held by that target. Negative threat instead requires the affected target to `CanHaveThreatList()` and calls that target's `AddThreat(caster, threat, false, schoolMask, spellInfo)`. This is a different recipient topology: the affected hostile itself is the threat-list owner, and the caster is the threat owner. Core's `AddThreat` path applies `ThreatCalcHelper::CalcThreat` modifiers.
+
+The existing estimator only includes a positive flat-threat component inside the direct-heal-assist helper, and only for the supplied healed target. It does not yet estimate negative flat spell threat. A future component must receive or independently prove the exact successful per-target effect mask, reject mixed-sign spells exactly as Core does, validate every affected hostile against the same snapshot/map/instance, and emit one impact row per successful hostile target. If target enumeration, miss state, effect mask, or the complete target set is unknown, the component and enclosing action must remain `Unknown`; it must not guess that a spell has no flat threat.
+
+This is a source-path audit only. No estimator behavior or runtime eligibility has been relaxed.

@@ -593,6 +593,161 @@ inline ThreatImpactEstimate EstimateAppliedPeriodicHealingAssistComponent(
     return estimate;
 }
 
+
+
+// Estimate only the assist-threat component of one already-applied periodic
+// power tick. The caller supplies the actual effective ModifyPower gain after
+// Core's tick amount calculation and resource-cap clamp. Future ticks remain
+// outside this component.
+inline ThreatImpactEstimate EstimateAppliedPeriodicPowerAssistComponent(
+    Unit* realCaster, Unit* energizedTarget, std::uint32_t effectivePowerGain,
+    Powers powerType, SpellEntry const* spellInfo, SpellEffectIndex effectIndex,
+    std::uint32_t snapshotEpoch)
+{
+    ThreatImpactEstimate estimate;
+    estimate.snapshotEpoch = snapshotEpoch;
+    estimate.reason = "periodic_power_assist_component_only";
+
+    bool const validEffectIndex = effectIndex >= EFFECT_INDEX_0 &&
+        effectIndex < MAX_EFFECT_INDEX;
+    bool periodicEnergize = false;
+    bool observedMana = false;
+    if (spellInfo && validEffectIndex &&
+        spellInfo->Effect[effectIndex] == SPELL_EFFECT_APPLY_AURA) {
+        periodicEnergize =
+            spellInfo->EffectApplyAuraName[effectIndex] == SPELL_AURA_PERIODIC_ENERGIZE;
+        observedMana =
+            spellInfo->EffectApplyAuraName[effectIndex] == SPELL_AURA_OBS_MOD_MANA;
+    }
+
+    if (!snapshotEpoch || !realCaster || !energizedTarget || !spellInfo ||
+        !validEffectIndex || (!periodicEnergize && !observedMana) ||
+        !realCaster->IsAlive() || !energizedTarget->IsAlive() ||
+        !realCaster->IsInWorld() || !energizedTarget->IsInWorld() ||
+        !realCaster->IsInMap(energizedTarget) ||
+        powerType < POWER_MANA || powerType >= MAX_POWERS) {
+        estimate.reason = "periodic_power_assist_component_missing_or_ineligible_core_state";
+        return estimate;
+    }
+
+    if (observedMana) {
+        if (powerType != POWER_MANA) {
+            estimate.reason = "periodic_power_assist_observed_mana_power_type_mismatch";
+            return estimate;
+        }
+    } else {
+        if (spellInfo->EffectMiscValue[effectIndex] != static_cast<int32>(powerType)) {
+            estimate.reason = "periodic_power_assist_effect_power_type_mismatch";
+            return estimate;
+        }
+
+        // Core's 1.12 branch explicitly excludes mana and happiness from
+        // SPELL_AURA_PERIODIC_ENERGIZE threat. OBS_MOD_MANA is a separate
+        // legacy aura arm and does generate assist threat for mana restoration.
+        if (powerType == POWER_MANA || powerType == POWER_HAPPINESS) {
+            estimate.completeness = ThreatImpactCompleteness::NoThreat;
+            estimate.reason = "core_periodic_energize_power_type_has_no_threat";
+            return estimate;
+        }
+    }
+
+    if (spellInfo->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT)) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "periodic_power_assist_suppressed_by_core_spell_attribute";
+        return estimate;
+    }
+
+    // Core can update an existing reference while suppressing creation of new
+    // references. Without proving that the caster reference already exists,
+    // this component must not guess the resulting impact set.
+    if (spellInfo->HasAttribute(SPELL_ATTR_EX_NO_THREAT)) {
+        estimate.reason = "periodic_power_assist_no_new_threat_reference_unproven";
+        return estimate;
+    }
+
+    if (!effectivePowerGain) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "periodic_power_tick_has_no_effective_resource_gain";
+        return estimate;
+    }
+
+    std::vector<std::pair<Guid, Unit*>> hostileReferences;
+    Guid const targetGuid = energizedTarget->GetObjectGuid().GetRawValue();
+    HostileRefManager& hostileRefs = energizedTarget->GetHostileRefManager();
+    for (HostileReference* reference = hostileRefs.getFirst();
+         reference; reference = reference->next()) {
+        Unit* hostileUnit = reference->getSourceUnit();
+        if (!hostileUnit || reference->getTarget() != energizedTarget ||
+            reference->getUnitGuid().GetRawValue() != targetGuid ||
+            !hostileUnit->CanHaveThreatList() || !hostileUnit->IsAlive() ||
+            !hostileUnit->IsInWorld() || !hostileUnit->IsInMap(realCaster)) {
+            estimate.reason = "periodic_power_assist_component_hostile_reference_unresolved";
+            return estimate;
+        }
+
+        Guid const hostileGuid = hostileUnit->GetObjectGuid().GetRawValue();
+        if (!hostileGuid ||
+            std::any_of(hostileReferences.begin(), hostileReferences.end(),
+                [hostileGuid](std::pair<Guid, Unit*> const& existing) {
+                    return existing.first == hostileGuid;
+                })) {
+            estimate.reason = "periodic_power_assist_component_duplicate_or_invalid_hostile";
+            return estimate;
+        }
+        hostileReferences.emplace_back(hostileGuid, hostileUnit);
+    }
+
+    if (hostileReferences.empty()) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "periodic_power_assist_component_has_no_hostile_references";
+        return estimate;
+    }
+
+    float const spellThreatMultiplier = sSpellMgr.GetSpellThreatMultiplier(spellInfo);
+    float const totalAssistThreat =
+        static_cast<float>(effectivePowerGain) * 0.5f * spellThreatMultiplier;
+    float const threatPerReference =
+        totalAssistThreat / static_cast<float>(hostileReferences.size());
+    if (!std::isfinite(spellThreatMultiplier) || spellThreatMultiplier < 0.0f ||
+        !std::isfinite(totalAssistThreat) || totalAssistThreat < 0.0f ||
+        !std::isfinite(threatPerReference) || threatPerReference < 0.0f) {
+        estimate.reason = "periodic_power_assist_component_invalid_core_multiplier_or_fanout";
+        return estimate;
+    }
+
+    Guid const casterGuid = realCaster->GetObjectGuid().GetRawValue();
+    if (!casterGuid) {
+        estimate.reason = "periodic_power_assist_component_caster_guid_missing";
+        return estimate;
+    }
+
+    for (std::pair<Guid, Unit*> const& hostileReference : hostileReferences) {
+        Unit* hostileUnit = hostileReference.second;
+        bool const assistSuppressedByHardCC =
+            hostileUnit->HasUnitState(UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING | UNIT_STATE_ISOLATED) ||
+            (hostileUnit->HasUnitState(UNIT_STATE_STUNNED) &&
+             hostileUnit->HasBreakableByDamageAuraType(SPELL_AURA_MOD_STUN, 0));
+        float const coreInputThreat = assistSuppressedByHardCC ? 0.0f : threatPerReference;
+        float const threatPoints = ThreatCalcHelper::CalcThreat(
+            realCaster, coreInputThreat, false, spellInfo->GetSpellSchoolMask(), spellInfo);
+        if (!std::isfinite(threatPoints) || threatPoints < 0.0f) {
+            estimate.reason = "periodic_power_assist_component_invalid_core_threat";
+            estimate.impacts.clear();
+            return estimate;
+        }
+
+        ThreatImpactEntry impact;
+        impact.threatOwnerGuid = casterGuid;
+        impact.hostileGuid = hostileReference.first;
+        impact.threatPoints = threatPoints;
+        impact.source = ThreatImpactSource::PeriodicPowerAssist;
+        impact.bound = ThreatImpactBound::Exact;
+        estimate.impacts.push_back(impact);
+    }
+
+    return estimate;
+}
+
 } // namespace PartyBotEngine
 
 #endif

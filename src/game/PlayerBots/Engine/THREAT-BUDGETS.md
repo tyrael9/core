@@ -314,3 +314,27 @@ This inventory is evidence of concrete exceptions, not an exhaustive proof over 
 - keep the existing direct-damage/direct-heal/flat-spell/Pet support strictly component-scoped.
 
 CI validation for this documentation state: trusted push `#44264594529` passed pure tests, Linux ARM64 configure/build, simulator harness syntax, and the optional full 5875 Core-backed runtime fixture; its log ended in `Runtime PASS` and uploaded artifact `partybot-simulator-992c25f7b38f149bf2faac3490c93384591b5c2a`. PR workflow `#44264603355` passed. The ordinary CI Build run `#44264594534` was skipped by its event/condition configuration; it is not a failure and supplies no additional validation.
+
+
+### Direct spell damage: cast-time calculation and side-effect audit (2026-11-18)
+
+The ordinary direct spell path was traced through the pinned Vanilla 5875 Core:
+
+1. `Spell::HandleEffects` calls `CalculateDamage(effect, target)`, which delegates to `SpellCaster::CalculateSpellEffectValue`. The latter uses the spell's current/base effect points, level/base-level/max-level scaling, dice/random range, combo-point contribution and applicable spell modifiers. These values are not necessarily the static DBC base points.
+2. Before the effect handler runs, `SpellScript::OnEffectExecute` may modify `spell->damage`, suppress the effect, mutate state or cast another spell. Registered examples include:
+   - Ferocious Bite: adds combo-point/attack-power and remaining-energy scaling, then consumes energy.
+   - Eviscerate: adds combo-point/attack-power scaling.
+   - Bloodthirst: scales damage by current attack power and target creature-type modifiers.
+   - Shield Slam: adds current shield block value.
+   - Execute: a dummy script computes a rage-scaled custom damage spell; the damage spell consumes rage.
+   - Hammer of Wrath and Judgement of Command: adjust the direct damage through target/caster modifiers; Judgement of Command can halve damage if the target is not stunned.
+   - Holy Shock, Holy Nova, Warrior's Wrath and Touch of Weakness select/cast separate follow-up spells.
+   - Flametongue computes a custom proc amount from spell power and weapon speed; Meteor divides damage among the actual selected targets.
+3. The ordinary hit pipeline aggregates effect damage, then invokes `SpellCaster::CalculateSpellDamage`. For magical spells this applies `SpellDamageBonusDone`, `SpellDamageBonusTaken`, possible critical damage and physical armor mitigation, followed by final integer dithering. Melee/ranged spell classes use their corresponding melee damage bonus functions. The target's absorb/resist/block and `DealDamageMods` are then applied before final application.
+4. `SpellScript::OnHit` can run after damage calculation but before procs/final damage. The hit path invokes `ProcDamageAndSpell` before `DealSpellDamage`; proc auras can create additional triggered spells and threat events. A direct spell forecast that only models its primary hit therefore misses a potentially state-dependent chain.
+5. `SpellCaster::DealSpellDamage` enters `Unit::DealDamage`. For a non-player hostile victim, the applied damage (not pre-mitigation damage) is multiplied by the spell threat multiplier and passed to `AddThreat`. `ThreatCalcHelper::CalcThreat` then applies the hated unit's spell-mod threat, critical-threat modifier and total threat modifier.
+6. Separately, `Spell::HandleSpellThreat` processes flat `spell_threat` data for successful target/effect masks. Positive entries use each successful target's `HostileRefManager::threatAssist`; negative entries add threat to the affected hostile. Both paths must be included in the same action estimate.
+
+The script inventory above was obtained by inspecting the registered class/item spell-script modules on the pinned branch. It is deliberately described as a concrete sample, not an exhaustive proof over all script bindings, proc-triggered spells, talents, item effects or encounter scripts.
+
+**Estimator boundary:** do not promote generic direct spell damage to `Complete` based only on `EffectBasePoints`, `CalculateSpellEffectValue` or the final damage formula. The pre-cast estimator must resolve the actual selected spell script, current random/state-dependent effect inputs, target-specific modifiers and mitigation bounds, OnHit changes, proc-trigger closure, flat spell-threat routing, and every hostile/actual threat-owner recipient. If any of those are unknown, stale or unbounded, the action remains `Unknown`. Existing applied-damage parity tests validate only the Core damage-to-threat calculation after damage is known; they do not establish a safe future-cast prediction.

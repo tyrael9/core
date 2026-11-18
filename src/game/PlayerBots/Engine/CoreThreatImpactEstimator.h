@@ -383,6 +383,80 @@ inline ThreatImpactEstimate EstimateNegativeFlatSpellThreatComponent(
     return estimate;
 }
 
+
+
+// Estimate only one already-applied ordinary periodic-damage tick. Aura::PeriodicTick
+// has already resolved scripts, family/tick scaling, target damage-taken bonuses,
+// dithering, immunity/absorb/resist, procs and the target-health clamp. Unit::DealDamage
+// then multiplies the final applied DOT damage by GetSpellThreatMultiplier(spellInfo)
+// and routes it through hostile->AddThreat(threatOwner, ...). This component must
+// never be used to predict future ticks from the Aura's nominal stored amount.
+inline ThreatImpactEstimate EstimateAppliedPeriodicDamageComponent(
+    Unit* threatOwner, Creature* hostile, std::uint32_t appliedDamage,
+    SpellEntry const* spellInfo, std::uint32_t snapshotEpoch)
+{
+    ThreatImpactEstimate estimate;
+    estimate.snapshotEpoch = snapshotEpoch;
+    estimate.reason = "periodic_damage_component_only";
+
+    bool periodicDamageEffect = false;
+    if (spellInfo) {
+        for (std::uint8_t i = 0; i < MAX_EFFECT_INDEX; ++i) {
+            if (spellInfo->Effect[i] == SPELL_EFFECT_APPLY_AURA &&
+                (spellInfo->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_DAMAGE ||
+                 spellInfo->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_DAMAGE_PERCENT)) {
+                periodicDamageEffect = true;
+                break;
+            }
+        }
+    }
+
+    if (!snapshotEpoch || !threatOwner || !hostile || !spellInfo ||
+        !periodicDamageEffect || !threatOwner->IsAlive() || !hostile->IsAlive() ||
+        !threatOwner->IsInWorld() || !hostile->IsInWorld() ||
+        !threatOwner->IsInMap(hostile) || threatOwner == hostile ||
+        !hostile->CanHaveThreatList() ||
+        spellInfo->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT) ||
+        // Core may update an existing reference but will not create a new one.
+        // Until the estimator proves that reference exists, this stays Unknown.
+        spellInfo->HasAttribute(SPELL_ATTR_EX_NO_THREAT)) {
+        estimate.reason = "periodic_damage_component_missing_or_ineligible_core_state";
+        return estimate;
+    }
+
+    if (!appliedDamage) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "periodic_damage_tick_applied_no_damage";
+        return estimate;
+    }
+
+    float const spellThreatMultiplier = sSpellMgr.GetSpellThreatMultiplier(spellInfo);
+    float const rawThreat = static_cast<float>(appliedDamage) * spellThreatMultiplier;
+    if (!std::isfinite(spellThreatMultiplier) || spellThreatMultiplier < 0.0f ||
+        !std::isfinite(rawThreat) || rawThreat < 0.0f) {
+        estimate.reason = "periodic_damage_component_invalid_core_multiplier";
+        return estimate;
+    }
+
+    // ThreatManager::addThreat calls this exact Core calculation for the
+    // threat owner supplied by Unit::DealDamage.
+    float const threatPoints = ThreatCalcHelper::CalcThreat(
+        threatOwner, rawThreat, false, spellInfo->GetSpellSchoolMask(), spellInfo);
+    if (!std::isfinite(threatPoints) || threatPoints < 0.0f) {
+        estimate.reason = "periodic_damage_component_invalid_core_threat";
+        return estimate;
+    }
+
+    ThreatImpactEntry impact;
+    impact.threatOwnerGuid = threatOwner->GetObjectGuid().GetRawValue();
+    impact.hostileGuid = hostile->GetObjectGuid().GetRawValue();
+    impact.threatPoints = threatPoints;
+    impact.source = ThreatImpactSource::PeriodicDamage;
+    impact.bound = ThreatImpactBound::Exact;
+    estimate.impacts.push_back(impact);
+    return estimate;
+}
+
 } // namespace PartyBotEngine
 
 #endif

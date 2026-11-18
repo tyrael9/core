@@ -1240,6 +1240,79 @@ void TestEncounterLifecycleCompanionWrapAndExplicitClose()
            EncounterTransitionKind::None);
 }
 
+
+void TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe()
+{
+    PartyCoordinator coordinator;
+    PartySnapshot snapshot;
+    snapshot.groupId = 900;
+    snapshot.mapId = 0;
+    snapshot.instanceId = 3;
+    snapshot.epoch = 1;
+
+    PartyMemberSnapshot member;
+    member.guid = 901;
+    member.online = true;
+    member.alive = true;
+    member.inCombat = true;
+    snapshot.members.push_back(member);
+
+    std::uint32_t const start = 1000;
+    EncounterTransition started = coordinator.ObserveEncounter(snapshot, start, 10000);
+    assert(started.kind == EncounterTransitionKind::Started);
+
+    EncounterHeartbeat heartbeat;
+    assert(!coordinator.TryBeginEncounterHeartbeat(start, 0, heartbeat));
+    assert(!coordinator.TryBeginEncounterHeartbeat(start, 0x80000000u, heartbeat));
+    assert(coordinator.TryBeginEncounterHeartbeat(start, 2000, heartbeat));
+    assert(heartbeat.encounterId == started.encounterId);
+    assert(heartbeat.sequence == 2);
+    assert(heartbeat.groupId == snapshot.groupId);
+    assert(heartbeat.mapId == 0);
+    assert(heartbeat.instanceId == snapshot.instanceId);
+    assert(heartbeat.elapsedMs == 0);
+
+    // All bots share the coordinator, so a second bot cannot duplicate the
+    // same party heartbeat at the same map tick.
+    EncounterHeartbeat duplicate;
+    assert(!coordinator.TryBeginEncounterHeartbeat(start, 2000, duplicate));
+    assert(!coordinator.TryBeginEncounterHeartbeat(start + 1999u, 2000, duplicate));
+    assert(coordinator.TryBeginEncounterHeartbeat(start + 2000u, 2000, duplicate));
+    assert(duplicate.encounterId == started.encounterId);
+    assert(duplicate.sequence == 3);
+    assert(duplicate.elapsedMs == 2000);
+
+    EncounterTransition closed = coordinator.CloseEncounter(start + 2500u, "test_close");
+    assert(closed.kind == EncounterTransitionKind::Ended);
+    assert(!coordinator.TryBeginEncounterHeartbeat(start + 3000u, 2000, duplicate));
+
+    // A new encounter resets the shared heartbeat gate and its sequence.
+    snapshot.epoch = 2;
+    EncounterTransition restarted =
+        coordinator.ObserveEncounter(snapshot, start + 4000u, 10000);
+    assert(restarted.kind == EncounterTransitionKind::Started);
+    assert(restarted.encounterId != started.encounterId);
+    assert(coordinator.TryBeginEncounterHeartbeat(start + 4000u, 2000, duplicate));
+    assert(duplicate.encounterId == restarted.encounterId);
+    assert(duplicate.sequence == 2);
+    assert(duplicate.elapsedMs == 0);
+
+    // Unsigned elapsed time keeps the interval gate correct across wraparound.
+    PartyCoordinator wrappedCoordinator;
+    snapshot.epoch = 1;
+    std::uint32_t const wrapStart = 0xfffffff0u;
+    EncounterTransition wrappedStart =
+        wrappedCoordinator.ObserveEncounter(snapshot, wrapStart, 10000);
+    assert(wrappedStart.kind == EncounterTransitionKind::Started);
+    assert(wrappedCoordinator.TryBeginEncounterHeartbeat(wrapStart, 2000, heartbeat));
+    assert(!wrappedCoordinator.TryBeginEncounterHeartbeat(
+        static_cast<std::uint32_t>(wrapStart + 1999u), 2000, duplicate));
+    assert(wrappedCoordinator.TryBeginEncounterHeartbeat(
+        static_cast<std::uint32_t>(wrapStart + 2000u), 2000, duplicate));
+    assert(duplicate.sequence == 3);
+    assert(duplicate.elapsedMs == 2000);
+}
+
 }
 int main() {
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();

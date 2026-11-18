@@ -66,6 +66,24 @@ void DecisionTrace::Record(Player const* bot, char const* event, Unit const* tar
              detail);
 }
 
+void DecisionTrace::RecordEncounterBoundary(Player const* bot, char const* event,
+                                                     uint32 groupId, uint32 mapId,
+                                                     uint32 instanceId, uint64 encounterId,
+                                                     uint32 sequence, uint32 elapsedMs,
+                                                     char const* reason) const
+{
+    // Do not apply MAX_RECORDS_PER_TICK here: losing an encounter boundary would
+    // make every later event in that fight impossible to correlate.
+    if (!m_enabled || !bot || !encounterId || !sequence)
+        return;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=%s group=%u map=%u instance=%u bot=%u elapsed_ms=%u reason=%s",
+             static_cast<unsigned long long>(encounterId), sequence,
+             event ? event : "unknown", groupId, mapId, instanceId,
+             bot->GetGUIDLow(), elapsedMs, reason ? reason : "unspecified");
+}
+
 void DecisionTrace::RecordShadowStatus(Player const* bot, char const* status,
                                       uint32 groupId, uint32 mapId, uint32 instanceId) const
 {

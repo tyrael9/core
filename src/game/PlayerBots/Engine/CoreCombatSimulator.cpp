@@ -4299,6 +4299,186 @@ bool RunPeriodicDamageThreatFixture(Map& map)
     return true;
 }
 
+
+bool RunPeriodicHealingAssistThreatFixture(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor healer;
+    SimulatorActor healedTarget;
+    SimulatorActor hostileA;
+    SimulatorActor hostileB;
+    bool created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 36.0f, healer) &&
+        CreateSimulatorActor(map, *info, partyFaction, 2.0f, 36.0f, healedTarget) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 4.0f, 36.0f, hostileA) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 6.0f, 36.0f, hostileB);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, healedTarget) && cleaned;
+        cleaned = DestroySimulatorActor(map, healer) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic healing fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    healer.creature->SetLevel(60);
+    healedTarget.creature->SetLevel(60);
+    hostileA.creature->SetLevel(60);
+    hostileB.creature->SetLevel(60);
+    healedTarget.creature->SetHealth(50000);
+
+    // Create two real hostile references on the healed Unit. The hostile
+    // Creature ThreatManagers must both contain the healed target before the
+    // periodic heal so Core's HostileRefManager::threatAssist divides by 2.
+    uint32 const seedDamageA = healedTarget.creature->DealDamage(
+        hostileA.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    uint32 const seedDamageB = healedTarget.creature->DealDamage(
+        hostileB.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    healedTarget.creature->SetInCombatWith(hostileA.creature);
+    healedTarget.creature->SetInCombatWith(hostileB.creature);
+    hostileA.creature->SetInCombatWith(healedTarget.creature);
+    hostileB.creature->SetInCombatWith(healedTarget.creature);
+
+    uint32 hostileReferenceCount = 0;
+    for (HostileReference* reference = healedTarget.creature->GetHostileRefManager().getFirst();
+         reference; reference = reference->next())
+        ++hostileReferenceCount;
+
+    // Rejuvenation rank 10 is an ordinary single-effect periodic heal in the
+    // pinned Vanilla 5875 data. Reject DB/script drift, rather than substituting
+    // a different effect family or broadening this fixture silently.
+    uint32 const spellId = 26982;
+    SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
+    bool const spellValid = spell &&
+        spell->Effect[0] == SPELL_EFFECT_APPLY_AURA &&
+        spell->EffectApplyAuraName[0] == SPELL_AURA_PERIODIC_HEAL &&
+        !spell->Effect[1] && !spell->Effect[2] &&
+        spell->IsPositiveEffect(EFFECT_INDEX_0) &&
+        spell->SpellVisual != 163 &&
+        !spell->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT) &&
+        !spell->HasAttribute(SPELL_ATTR_EX_NO_THREAT);
+    if (!spellValid || seedDamageA != 1 || seedDamageB != 1 ||
+        hostileReferenceCount != 2)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, healedTarget) && cleaned;
+        cleaned = DestroySimulatorActor(map, healer) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic healing fixture preconditions failed (spellValid=%u seed=%u/%u references=%u cleanup=%u).",
+                 spellValid ? 1u : 0u, seedDamageA, seedDamageB,
+                 hostileReferenceCount, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    SpellCastResult const castResult = healer.creature->CastSpell(
+        healedTarget.creature, spell, true);
+    Aura* aura = castResult == SPELL_CAST_OK
+        ? healedTarget.creature->GetAura(spellId, EFFECT_INDEX_0) : nullptr;
+    bool const auraIsOrdinary = aura && aura->IsPeriodic() &&
+        aura->GetAuraScript() == nullptr && aura->GetAuraPeriodicTimer() > 0;
+    if (!auraIsOrdinary)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, healedTarget) && cleaned;
+        cleaned = DestroySimulatorActor(map, healer) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic healing aura did not apply as a simple Core aura (cast=%u aura=%u script=%u timer=%d cleanup=%u).",
+                 static_cast<uint32>(castResult), aura ? 1u : 0u,
+                 aura && aura->GetAuraScript() ? 1u : 0u,
+                 aura ? aura->GetAuraPeriodicTimer() : -1, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    uint32 const healthBefore = healedTarget.creature->GetHealth();
+    uint32 const ticksBefore = aura->GetAuraTicks();
+    float const threatABefore = hostileA.creature->GetThreatManager().getThreat(healer.creature);
+    float const threatBBefore = hostileB.creature->GetThreatManager().getThreat(healer.creature);
+
+    // Drive the ordinary Core active-object/Aura scheduler until exactly one
+    // real tick has completed. Resolve the Aura pointer again after each update.
+    uint32 updates = 0;
+    for (; updates < 64; ++updates)
+    {
+        map.Update(250);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        aura = healedTarget.creature->GetAura(spellId, EFFECT_INDEX_0);
+        if (!aura || aura->GetAuraTicks() > ticksBefore)
+            break;
+    }
+
+    uint32 const ticksAfter = aura ? aura->GetAuraTicks() : 0;
+    uint32 const healthAfter = healedTarget.creature->GetHealth();
+    uint32 const effectiveHealing = healthAfter > healthBefore
+        ? healthAfter - healthBefore : 0;
+    float const threatAAfter = hostileA.creature->GetThreatManager().getThreat(healer.creature);
+    float const threatBAfter = hostileB.creature->GetThreatManager().getThreat(healer.creature);
+    float const actualDeltaA = threatAAfter - threatABefore;
+    float const actualDeltaB = threatBAfter - threatBBefore;
+
+    ThreatImpactEstimate const estimate = EstimateAppliedPeriodicHealingAssistComponent(
+        healer.creature, healedTarget.creature, effectiveHealing, spell, 88002);
+    bool rowA = false, rowB = false;
+    float estimatedA = -1.0f, estimatedB = -1.0f;
+    for (ThreatImpactEntry const& impact : estimate.impacts)
+    {
+        if (impact.threatOwnerGuid != healer.creature->GetObjectGuid().GetRawValue() ||
+            impact.source != ThreatImpactSource::PeriodicHealAssist ||
+            impact.bound != ThreatImpactBound::Exact)
+            continue;
+        if (impact.hostileGuid == hostileA.creature->GetObjectGuid().GetRawValue())
+        {
+            rowA = true;
+            estimatedA = impact.threatPoints;
+        }
+        else if (impact.hostileGuid == hostileB.creature->GetObjectGuid().GetRawValue())
+        {
+            rowB = true;
+            estimatedB = impact.threatPoints;
+        }
+    }
+
+    bool const estimateShape =
+        estimate.completeness == ThreatImpactCompleteness::Unknown &&
+        estimate.impacts.size() == 2 && rowA && rowB;
+    bool const matched = ticksAfter == ticksBefore + 1 &&
+        effectiveHealing > 0 && estimateShape &&
+        std::fabs(actualDeltaA - estimatedA) < 0.01f &&
+        std::fabs(actualDeltaB - estimatedB) < 0.01f &&
+        std::fabs(actualDeltaA - actualDeltaB) < 0.01f;
+
+    bool cleaned = DestroySimulatorActor(map, hostileB);
+    cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+    cleaned = DestroySimulatorActor(map, healedTarget) && cleaned;
+    cleaned = DestroySimulatorActor(map, healer) && cleaned;
+
+    sLog.Out(LOG_BASIC, matched && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Periodic healing tick: spell=%u ticks=%u>%u updates=%u effectiveHealing=%u refs=%u estimateShape=%u estimated=%.3f/%.3f actualDelta=%.3f/%.3f matched=%u cleanup=%u.",
+             spellId, ticksBefore, ticksAfter, updates, effectiveHealing,
+             hostileReferenceCount, estimateShape ? 1u : 0u, estimatedA,
+             estimatedB, actualDeltaA, actualDeltaB, matched ? 1u : 0u,
+             cleaned ? 1u : 0u);
+
+    if (!matched || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core periodic-healing assist tick parity fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: a real Core periodic-healing Aura tick distributed 50% of effective healing across both live hostile references; the component matched each actual ThreatManager delta.");
+    return true;
+}
+
 bool RunNegativeFlatSpellThreatFixture(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -4509,6 +4689,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const creatureCombatPassed = RunCoreCombatThreatSmokeTest(*map);
     bool const negativeFlatSpellThreatPassed = RunNegativeFlatSpellThreatFixture(*map);
     bool const periodicDamagePassed = RunPeriodicDamageThreatFixture(*map);
+    bool const periodicHealingPassed = RunPeriodicHealingAssistThreatFixture(*map);
     bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
@@ -4526,7 +4707,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     // and F9 multi-add threat path; do not create two Groups on the same Map.
     bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
-                              creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && engineExecutorPassed &&
+                              creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&

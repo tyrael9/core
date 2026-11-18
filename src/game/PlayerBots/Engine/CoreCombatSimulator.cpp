@@ -4820,12 +4820,29 @@ bool RunPeriodicManaLeechThreatFixture(Map& map)
         castResult = caster.creature->CastSpell(hostile.creature, candidate, true);
         aura = castResult == SPELL_CAST_OK
             ? hostile.creature->GetAura(candidate->Id, EFFECT_INDEX_0) : nullptr;
-        if (aura && aura->IsPeriodic() && !aura->GetAuraScript() &&
-            aura->GetAuraPeriodicTimer() > 0)
+        Modifier const* modifier = aura ? aura->GetModifier() : nullptr;
+        bool const hasEffectiveDrain = modifier && modifier->m_amount > 0.0f;
+        bool const transfersMana = candidate->EffectMultipleValue[0] > 0.0f;
+        bool const ordinaryManaLeech = aura && aura->IsPeriodic() &&
+            !aura->GetAuraScript() && aura->GetAuraPeriodicTimer() > 0 &&
+            hasEffectiveDrain && transfersMana;
+        if (ordinaryManaLeech)
         {
             selectedSpell = candidate;
             break;
         }
+
+        // Some 5875 rows use the PERIODIC_MANA_LEECH aura type for a zero
+        // amount or a zero transfer multiplier. They apply and tick normally,
+        // but cannot drain or produce threat. Do not let one masquerade as the
+        // representative mana-leech fixture.
+        sLog.Out(LOG_BASIC, LOG_LVL_DEBUG,
+                 "[PartyBotSimulator] Periodic mana leech candidate skipped: spell=%u cast=%u aura=%u amount=%.3f multiplier=%.3f timer=%d script=%u.",
+                 candidate->Id, static_cast<uint32>(castResult), aura ? 1u : 0u,
+                 modifier ? modifier->m_amount : 0.0f,
+                 candidate->EffectMultipleValue[0],
+                 aura ? aura->GetAuraPeriodicTimer() : -1,
+                 aura && aura->GetAuraScript() ? 1u : 0u);
         hostile.creature->RemoveAurasDueToSpell(candidate->Id);
     }
 

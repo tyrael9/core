@@ -236,7 +236,7 @@ bool CreateSimulatorPrimaryPet(Map& map, Player& owner, CreatureInfo const& info
 
     candidate->SetActiveObjectState(true);
     owner.SetPet(candidate.get());
-    map.Add(candidate.get());
+    map.Add(static_cast<Creature*>(candidate.get()));
 
     bool const registered = candidate->IsInWorld() &&
         map.GetPet(candidate->GetObjectGuid()) == candidate.get() &&
@@ -248,7 +248,7 @@ bool CreateSimulatorPrimaryPet(Map& map, Player& owner, CreatureInfo const& info
         if (candidate->IsInWorld())
         {
             candidate->CleanupsBeforeDelete();
-            map.Remove(candidate.get(), false);
+            map.Remove(static_cast<Creature*>(candidate.get()), false);
         }
         return false;
     }
@@ -272,7 +272,7 @@ bool DestroySimulatorPrimaryPet(Map& map, Player* owner, std::unique_ptr<Pet>& p
         // Delete both directions of the real Core HostileReference links before
         // detaching the Pet. Do not call Unsummon/SavePetToDB in this fixture.
         rawPet->CleanupsBeforeDelete();
-        map.Remove(rawPet, false);
+        map.Remove(static_cast<Creature*>(rawPet), false);
     }
 
     bool const detached = !rawPet->IsInWorld() && map.GetPet(guid) == nullptr;
@@ -3015,10 +3015,14 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         PartyCompanionSnapshot const* petForBudget = budgetSnapshot && primaryPetGuid
             ? budgetSnapshot->FindCompanion(primaryPetGuid) : nullptr;
         ThreatEntrySnapshot const* petThreatForBudget = nullptr;
+        uint32 petThreatRows = 0;
         if (firstForBudget) {
-            for (ThreatEntrySnapshot const& entry : firstForBudget->threat)
-                if (entry.unitGuid == primaryPetGuid)
-                    petThreatForBudget = petThreatForBudget ? nullptr : &entry;
+            for (ThreatEntrySnapshot const& entry : firstForBudget->threat) {
+                if (entry.unitGuid == primaryPetGuid) {
+                    ++petThreatRows;
+                    petThreatForBudget = &entry;
+                }
+            }
         }
         primaryPetCoreMeleeReachable = primaryPetCreated &&
             hostiles[0].creature->CanReachWithMeleeAutoAttack(primaryPet.get());
@@ -3038,7 +3042,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             petForBudget->mapId == map.GetId() &&
             petForBudget->instanceId == map.GetInstanceId() &&
             primaryPet->GetOwnerGuid().GetRawValue() == healerGuid.GetRawValue() &&
-            petThreatForBudget &&
+            petThreatForBudget && petThreatRows == 1 &&
             std::fabs(petThreatForBudget->threat - primaryPetThreat) < 0.01f &&
             petThreatForBudget->online && petThreatForBudget->accessible &&
             petThreatForBudget->meleeReachable == primaryPetCoreMeleeReachable &&
@@ -3499,10 +3503,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     petCleanupPassed = DestroySimulatorPrimaryPet(map, healer, primaryPet) &&
         petCleanupPassed;
     bool primaryPetThreatReferenceRemoved = true;
-    for (HostileReference* reference = hostiles[0].creature->GetThreatManager().getThreatList().empty()
-             ? nullptr : hostiles[0].creature->GetThreatManager().getThreatList().front();
-         reference; reference = reference->next())
-        if (reference->getUnitGuid().GetRawValue() == primaryPetGuid)
+    for (HostileReference* reference :
+         hostiles[0].creature->GetThreatManager().getThreatList())
+        if (reference && reference->getUnitGuid().GetRawValue() == primaryPetGuid)
             primaryPetThreatReferenceRemoved = false;
     petCleanupPassed = petCleanupPassed && primaryPetThreatReferenceRemoved &&
         (!primaryPetGuid || map.GetPet(ObjectGuid(primaryPetGuid)) == nullptr);

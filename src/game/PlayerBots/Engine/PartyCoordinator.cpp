@@ -239,6 +239,8 @@ EncounterTransition PartyCoordinator::ObserveEncounter(PartySnapshot const& snap
             m_encounterInstanceId = snapshot.instanceId;
             m_encounterStartedAtMs = nowMs;
             m_lastCombatAtMs = nowMs;
+            m_lastEncounterHeartbeatAtMs = 0;
+            m_hasEncounterHeartbeat = false;
 
             transition.kind = EncounterTransitionKind::Started;
             transition.encounterId = m_encounterId;
@@ -286,7 +288,33 @@ EncounterTransition PartyCoordinator::CloseEncounter(std::uint32_t nowMs, char c
     m_encounterInstanceId = 0;
     m_encounterStartedAtMs = 0;
     m_lastCombatAtMs = 0;
+    m_lastEncounterHeartbeatAtMs = 0;
+    m_hasEncounterHeartbeat = false;
     return transition;
+}
+
+bool PartyCoordinator::TryBeginEncounterHeartbeat(std::uint32_t nowMs,
+                                                    std::uint32_t intervalMs,
+                                                    EncounterHeartbeat& heartbeat)
+{
+    if (!m_encounterActive || !m_encounterId || !intervalMs ||
+        intervalMs >= 0x80000000u)
+        return false;
+
+    if (m_hasEncounterHeartbeat &&
+        !HasElapsed(nowMs, m_lastEncounterHeartbeatAtMs, intervalMs))
+        return false;
+
+    m_lastEncounterHeartbeatAtMs = nowMs;
+    m_hasEncounterHeartbeat = true;
+
+    heartbeat.encounterId = m_encounterId;
+    heartbeat.sequence = NextEncounterSequence();
+    heartbeat.groupId = m_encounterGroupId;
+    heartbeat.mapId = m_encounterMapId;
+    heartbeat.instanceId = m_encounterInstanceId;
+    heartbeat.elapsedMs = nowMs - m_encounterStartedAtMs;
+    return heartbeat.sequence != 0;
 }
 
 std::uint32_t PartyCoordinator::NextEncounterSequence()

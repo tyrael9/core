@@ -254,6 +254,129 @@ inline ThreatImpactEstimate EstimateDirectHealingAssistComponent(
     return estimate;
 }
 
+
+// One successful Unit target recorded by Spell::m_UniqueTargetInfo. The
+// caller must supply the exact per-target effectMask and assert that the
+// complete successful target set for this cast has been enumerated.
+struct NegativeFlatSpellThreatTarget
+{
+    Unit* target = nullptr;
+    std::uint8_t successfulEffectMask = 0;
+};
+
+inline ThreatImpactEstimate EstimateNegativeFlatSpellThreatComponent(
+    Unit* realCaster, SpellEntry const* spellInfo,
+    SpellThreatEntry const* threatEntry,
+    std::vector<NegativeFlatSpellThreatTarget> const& successfulTargets,
+    bool successfulTargetSetComplete, std::uint32_t snapshotEpoch)
+{
+    ThreatImpactEstimate estimate;
+    estimate.snapshotEpoch = snapshotEpoch;
+    estimate.reason = "negative_flat_spell_threat_component_only";
+
+    if (!snapshotEpoch || !realCaster || !spellInfo || !threatEntry ||
+        !threatEntry->threat || !successfulTargetSetComplete ||
+        !realCaster->IsInWorld()) {
+        estimate.reason = "negative_flat_spell_threat_component_inputs_incomplete";
+        return estimate;
+    }
+
+    std::uint8_t activeEffectMask = 0;
+    std::uint8_t negativeEffectMask = 0;
+    for (std::uint8_t i = 0; i < MAX_EFFECT_INDEX; ++i) {
+        if (!spellInfo->Effect[i])
+            continue;
+
+        std::uint8_t const bit = static_cast<std::uint8_t>(1u << i);
+        activeEffectMask |= bit;
+        if (!spellInfo->IsPositiveEffect(SpellEffectIndex(i)) ||
+            (spellInfo->Effect[i] == SPELL_EFFECT_SCHOOL_DAMAGE &&
+             spellInfo->EffectImplicitTargetA[i] == TARGET_UNIT_CASTER))
+            negativeEffectMask |= bit;
+    }
+
+    // Spell::HandleThreatSpells aborts the whole flat-threat path for mixed
+    // positive/negative active effects. A wholly positive spell belongs to
+    // the separate positive-assist component, not this estimator.
+    if (!activeEffectMask || !negativeEffectMask ||
+        negativeEffectMask != activeEffectMask) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "core_negative_flat_spell_threat_not_applicable";
+        return estimate;
+    }
+
+    if (successfulTargets.empty()) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "core_negative_flat_spell_threat_no_successful_targets";
+        return estimate;
+    }
+
+    Guid const casterGuid = realCaster->GetObjectGuid().GetRawValue();
+    if (!casterGuid) {
+        estimate.reason = "negative_flat_spell_threat_caster_guid_missing";
+        return estimate;
+    }
+
+    std::vector<Guid> seenTargets;
+    for (NegativeFlatSpellThreatTarget const& hit : successfulTargets) {
+        Unit* target = hit.target;
+        if (!target || !hit.successfulEffectMask ||
+            !target->IsInWorld() || target->GetMap() != realCaster->GetMap()) {
+            estimate.reason = "negative_flat_spell_threat_target_unresolved";
+            estimate.impacts.clear();
+            return estimate;
+        }
+
+        Guid const targetGuid = target->GetObjectGuid().GetRawValue();
+        if (!targetGuid) {
+            estimate.reason = "negative_flat_spell_threat_target_guid_missing";
+            estimate.impacts.clear();
+            return estimate;
+        }
+        for (Guid seen : seenTargets) {
+            if (seen == targetGuid) {
+                estimate.reason = "negative_flat_spell_threat_duplicate_target";
+                estimate.impacts.clear();
+                return estimate;
+            }
+        }
+        seenTargets.push_back(targetGuid);
+
+        if (!threatEntry->CanCauseThreatOnMask(hit.successfulEffectMask) ||
+            !target->CanHaveThreatList())
+            continue;
+
+        // Spell::HandleThreatSpells calls target->AddThreat(caster, threat,
+        // false, schoolMask, spellInfo). AddThreat applies this exact Core
+        // threat calculation before storing the row on the affected hostile.
+        float const threatPoints = ThreatCalcHelper::CalcThreat(
+            realCaster, static_cast<float>(threatEntry->threat), false,
+            spellInfo->GetSpellSchoolMask(), spellInfo);
+        if (!std::isfinite(threatPoints) || threatPoints < 0.0f) {
+            estimate.reason = "negative_flat_spell_threat_invalid_core_modifier";
+            estimate.impacts.clear();
+            return estimate;
+        }
+
+        ThreatImpactEntry impact;
+        impact.threatOwnerGuid = casterGuid;
+        impact.hostileGuid = targetGuid;
+        impact.threatPoints = threatPoints;
+        impact.source = ThreatImpactSource::FlatSpellThreat;
+        impact.bound = ThreatImpactBound::Exact;
+        estimate.impacts.push_back(impact);
+    }
+
+    if (estimate.impacts.empty()) {
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "core_negative_flat_spell_threat_no_eligible_hostile_targets";
+        return estimate;
+    }
+
+    estimate.reason = "negative_flat_spell_threat_component_only";
+    return estimate;
+}
+
 } // namespace PartyBotEngine
 
 #endif

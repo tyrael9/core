@@ -153,3 +153,8 @@ The combined production five-Player Group/two-add simulator fixture now includes
 
 
 Additional P7.3d regressions cover the gap between selection and execution: a competing bot reservation inserted after Evaluate must cause ExecuteSelected to revalidate and refuse execution. The bounded-capacity test starts with 127 unrelated rows and attempts a two-recipient reservation; the first partial row must be rolled back when the second cannot fit, leaving all 127 original rows intact.
+
+
+## Running the full fixture-backed simulator manually
+
+The PartyBot Core build workflow keeps Google Drive fixture secrets out of pull-request jobs. The optional runtime, secret-presence checks and log-artifact upload run on trusted branch pushes and on maintainer-initiated workflow_dispatch only. To run the complete 5875 simulator manually, open **Actions → PartyBot Core build → Run workflow**, select branch **work/partybot-engine-foundation**, and click **Run workflow**. The job reports only whether the URL/checksum secrets are present, never their values; it downloads the archive, verifies SHA-256, runs disposable schemas and uploads the simulator logs. It has no image-publish or deployment step.

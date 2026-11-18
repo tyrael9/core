@@ -20,6 +20,7 @@
 #include "PlayerBots/Engine/Trigger.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "Pet.h"
 #include "Player.h"
 #include "Spell.h"
 #include "SpellMgr.h"
@@ -210,6 +211,81 @@ bool DestroySimulatorActor(Map& map, SimulatorActor& actor)
 
     delete actor.creature;
     actor.creature = nullptr;
+    return true;
+}
+
+bool CreateSimulatorPrimaryPet(Map& map, Player& owner, CreatureInfo const& info,
+                               std::unique_ptr<Pet>& pet)
+{
+    std::unique_ptr<Pet> candidate(new Pet(SUMMON_PET));
+    CreatureCreatePos position(
+        &map, owner.GetPositionX() + 1.0f, owner.GetPositionY(),
+        owner.GetPositionZ(), owner.GetOrientation());
+
+    if (!candidate->Create(
+            map.GenerateLocalLowGuid(HIGHGUID_PET), position, &info,
+            sObjectMgr.GeneratePetNumber()))
+        return false;
+
+    candidate->SetOwnerGuid(owner.GetObjectGuid());
+    candidate->SetCreatorGuid(owner.GetObjectGuid());
+    candidate->SetFactionTemplateId(owner.GetFactionTemplateId());
+    if (!candidate->InitStatsForLevel(owner.GetLevel(), &owner) ||
+        !candidate->AIM_Initialize())
+        return false;
+
+    candidate->SetActiveObjectState(true);
+    owner.SetPet(candidate.get());
+    map.Add(candidate.get());
+
+    bool const registered = candidate->IsInWorld() &&
+        map.GetPet(candidate->GetObjectGuid()) == candidate.get() &&
+        owner.GetPet() == candidate.get();
+    if (!registered)
+    {
+        if (owner.GetPetGuid() == candidate->GetObjectGuid())
+            owner.SetPet(nullptr);
+        if (candidate->IsInWorld())
+        {
+            candidate->CleanupsBeforeDelete();
+            map.Remove(candidate.get(), false);
+        }
+        return false;
+    }
+
+    pet = std::move(candidate);
+    return true;
+}
+
+bool DestroySimulatorPrimaryPet(Map& map, Player* owner, std::unique_ptr<Pet>& pet)
+{
+    if (!pet)
+        return true;
+
+    Pet* const rawPet = pet.get();
+    ObjectGuid const guid = rawPet->GetObjectGuid();
+    if (owner && owner->GetPetGuid() == guid)
+        owner->SetPet(nullptr);
+
+    if (rawPet->IsInWorld())
+    {
+        // Delete both directions of the real Core HostileReference links before
+        // detaching the Pet. Do not call Unsummon/SavePetToDB in this fixture.
+        rawPet->CleanupsBeforeDelete();
+        map.Remove(rawPet, false);
+    }
+
+    bool const detached = !rawPet->IsInWorld() && map.GetPet(guid) == nullptr;
+    if (!detached)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Refusing to destroy Pet GUID %u because Map::Remove(false) did not detach it.",
+                 rawPet->GetGUIDLow());
+        pet.release();
+        return false;
+    }
+
+    pet.reset();
     return true;
 }
 
@@ -2657,11 +2733,18 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     std::vector<ObjectGuid> playerGuids;
     SimulatorActor hostiles[2];
     SimulatorActor outsideGroupVictim;
+    std::unique_ptr<Pet> primaryPet;
+    Guid primaryPetGuid = 0;
+    bool primaryPetCreated = false;
+    bool petCleanupPassed = true;
     std::unique_ptr<Group> group(new Group());
     bool groupRegistered = false;
 
     auto cleanup = [&]() -> bool
     {
+        Player* const petOwner = players.size() > 1 ? players[1] : nullptr;
+        petCleanupPassed = DestroySimulatorPrimaryPet(map, petOwner, primaryPet) &&
+            petCleanupPassed;
         bool actorsCleaned = DestroySimulatorActor(map, hostiles[0]);
         actorsCleaned = DestroySimulatorActor(map, hostiles[1]) && actorsCleaned;
         actorsCleaned = DestroySimulatorActor(map, outsideGroupVictim) && actorsCleaned;
@@ -2700,7 +2783,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
 
         players.clear();
         sessions.clear();
-        return actorsCleaned && ungrouped && sessionsCleaned && playersDetachedFromMap;
+        return petCleanupPassed && actorsCleaned && ungrouped &&
+            sessionsCleaned && playersDetachedFromMap;
     };
 
     // Five real Core Players, all on the same test Map. The first is assigned
@@ -2879,6 +2963,23 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         initialVictim0 == tank && initialVictim1 == tank &&
         tankThreat0 > 0.0f && tankThreat1 > 0.0f;
 
+    // Create a real Core Pet owned by the Healer. The hostile gets threat on
+    // the Pet GUID itself; Core may also create the owner's zero-threat link.
+    // The Tank remains current victim because the Pet starts far below 110%.
+    bool const primaryPetEligible = bothHostilesInitiallyTargetTank &&
+        players.size() > 1 && players[1] == healer;
+    primaryPetCreated = primaryPetEligible &&
+        CreateSimulatorPrimaryPet(map, *healer, *info, primaryPet);
+    float primaryPetThreat = 0.0f;
+    if (primaryPetCreated)
+    {
+        primaryPetGuid = primaryPet->GetObjectGuid().GetRawValue();
+        hostiles[0].creature->AddThreat(
+            primaryPet.get(), 30.0f, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
+        primaryPetThreat =
+            hostiles[0].creature->GetThreatManager().getThreat(primaryPet.get());
+    }
+
     // Give the Healer a real, deliberately tiny assist-threat reference on
     // each add. The resulting snapshot has a current victim plus a non-victim
     // threat owner, so the Engine can assess both 110%/130% Core headrooms.
@@ -2891,6 +2992,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool enginePreservedCoreThreatState = false;
     bool enginePreservedCoreVictims = false;
     bool reservationReleased = false;
+    bool companionSnapshotValid = false;
+    bool companionBudgetValid = false;
+    float primaryPetHeadroom = 0.0f;
+    bool primaryPetCoreMeleeReachable = false;
 
     if (bothHostilesInitiallyTargetTank)
     {
@@ -2907,6 +3012,46 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             ? budgetSnapshot->FindHostile(hostiles[0].creature->GetObjectGuid().GetRawValue()) : nullptr;
         HostileSnapshot const* secondForBudget = budgetSnapshot
             ? budgetSnapshot->FindHostile(hostiles[1].creature->GetObjectGuid().GetRawValue()) : nullptr;
+        PartyCompanionSnapshot const* petForBudget = budgetSnapshot && primaryPetGuid
+            ? budgetSnapshot->FindCompanion(primaryPetGuid) : nullptr;
+        ThreatEntrySnapshot const* petThreatForBudget = nullptr;
+        if (firstForBudget) {
+            for (ThreatEntrySnapshot const& entry : firstForBudget->threat)
+                if (entry.unitGuid == primaryPetGuid)
+                    petThreatForBudget = petThreatForBudget ? nullptr : &entry;
+        }
+        primaryPetCoreMeleeReachable = primaryPetCreated &&
+            hostiles[0].creature->CanReachWithMeleeAutoAttack(primaryPet.get());
+
+        ThreatBudgetAssessment const petAssessment =
+            budgetSnapshot && primaryPetGuid
+                ? AssessThreatBudget(*budgetSnapshot,
+                    hostiles[0].creature->GetObjectGuid().GetRawValue(),
+                    primaryPetGuid, 15500, 250)
+                : ThreatBudgetAssessment();
+        primaryPetHeadroom = petAssessment.rawHeadroom;
+        companionSnapshotValid = primaryPetCreated && budgetSnapshot &&
+            budgetSnapshot->companions.size() == 1 && petForBudget &&
+            petForBudget->guid == primaryPetGuid &&
+            petForBudget->ownerGuid == healerGuid.GetRawValue() &&
+            petForBudget->online && petForBudget->alive &&
+            petForBudget->mapId == map.GetId() &&
+            petForBudget->instanceId == map.GetInstanceId() &&
+            primaryPet->GetOwnerGuid().GetRawValue() == healerGuid.GetRawValue() &&
+            petThreatForBudget &&
+            std::fabs(petThreatForBudget->threat - primaryPetThreat) < 0.01f &&
+            petThreatForBudget->online && petThreatForBudget->accessible &&
+            petThreatForBudget->meleeReachable == primaryPetCoreMeleeReachable &&
+            primaryPet->GetHostileRefManager().getFirst() != nullptr;
+        companionBudgetValid = companionSnapshotValid &&
+            petAssessment.status == ThreatBudgetStatus::BudgetAvailable &&
+            petAssessment.currentVictimGuid == tankGuid &&
+            std::fabs(petAssessment.memberThreat - primaryPetThreat) < 0.01f &&
+            petAssessment.usesMeleeThreshold == primaryPetCoreMeleeReachable &&
+            std::fabs(petAssessment.thresholdMultiplier -
+                (primaryPetCoreMeleeReachable ? 1.1f : 1.3f)) < 0.0001f &&
+            petAssessment.rawHeadroom > 0.0f &&
+            hostiles[0].creature->GetThreatManager().getHostileTarget() == tank;
 
         ThreatBudgetAssessment const firstAssessment = budgetSnapshot && healerForBudget
             ? AssessThreatBudget(*budgetSnapshot, hostiles[0].creature->GetObjectGuid().GetRawValue(),
@@ -3310,10 +3455,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         safeBudgetSelectedAndReserved && enginePreservedCoreThreatState &&
         enginePreservedCoreVictims && reservationReleased &&
         tankAliveAndInjured && healCompleted && healAssistBoundValid && healerPulledBothAdds &&
-        snapshotValid && rosterRoleStateValid && bothAddsResolved && threatValuesCopied && coreReachabilityCopied;
+        snapshotValid && rosterRoleStateValid && bothAddsResolved && threatValuesCopied &&
+        coreReachabilityCopied && companionSnapshotValid && companionBudgetValid;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u budgetSnapshot=%u overBudgetRejected=%u executionRaceRejected=%u safeSelectedReserved=%u threatUnchanged=%u victimUnchanged=%u reservationReleased=%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u healAssistBound=%u upper=%.1f/%.1f delta=%.1f/%.1f assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u meleeReachability=%u/4 reachable=%u unreachable=%u.",
+             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u petCreated=%u petSnapshot=%u petBudget=%u petThreat=%.1f petHeadroom=%.1f petMelee=%u budgetSnapshot=%u overBudgetRejected=%u executionRaceRejected=%u safeSelectedReserved=%u threatUnchanged=%u victimUnchanged=%u reservationReleased=%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u healAssistBound=%u upper=%.1f/%.1f delta=%.1f/%.1f assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u meleeReachability=%u/4 reachable=%u unreachable=%u.",
              hostileAIReady ? 1u : 0u, membersAdded ? 1u : 0u,
              mainTankAssigned ? 1u : 0u, allPlayersOnSameMap ? 1u : 0u,
              initialSnapshotValid ? 1u : 0u, initialRosterResolved ? 1u : 0u,
@@ -3322,6 +3468,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
              tankDamage0, tankDamage1, patientHealthBeforeDamage,
              scriptedTankDamage, patientHealthBeforeHeal, tankThreat0, tankThreat1,
              initialVictim0 == tank ? 1u : 0u, initialVictim1 == tank ? 1u : 0u,
+             primaryPetCreated ? 1u : 0u, companionSnapshotValid ? 1u : 0u,
+             companionBudgetValid ? 1u : 0u, primaryPetThreat, primaryPetHeadroom,
+             primaryPetCoreMeleeReachable ? 1u : 0u,
              threatBudgetSnapshotValid ? 1u : 0u, overBudgetRejected ? 1u : 0u,
              executionReservationRaceRejected ? 1u : 0u,
              safeBudgetSelectedAndReserved ? 1u : 0u,
@@ -3344,11 +3493,25 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat values and both reachable/unreachable per-reference melee states matched Core, and all Group/session cleanup succeeded.");
 
+    // Remove the test Pet before later Tank/Healer death-retarget scenarios.
+    // This checks Core reference cleanup without letting a living Pet become
+    // a third surviving threat owner in the subsequent death test.
+    petCleanupPassed = DestroySimulatorPrimaryPet(map, healer, primaryPet) &&
+        petCleanupPassed;
+    bool primaryPetThreatReferenceRemoved = true;
+    for (HostileReference* reference = hostiles[0].creature->GetThreatManager().getThreatList().empty()
+             ? nullptr : hostiles[0].creature->GetThreatManager().getThreatList().front();
+         reference; reference = reference->next())
+        if (reference->getUnitGuid().GetRawValue() == primaryPetGuid)
+            primaryPetThreatReferenceRemoved = false;
+    petCleanupPassed = petCleanupPassed && primaryPetThreatReferenceRemoved &&
+        (!primaryPetGuid || map.GetPet(ObjectGuid(primaryPetGuid)) == nullptr);
+
     // F12: a hostile can still hold threat references to a party member
     // without currently attacking any group member. It must be discovered
     // through that member's HostileRefManager, including offline references.
-    bool const f12CanProbe = f9ChecksPassed && outsideGroupVictim.creature &&
-        outsideGroupVictim.creature->IsInWorld();
+    bool const f12CanProbe = f9ChecksPassed && petCleanupPassed &&
+        outsideGroupVictim.creature && outsideGroupVictim.creature->IsInWorld();
     bool hostileVictimOutsideGroup = false;
     bool noPartyMemberCurrentlyAttacked = false;
     bool tankReferenceFound = false;
@@ -3561,7 +3724,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         !containsThreat(healerDeathBossSnapshot, healerGuid.GetRawValue(), healerThreat0) &&
         !containsThreat(healerDeathAddSnapshot, healerGuid.GetRawValue(), healerThreat1);
 
-    bool const f10ChecksPassed = f9ChecksPassed && f12ChecksPassed && healerHoldsAggroOverDps &&
+    bool const f10ChecksPassed = f9ChecksPassed && petCleanupPassed &&
+        f12ChecksPassed && healerHoldsAggroOverDps &&
         tankDied && tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&
@@ -3589,7 +3753,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
              registeredBeforeCleanup ? 1u : 0u, groupRemoved ? 1u : 0u,
              cleanupPassed ? 1u : 0u);
 
-    if (!f9ChecksPassed || !f12ChecksPassed || !groupStillRegistered)
+    if (!f9ChecksPassed || !petCleanupPassed || !f12ChecksPassed || !groupStillRegistered)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Combined Group F8/F9/F12 threat-reference scenario failed before death recovery.");

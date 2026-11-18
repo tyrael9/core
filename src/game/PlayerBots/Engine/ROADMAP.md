@@ -247,3 +247,10 @@ No such closure is implemented yet. This is source-audit evidence only; no comba
 The next P7.3b/P7.3d gap is now documented from Core's `Spell::HandleThreatSpells` path. Positive flat threat fans out through the affected target's HostileRefManager; negative flat threat is added directly to each successful affected hostile's ThreatManager with the caster as threat owner. Core rejects mixed-sign active effect masks and filters each target by its successful effect mask. The existing estimator covers only the positive flat-threat component within direct-heal assist; negative flat spell threat remains unsupported.
 
 Next implementation slice: add a component-scoped negative flat-threat estimator only when the caller can prove the complete successful target set and each target's exact effect mask. Reproduce Core's negative-effect classification and mixed-sign rejection exactly, use Core's ThreatCalcHelper modifiers, and fail closed on unresolved targets or incomplete masks. Add a real Core fixture that verifies the estimated row against the actual ThreatManager delta while asserting unchanged Core victim selection outside the normal AddThreat behavior. Do not mark generic spell actions Complete: SpellScript, proc closure, and other direct-damage side effects remain separate blockers.
+
+
+## Negative flat spell-threat estimator implementation (2026-11-18)
+
+- [x] Add a component-scoped Core estimator for negative `spell_threat` routing. It requires a caller-proven complete successful target set and exact per-target effect masks; reproduces Core's negative-effect classification, mixed-sign rejection, harmful-threat suppression, `CanCauseThreatOnMask` filter and `ThreatCalcHelper` modifier; emits caster-owned threat rows on the affected hostile.
+- [ ] Add a real Core cast fixture comparing the estimate with the actual ThreatManager delta, plus fail-closed tests for incomplete target sets, mixed-sign effects, masked effects and unresolved targets.
+- [ ] Keep the enclosing action `Unknown` until SpellScript/proc/other effect closure is separately proven.

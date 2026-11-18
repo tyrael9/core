@@ -123,6 +123,11 @@ Assist healing expands into one impact per hostile reference of the healed unit.
 
 The current `Reservation::amount` is an integer used by existing heal/CC-style reservations. Threat reservations need floating-point threat units and a key per (hostile GUID, threat-owner GUID); do not overload the existing integer field without auditing every existing reservation caller. Reservation expiry must not outlive the action/tick window, and all reservations must be released on owner logout, action failure, cancellation and completion.
 
+## Stage P7.3 — action-specific impact estimators and policy
+
+The first Core-backed estimator component is `CoreThreatImpactEstimator.h::EstimateAppliedDirectDamageComponent`. Given damage already applied by Core (or a caller-declared upper bound), it applies the same `SpellMgr::GetSpellThreatMultiplier(nullptr)` and `ThreatCalcHelper::CalcThreat` path used by `Unit::DealDamage` and `ThreatManager::addThreat`. It emits a GUID/scalar row for the actual threat owner and hostile, without changing Core state.
+
+This is deliberately a component, not a complete Action estimate: the returned envelope remains `Unknown` even when the row is valid, because procs, pet-owner reference side effects and any additional action threat paths have not been proven absent. It only handles spell-less direct damage; spell damage, periodic ticks, healing, power regeneration, flat spell threat, taunt and threat reduction remain unimplemented. The simulator compares the component against the real ThreatManager increment from a 100-damage Core event and the CI runner requires `impactMatches=1`.
 ## Implementation sequence
 
 1. **Snapshot assessment primitive — complete (Stage P7.1):** `AssessThreatBudget` locates unique current-victim/member references, reports unknown states explicitly, checks wrap-safe snapshot freshness and calculates raw headroom without touching live Core objects. Pure tests cover melee/ranged thresholds, strict equality, just-below/above values, current victim, missing/offline/dead/invalid inputs and uint32 clock wrap.

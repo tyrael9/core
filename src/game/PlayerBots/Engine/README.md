@@ -15,6 +15,7 @@ The target is a complete independent PartyBot AI for Vanilla 1.12.1 / client bui
 - THREAT-BUDGETS.md: Core-authoritative aggro thresholds, snapshot semantics and action-specific threat-impact requirements.
 - ThreatBudget.h: pure snapshot-only current-victim threshold/headroom assessment; not an action-impact estimator or Core target selector.
 - ThreatImpact.h: GUID/scalar-only action threat-impact contract; unimplemented estimates default to Unknown rather than zero.
+- CoreThreatImpactEstimator.h: narrow Core-backed applied direct-damage component calculation; remains Unknown until an Action proves its complete threat-impact set.
 
 Update relevant source and design/testing documents in the same change.
 

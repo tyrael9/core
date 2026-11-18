@@ -14,6 +14,7 @@
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
 #include "PlayerBots/Engine/PartyCoordinator.h"
 #include "PlayerBots/Engine/PartySnapshot.h"
+#include "PlayerBots/Engine/CoreThreatImpactEstimator.h"
 #include "PlayerBots/Engine/Strategy.h"
 #include "PlayerBots/Engine/Trigger.h"
 #include "ObjectAccessor.h"
@@ -3469,9 +3470,21 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
     if (hostilePair && aiUpdated)
     {
         initialHealth = boss.creature->GetHealth();
+        ThreatImpactEstimate const tankDamageImpact = EstimateAppliedDirectDamageComponent(
+            tank.creature, boss.creature, 100, SPELL_SCHOOL_MASK_NORMAL, 1,
+            ThreatImpactBound::Exact);
+        bool const tankImpactShapeValid =
+            tankDamageImpact.completeness == ThreatImpactCompleteness::Unknown &&
+            tankDamageImpact.snapshotEpoch == 1 && tankDamageImpact.impacts.size() == 1 &&
+            tankDamageImpact.impacts[0].source == ThreatImpactSource::DirectDamage &&
+            tankDamageImpact.impacts[0].bound == ThreatImpactBound::Exact;
+        float const estimatedTankThreat = tankImpactShapeValid
+            ? tankDamageImpact.impacts[0].threatPoints : -1.0f;
         tankDamage = tank.creature->DealDamage(
             boss.creature, 100, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
         tankThreat = boss.creature->GetThreatManager().getThreat(tank.creature);
+        bool const tankImpactMatchesCore = tankImpactShapeValid && tankDamage == 100 &&
+            std::fabs(estimatedTankThreat - tankThreat) < 0.01f;
         healthAfterTank = boss.creature->GetHealth();
 
         Unit* selectedAfterTank = boss.creature->GetThreatManager().getHostileTarget();
@@ -3493,7 +3506,8 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
 
         damageAndThreat = tankDamage > 0 && dpsDamage > 0 && additionalDamage > 0 &&
                           healthAfterTank < initialHealth && healthAfterDps < healthAfterTank &&
-                          healthAfterFinalHit < healthAfterDps && tankThreat > 0.0f && dpsThreat > 0.0f;
+                          healthAfterFinalHit < healthAfterDps && tankThreat > 0.0f && dpsThreat > 0.0f &&
+                          tankImpactMatchesCore;
 
         targetSelection = selectedAfterTank == tank.creature &&
                           selectedBelowThreshold == tank.creature &&
@@ -3502,13 +3516,14 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Creature probe: template=%u factions=%u/%u aiUpdates=%u/%u/%u hostile=%u health=%u>%u>%u>%u damage=%u/%u/%u threat=%.1f/%.1f switchThreshold=%.1f selectedGUID=%u/%u/%u damageThreat=%u targetSwitch=%u.",
+             "[PartyBotSimulator] Creature probe: template=%u factions=%u/%u aiUpdates=%u/%u/%u hostile=%u health=%u>%u>%u>%u damage=%u/%u/%u threat=%.1f/%.1f switchThreshold=%.1f selectedGUID=%u/%u/%u damageThreat=%u impactThreat=%.1f impactMatches=%u targetSwitch=%u.",
              info->entry, bossFaction, attackerFaction,
              boss.updateCount, tank.updateCount, damageDealer.updateCount,
              hostilePair ? 1u : 0u, initialHealth, healthAfterTank, healthAfterDps, healthAfterFinalHit,
              tankDamage, dpsDamage, additionalDamage, tankThreat, dpsThreat, 1.1f * tankThreat,
              selectedAfterTankGuid, selectedBelowThresholdGuid, selectedAboveThresholdGuid,
-             damageAndThreat ? 1u : 0u, targetSelection ? 1u : 0u);
+             damageAndThreat ? 1u : 0u, estimatedTankThreat,
+             tankImpactMatchesCore ? 1u : 0u, targetSelection ? 1u : 0u);
 
     // Clear the boss-owned threat references before destroying their targets.
     bool const cleanedBoss = DestroySimulatorActor(map, boss);
@@ -3527,7 +3542,7 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PASS: real Creature updates, direct damage, damage-generated threat and 110%% melee target switching.");
+             "[PartyBotSimulator] PASS: real Creature updates, a Core-calculated applied-damage threat component matched the real ThreatManager increment, and Core retained its 110%% melee target switching.");
     return true;
 }
 } // namespace

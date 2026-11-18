@@ -26,7 +26,8 @@ enum class ThreatBudgetUnknownReason : std::uint8_t {
     InvalidVictimThreat,
     MissingOrDuplicateMemberThreat,
     MemberThreatOffline,
-    InvalidMemberThreat
+    InvalidMemberThreat,
+    InvalidBudgetProjection
 };
 
 struct ThreatBudgetAssessment {
@@ -185,6 +186,10 @@ inline ThreatBudgetAssessment AssessThreatBudget(PartySnapshot const& snapshot,
     result.thresholdMultiplier = result.usesMeleeThreshold ? 1.1f : 1.3f;
     result.thresholdThreat = result.currentVictimThreat * result.thresholdMultiplier;
     result.rawHeadroom = result.thresholdThreat - result.memberThreat;
+    if (!std::isfinite(result.thresholdThreat) || !std::isfinite(result.rawHeadroom)) {
+        result.unknownReason = ThreatBudgetUnknownReason::InvalidBudgetProjection;
+        return result;
+    }
     result.status = result.rawHeadroom > 0.0f
         ? ThreatBudgetStatus::BudgetAvailable
         : ThreatBudgetStatus::AtOrOverBudget;

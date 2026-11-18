@@ -19,6 +19,7 @@ enum class ThreatImpactSource : std::uint8_t {
     DirectHealAssist,
     PeriodicHealAssist,
     PeriodicPowerAssist,
+    PeriodicManaLeech,
     FlatSpellThreat
 };
 enum class ThreatImpactBound : std::uint8_t {

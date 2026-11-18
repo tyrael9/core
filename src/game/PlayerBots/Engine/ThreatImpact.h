@@ -6,42 +6,8 @@
 
 namespace PartyBotEngine {
 
-// Completeness describes the whole action's affected-hostile set. Unknown may
-// still carry known partial rows; those rows must never imply completeness.
-enum class ThreatImpactCompleteness : std::uint8_t {
-    Unknown,
-    Complete,
-    NoThreat
-};
-
-enum class ThreatImpactSource : std::uint8_t {
-    DirectDamage,
-    PeriodicDamage,
-    DirectHealAssist,
-    PeriodicHealAssist,
-    PeriodicPowerAssist,
-    FlatSpellThreat
-};
-
-enum class ThreatImpactBound : std::uint8_t {
-    Exact,
-    UpperBound
-};
-
-struct ThreatImpactEntry {
-    Guid threatOwnerGuid = 0;
-    Guid hostileGuid = 0;
-    float threatPoints = 0.0f;
-    ThreatImpactSource source = ThreatImpactSource::DirectDamage;
-    ThreatImpactBound bound = ThreatImpactBound::UpperBound;
-};
-
-struct ThreatImpactEstimate {
-    ThreatImpactCompleteness completeness = ThreatImpactCompleteness::Unknown;
-    std::uint32_t snapshotEpoch = 0;
-    std::vector<ThreatImpactEntry> impacts;
-    std::string reason = "threat_impact_not_estimated";
-};
+// Threat impact value types live in DecisionTypes.h so DecisionReport can retain
+// the exact estimate used during evaluation and revalidate it before execution.
 
 inline bool IsValidThreatImpactSource(ThreatImpactSource source)
 {
@@ -87,13 +53,24 @@ inline bool IsWellFormedThreatImpactEstimate(ThreatImpactEstimate const& estimat
         estimate.completeness != ThreatImpactCompleteness::Complete)
         return false;
 
+    bool hasPositiveImpact = false;
     for (ThreatImpactEntry const& impact : estimate.impacts) {
         if (!impact.threatOwnerGuid || !impact.hostileGuid ||
             !std::isfinite(impact.threatPoints) || impact.threatPoints < 0.0f ||
             !IsValidThreatImpactSource(impact.source) ||
             !IsValidThreatImpactBound(impact.bound))
             return false;
+        hasPositiveImpact = hasPositiveImpact || impact.threatPoints > 0.0f;
     }
+
+    // A positive threat estimate must declare how long other bots should treat
+    // it as in-flight. Keep all deadline deltas within signed uint32 wrap range.
+    if (estimate.completeness == ThreatImpactCompleteness::Complete &&
+        hasPositiveImpact &&
+        (estimate.reservationDurationMs == 0 ||
+         estimate.reservationDurationMs > 0x7fffffffu))
+        return false;
+
     return true;
 }
 

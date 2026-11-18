@@ -227,14 +227,15 @@ void DecisionTrace::RecordEncounterCandidate(
     Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
     uint32 snapshotEpoch, uint64 encounterId, uint32 sequence,
     uint32 elapsedMs, char const* role, char const* strategy,
-    char const* action, uint64 targetGuid, float priority,
-    char const* status, char const* reason) const
+    char const* action, uint64 targetGuid, uint32 spellId, uint32 channel,
+    float priority, char const* status, char const* reason) const
 {
-    if (!m_enabled || !bot || !encounterId || !sequence ||
-        m_recordsThisTick >= MAX_RECORDS_PER_TICK)
+    // PartyBotAI bounds this to a summary plus at most three candidates per
+    // bot in its ten-second Shadow detail window. Preserve those correlated
+    // records even when ordinary per-tick legacy diagnostics use their quota.
+    if (!m_enabled || !bot || !encounterId || !sequence)
         return;
 
-    ++m_recordsThisTick;
     std::string const safeRole = SafeTraceToken(role);
     std::string const safeStrategy = SafeTraceToken(strategy);
     std::string const safeAction = SafeTraceToken(action);
@@ -242,11 +243,12 @@ void DecisionTrace::RecordEncounterCandidate(
     std::string const safeReason = SafeTraceToken(reason);
     bool const priorityValid = std::isfinite(priority);
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=candidate group=%u map=%u instance=%u bot=%u elapsed_ms=%u snapshot_epoch=%u role=%s strategy=%s action=%s target=%llu priority=%.2f priority_valid=%u status=%s reason=%s",
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=candidate group=%u map=%u instance=%u bot=%u elapsed_ms=%u snapshot_epoch=%u role=%s strategy=%s action=%s spell=%u channel=%u target=%llu priority=%.2f priority_valid=%u status=%s reason=%s",
              static_cast<unsigned long long>(encounterId), sequence,
              groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
              snapshotEpoch, safeRole.c_str(), safeStrategy.c_str(),
-             safeAction.c_str(), static_cast<unsigned long long>(targetGuid),
+             safeAction.c_str(), spellId, channel,
+             static_cast<unsigned long long>(targetGuid),
              priorityValid ? priority : 0.0f, priorityValid ? 1u : 0u,
              safeStatus.c_str(), safeReason.c_str());
 }

@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <string>
 
 namespace
 {
@@ -190,10 +191,9 @@ namespace
 
         std::string token;
         token.reserve(64);
-        for (unsigned char c = static_cast<unsigned char>(*value);
-             c && token.size() < 64;
-             c = static_cast<unsigned char>(*++value))
+        for (std::size_t i = 0; value[i] && token.size() < 64; ++i)
         {
+            unsigned char const c = static_cast<unsigned char>(value[i]);
             bool const safe =
                 (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                 (c >= '0' && c <= '9') || c == '_' || c == '-' ||

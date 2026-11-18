@@ -152,7 +152,11 @@ All classes and roles are composed within one PartyBotEngine queue; this is not 
 - [~] Threat budgets, aggro prevention and broader recovery.
   - [x] Stage P7.1: pure snapshot-only `AssessThreatBudget` projection with Core's 110% melee / 130% ranged thresholds, strict boundaries, explicit Unknown states and wrap-safe freshness. Tests and ARM64 Core build passed in CI `#44217682323` on `705f7f3`; the runtime step was blocked before mangosd startup by Google Drive download quota.
   - [x] Stage P7.2: audit direct damage, direct/periodic healing, assist fan-out, flat spell threat and Core modifiers; add GUID/scalar-only `ThreatImpact` contract, defaulting to Unknown and distinguishing Complete/NoThreat/Unknown.
-  - [ ] Stage P7.3: implement action-specific impact estimators, threat reservations and budget-policy integration; validate against actual Core-generated threat.
+  - [~] Stage P7.3: connect action-specific impact estimates, reservations and budget policy without duplicating Core target selection.
+    - [x] P7.3a: extend the typed impact taxonomy to distinguish periodic damage and periodic power assist; validate source/bound enums, finite nonnegative threat points, nonzero GUIDs/reason/epoch and exact snapshot-epoch matching with pure tests.
+    - [ ] P7.3b: implement Core-backed per-action estimates for direct damage and direct/periodic healing/power paths; incomplete fan-out or unbounded modifiers must remain Unknown.
+    - [ ] P7.3c: add bounded floating-point reservations keyed by hostile and actual threat owner, with action/tick expiry and complete owner/action cleanup.
+    - [ ] P7.3d: integrate per-hostile headroom and reservations into action eligibility/priority, then validate against actual Core-generated threat and prove the Engine never mutates Core threat/victim state.
 - [ ] Healing triage with incoming heals, HoTs, shields, effective healing and reservations.
 - [ ] CC assignment, protection and break recovery.
 - [ ] Interrupt, dispel and resurrection reservations.

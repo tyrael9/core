@@ -16,8 +16,10 @@ enum class ThreatImpactCompleteness : std::uint8_t {
 
 enum class ThreatImpactSource : std::uint8_t {
     DirectDamage,
+    PeriodicDamage,
     DirectHealAssist,
     PeriodicHealAssist,
+    PeriodicPowerAssist,
     FlatSpellThreat
 };
 
@@ -41,11 +43,39 @@ struct ThreatImpactEstimate {
     std::string reason = "threat_impact_not_estimated";
 };
 
-// Validate the data contract without consulting live Core objects. A Complete
+inline bool IsValidThreatImpactSource(ThreatImpactSource source)
+{
+    switch (source) {
+        case ThreatImpactSource::DirectDamage:
+        case ThreatImpactSource::PeriodicDamage:
+        case ThreatImpactSource::DirectHealAssist:
+        case ThreatImpactSource::PeriodicHealAssist:
+        case ThreatImpactSource::PeriodicPowerAssist:
+        case ThreatImpactSource::FlatSpellThreat:
+            return true;
+    }
+    return false;
+}
+
+inline bool IsValidThreatImpactBound(ThreatImpactBound bound)
+{
+    switch (bound) {
+        case ThreatImpactBound::Exact:
+        case ThreatImpactBound::UpperBound:
+            return true;
+    }
+    return false;
+}
+
+// Validate the value contract without consulting live Core objects. A Complete
 // estimate must enumerate at least one impact; NoThreat is the only explicit
-// complete empty result. Unknown estimates may contain partial known rows.
+// complete empty result. Unknown estimates may contain partial known rows, but
+// must explain why the complete impact set is unavailable.
 inline bool IsWellFormedThreatImpactEstimate(ThreatImpactEstimate const& estimate)
 {
+    if (!estimate.snapshotEpoch || estimate.reason.empty())
+        return false;
+
     if (estimate.completeness == ThreatImpactCompleteness::NoThreat)
         return estimate.impacts.empty();
 
@@ -53,12 +83,27 @@ inline bool IsWellFormedThreatImpactEstimate(ThreatImpactEstimate const& estimat
         estimate.impacts.empty())
         return false;
 
+    if (estimate.completeness != ThreatImpactCompleteness::Unknown &&
+        estimate.completeness != ThreatImpactCompleteness::Complete)
+        return false;
+
     for (ThreatImpactEntry const& impact : estimate.impacts) {
         if (!impact.threatOwnerGuid || !impact.hostileGuid ||
-            !std::isfinite(impact.threatPoints) || impact.threatPoints < 0.0f)
+            !std::isfinite(impact.threatPoints) || impact.threatPoints < 0.0f ||
+            !IsValidThreatImpactSource(impact.source) ||
+            !IsValidThreatImpactBound(impact.bound))
             return false;
     }
     return true;
+}
+
+// An estimate is usable only for the exact immutable snapshot from which it
+// was produced. Callers must treat a mismatched epoch as Unknown, not reuse it.
+inline bool IsThreatImpactEstimateForSnapshot(ThreatImpactEstimate const& estimate,
+                                               std::uint32_t snapshotEpoch)
+{
+    return snapshotEpoch && estimate.snapshotEpoch == snapshotEpoch &&
+        IsWellFormedThreatImpactEstimate(estimate);
 }
 
 } // namespace PartyBotEngine

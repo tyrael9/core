@@ -298,11 +298,15 @@ void TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness() {
     assert(unknown.snapshotEpoch == f.snapshot.epoch);
     assert(unknown.reason == "action_threat_impact_not_implemented");
     assert(IsWellFormedThreatImpactEstimate(unknown));
+    assert(IsThreatImpactEstimateForSnapshot(unknown, f.snapshot.epoch));
+    assert(!IsThreatImpactEstimateForSnapshot(unknown, f.snapshot.epoch + 1));
+    assert(!IsThreatImpactEstimateForSnapshot(unknown, 0));
 
     ThreatImpactEstimate noThreat;
     noThreat.completeness = ThreatImpactCompleteness::NoThreat;
     noThreat.snapshotEpoch = f.snapshot.epoch;
     assert(IsWellFormedThreatImpactEstimate(noThreat));
+    assert(IsThreatImpactEstimateForSnapshot(noThreat, f.snapshot.epoch));
     noThreat.impacts.push_back(ThreatImpactEntry());
     assert(!IsWellFormedThreatImpactEstimate(noThreat));
 
@@ -318,8 +322,30 @@ void TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness() {
     impact.bound = ThreatImpactBound::UpperBound;
     complete.impacts.push_back(impact);
     assert(IsWellFormedThreatImpactEstimate(complete));
+    assert(IsThreatImpactEstimateForSnapshot(complete, f.snapshot.epoch));
+
+    complete.impacts[0].source = ThreatImpactSource::PeriodicDamage;
+    assert(IsWellFormedThreatImpactEstimate(complete));
+    complete.impacts[0].source = ThreatImpactSource::PeriodicPowerAssist;
+    assert(IsWellFormedThreatImpactEstimate(complete));
+    complete.impacts[0].source = ThreatImpactSource::FlatSpellThreat;
+    assert(IsWellFormedThreatImpactEstimate(complete));
+
     complete.impacts[0].threatPoints = std::nanf("");
     assert(!IsWellFormedThreatImpactEstimate(complete));
+    complete.impacts[0].threatPoints = 12.5f;
+    complete.impacts[0].source = static_cast<ThreatImpactSource>(255);
+    assert(!IsWellFormedThreatImpactEstimate(complete));
+    complete.impacts[0].source = ThreatImpactSource::DirectHealAssist;
+    complete.impacts[0].bound = static_cast<ThreatImpactBound>(255);
+    assert(!IsWellFormedThreatImpactEstimate(complete));
+
+    ThreatImpactEstimate missingReason = unknown;
+    missingReason.reason.clear();
+    assert(!IsWellFormedThreatImpactEstimate(missingReason));
+    ThreatImpactEstimate missingEpoch = unknown;
+    missingEpoch.snapshotEpoch = 0;
+    assert(!IsWellFormedThreatImpactEstimate(missingEpoch));
 }
 
 void TestThreatBudgetCoreThresholdProjection() {

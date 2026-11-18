@@ -1,5 +1,6 @@
 #include "PartyCoordinator.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -12,6 +13,20 @@ namespace {
 using RegistryKey = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>;
 using Registry = std::map<RegistryKey, std::weak_ptr<PartyCoordinator>>;
 constexpr std::size_t MaxThreatReservations = 128;
+
+std::atomic<std::uint64_t>& GetNextEncounterId()
+{
+    static std::atomic<std::uint64_t> nextId(1);
+    return nextId;
+}
+
+bool HasElapsed(std::uint32_t nowMs, std::uint32_t sinceMs, std::uint32_t durationMs)
+{
+    std::uint32_t const elapsed = nowMs - sinceMs;
+    // Keep the unsigned subtraction wrap-safe while rejecting backwards or
+    // unsupported half-range clock jumps.
+    return elapsed < 0x80000000u && elapsed >= durationMs;
+}
 
 Registry& GetRegistry() {
     static Registry registry;
@@ -177,6 +192,102 @@ void PartyCoordinator::ReleaseThreatAction(ThreatActionId actionId) {
     m_threatReservations.erase(std::remove_if(m_threatReservations.begin(), m_threatReservations.end(),
         [actionId](ThreatReservation const& reservation) { return reservation.actionId == actionId; }),
         m_threatReservations.end());
+}
+
+EncounterTransition PartyCoordinator::ObserveEncounter(PartySnapshot const& snapshot,
+                                                                      std::uint32_t nowMs,
+                                                                      std::uint32_t settleMs)
+{
+    EncounterTransition transition;
+    if (!snapshot.groupId || !snapshot.mapId || !snapshot.epoch)
+        return transition;
+
+    bool combatObserved = false;
+    for (PartyMemberSnapshot const& member : snapshot.members)
+    {
+        if (member.online && member.alive && member.inCombat)
+        {
+            combatObserved = true;
+            break;
+        }
+    }
+    if (!combatObserved)
+    {
+        for (PartyCompanionSnapshot const& companion : snapshot.companions)
+        {
+            if (companion.online && companion.alive && companion.inCombat)
+            {
+                combatObserved = true;
+                break;
+            }
+        }
+    }
+
+    if (combatObserved)
+    {
+        if (!m_encounterActive)
+        {
+            std::uint64_t encounterId = GetNextEncounterId().fetch_add(1, std::memory_order_relaxed);
+            if (!encounterId)
+                encounterId = GetNextEncounterId().fetch_add(1, std::memory_order_relaxed);
+
+            m_encounterActive = true;
+            m_encounterId = encounterId;
+            m_encounterSequence = 1;
+            m_encounterStartedAtMs = nowMs;
+            m_lastCombatAtMs = nowMs;
+
+            transition.kind = EncounterTransitionKind::Started;
+            transition.encounterId = m_encounterId;
+            transition.sequence = m_encounterSequence;
+            transition.groupId = snapshot.groupId;
+            transition.mapId = snapshot.mapId;
+            transition.instanceId = snapshot.instanceId;
+            transition.reason = "combat_detected";
+            return transition;
+        }
+
+        m_lastCombatAtMs = nowMs;
+        return transition;
+    }
+
+    // The caller supplies a bounded settle interval. Zero or half-range values
+    // are not meaningful monotonic deadlines, so do not end an encounter on them.
+    if (m_encounterActive && settleMs > 0 && settleMs < 0x80000000u &&
+        HasElapsed(nowMs, m_lastCombatAtMs, settleMs))
+        return CloseEncounter(nowMs, "combat_settled");
+
+    return transition;
+}
+
+EncounterTransition PartyCoordinator::CloseEncounter(std::uint32_t nowMs, char const* reason)
+{
+    EncounterTransition transition;
+    if (!m_encounterActive || !m_encounterId)
+        return transition;
+
+    transition.kind = EncounterTransitionKind::Ended;
+    transition.encounterId = m_encounterId;
+    transition.sequence = NextEncounterSequence();
+    transition.elapsedMs = nowMs - m_encounterStartedAtMs;
+    transition.reason = reason ? reason : "explicit_end";
+
+    m_encounterActive = false;
+    m_encounterId = 0;
+    m_encounterSequence = 0;
+    m_encounterStartedAtMs = 0;
+    m_lastCombatAtMs = 0;
+    return transition;
+}
+
+std::uint32_t PartyCoordinator::NextEncounterSequence()
+{
+    if (!m_encounterActive)
+        return 0;
+    ++m_encounterSequence;
+    if (!m_encounterSequence)
+        ++m_encounterSequence;
+    return m_encounterSequence;
 }
 
 std::uint32_t PartyCoordinator::NextSnapshotEpoch() {

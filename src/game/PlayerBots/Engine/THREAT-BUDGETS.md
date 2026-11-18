@@ -291,3 +291,26 @@ The standalone suite verifies the execution-time race window: an action can be s
 
 
 The workflow's fixture-backed runtime step runs on trusted branch pushes; pull-request jobs continue to skip secret access. A workflow_dispatch trigger is declared for future use, but GitHub does not expose manual dispatch until the workflow file is present on the repository default branch. In this Draft PR, the trusted push event is the active runtime path. The runner verifies the 5875 archive checksum and uploads bounded simulator logs without publishing or deploying an image.
+
+
+### AuraScript callback and periodic side-effect audit (2026-11-18)
+
+The pinned Core's `AuraScript` contract in `src/game/ScriptMgr.h` is broader than a periodic amount hook. It includes value/duration calculation, before/after apply, proc eligibility and execution, absorb/mana-absorb adjustment, periodic amount calculation, periodic trigger replacement/suppression, periodic dummy and tick-end callbacks, and AreaAura target filtering. Any one of these can change the effect or add/remove behavior around an aura; a forecast that only reads `EffectBasePoints`, duration and amplitude is not a complete action model.
+
+Concrete registered spell-script examples found in the 5875 class/item/special spell modules:
+
+- **Gnomish Death Ray periodic damage** (`spell_item.cpp`): `OnAuraValueCalculate` chooses a random 100–500 value; `OnPeriodicCalculateAmount` can zero the tick if the channel is gone and accumulates the amount; on expiry, `OnAfterApply` casts a separate `SPELL_GDR_DAMAGE_HIT` at the target's selected target. This is not a stable base-point DoT and has a second damage recipient/path.
+- **Mage Ignite** (`spell_mage.cpp`): `OnProc` derives 4–20% of the triggering hit, then updates/refreshes or creates DoT 12654. Stack state, prior hit size and refresh timing determine future damage.
+- **Hunter Frost Trap** (`spell_hunter.cpp`): `OnPeriodicTrigger` calls `ProcDamageAndSpell` for trap activation, allowing proc/talent effects beyond the nominal periodic trigger.
+- **Shaman Mana Tide** (`spell_shaman.cpp`): `OnPeriodicTrigger` rolls a dithered custom amount, casts the trigger spell itself, and sets `spellInfo=nullptr` to suppress Core's default trigger.
+- **Warlock Curse of Idiocy** (`spell_warlock.cpp`): `OnPeriodicTrigger` may suppress the default trigger based on accumulated stat-loss state.
+- **Darkmoon Faire turret/Flamethrower** (`spell_special.cpp`): the periodic callback drains mana, removes the aura when insufficient, and suppresses the trigger in that branch. **Cannibalize**'s tick-end callback only changes emote state; it is a useful example of a non-threat periodic callback, not grounds to generalize all callbacks as harmless.
+- **Wyvern Sting** (`spell_hunter.cpp`): aura removal can cast a follow-up spell. Apply/remove callbacks therefore also belong in the action's side-effect audit even though they are not periodic ticks.
+
+This inventory is evidence of concrete exceptions, not an exhaustive proof over every spell, database script binding or proc chain. The estimator must resolve the actual aura script selected for the spell, account for callback state and any triggered spells/procs, and enumerate every actual threat owner and hostile recipient. Until then:
+- generic DoT/HoT/periodic power actions remain `Unknown`;
+- do not infer `NoThreat` from a callback that appears cosmetic in one spell;
+- do not sum nominal future tick amounts as if target mitigation, health gain, current hostile-reference fan-out, proc outcomes and script-mutated amounts were fixed;
+- keep the existing direct-damage/direct-heal/flat-spell/Pet support strictly component-scoped.
+
+CI validation for this documentation state: trusted push `#44264594529` passed pure tests, Linux ARM64 configure/build, simulator harness syntax, and the optional full 5875 Core-backed runtime fixture; its log ended in `Runtime PASS` and uploaded artifact `partybot-simulator-992c25f7b38f149bf2faac3490c93384591b5c2a`. PR workflow `#44264603355` passed. The ordinary CI Build run `#44264594534` was skipped by its event/condition configuration; it is not a failure and supplies no additional validation.

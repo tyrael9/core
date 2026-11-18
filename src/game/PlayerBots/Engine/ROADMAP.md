@@ -196,3 +196,17 @@ All classes and roles are composed within one PartyBotEngine queue; this is not 
 - Every meaningful decision/action failure should be diagnosable from bounded post-fight traces.
 - A successful CI build is not an in-game test and never authorizes deployment.
 
+
+
+## Periodic AuraScript audit update (2026-11-18)
+
+The pinned 5875 spell-script modules were inspected for AuraScript subclasses and periodic/proc callbacks. This confirms that generic periodic effects cannot be forecast from spell-table base points alone:
+
+- Hunter Wyvern Sting casts a follow-up spell when its aura is removed; Frost Trap invokes `ProcDamageAndSpell` from `OnPeriodicTrigger`.
+- Mage Ignite is proc-driven: it derives new DoT damage from the triggering hit, then stacks/refreshes or applies spell 12654. Its future tick amount is therefore coupled to prior combat events.
+- Shaman Mana Tide replaces the default periodic trigger with a custom, dithered triggered spell and suppresses the default cast.
+- Warlock Curse of Idiocy conditionally suppresses its periodic trigger based on the target's accumulated stat loss.
+- The Gnomish Death Ray periodic aura chooses a random 100–500 amount, accumulates tick damage, and casts a separate damage spell when the aura expires.
+- Darkmoon Faire turret/Flamethrower auras consume mana in the periodic callback and can remove themselves before the default trigger; Cannibalize's tick-end callback changes emote state only. Other inspected aura scripts also perform apply/remove-triggered casts or proc handling.
+
+This is a concrete audit sample, not proof that every spell/aura script or proc chain has been exhaustively enumerated. P7.3b/P7.3d remain partial; generic DoT, HoT, periodic power and triggered-effect actions stay Unknown until their complete callback/proc and recipient sets are bounded. The full runtime fixture on commit `992c25f` passed in trusted push CI `#44264594529`; PR build `#44264603355` also passed. Ordinary CI Build push `#44264594534` was skipped by workflow conditions and is not counted as a pass or failure.

@@ -405,7 +405,9 @@ inline ThreatImpactEstimate EstimateAppliedPeriodicDamageComponent(
         for (std::uint8_t i = 0; i < MAX_EFFECT_INDEX; ++i) {
             if (spellInfo->Effect[i] == SPELL_EFFECT_APPLY_AURA &&
                 (spellInfo->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_DAMAGE ||
-                 spellInfo->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_DAMAGE_PERCENT)) {
+                 spellInfo->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_DAMAGE_PERCENT ||
+                 spellInfo->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_LEECH ||
+                 spellInfo->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_HEALTH_FUNNEL)) {
                 periodicDamageEffect = true;
                 break;
             }

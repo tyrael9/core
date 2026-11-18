@@ -135,3 +135,8 @@ The first configured-fixture run exposed and fixed the empty-`MotionMaster` life
 The Core Creature update/damage/threat scenario has passed on disposable schemas and real 5875 data. Keep the overall CI gate open until the corrected shell marker checks also pass end-to-end.
 
 Do not treat the existing pure tests as Core combat coverage. Do not use mocked damage/threat or direct state mutation as proof of Core behavior. The simulator must be bounded, seedable and explicit about remaining nondeterminism. It must not publish or deploy images.
+
+
+## Threat-impact reservation coverage
+
+The standalone C++14 suite in src/game/PlayerBots/Engine/tests/run_tests.sh now covers the P7.3c coordinator contract without constructing live Core objects: action fan-out across hostiles and actual threat owners, idempotent row refresh, aggregate pending threat, action completion cleanup, bot-owner cleanup when threat is attributed to a pet GUID, wrap-safe deadline expiry, invalid/expired input rejection, and the bounded 128-row fail-closed capacity. This validates only the reservation data structure and lifecycle; P7.3d still needs to connect these values to action eligibility and prove the result against real Core-generated threat.

@@ -4475,7 +4475,7 @@ bool RunPeriodicHealingAssistThreatFixture(Map& map)
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PASS: a real Core periodic-healing Aura tick distributed 50% of effective healing across both live hostile references; the component matched each actual ThreatManager delta.");
+             "[PartyBotSimulator] PASS: a real Core periodic-healing Aura tick distributed half the effective healing across both live hostile references; the component matched each actual ThreatManager delta.");
     return true;
 }
 

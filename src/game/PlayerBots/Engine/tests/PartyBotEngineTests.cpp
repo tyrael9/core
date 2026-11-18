@@ -310,7 +310,7 @@ void TestThreatBudgetCoreThresholdProjection() {
     snapshot.hostiles[0].threat[1].meleeReachable = false;
     snapshot.hostiles[0].threat[1].accessible = false;
     snapshot.hostiles[0].threat[1].threat = 120.0f;
-    ThreatBudgetAssessment ranged = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment ranged = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(ranged.status == ThreatBudgetStatus::BudgetAvailable);
     assert(!ranged.usesMeleeThreshold && ranged.thresholdMultiplier == 1.3f);
     assert(std::fabs(ranged.thresholdThreat - 130.0f) < 0.0001f);
@@ -328,30 +328,30 @@ void TestThreatBudgetStrictCoreThresholdBoundaries() {
     snapshot.hostiles = {hostile};
 
     snapshot.hostiles[0].threat[1].threat = std::nextafter(110.0f, 0.0f);
-    ThreatBudgetAssessment justBelowMelee = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment justBelowMelee = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(justBelowMelee.status == ThreatBudgetStatus::BudgetAvailable);
     assert(justBelowMelee.rawHeadroom > 0.0f);
 
     snapshot.hostiles[0].threat[1].threat = 110.0f;
-    ThreatBudgetAssessment atMelee = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment atMelee = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(atMelee.status == ThreatBudgetStatus::AtOrOverBudget);
     assert(atMelee.rawHeadroom == 0.0f);
 
     snapshot.hostiles[0].threat[1].threat = std::nextafter(110.0f, 200.0f);
-    ThreatBudgetAssessment aboveMelee = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment aboveMelee = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(aboveMelee.status == ThreatBudgetStatus::AtOrOverBudget);
     assert(aboveMelee.rawHeadroom < 0.0f);
 
     snapshot.hostiles[0].threat[1].meleeReachable = false;
     snapshot.hostiles[0].threat[1].threat = std::nextafter(130.0f, 0.0f);
-    ThreatBudgetAssessment justBelowRanged = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment justBelowRanged = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(justBelowRanged.status == ThreatBudgetStatus::BudgetAvailable);
     snapshot.hostiles[0].threat[1].threat = 130.0f;
-    ThreatBudgetAssessment atRanged = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment atRanged = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(atRanged.status == ThreatBudgetStatus::AtOrOverBudget);
     assert(atRanged.rawHeadroom == 0.0f);
     snapshot.hostiles[0].threat[1].threat = std::nextafter(130.0f, 200.0f);
-    assert(AssessThreatBudget(snapshot, hostile.guid, dps.guid).status ==
+    assert(AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250).status ==
            ThreatBudgetStatus::AtOrOverBudget);
 }
 
@@ -380,6 +380,7 @@ void TestThreatBudgetRejectsStaleSnapshotsAndHandlesClockWrap() {
 }
 void TestThreatBudgetUnknownAndCurrentVictimStates() {
     PartySnapshot snapshot;
+    snapshot.capturedAtMs = 1000;
     PartyMemberSnapshot tank, dps;
     ConfigureMember(tank, 401, PartyRole::Tank, 100, 100, true);
     ConfigureMember(dps, 402, PartyRole::RangedDamage, 100, 100);
@@ -393,31 +394,31 @@ void TestThreatBudgetUnknownAndCurrentVictimStates() {
     assert(current.currentVictimGuid == tank.guid);
 
     snapshot.hostiles[0].victimGuid = 0;
-    ThreatBudgetAssessment noVictim = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment noVictim = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(noVictim.status == ThreatBudgetStatus::Unknown);
     assert(noVictim.unknownReason == ThreatBudgetUnknownReason::MissingCurrentVictim);
     snapshot.hostiles[0].victimGuid = tank.guid;
 
     snapshot.hostiles[0].threat.erase(snapshot.hostiles[0].threat.begin());
-    ThreatBudgetAssessment missingVictim = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment missingVictim = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(missingVictim.unknownReason == ThreatBudgetUnknownReason::MissingOrDuplicateVictimThreat);
     ConfigureThreat(snapshot.hostiles[0], tank.guid, 100.0f, dps.guid, 50.0f, true);
     snapshot.hostiles[0].threat[1].online = false;
-    ThreatBudgetAssessment offlineMember = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment offlineMember = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(offlineMember.unknownReason == ThreatBudgetUnknownReason::MemberThreatOffline);
 
     snapshot.hostiles[0].threat[1].online = true;
     snapshot.hostiles[0].threat[0].threat = std::nanf("");
-    ThreatBudgetAssessment invalidVictim = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment invalidVictim = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(invalidVictim.unknownReason == ThreatBudgetUnknownReason::InvalidVictimThreat);
 
     snapshot.hostiles[0].threat[0].threat = 100.0f;
     snapshot.members[1].alive = false;
-    ThreatBudgetAssessment deadMember = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment deadMember = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(deadMember.unknownReason == ThreatBudgetUnknownReason::MemberNotOnlineOrAlive);
     snapshot.members[1].alive = true;
     snapshot.hostiles[0].alive = false;
-    ThreatBudgetAssessment deadHostile = AssessThreatBudget(snapshot, hostile.guid, dps.guid);
+    ThreatBudgetAssessment deadHostile = AssessThreatBudget(snapshot, hostile.guid, dps.guid, 1000, 250);
     assert(deadHostile.unknownReason == ThreatBudgetUnknownReason::HostileNotAlive);
 }
 

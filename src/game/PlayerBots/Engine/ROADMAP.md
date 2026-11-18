@@ -161,7 +161,9 @@ All classes and roles are composed within one PartyBotEngine queue; this is not 
       - [x] Check each hostile/actual threat-owner pair against Core-derived headroom, existing in-flight reservations and higher-priority candidates already admitted in the same decision report.
       - [x] Revalidate immediately before execution; reserve all positive impact rows before calling the action, roll back on reservation/execution failure, and retain successful reservations until declared expiry or explicit action release.
       - [ ] Add production pre-action estimates for damage, healing/assist fan-out, periodic effects, flat spell threat, pets and other indirect recipients. The current Core direct-damage parity helper uses already-applied damage and is not yet a complete pre-cast action estimator.
-      - [ ] Extend Core-backed runtime CI to verify threshold admission/rejection against actual ThreatManager values, reservation races and cleanup, and unchanged Core victim/threat state.
+      - [~] Extend Core-backed runtime CI to verify threshold admission/rejection against actual ThreatManager values, reservation races and cleanup, and unchanged Core victim/threat state.
+        - [x] Add a real five-Player Group/two-add probe: Core HostileRefManager assist creates non-victim threat references; production PartySnapshotBuilder feeds both the 110% melee and 130% ranged budget assessments; Core ThreatCalcHelper estimates a spell-less damage action; Engine rejects an over-budget candidate and accepts/reserves a safe candidate; real DealDamage verifies the estimated threat delta; action release and unchanged Core victim/threat state are asserted. Full Linux ARM64 compile/pure-test CI passed in #44234198163.
+        - [ ] Run the expanded scenario on the push-only CI runner with the refreshed 5875 fixture and verify the final Runtime PASS/artifact.
 - [ ] Healing triage with incoming heals, HoTs, shields, effective healing and reservations.
 - [ ] CC assignment, protection and break recovery.
 - [ ] Interrupt, dispel and resurrection reservations.

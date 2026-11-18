@@ -4984,6 +4984,7 @@ bool RunPeriodicLeechThreatFixture(Map& map)
             spell->Effect[1] || spell->Effect[2] || spell->ScriptId ||
             spell->SpellVisual == 163 ||
             spell->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT) ||
+            spell->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT) ||
             spell->HasAttribute(SPELL_ATTR_EX_NO_THREAT))
             continue;
         candidates.push_back(spell);

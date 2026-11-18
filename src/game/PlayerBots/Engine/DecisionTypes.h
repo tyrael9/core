@@ -63,6 +63,9 @@ struct ActionCandidate {
     std::string actionName;
     Guid targetGuid = 0;
     std::uint32_t spellId = 0;
+    // Filled by ExecuteSelected before dispatch so asynchronous action
+    // completion hooks can release every reservation belonging to the action.
+    ThreatActionId threatActionId = 0;
     float basePriority = 0.0f;
     float finalPriority = 0.0f;
     ActionChannel channel = ActionChannel::GlobalCooldown;

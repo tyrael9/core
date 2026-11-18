@@ -6,6 +6,7 @@
 #include <vector>
 namespace PartyBotEngine {
 using Guid = std::uint64_t;
+using ThreatActionId = std::uint64_t;
 enum class PartyRole : std::uint8_t { Unknown, Tank, MainTank, Healer, RangedDamage, MeleeDamage, Support };
 enum class ActionChannel : std::uint8_t { GlobalCooldown, Movement, Targeting, Utility };
 enum class ActionResult : std::uint8_t { NotAttempted, Success, Impossible, Useless, Failed, Skipped };

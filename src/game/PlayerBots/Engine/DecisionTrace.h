@@ -29,6 +29,12 @@ public:
     void Record(Player const* bot, char const* event, Unit const* target,
                 SpellEntry const* spell, char const* reason, uint32 detail = 0) const;
 
+    // Encounter boundaries are high-value records and bypass the per-tick detail cap.
+    void RecordEncounterBoundary(Player const* bot, char const* event,
+                                  uint32 groupId, uint32 mapId, uint32 instanceId,
+                                  uint64 encounterId, uint32 sequence,
+                                  uint32 elapsedMs, char const* reason) const;
+
     // Record a bounded status when Shadow cannot produce an evaluation.
     void RecordShadowStatus(Player const* bot, char const* status,
                             uint32 groupId, uint32 mapId, uint32 instanceId) const;

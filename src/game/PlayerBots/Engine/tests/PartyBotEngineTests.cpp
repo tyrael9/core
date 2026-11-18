@@ -197,7 +197,8 @@ void TestThreatReservationExpiryAndClockWrap() {
 void TestThreatReservationValidationAndBoundedCapacity() {
     PartyCoordinator coordinator;
     ThreatReservation invalid;
-    invalid.ownerGuid = 1;
+    // A missing logical action owner must be rejected even when all other fields are valid.
+    invalid.ownerGuid = 0;
     invalid.threatOwnerGuid = 2;
     invalid.hostileGuid = 3;
     invalid.actionId = coordinator.NextThreatActionId();

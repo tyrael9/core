@@ -56,6 +56,31 @@ struct SimulatorActor
     uint32 updateCount = 0;
 };
 
+ThreatImpactEstimate MakeSimulatorNoThreatEstimate(DecisionContext const& context,
+                                                     char const* reason)
+{
+    ThreatImpactEstimate estimate;
+    estimate.completeness = ThreatImpactCompleteness::NoThreat;
+    estimate.snapshotEpoch = context.snapshot.epoch;
+    estimate.reason = reason;
+    return estimate;
+}
+
+ThreatImpactEstimate EstimateSimulatorHealThreat(DecisionContext const& context)
+{
+    // The isolated heal fixtures intentionally contain no hostile snapshot
+    // entries. If any party hostile exists, healing-assist fan-out is not
+    // modelled here and must remain Unknown rather than being treated as free.
+    if (!context.snapshot.hostiles.empty()) {
+        ThreatImpactEstimate estimate;
+        estimate.snapshotEpoch = context.snapshot.epoch;
+        estimate.reason = "simulator_healing_assist_threat_not_modelled";
+        return estimate;
+    }
+    return MakeSimulatorNoThreatEstimate(
+        context, "simulator_fixture_has_no_party_hostile_recipients");
+}
+
 CreatureInfo const* FindSafeCreatureTemplate()
 {
     std::vector<CreatureInfo const*> candidates;
@@ -193,6 +218,12 @@ class SimulatorCoreAttackAction final : public Action
 public:
     explicit SimulatorCoreAttackAction(Map& map) : m_map(map) {}
     std::string const& GetName() const override { return m_name; }
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        // Unit::Attack changes target/motion state only; no damage or threat is generated.
+        return MakeSimulatorNoThreatEstimate(context, "simulator_attack_only_changes_victim");
+    }
     bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
                     std::string& reason) const override
     {
@@ -269,6 +300,12 @@ class SimulatorCoreHealAction final : public Action
 public:
     explicit SimulatorCoreHealAction(Map& map) : m_map(map) {}
     std::string const& GetName() const override { return m_name; }
+
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        return EstimateSimulatorHealThreat(context);
+    }
 
     bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
                     std::string& reason) const override
@@ -534,6 +571,12 @@ public:
     explicit SimulatorCorePlayerHealAction(Map& map) : m_map(map) {}
     std::string const& GetName() const override { return m_name; }
 
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        return EstimateSimulatorHealThreat(context);
+    }
+
     bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
                     std::string& reason) const override
     {
@@ -711,6 +754,12 @@ public:
     explicit SimulatorCoreFollowAction(Map& map) : m_map(map) {}
     std::string const& GetName() const override { return m_name; }
 
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        return MakeSimulatorNoThreatEstimate(context, "simulator_follow_has_no_combat_effect");
+    }
+
     bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
                     std::string& reason) const override
     {
@@ -810,6 +859,12 @@ public:
     explicit SimulatorCoreMovePointAction(Map& map, bool simulateClientRelocation = false)
         : m_map(map), m_simulateClientRelocation(simulateClientRelocation) {}
     std::string const& GetName() const override { return m_name; }
+
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        return MakeSimulatorNoThreatEstimate(context, "simulator_movement_has_no_combat_effect");
+    }
 
     bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
                     std::string& reason) const override

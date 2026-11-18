@@ -97,6 +97,15 @@ inline ThreatImpactBudgetResult AssessThreatImpactBudget(
         if (budget.status == ThreatBudgetStatus::CurrentVictim)
             continue;
 
+        if (budget.status == ThreatBudgetStatus::AtOrOverBudget) {
+            result.status = ThreatImpactBudgetStatus::Exceeded;
+            result.hostileGuid = hostileGuid;
+            result.threatOwnerGuid = threatOwnerGuid;
+            result.rawHeadroom = budget.rawHeadroom;
+            result.reason = "member_already_at_or_over_core_threshold";
+            return result;
+        }
+
         if (budget.status != ThreatBudgetStatus::BudgetAvailable) {
             result.hostileGuid = hostileGuid;
             result.threatOwnerGuid = threatOwnerGuid;

@@ -90,10 +90,39 @@ The eventual action-to-threat contract must distinguish at least:
 
 Core `ThreatCalcHelper::CalcThreat` applies spell threat modifiers, critical-threat modifiers and the hated unit's total threat modifier before insertion. Any action estimate that starts from raw damage or another raw amount must use the audited Core calculation path and account for its timing/inputs. If a reliable estimate is unavailable, the action's threat impact is unknown; it must not silently be treated as zero.
 
+## Core action threat paths — Stage P7.2 audit
+
+The pinned Core source has several independent threat-producing paths. An action estimate must name which path it will invoke; one generic damage/heal formula is not sufficient.
+
+| Path | Core source and observed behavior | Consequence for an Engine estimate |
+|---|---|---|
+| Direct damage | `Unit::DealDamage` computes the damage actually applied, multiplies it by `SpellMgr::GetSpellThreatMultiplier(spellProto)`, then calls the damaged hostile's `AddThreat(actor, threat, crit, damageSchoolMask, spellProto)`. | The input is applied damage, not tooltip/base damage. Hit outcome, armor/resist, crit, school and spell threat multiplier matter. |
+| Threat calculation | `Unit::AddThreat` rejects spells with `SPELL_ATTR_EX4_NO_HARMFUL_THREAT`. `ThreatManager::addThreat` validates life/map state; `ThreatCalcHelper::CalcThreat` applies the hated Unit's spell threat modifier, critical-threat aura modifier and total threat modifier. `SPELL_ATTR_EX_NO_THREAT` can prevent creation of a new reference while still allowing updates to an existing reference. | A raw damage estimate is not yet final threat. The relevant modifiers belong to the hostile/actor Core path and may vary by hostile. |
+| Direct healing assist | `Spell::DoAllEffectOnTarget` uses the actual `DealHeal` return value (`gain`), multiplies by 0.25 for a Paladin caster or 0.5 for other classes, then by `GetSpellThreatMultiplier`, and calls the healed target's `HostileRefManager::threatAssist`. | Effective health gain and caster class matter. A raw spell heal amount overestimates overheal and is not the emitted threat amount. |
+| Assist fan-out | `HostileRefManager::threatAssist` returns for `SPELL_ATTR_EX4_NO_HELPFUL_THREAT`; otherwise it divides the supplied threat by `getSize()` unless `pSingleTarget` is true, then visits every linked hostile reference and calls that source ThreatManager's `addThreat(..., isAssistThreat=true)`. The normal healing call uses the default non-single-target mode. | The same heal can affect multiple hostiles. The divisor is the full linked reference count, not just the currently attacking mobs or online threat-list entries. Stage F12 snapshot discovery is required to enumerate this set. |
+| Assist-threat suppression | `ThreatManager::addThreat` zeroes assist threat when the hostile is confused, fleeing or isolated, or stunned with a breakable stun aura; it then runs the same Core threat calculation. | A pre-action estimate must include hostile CC state and modifiers or report a bound/unknown result. A zero contribution from one hostile does not mean the action has no threat impact on other references. |
+| Periodic healing / regeneration | `SpellAuras.cpp` has separate periodic-heal and power-regeneration paths which call `threatAssist` with 50% of the actual gain times the spell threat multiplier (with power-type/version exceptions). | HoT ticks are separate future impacts; they need bounded, expiring per-tick reservations or explicit unknown handling. Mana regeneration must not be treated as healing threat. |
+| Additional spell-table threat | `Spell::DoAllEffectOnTarget` separately reads `SpellThreatEntry`. For clearly positive spells it calls assist threat on each eligible hit target; for clearly negative spells it adds threat to each eligible hostile target. Mixed positive/negative effect masks are deliberately ignored. | Flat spell-table threat is additional to damage/healing threat and can fan out across multiple targets. Spell rank alone is not a complete impact description. |
+| Taunt / threat modification | `Unit::TauntApply` and `ThreatManager::tauntApply/tauntFadeOut` use a temporary threat modifier on a reference; threat-percent changes and threat resets use other Core APIs. `HostileReference::getThreat()` reports the currently modified value. | These are state transitions, not additive damage/heal estimates. The snapshot headroom helper observes their current result but must not predict them as ordinary positive/negative threat. |
+
+### Action-impact contract requirements
+
+The next interface should return a bounded list of per-hostile impacts, each carrying:
+- acting threat owner GUID (Player, Pet or other actual Core actor);
+- recipient hostile GUID;
+- impact amount in **threat points**, not damage/healing units;
+- impact kind/source path (direct damage, direct heal assist, periodic tick, flat spell threat, taunt, threat reduction, etc.);
+- confidence: `Exact`, `UpperBound`, `NoThreat` or `Unknown`;
+- the snapshot epoch / execution window to which the estimate applies.
+
+Assist healing expands into one impact per hostile reference of the healed unit. If the fan-out, effective heal, hostile suppression state, Core modifiers or additional spell-table contribution cannot be bounded, the estimate is `Unknown`; it must not disappear from the list or be treated as zero.
+
+The current `Reservation::amount` is an integer used by existing heal/CC-style reservations. Threat reservations need floating-point threat units and a key per (hostile GUID, threat-owner GUID); do not overload the existing integer field without auditing every existing reservation caller. Reservation expiry must not outlive the action/tick window, and all reservations must be released on owner logout, action failure, cancellation and completion.
+
 ## Implementation sequence
 
-1. **Snapshot assessment primitive:** add a pure value helper that locates the current victim and member references, reports unknown states explicitly, and calculates the unreserved raw/safe headroom without touching live Core objects. Unit tests must cover melee and ranged thresholds, strict equality, just-over-threshold values, current victim, missing references, offline/dead members and stale/invalid inputs.
-2. **Action threat-impact contract:** define how each Action describes affected hostile/member pairs and whether the estimate is exact, bounded or unknown. Keep the interface independent of live Core pointers; Core adapters may resolve GUIDs on the map thread to obtain audited estimates.
+1. **Snapshot assessment primitive — complete (Stage P7.1):** `AssessThreatBudget` locates unique current-victim/member references, reports unknown states explicitly, checks wrap-safe snapshot freshness and calculates raw headroom without touching live Core objects. Pure tests cover melee/ranged thresholds, strict equality, just-below/above values, current victim, missing/offline/dead/invalid inputs and uint32 clock wrap.
+2. **Action threat-impact contract — next:** define how each Action describes affected hostile/member pairs and whether the estimate is exact, bounded, no-threat or unknown. Keep the interface independent of live Core pointers; Core adapters may resolve GUIDs on the map thread to obtain audited estimates. Use the Stage P7.2 source audit above as the contract boundary.
 3. **Party coordination:** add bounded, expiring reservations for known in-flight threat impacts where simultaneous bots could otherwise all consume the same headroom. Reservation amount/units, target key, action completion/release and owner cleanup must be explicit.
 4. **Policy integration:** compose a ThreatBudget multiplier or hard safety veto only after the action impact contract exists. Unknown impact must be handled explicitly; it must not be mapped to an arbitrary zero-cost action. The policy adjusts candidate eligibility/priority, but Core still performs target selection.
 5. **Core-backed runtime validation:** extend the simulator with real Players, at least two hostiles, both melee/ranged candidate distances, actual Core-generated threat, and an Engine decision near the threshold. Verify the decision's input against direct Core threat values and verify Core's actual victim afterward. Include a control case proving the Engine does not mutate Core victim/threat state.
@@ -177,3 +206,8 @@ Core `ThreatCalcHelper::CalcThreat` applies spell threat modifiers, critical-thr
 - No unbounded reservations, threat history or per-tick scans.
 - Revalidate before executing; post-action snapshots/Core state remain authoritative.
 - No hidden fallback to Legacy threat/taunt policy in New Engine mode.
+
+
+## Stage P7.1 validation note
+
+CI `#44217682323` on commit `705f7f3` passed the standalone PartyBotEngine test step (including stale snapshot and uint32 wraparound cases), CMake configure, full Linux ARM64 Core/server build and simulator harness syntax validation. The optional Core-backed runtime step failed before starting `mangosd`: Google Drive returned its download quota/rate-limit message for the extracted-data fixture. This is an external fixture-hosting failure, not a simulator assertion or a runtime pass. Do not count this run as Core runtime evidence. The previous F12 runtime evidence remains CI `#44215877767`.

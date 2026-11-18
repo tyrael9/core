@@ -165,6 +165,10 @@ if ! grep -Fq "[PartyBotSimulator] PASS: real Creature updates, a Core-calculate
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: negative flat spell-threat estimator rejected incomplete target sets, invalid masks, duplicate/unresolved targets and mixed-sign spells without emitting impacts." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] Missing negative flat spell-threat fail-closed PASS marker." >&2
+    exit 1
+fi
 if ! grep -Fq "[PartyBotSimulator] PASS: a real harmful Core aura spell routed negative flat spell_threat to its affected hostile and matched the estimator against the actual ThreatManager delta." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The negative flat spell-threat Core cast parity assertion marker was not found." | tee -a "$LOG_FILE"
     exit 1

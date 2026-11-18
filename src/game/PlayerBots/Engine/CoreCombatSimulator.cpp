@@ -4302,6 +4302,8 @@ bool RunPeriodicDamageThreatFixture(Map& map)
 
 bool RunPeriodicHealingAssistThreatFixture(Map& map)
 {
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic healing fixture: begin.");
     CreatureInfo const* info = FindSafeCreatureTemplate();
     uint32 partyFaction = 0, hostileFaction = 0;
     if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
@@ -4337,6 +4339,8 @@ bool RunPeriodicHealingAssistThreatFixture(Map& map)
     // Create two real hostile references on the healed Unit. The hostile
     // Creature ThreatManagers must both contain the healed target before the
     // periodic heal so Core's HostileRefManager::threatAssist divides by 2.
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic healing fixture: actors ready; seeding hostile references.");
     uint32 const seedDamageA = healedTarget.creature->DealDamage(
         hostileA.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
     uint32 const seedDamageB = healedTarget.creature->DealDamage(
@@ -4378,6 +4382,8 @@ bool RunPeriodicHealingAssistThreatFixture(Map& map)
         return false;
     }
 
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic healing fixture: refs=%u; applying Rejuvenation.", hostileReferenceCount);
     SpellCastResult const castResult = healer.creature->CastSpell(
         healedTarget.creature, spell, true);
     Aura* aura = castResult == SPELL_CAST_OK
@@ -4927,8 +4933,17 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const creatureCombatPassed = RunCoreCombatThreatSmokeTest(*map);
     bool const negativeFlatSpellThreatPassed = RunNegativeFlatSpellThreatFixture(*map);
     bool const periodicDamagePassed = RunPeriodicDamageThreatFixture(*map);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Stage completed: periodic damage=%u; starting periodic healing.",
+             periodicDamagePassed ? 1u : 0u);
     bool const periodicHealingPassed = RunPeriodicHealingAssistThreatFixture(*map);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Stage completed: periodic healing=%u; starting periodic power.",
+             periodicHealingPassed ? 1u : 0u);
     bool const periodicPowerPassed = RunPeriodicPowerAssistThreatFixture(*map);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Stage completed: periodic power=%u.",
+             periodicPowerPassed ? 1u : 0u);
     bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);

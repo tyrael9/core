@@ -486,7 +486,7 @@ inline ThreatImpactEstimate EstimateAppliedPeriodicHealingAssistComponent(
     if (!snapshotEpoch || !realCaster || !healedTarget || !spellInfo ||
         !periodicHealEffect || !realCaster->IsAlive() || !healedTarget->IsAlive() ||
         !realCaster->IsInWorld() || !healedTarget->IsInWorld() ||
-        !realCaster->IsInMap(healedTarget) || realCaster == healedTarget) {
+        !realCaster->IsInMap(healedTarget)) {
         estimate.reason = "periodic_healing_assist_component_missing_or_ineligible_core_state";
         return estimate;
     }

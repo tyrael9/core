@@ -4237,19 +4237,27 @@ bool RunPeriodicDamageThreatFixture(Map& map)
 
     uint32 const healthBefore = hostile.creature->GetHealth();
     uint32 const ticksBefore = aura->GetAuraTicks();
+    int32 const durationBefore = aura->GetAuraDuration();
+    int32 const maxDuration = aura->GetAuraMaxDuration();
+    int32 const timerBefore = aura->GetAuraPeriodicTimer();
     float const threatBefore = hostile.creature->GetThreatManager().getThreat(caster.creature);
 
-    // Advance the ordinary active Creature/Aura update path. Do not call
-    // PeriodicTick directly and do not reimplement Core damage/threat math.
-    for (uint32 update = 0; update < 64 &&
-         aura->GetAuraTicks() == ticksBefore &&
-         aura->GetAuraDuration() > 0; ++update)
+    // Advance the ordinary active Creature/Aura update path. Duration can be
+    // zero for a permanent/otherwise non-expiring aura, so it must not gate
+    // ticking. Re-resolve the Aura after each map update in case Core removes it.
+    uint32 updates = 0;
+    for (; updates < 64; ++updates)
     {
         map.Update(250);
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        aura = hostile.creature->GetAura(spellId, EFFECT_INDEX_0);
+        if (!aura || aura->GetAuraTicks() > ticksBefore)
+            break;
     }
 
-    uint32 const ticksAfter = aura->GetAuraTicks();
+    uint32 const ticksAfter = aura ? aura->GetAuraTicks() : 0;
+    int32 const timerAfter = aura ? aura->GetAuraPeriodicTimer() : -1;
+    int32 const durationAfter = aura ? aura->GetAuraDuration() : -1;
     uint32 const healthAfter = hostile.creature->GetHealth();
     float const threatAfter = hostile.creature->GetThreatManager().getThreat(caster.creature);
     uint32 const appliedDamage = healthBefore > healthAfter
@@ -4271,8 +4279,9 @@ bool RunPeriodicDamageThreatFixture(Map& map)
     bool cleaned = DestroySimulatorActor(map, hostile);
     cleaned = DestroySimulatorActor(map, caster) && cleaned;
     sLog.Out(LOG_BASIC, matched && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-             "[PartyBotSimulator] Periodic damage tick: spell=%u ticks=%u>%u appliedDamage=%u estimated=%.3f actualDelta=%.3f estimateShape=%u matched=%u cleanup=%u.",
-             spellId, ticksBefore, ticksAfter, appliedDamage, estimatedThreat,
+             "[PartyBotSimulator] Periodic damage tick: spell=%u ticks=%u>%u updates=%u duration=%d>%d maxDuration=%d timer=%d>%d appliedDamage=%u estimated=%.3f actualDelta=%.3f estimateShape=%u matched=%u cleanup=%u.",
+             spellId, ticksBefore, ticksAfter, updates, durationBefore, durationAfter,
+             maxDuration, timerBefore, timerAfter, appliedDamage, estimatedThreat,
              actualThreatDelta, estimateShape ? 1u : 0u, matched ? 1u : 0u,
              cleaned ? 1u : 0u);
 

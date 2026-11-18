@@ -13,6 +13,7 @@ The target is a complete independent PartyBot AI for Vanilla 1.12.1 / client bui
 - TESTING.md: CI, in-game validation and log collection.
 - CORE-COMBAT-SIMULATOR.md: headless Core-backed combat simulator design and API feasibility audit.
 - THREAT-BUDGETS.md: Core-authoritative aggro thresholds, snapshot semantics and action-specific threat-impact requirements.
+- ThreatBudget.h: pure snapshot-only current-victim threshold/headroom assessment; not an action-impact estimator or Core target selector.
 
 Update relevant source and design/testing documents in the same change.
 

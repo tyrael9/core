@@ -2,11 +2,24 @@
 
 ## Status and goal
 
-This document is the design/audit boundary for the Phase 7 threat-budget work. Stage F11 has completed the snapshot prerequisite: every copied hostile threat reference now carries a Core-derived `meleeReachable` bit, and ARM64 runtime CI validates both reachable and unreachable values.
+This document is the design/audit boundary for the Phase 7 threat-budget work. Stages F11 and F12 have completed the snapshot prerequisites: threat entries carry Core-derived `meleeReachable`, and hostile discovery includes all member-side `HostileRefManager` links, including offline references. ARM64 runtime CI validates both reachability states and the complete hostile-reference discovery path.
 
-No production threat-budget policy or aggro-prevention multiplier is implemented yet. The next code change must not turn the observed 110%/130% rules into a second, incomplete copy of Core target selection.
+Stage P7.1 now provides a pure, snapshot-only threshold/headroom assessment and standalone boundary/unknown-state tests. It is not yet connected to action evaluation and does not estimate any future action's threat impact; no production aggro-prevention multiplier is implemented. The next code change must not turn the observed 110%/130% rules into a second, incomplete copy of Core target selection.
 
 The goal is to let PartyBotEngine assess how much additional threat a member can safely generate against each hostile, coordinate simultaneous actions, and avoid avoidable over-aggro while leaving final victim selection to vMaNGOS.
+
+
+## Stage P7.1 — snapshot-only threshold assessment
+
+`ThreatBudget.h` adds `AssessThreatBudget(snapshot, hostileGuid, memberGuid)`. It resolves unique hostile/member/threat entries from immutable GUID/scalar data and returns one of `Unknown`, `CurrentVictim`, `BudgetAvailable` or `AtOrOverBudget`, with an explicit unknown reason. It exposes the current victim's threat, the member's threat, the threshold multiplier/value and raw headroom.
+
+The helper applies 1.1 only when the candidate member's copied Core `meleeReachable` bit is true, otherwise 1.3. It uses the current victim's threat as the baseline and treats equality as zero headroom, matching Core's strict greater-than comparisons. An online but inaccessible ranged reference remains assessable; `accessible` is not substituted for `meleeReachable`.
+
+Missing/duplicate hostile, member or threat entries; missing current victim; offline references; dead/offline members; dead hostiles; and non-finite/negative threat values return `Unknown` rather than fabricating a safe budget. The current victim is reported separately and is not treated as a DPS/healer over-aggro candidate.
+
+This is deliberately a limited numeric projection, not a second target selector. It does not model Core's threat-area checks, eligibility passes, taunt modifiers, immunities, secondary-threat state, immobilization/chase conditions or future threat. It must not be used as an action multiplier until the action-specific threat-impact contract and execution-time revalidation are implemented.
+
+Standalone tests cover melee/ranged thresholds, exact equality and just-below/above values, inaccessible ranged entries, current-victim state and incomplete/invalid snapshot inputs.
 
 ## Core remains the authority
 

@@ -1079,14 +1079,37 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
 
     uint32 const mapId = me->GetMapId();
     uint32 const instanceId = me->GetInstanceId();
+    uint32 const nowMs = WorldTimer::getMSTime();
     bool const enabled = sConfig.GetBoolDefault("PlayerBot.EngineShadow", false);
+    int32 const configuredSettleMs =
+        sConfig.GetIntDefault("PlayerBot.EngineEncounterSettleMs", 30000);
+    uint32 const settleMs = configuredSettleMs > 0
+        ? std::min<uint32>(static_cast<uint32>(configuredSettleMs), 300000u)
+        : 30000u;
+
+    auto traceEncounter = [this](PartyBotEngine::EncounterTransition const& transition)
+    {
+        if (transition.kind == PartyBotEngine::EncounterTransitionKind::None)
+            return;
+
+        bool const started =
+            transition.kind == PartyBotEngine::EncounterTransitionKind::Started;
+        m_decisionTrace.RecordEncounterBoundary(
+            me, started ? "encounter_start" : "encounter_end",
+            transition.groupId, transition.mapId, transition.instanceId,
+            transition.encounterId, transition.sequence, transition.elapsedMs,
+            transition.reason);
+    };
 
     if (!enabled)
     {
         // A bot can change maps before its next AI tick. Never mutate a shard owned by another map thread.
         if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
             m_partyCoordinatorInstanceId == instanceId)
+        {
+            traceEncounter(m_partyCoordinator->CloseEncounter(nowMs, "engine_shadow_disabled"));
             m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+        }
         m_partyCoordinator.reset();
         m_partyCoordinatorMapId = 0;
         m_partyCoordinatorInstanceId = 0;
@@ -1118,7 +1141,10 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     {
         if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
             m_partyCoordinatorInstanceId == instanceId)
+        {
+            traceEncounter(m_partyCoordinator->CloseEncounter(nowMs, "party_unavailable"));
             m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+        }
         m_partyCoordinator.reset();
         m_partyCoordinatorMapId = 0;
         m_partyCoordinatorInstanceId = 0;
@@ -1139,14 +1165,16 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         // Release only when the old shard belongs to this same map update thread.
         if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
             m_partyCoordinatorInstanceId == instanceId)
+        {
+            traceEncounter(m_partyCoordinator->CloseEncounter(nowMs, "party_changed"));
             m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+        }
 
         m_partyCoordinator = coordinator;
         m_partyCoordinatorMapId = mapId;
         m_partyCoordinatorInstanceId = instanceId;
     }
 
-    uint32 const nowMs = WorldTimer::getMSTime();
     m_partyCoordinator->PruneExpired(nowMs);
     PartyBotEngine::PartySnapshot const* snapshot =
         PartyBotEngine::PartySnapshotBuilder::GetOrBuild(me, *m_partyCoordinator, nowMs, 250);
@@ -1155,6 +1183,8 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         traceStatus("snapshot_unavailable", group->GetId());
         return;
     }
+
+    traceEncounter(m_partyCoordinator->ObserveEncounter(*snapshot, nowMs, settleMs));
 
     PartyBotEngine::Guid const botGuid = me->GetObjectGuid().GetRawValue();
     PartyBotEngine::PartyMemberSnapshot const* botSnapshot = snapshot->FindMember(botGuid);

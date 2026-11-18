@@ -4237,12 +4237,12 @@ bool RunNegativeFlatSpellThreatFixture(Map& map)
             continue;
 
         ++attemptedSpells;
+        float const before = hostile.creature->GetThreatManager().getThreat(caster.creature);
         SpellCastResult const castResult = caster.creature->CastSpell(
             hostile.creature, spell, true);
         if (castResult != SPELL_CAST_OK)
             continue;
 
-        float const before = hostile.creature->GetThreatManager().getThreat(caster.creature);
         map.Update(50);
         float const after = hostile.creature->GetThreatManager().getThreat(caster.creature);
         float const delta = after - before;

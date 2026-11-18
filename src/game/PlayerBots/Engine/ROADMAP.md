@@ -82,8 +82,8 @@ Design and audit: CORE-COMBAT-SIMULATOR.md. This phase is test infrastructure, n
 
 ## Phase 3 — first-class encounter trace and post-fight analysis
 
-- [ ] Implement encounter identity and start/end detection.
-- [ ] Add stable structured event schema with sequence numbers and schema version.
+- [~] Implement encounter identity and start/end detection. The map/instance-scoped PartyCoordinator now assigns process-unique encounter IDs, deduplicates party observations, starts on live online member/companion combat, and ends after a configurable quiet settle interval (default 30 seconds) or same-map party/shadow teardown. Pure tests cover duplicate observations, companion combat, wrap-safe settle timing and explicit close. Explicit end records for cross-map/instance transitions remain open because an old map shard must not be mutated from another map thread.
+- [~] Add stable structured event schema with sequence numbers and schema version. Versioned key/value encounter_start/encounter_end records now carry encounter ID, per-encounter sequence, group/map/instance, bot GUID, elapsed time and reason; boundary records bypass the ordinary per-tick detail cap. Remaining event families and end-to-end report correlation are still open.
 - [ ] Record party roster, role/state snapshots and bounded combat heartbeats.
 - [ ] Record trigger results, candidates, rejection reasons, arbitration and selected action.
 - [ ] Record action attempt and authoritative vMaNGOS result separately.

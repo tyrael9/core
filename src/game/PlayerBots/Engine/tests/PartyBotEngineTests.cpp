@@ -522,6 +522,8 @@ void TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness() {
     assert(IsWellFormedThreatImpactEstimate(complete));
     complete.impacts[0].source = ThreatImpactSource::PeriodicPowerAssist;
     assert(IsWellFormedThreatImpactEstimate(complete));
+    complete.impacts[0].source = ThreatImpactSource::PeriodicManaLeech;
+    assert(IsWellFormedThreatImpactEstimate(complete));
     complete.impacts[0].source = ThreatImpactSource::FlatSpellThreat;
     assert(IsWellFormedThreatImpactEstimate(complete));
 

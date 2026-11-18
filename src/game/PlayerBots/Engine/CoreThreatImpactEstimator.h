@@ -206,16 +206,17 @@ inline ThreatImpactEstimate EstimateDirectHealingAssistComponent(
     SpellThreatEntry const* flatThreatEntry =
         sSpellMgr.GetSpellThreatEntry(spellInfo->Id);
     std::uint8_t effectMask = 0;
-    for (std::uint8_t i = 0; i < MAX_EFFECT_INDEX; ++i)
-        if (spellInfo->Effect[i])
-            effectMask |= static_cast<std::uint8_t>(1u << i);
-
-    bool positiveForFlatThreat = spellInfo->IsPositiveSpell();
+    bool positiveForFlatThreat = true;
     for (std::uint8_t i = 0; i < MAX_EFFECT_INDEX; ++i) {
-        // Spell's constructor adds this effect to m_negativeEffectMask even
-        // when SpellEntry::IsPositiveEffect regards the self-damage as positive.
-        if (spellInfo->Effect[i] == SPELL_EFFECT_SCHOOL_DAMAGE &&
-            spellInfo->EffectImplicitTargetA[i] == TARGET_UNIT_CASTER)
+        if (!spellInfo->Effect[i])
+            continue;
+
+        effectMask |= static_cast<std::uint8_t>(1u << i);
+        if (!spellInfo->IsPositiveEffect(SpellEffectIndex(i)) ||
+            // Spell's constructor adds self-damage to m_negativeEffectMask
+            // even when SpellEntry::IsPositiveEffect regards it as positive.
+            (spellInfo->Effect[i] == SPELL_EFFECT_SCHOOL_DAMAGE &&
+             spellInfo->EffectImplicitTargetA[i] == TARGET_UNIT_CASTER))
             positiveForFlatThreat = false;
     }
 

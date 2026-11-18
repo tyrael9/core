@@ -276,7 +276,8 @@ inline ThreatImpactEstimate EstimateNegativeFlatSpellThreatComponent(
 
     if (!snapshotEpoch || !realCaster || !spellInfo || !threatEntry ||
         !threatEntry->threat || !successfulTargetSetComplete ||
-        !realCaster->IsInWorld()) {
+        !realCaster->IsInWorld() || !realCaster->IsAlive() ||
+        spellInfo->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT)) {
         estimate.reason = "negative_flat_spell_threat_component_inputs_incomplete";
         return estimate;
     }
@@ -321,7 +322,8 @@ inline ThreatImpactEstimate EstimateNegativeFlatSpellThreatComponent(
     for (NegativeFlatSpellThreatTarget const& hit : successfulTargets) {
         Unit* target = hit.target;
         if (!target || !hit.successfulEffectMask ||
-            !target->IsInWorld() || target->GetMap() != realCaster->GetMap()) {
+            !target->IsInWorld() || !target->IsAlive() ||
+            target->GetMap() != realCaster->GetMap()) {
             estimate.reason = "negative_flat_spell_threat_target_unresolved";
             estimate.impacts.clear();
             return estimate;

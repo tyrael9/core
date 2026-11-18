@@ -4479,6 +4479,244 @@ bool RunPeriodicHealingAssistThreatFixture(Map& map)
     return true;
 }
 
+
+bool RunPeriodicPowerAssistThreatFixture(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor healer;
+    SimulatorActor energizedTarget;
+    SimulatorActor hostileA;
+    SimulatorActor hostileB;
+    bool created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 48.0f, healer) &&
+        CreateSimulatorActor(map, *info, partyFaction, 2.0f, 48.0f, energizedTarget) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 4.0f, 48.0f, hostileA) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 6.0f, 48.0f, hostileB);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, energizedTarget) && cleaned;
+        cleaned = DestroySimulatorActor(map, healer) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic power fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    healer.creature->SetLevel(60);
+    energizedTarget.creature->SetLevel(60);
+    hostileA.creature->SetLevel(60);
+    hostileB.creature->SetLevel(60);
+
+    // As in the HoT fixture, create two real hostile references on the Unit
+    // receiving power. The helper must distribute each assist event over both.
+    uint32 const seedDamageA = energizedTarget.creature->DealDamage(
+        hostileA.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    uint32 const seedDamageB = energizedTarget.creature->DealDamage(
+        hostileB.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    energizedTarget.creature->SetInCombatWith(hostileA.creature);
+    energizedTarget.creature->SetInCombatWith(hostileB.creature);
+    hostileA.creature->SetInCombatWith(energizedTarget.creature);
+    hostileB.creature->SetInCombatWith(energizedTarget.creature);
+
+    uint32 hostileReferenceCount = 0;
+    for (HostileReference* reference = energizedTarget.creature->GetHostileRefManager().getFirst();
+         reference; reference = reference->next())
+        ++hostileReferenceCount;
+
+    // Use a copy of a loaded, ordinary one-effect 5875 friendly aura template
+    // to exercise both real Core Aura branches. Only its aura type/resource
+    // metadata are changed; CastSpell, Aura::Update, PeriodicTick, ModifyPower,
+    // HostileRefManager and ThreatManager remain the production Core code.
+    uint32 const spellId = 9841; // Rejuvenation rank 10: ordinary 12s / 3s aura
+    SpellEntry const* baseSpell = sSpellMgr.GetSpellEntry(spellId);
+    bool const baseSpellValid = baseSpell &&
+        baseSpell->Effect[0] == SPELL_EFFECT_APPLY_AURA &&
+        !baseSpell->Effect[1] && !baseSpell->Effect[2] &&
+        baseSpell->SpellVisual != 163 &&
+        !baseSpell->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT) &&
+        !baseSpell->HasAttribute(SPELL_ATTR_EX_NO_THREAT);
+    if (!baseSpellValid || seedDamageA != 1 || seedDamageB != 1 ||
+        hostileReferenceCount != 2)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, energizedTarget) && cleaned;
+        cleaned = DestroySimulatorActor(map, healer) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic power fixture preconditions failed (spellValid=%u seed=%u/%u references=%u cleanup=%u).",
+                 baseSpellValid ? 1u : 0u, seedDamageA, seedDamageB,
+                 hostileReferenceCount, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    SpellEntry periodicEnergySpell = *baseSpell;
+    periodicEnergySpell.EffectApplyAuraName[0] = SPELL_AURA_PERIODIC_ENERGIZE;
+    periodicEnergySpell.EffectMiscValue[0] = POWER_ENERGY;
+
+    SpellEntry periodicManaSpell = *baseSpell;
+    periodicManaSpell.EffectApplyAuraName[0] = SPELL_AURA_PERIODIC_ENERGIZE;
+    periodicManaSpell.EffectMiscValue[0] = POWER_MANA;
+
+    SpellEntry observedManaSpell = *baseSpell;
+    observedManaSpell.EffectApplyAuraName[0] = SPELL_AURA_OBS_MOD_MANA;
+
+    struct PeriodicPowerVariantResult
+    {
+        bool matched = false;
+        uint32 effectiveGain = 0;
+        float estimatedA = -1.0f;
+        float estimatedB = -1.0f;
+        float actualA = 0.0f;
+        float actualB = 0.0f;
+    };
+
+    auto runVariant = [&](char const* label, SpellEntry const* variant,
+                          Powers powerType, uint32 maxPower,
+                          bool expectThreat) -> PeriodicPowerVariantResult
+    {
+        PeriodicPowerVariantResult result;
+        energizedTarget.creature->RemoveAurasDueToSpell(spellId);
+        energizedTarget.creature->SetPowerType(powerType);
+        energizedTarget.creature->SetMaxPower(powerType, maxPower);
+        energizedTarget.creature->SetPower(powerType, 0);
+
+        SpellCastResult const castResult =
+            healer.creature->CastSpell(energizedTarget.creature, variant, true);
+        Aura* aura = castResult == SPELL_CAST_OK
+            ? energizedTarget.creature->GetAura(spellId, EFFECT_INDEX_0) : nullptr;
+        bool const auraIsOrdinary = aura && aura->IsPeriodic() &&
+            aura->GetAuraScript() == nullptr && aura->GetAuraPeriodicTimer() > 0;
+        if (!auraIsOrdinary)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                     "[PartyBotSimulator] Periodic power aura variant %s failed to apply (cast=%u aura=%u script=%u timer=%d).",
+                     label, static_cast<uint32>(castResult), aura ? 1u : 0u,
+                     aura && aura->GetAuraScript() ? 1u : 0u,
+                     aura ? aura->GetAuraPeriodicTimer() : -1);
+            energizedTarget.creature->RemoveAurasDueToSpell(spellId);
+            return result;
+        }
+
+        uint32 const powerBefore = energizedTarget.creature->GetPower(powerType);
+        uint32 const ticksBefore = aura->GetAuraTicks();
+        float const threatABefore = hostileA.creature->GetThreatManager().getThreat(healer.creature);
+        float const threatBBefore = hostileB.creature->GetThreatManager().getThreat(healer.creature);
+
+        uint32 updates = 0;
+        for (; updates < 64; ++updates)
+        {
+            map.Update(250);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            aura = energizedTarget.creature->GetAura(spellId, EFFECT_INDEX_0);
+            if (!aura || aura->GetAuraTicks() > ticksBefore)
+                break;
+        }
+
+        uint32 const ticksAfter = aura ? aura->GetAuraTicks() : 0;
+        uint32 const powerAfter = energizedTarget.creature->GetPower(powerType);
+        result.effectiveGain = powerAfter > powerBefore ? powerAfter - powerBefore : 0;
+        result.actualA =
+            hostileA.creature->GetThreatManager().getThreat(healer.creature) - threatABefore;
+        result.actualB =
+            hostileB.creature->GetThreatManager().getThreat(healer.creature) - threatBBefore;
+
+        ThreatImpactEstimate const estimate = EstimateAppliedPeriodicPowerAssistComponent(
+            healer.creature, energizedTarget.creature, result.effectiveGain,
+            powerType, variant, EFFECT_INDEX_0, 88003);
+        bool rowA = false, rowB = false;
+        for (ThreatImpactEntry const& impact : estimate.impacts)
+        {
+            if (impact.threatOwnerGuid != healer.creature->GetObjectGuid().GetRawValue() ||
+                impact.source != ThreatImpactSource::PeriodicPowerAssist ||
+                impact.bound != ThreatImpactBound::Exact)
+                continue;
+            if (impact.hostileGuid == hostileA.creature->GetObjectGuid().GetRawValue())
+            {
+                rowA = true;
+                result.estimatedA = impact.threatPoints;
+            }
+            else if (impact.hostileGuid == hostileB.creature->GetObjectGuid().GetRawValue())
+            {
+                rowB = true;
+                result.estimatedB = impact.threatPoints;
+            }
+        }
+
+        bool estimateValid = false;
+        if (expectThreat)
+        {
+            estimateValid = estimate.completeness == ThreatImpactCompleteness::Unknown &&
+                estimate.impacts.size() == 2 && rowA && rowB;
+            result.matched = ticksAfter == ticksBefore + 1 &&
+                result.effectiveGain > 0 && estimateValid &&
+                std::fabs(result.actualA - result.estimatedA) < 0.01f &&
+                std::fabs(result.actualB - result.estimatedB) < 0.01f &&
+                std::fabs(result.actualA - result.actualB) < 0.01f;
+        }
+        else
+        {
+            estimateValid = estimate.completeness == ThreatImpactCompleteness::NoThreat &&
+                estimate.impacts.empty();
+            result.matched = ticksAfter == ticksBefore + 1 &&
+                result.effectiveGain > 0 && estimateValid &&
+                std::fabs(result.actualA) < 0.01f &&
+                std::fabs(result.actualB) < 0.01f;
+        }
+
+        sLog.Out(LOG_BASIC, result.matched ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic power variant: name=%s spell=%u power=%u ticks=%u>%u updates=%u gain=%u expectedThreat=%u estimateValid=%u estimated=%.3f/%.3f actualDelta=%.3f/%.3f matched=%u.",
+                 label, spellId, static_cast<uint32>(powerType), ticksBefore,
+                 ticksAfter, updates, result.effectiveGain, expectThreat ? 1u : 0u,
+                 estimateValid ? 1u : 0u, result.estimatedA, result.estimatedB,
+                 result.actualA, result.actualB, result.matched ? 1u : 0u);
+
+        energizedTarget.creature->RemoveAurasDueToSpell(spellId);
+        return result;
+    };
+
+    // Non-mana periodic energize creates 50% assist threat. Vanilla 1.12
+    // explicitly suppresses that path for mana and happiness regeneration.
+    PeriodicPowerVariantResult const energy = runVariant(
+        "periodic-energy", &periodicEnergySpell, POWER_ENERGY, 100, true);
+    PeriodicPowerVariantResult const manaEnergize = runVariant(
+        "periodic-mana-exempt", &periodicManaSpell, POWER_MANA, 1000, false);
+
+    // OBS_MOD_MANA is a separate legacy aura branch: unlike PERIODIC_ENERGIZE
+    // mana, this percent-of-max-mana tick still distributes 50% assist threat.
+    PeriodicPowerVariantResult const observedMana = runVariant(
+        "observed-mana", &observedManaSpell, POWER_MANA, 1000, true);
+
+    bool const matched = energy.matched && manaEnergize.matched && observedMana.matched;
+    bool cleaned = DestroySimulatorActor(map, hostileB);
+    cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+    cleaned = DestroySimulatorActor(map, energizedTarget) && cleaned;
+    cleaned = DestroySimulatorActor(map, healer) && cleaned;
+
+    sLog.Out(LOG_BASIC, matched && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Periodic power summary: energyGain=%u energyThreat=%.3f/%.3f manaEnergizeGain=%u manaThreat=%.3f/%.3f observedManaGain=%u observedManaThreat=%.3f/%.3f matched=%u cleanup=%u.",
+             energy.effectiveGain, energy.actualA, energy.actualB,
+             manaEnergize.effectiveGain, manaEnergize.actualA, manaEnergize.actualB,
+             observedMana.effectiveGain, observedMana.actualA, observedMana.actualB,
+             matched ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!matched || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core periodic-power assist fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Core PERIODIC_ENERGIZE granted assist threat for energy but not mana, while OBS_MOD_MANA did grant mana assist threat; the component matched each real two-hostile ThreatManager result.");
+    return true;
+}
+
 bool RunNegativeFlatSpellThreatFixture(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -4690,6 +4928,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const negativeFlatSpellThreatPassed = RunNegativeFlatSpellThreatFixture(*map);
     bool const periodicDamagePassed = RunPeriodicDamageThreatFixture(*map);
     bool const periodicHealingPassed = RunPeriodicHealingAssistThreatFixture(*map);
+    bool const periodicPowerPassed = RunPeriodicPowerAssistThreatFixture(*map);
     bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
@@ -4707,7 +4946,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     // and F9 multi-add threat path; do not create two Groups on the same Map.
     bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
-                              creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && engineExecutorPassed &&
+                              creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&

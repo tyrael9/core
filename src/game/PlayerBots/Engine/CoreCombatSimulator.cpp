@@ -4751,6 +4751,174 @@ bool RunPeriodicPowerAssistThreatFixture(Map& map)
     return true;
 }
 
+
+bool RunPeriodicManaLeechThreatFixture(Map& map)
+{
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic mana leech fixture: begin.");
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor caster;
+    SimulatorActor hostile;
+    bool created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 60.0f, caster) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 60.0f, hostile);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic mana leech fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    caster.creature->SetLevel(60);
+    hostile.creature->SetLevel(60);
+    caster.creature->SetPowerType(POWER_MANA);
+    caster.creature->SetMaxPower(POWER_MANA, 1000);
+    caster.creature->SetPower(POWER_MANA, 0);
+    hostile.creature->SetPowerType(POWER_MANA);
+    hostile.creature->SetMaxPower(POWER_MANA, 1000);
+    hostile.creature->SetPower(POWER_MANA, 1000);
+    hostile.creature->SetInCombatWith(caster.creature);
+    caster.creature->SetInCombatWith(hostile.creature);
+
+    // Select a real native 5875 single-effect periodic mana-leech aura. Avoid
+    // Mark of Kazzak (its depletion explosion is a separate action) and any
+    // scripted/suppressed spell so this fixture isolates the direct mana-gain
+    // threat row only.
+    std::vector<SpellEntry const*> candidates;
+    uint32 const maxSpellId = sSpellMgr.GetMaxSpellId();
+    for (uint32 spellId = 1; spellId < maxSpellId; ++spellId)
+    {
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
+        if (!spell || spell->Id == 21056 ||
+            spell->Effect[0] != SPELL_EFFECT_APPLY_AURA ||
+            spell->EffectApplyAuraName[0] != SPELL_AURA_PERIODIC_MANA_LEECH ||
+            spell->EffectMiscValue[0] != POWER_MANA ||
+            spell->Effect[1] || spell->Effect[2] || spell->ScriptId ||
+            spell->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT) ||
+            spell->HasAttribute(SPELL_ATTR_EX_NO_THREAT))
+            continue;
+        candidates.push_back(spell);
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic mana leech fixture: native candidates=%u.",
+             static_cast<uint32>(candidates.size()));
+
+    SpellEntry const* selectedSpell = nullptr;
+    Aura* aura = nullptr;
+    SpellCastResult castResult = SPELL_FAILED_SPELL_UNAVAILABLE;
+    for (SpellEntry const* candidate : candidates)
+    {
+        // Preserve Core's exact SpellMgr-owned pointer invariant.
+        castResult = caster.creature->CastSpell(hostile.creature, candidate, true);
+        aura = castResult == SPELL_CAST_OK
+            ? hostile.creature->GetAura(candidate->Id, EFFECT_INDEX_0) : nullptr;
+        if (aura && aura->IsPeriodic() && !aura->GetAuraScript() &&
+            aura->GetAuraPeriodicTimer() > 0)
+        {
+            selectedSpell = candidate;
+            break;
+        }
+        hostile.creature->RemoveAurasDueToSpell(candidate->Id);
+    }
+
+    if (!selectedSpell || !aura || !hostile.creature->CanHaveThreatList() ||
+        caster.creature->HasAura(17864, EFFECT_INDEX_0) ||
+        caster.creature->HasAura(18393, EFFECT_INDEX_0))
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic mana leech fixture preconditions failed (cast=%u aura=%u candidates=%u threatList=%u improvedA=%u improvedB=%u cleanup=%u).",
+                 static_cast<uint32>(castResult), aura ? 1u : 0u,
+                 static_cast<uint32>(candidates.size()),
+                 hostile.creature->CanHaveThreatList() ? 1u : 0u,
+                 caster.creature->HasAura(17864, EFFECT_INDEX_0) ? 1u : 0u,
+                 caster.creature->HasAura(18393, EFFECT_INDEX_0) ? 1u : 0u,
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    uint32 const targetPowerBefore = hostile.creature->GetPower(POWER_MANA);
+    uint32 const casterPowerBefore = caster.creature->GetPower(POWER_MANA);
+    uint32 const ticksBefore = aura->GetAuraTicks();
+    uint32 const targetHealthBefore = hostile.creature->GetHealth();
+    float const threatBefore =
+        hostile.creature->GetThreatManager().getThreat(caster.creature);
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic mana leech fixture: selected native spell %u; awaiting one Core Aura tick.",
+             selectedSpell->Id);
+
+    uint32 updates = 0;
+    for (; updates < 64; ++updates)
+    {
+        map.Update(250);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        aura = hostile.creature->GetAura(selectedSpell->Id, EFFECT_INDEX_0);
+        if (!aura || aura->GetAuraTicks() > ticksBefore)
+            break;
+    }
+
+    uint32 const ticksAfter = aura ? aura->GetAuraTicks() : 0;
+    uint32 const targetPowerAfter = hostile.creature->GetPower(POWER_MANA);
+    uint32 const casterPowerAfter = caster.creature->GetPower(POWER_MANA);
+    uint32 const drainedPower = targetPowerBefore > targetPowerAfter
+        ? targetPowerBefore - targetPowerAfter : 0;
+    uint32 const effectiveCasterGain = casterPowerAfter > casterPowerBefore
+        ? casterPowerAfter - casterPowerBefore : 0;
+    uint32 const appliedHealthDamage = targetHealthBefore > hostile.creature->GetHealth()
+        ? targetHealthBefore - hostile.creature->GetHealth() : 0;
+    float const actualThreatDelta =
+        hostile.creature->GetThreatManager().getThreat(caster.creature) - threatBefore;
+
+    ThreatImpactEstimate const estimate = EstimateAppliedPeriodicManaLeechComponent(
+        caster.creature, hostile.creature, effectiveCasterGain, POWER_MANA,
+        selectedSpell, EFFECT_INDEX_0, 88004);
+    bool const estimateShape =
+        estimate.completeness == ThreatImpactCompleteness::Unknown &&
+        estimate.impacts.size() == 1 &&
+        estimate.impacts[0].threatOwnerGuid == caster.creature->GetObjectGuid().GetRawValue() &&
+        estimate.impacts[0].hostileGuid == hostile.creature->GetObjectGuid().GetRawValue() &&
+        estimate.impacts[0].source == ThreatImpactSource::PeriodicManaLeech &&
+        estimate.impacts[0].bound == ThreatImpactBound::Exact;
+    float const estimatedThreat = estimateShape ? estimate.impacts[0].threatPoints : -1.0f;
+    bool const matched = ticksAfter == ticksBefore + 1 &&
+        drainedPower > 0 && effectiveCasterGain > 0 && estimateShape &&
+        std::fabs(actualThreatDelta - estimatedThreat) < 0.01f;
+
+    bool cleaned = true;
+    if (hostile.creature->IsInWorld())
+        hostile.creature->RemoveAurasDueToSpell(selectedSpell->Id);
+    cleaned = DestroySimulatorActor(map, hostile);
+    cleaned = DestroySimulatorActor(map, caster) && cleaned;
+
+    sLog.Out(LOG_BASIC, matched && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Periodic mana leech tick: spell=%u ticks=%u>%u updates=%u drained=%u casterGain=%u extraDamage=%u estimated=%.3f actualDelta=%.3f estimateShape=%u matched=%u cleanup=%u.",
+             selectedSpell->Id, ticksBefore, ticksAfter, updates, drainedPower,
+             effectiveCasterGain, appliedHealthDamage, estimatedThreat,
+             actualThreatDelta, estimateShape ? 1u : 0u, matched ? 1u : 0u,
+             cleaned ? 1u : 0u);
+
+    if (!matched || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core periodic mana leech threat fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: a real Core periodic mana-leech tick drained target Mana, credited the caster's effective Mana gain and matched the target ThreatManager delta with the direct 50%-assist component.");
+    return true;
+}
+
 bool RunNegativeFlatSpellThreatFixture(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -4970,6 +5138,13 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
              periodicHealingPassed ? 1u : 0u);
     bool const periodicPowerPassed = RunPeriodicPowerAssistThreatFixture(*map);
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Stage completed: periodic power=%u; starting periodic mana leech.",
+             periodicPowerPassed ? 1u : 0u);
+    bool const periodicManaLeechPassed = RunPeriodicManaLeechThreatFixture(*map);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Stage completed: periodic mana leech=%u.",
+             periodicManaLeechPassed ? 1u : 0u);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] Stage completed: periodic power=%u.",
              periodicPowerPassed ? 1u : 0u);
     bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
@@ -4989,7 +5164,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     // and F9 multi-add threat path; do not create two Groups on the same Map.
     bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
-                              creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && engineExecutorPassed &&
+                              creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && periodicManaLeechPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&

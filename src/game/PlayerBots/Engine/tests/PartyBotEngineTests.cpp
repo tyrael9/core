@@ -1132,6 +1132,114 @@ void TestThreatBudgetUnknownAndCurrentVictimStates() {
     assert(overflow.unknownReason == ThreatBudgetUnknownReason::InvalidBudgetProjection);
 }
 
+void TestEncounterLifecycleStartSettleAndSequence()
+{
+    PartyCoordinator coordinator;
+    PartySnapshot snapshot;
+    snapshot.groupId = 700;
+    snapshot.mapId = 0; // World map zero is valid and must not suppress tracing.
+    snapshot.instanceId = 12;
+    snapshot.epoch = 1;
+
+    PartyMemberSnapshot tank;
+    tank.guid = 701;
+    tank.online = true;
+    tank.alive = true;
+    tank.inCombat = false;
+    snapshot.members.push_back(tank);
+
+    EncounterTransition none = coordinator.ObserveEncounter(snapshot, 1000, 10000);
+    assert(none.kind == EncounterTransitionKind::None);
+    assert(!coordinator.HasActiveEncounter());
+    assert(coordinator.NextEncounterSequence() == 0);
+
+    snapshot.members[0].inCombat = true;
+    EncounterTransition started = coordinator.ObserveEncounter(snapshot, 1000, 10000);
+    assert(started.kind == EncounterTransitionKind::Started);
+    assert(started.encounterId != 0 && started.sequence == 1);
+    assert(started.groupId == snapshot.groupId && started.mapId == 0);
+    assert(started.instanceId == snapshot.instanceId);
+    assert(started.elapsedMs == 0 && std::string(started.reason) == "combat_detected");
+    assert(coordinator.GetEncounterId() == started.encounterId);
+    assert(coordinator.NextEncounterSequence() == 2);
+
+    // A second bot observing the same party combat does not start a duplicate trace.
+    EncounterTransition duplicate = coordinator.ObserveEncounter(snapshot, 2000, 10000);
+    assert(duplicate.kind == EncounterTransitionKind::None);
+    assert(duplicate.encounterId == 0);
+
+    // Combat seen on a later snapshot refreshes the settle clock.
+    snapshot.epoch = 2;
+    EncounterTransition active = coordinator.ObserveEncounter(snapshot, 3000, 10000);
+    assert(active.kind == EncounterTransitionKind::None);
+    snapshot.members[0].inCombat = false;
+    snapshot.epoch = 3;
+
+    EncounterTransition beforeSettle = coordinator.ObserveEncounter(snapshot, 12999, 10000);
+    assert(beforeSettle.kind == EncounterTransitionKind::None);
+    assert(coordinator.HasActiveEncounter());
+
+    EncounterTransition ended = coordinator.ObserveEncounter(snapshot, 13000, 10000);
+    assert(ended.kind == EncounterTransitionKind::Ended);
+    assert(ended.encounterId == started.encounterId);
+    assert(ended.sequence == 3);
+    assert(ended.groupId == snapshot.groupId && ended.mapId == 0);
+    assert(ended.instanceId == snapshot.instanceId);
+    assert(ended.elapsedMs == 12000);
+    assert(std::string(ended.reason) == "combat_settled");
+    assert(!coordinator.HasActiveEncounter());
+    assert(coordinator.NextEncounterSequence() == 0);
+    assert(coordinator.ObserveEncounter(snapshot, 14000, 10000).kind ==
+           EncounterTransitionKind::None);
+}
+
+void TestEncounterLifecycleCompanionWrapAndExplicitClose()
+{
+    PartyCoordinator coordinator;
+    PartySnapshot snapshot;
+    snapshot.groupId = 800;
+    snapshot.mapId = 1;
+    snapshot.instanceId = 2;
+    snapshot.epoch = 1;
+
+    PartyCompanionSnapshot pet;
+    pet.guid = 801;
+    pet.online = true;
+    pet.alive = true;
+    pet.inCombat = true;
+    snapshot.companions.push_back(pet);
+
+    std::uint32_t const start = 0xfffffff0u;
+    EncounterTransition started = coordinator.ObserveEncounter(snapshot, start, 5000);
+    assert(started.kind == EncounterTransitionKind::Started);
+    assert(started.encounterId != 0);
+
+    snapshot.companions[0].inCombat = false;
+    snapshot.epoch = 2;
+    EncounterTransition beforeWrapSafeSettle =
+        coordinator.ObserveEncounter(snapshot, static_cast<std::uint32_t>(start + 4999u), 5000);
+    assert(beforeWrapSafeSettle.kind == EncounterTransitionKind::None);
+
+    EncounterTransition wrappedEnd =
+        coordinator.ObserveEncounter(snapshot, static_cast<std::uint32_t>(start + 5000u), 5000);
+    assert(wrappedEnd.kind == EncounterTransitionKind::Ended);
+    assert(wrappedEnd.encounterId == started.encounterId);
+    assert(wrappedEnd.elapsedMs == 5000);
+
+    // Explicit party teardown closes an active trace once, without mutating Core state.
+    snapshot.companions[0].inCombat = true;
+    snapshot.epoch = 3;
+    EncounterTransition restarted = coordinator.ObserveEncounter(snapshot, 100, 5000);
+    assert(restarted.kind == EncounterTransitionKind::Started);
+    EncounterTransition closed = coordinator.CloseEncounter(600, "party_unavailable");
+    assert(closed.kind == EncounterTransitionKind::Ended);
+    assert(closed.encounterId == restarted.encounterId);
+    assert(closed.elapsedMs == 500);
+    assert(std::string(closed.reason) == "party_unavailable");
+    assert(coordinator.CloseEncounter(700, "duplicate_close").kind ==
+           EncounterTransitionKind::None);
+}
+
 }
 int main() {
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();
@@ -1142,6 +1250,8 @@ int main() {
     TestInvalidPriorityAndMultiplierVeto();
     TestSnapshotCacheFreshnessAndEpoch();
     TestCoordinatorRegistryIdentityAndBattlegroundBypass();
+    TestEncounterLifecycleStartSettleAndSequence();
+    TestEncounterLifecycleCompanionWrapAndExplicitClose();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();

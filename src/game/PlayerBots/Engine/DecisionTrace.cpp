@@ -210,11 +210,12 @@ void DecisionTrace::RecordEncounterDecisionSummary(
     uint32 elapsedMs, char const* role,
     uint32 candidateCount, uint32 selectedCount) const
 {
-    if (!m_enabled || !bot || !encounterId || !sequence ||
-        m_recordsThisTick >= MAX_RECORDS_PER_TICK)
+    // PartyBotAI emits only one summary per bot in its ten-second Shadow
+    // detail window. Keep this correlated event independent of the legacy
+    // per-tick diagnostic quota.
+    if (!m_enabled || !bot || !encounterId || !sequence)
         return;
 
-    ++m_recordsThisTick;
     std::string const safeRole = SafeTraceToken(role);
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=decision_summary group=%u map=%u instance=%u bot=%u elapsed_ms=%u snapshot_epoch=%u role=%s candidates=%u selected=%u",

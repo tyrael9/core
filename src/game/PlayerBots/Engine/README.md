@@ -12,6 +12,7 @@ The target is a complete independent PartyBot AI for Vanilla 1.12.1 / client bui
 - RESEARCH-AZEROTHCORE.md: class/role/encounter strategy research.
 - TESTING.md: CI, in-game validation and log collection.
 - CORE-COMBAT-SIMULATOR.md: headless Core-backed combat simulator design and API feasibility audit.
+- THREAT-BUDGETS.md: Core-authoritative aggro thresholds, snapshot semantics and action-specific threat-impact requirements.
 
 Update relevant source and design/testing documents in the same change.
 

@@ -67,9 +67,13 @@ Verified ThreatManager/HostileReference APIs:
 - ThreatManager::getThreat(Unit*, bool) reads threat for a unit.
 - ThreatManager::getThreatList() returns a const ThreatList.
 - ThreatManager::getCurrentVictim() returns the current hostile reference.
-- HostileReference exposes getThreat(), getUnitGuid(), isOnline() and isAccessable().
+- HostileReference exposes `getThreat()`, `getUnitGuid()`, `isOnline()` and `isAccessable()`. `getThreat()` returns the reference's current threat value, including any temporary threat modification currently applied by taunt. `isOnline()` and `isAccessable()` are distinct: the header documents cases where a target is online but inaccessible to melee movement while still attackable by range.
 
-Threat-based tank decisions must use the actual hostile creature's threat list and distinguish offline/inaccessible references. Do not infer threat rank solely from current victim.
+`Unit::CanReachWithMeleeAutoAttack(Unit const*)` is a public Core API. The implementation delegates to `CanReachWithMeleeAutoAttackAtPosition` and uses the hostile's combat reach, target combat reach, `BASE_MELEERANGE_OFFSET`, minimum `ATTACK_DISTANCE`, leeway and melee Z reach. PartySnapshotBuilder now calls this API on the hostile Creature for each online threat reference and copies only the resulting boolean; Stage F11 runtime CI validates both true and false cases.
+
+`ThreatManager::getHostileTarget()` updates the threat container and calls `ThreatContainer::selectNextVictim(attacker, currentVictim)`. The container sorts references by descending threat. The selector validates attack targets, immediately aborts selection for a target outside the threat area, and makes a first pass that skips low-priority targets (melee-school immune, secondary threat target and certain immobilized/chase-distance cases), followed by a fallback pass that allows those targets. Relative to a valid current victim, the top eligible challenger must exceed 1.3 times current threat to switch regardless of range, or exceed 1.1 times current threat while `CanReachWithMeleeAutoAttack(challenger)` is true. Both comparisons are strict `>` checks. If the current victim is invalid/removed or no longer eligible, this threshold comparison may not apply.
+
+Threat-based tank decisions must use the actual hostile creature's threat list and distinguish offline/inaccessible references. Do not infer threat rank solely from current victim, and do not reimplement Core's entire victim selector in PartyBotEngine.
 
 ## 4. Spell eligibility and execution APIs verified
 

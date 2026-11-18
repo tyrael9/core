@@ -29,7 +29,7 @@ These tests validate lifecycle-host behavior, not new combat AI behavior.
 - [x] Trace MapManager -> Map -> Player::Update -> PlayerAI::UpdateAI update path.
 - [x] Audit same-map versus cross-map update ownership and Group roster read safety.
 - [x] Audit initial group, target, attacker, threat, cast and movement APIs.
-- [~] Continue action-specific audit for target validity, threat values, spell execution results, range/LOS and movement side effects; F6/F7 validate Core range, resource, LOS and immobility rejection. F8-F10 establish the real five-Player Group, multi-add healer threat, death-reference cleanup and post-death recovery. Stage F11 captures Core-derived melee reachability per threat reference, required to distinguish the 110% melee and 130% ranged victim-switch rules.
+- [~] Continue action-specific audit for target validity, threat values, spell execution results, range/LOS and movement side effects; F6/F7 validate Core range, resource, LOS and immobility rejection. F8-F10 establish the real five-Player Group, multi-add healer threat, death-reference cleanup and post-death recovery. F11 now validates Core-derived melee reachability on both reachable and unreachable threat references; remaining audits will feed the threat-budget and action-execution stages.
 
 ## Phase 2 — independent engine foundation
 
@@ -147,8 +147,8 @@ All classes and roles are composed within one PartyBotEngine queue; this is not 
 - [ ] Main Tank and assistant assignments.
 - [ ] Shared target selection and add pickup.
 - [x] Stage F10 validates Core Tank and Healer death cleanup with two adds. Runtime CI `#44185236970` on `1a463d8` passed: lethal Core DealDamage removed both dead Players from both hostile ThreatManagers; native `SelectHostileTarget` kept both adds on Healer after Tank death, then selected surviving DPS after Healer death; production snapshots reflected both dead roster states, current victims and remaining threat entries; Group/session cleanup and Runtime PASS succeeded.
-- [~] Stage F11 extends copied threat entries with Core-derived `meleeReachable` (`hostileUnit->CanReachWithMeleeAutoAttack(threatTarget)`) to distinguish Core's 110% melee and 130% ranged aggro-switch thresholds. Snapshot parity runtime validation is pending.
-- [ ] Threat budgets, aggro prevention and broader recovery.
+- [x] Stage F11 adds Core-derived `meleeReachable` to every copied threat entry using `hostileUnit->CanReachWithMeleeAutoAttack(threatTarget)`. Runtime CI `#44213077421` on `6066306` passed the production five-Player Group/two-add fixture with `meleeReachability=4/4 reachable=2 unreachable=2`; all four snapshot values matched direct Core API calls and the complete simulator reached final Runtime PASS.
+- [ ] Threat budgets, aggro prevention and broader recovery. Core selector semantics, snapshot limits and action-specific threat-impact requirements are documented in `THREAT-BUDGETS.md`; implementation remains unstarted until the value/impact contract is defined and covered by tests.
 - [ ] Healing triage with incoming heals, HoTs, shields, effective healing and reservations.
 - [ ] CC assignment, protection and break recovery.
 - [ ] Interrupt, dispel and resurrection reservations.

@@ -102,8 +102,16 @@ Post-fight analysis should distinguish:
 
 A log analysis must not assume that a selected candidate was executed. Only an action_result/authoritative execution record proves that an action was attempted or accepted.
 
-## Current implementation gap
+## Current implementation status and gap
 
-At the current branch head, PlayerBot.DecisionTrace emits legacy decision diagnostics and the Shadow integration emits rate-limited summaries plus at most three candidate details per bot every ten seconds. It has no encounter ID, complete action lifecycle, durable per-fight timeline or collector report. This is useful smoke-test instrumentation only; it is not yet a post-fight AI trace.
+The first encounter-lifecycle slice is now implemented in the map/instance-scoped PartyCoordinator and the existing mangosd logging path:
 
-The next observability milestone must implement this contract before New Engine Mode is used for meaningful combat testing.
+- A shared, process-unique encounter ID is allocated once when a live, online party member or primary companion is observed in combat. Multiple bots observing the same party snapshot do not create duplicate starts.
+- A quiet settle interval ends the encounter. The default is 30 seconds and can be overridden with PlayerBot.EngineEncounterSettleMs (positive values are capped at 300 seconds; nonpositive values use the default). This deliberately keeps short post-death/recovery gaps inside the same encounter.
+- A same-map party change, unsupported/disbanded group or Shadow disable explicitly closes the active encounter. Cross-map/instance transitions do not mutate an old coordinator shard from a different map thread; explicit transition closure remains open.
+- The versioned key/value boundary record uses the [PartyBotEngineTrace] prefix and includes trace_version, encounter_id, seq, event, group/map/instance, bot GUID, elapsed_ms and reason. Boundary events bypass the ordinary per-tick diagnostic detail cap.
+- The initial pure suite covers start deduplication, party-member and companion combat, the settle boundary, uint32 clock wrap, monotonic boundary sequence and explicit close.
+
+Only encounter_start and encounter_end are emitted today. Boss identity, roster/state snapshots and heartbeats, trigger/candidate/arbitration records, action/cast lifecycle, target/threat/reservation/health events, bounded encounter buffers, terminal trace-limit handling, shutdown flush and the read-only post-fight collector are not implemented. The legacy [PartyBotDecision], [PartyBotShadow] and [PartyBotShadowDecision] records remain separate and are not yet correlated to encounter IDs. This is an incremental lifecycle foundation, not yet a post-fight AI trace.
+
+For the current Shadow path, both PlayerBot.EngineShadow and PlayerBot.DecisionTrace must be enabled to observe these boundary records. New Engine Mode must remain disabled for meaningful gameplay until the remaining trace contract and the audited exclusive executor are complete.

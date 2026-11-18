@@ -179,7 +179,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: a real Core Aura update delivered one p
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: a real Core periodic-healing Aura tick distributed 50% of effective healing across both live hostile references; the component matched each actual ThreatManager delta." "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: a real Core periodic-healing Aura tick distributed half the effective healing across both live hostile references; the component matched each actual ThreatManager delta." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Core periodic-healing assist tick threat parity marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi

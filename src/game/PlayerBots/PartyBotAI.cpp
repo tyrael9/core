@@ -1086,6 +1086,12 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     uint32 const settleMs = configuredSettleMs > 0
         ? std::min<uint32>(static_cast<uint32>(configuredSettleMs), 300000u)
         : 30000u;
+    int32 const configuredHeartbeatMs =
+        sConfig.GetIntDefault("PlayerBot.EngineEncounterHeartbeatMs", 2000);
+    uint32 const heartbeatMs = configuredHeartbeatMs > 0
+        ? std::max<uint32>(1000u, std::min<uint32>(
+            static_cast<uint32>(configuredHeartbeatMs), 60000u))
+        : 0u;
 
     auto traceEncounter = [this](PartyBotEngine::EncounterTransition const& transition)
     {
@@ -1185,6 +1191,13 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     }
 
     traceEncounter(m_partyCoordinator->ObserveEncounter(*snapshot, nowMs, settleMs));
+
+    if (heartbeatMs && m_decisionTrace.IsEnabled())
+    {
+        PartyBotEngine::EncounterHeartbeat heartbeat;
+        if (m_partyCoordinator->TryBeginEncounterHeartbeat(nowMs, heartbeatMs, heartbeat))
+            m_decisionTrace.RecordPartyHeartbeat(me, *snapshot, heartbeat);
+    }
 
     PartyBotEngine::Guid const botGuid = me->GetObjectGuid().GetRawValue();
     PartyBotEngine::PartyMemberSnapshot const* botSnapshot = snapshot->FindMember(botGuid);

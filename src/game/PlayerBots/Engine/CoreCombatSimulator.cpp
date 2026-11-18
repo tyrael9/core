@@ -23,6 +23,7 @@
 #include "Pet.h"
 #include "Player.h"
 #include "Spell.h"
+#include "SpellAuras.h"
 #include "SpellMgr.h"
 
 #include <algorithm>
@@ -4166,6 +4167,130 @@ bool RunCoreCombatThreatSmokeTest(Map& map)
     return true;
 }
 
+
+bool RunPeriodicDamageThreatFixture(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor caster;
+    SimulatorActor hostile;
+    bool const created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 24.0f, caster) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 24.0f, hostile);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic damage fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    caster.creature->SetLevel(60);
+    hostile.creature->SetLevel(60);
+
+    // Shadow Word: Pain (rank 8) is an ordinary one-effect periodic-damage aura
+    // in the pinned 5875 data. Reject data drift instead of silently exercising
+    // a different aura family or a scripted special case.
+    uint32 const spellId = 10894;
+    SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
+    bool const spellValid = spell &&
+        spell->Effect[0] == SPELL_EFFECT_APPLY_AURA &&
+        spell->EffectApplyAuraName[0] == SPELL_AURA_PERIODIC_DAMAGE &&
+        !spell->Effect[1] && !spell->Effect[2] &&
+        !spell->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT) &&
+        !spell->HasAttribute(SPELL_ATTR_EX_NO_THREAT);
+    if (!spellValid)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Expected simple periodic-damage spell %u was not available (cleanup=%u).",
+                 spellId, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    // Keep the victim in combat so passive Creature regeneration cannot hide
+    // the effective tick damage. The simulator AI intentionally does not attack.
+    hostile.creature->SetInCombatWith(caster.creature);
+    for (uint32 school = SPELL_SCHOOL_HOLY; school < MAX_SPELL_SCHOOL; ++school)
+        hostile.creature->SetResistance(SpellSchools(school), 0);
+
+    SpellCastResult const castResult = caster.creature->CastSpell(
+        hostile.creature, spell, true);
+    Aura* aura = castResult == SPELL_CAST_OK
+        ? hostile.creature->GetAura(spellId, EFFECT_INDEX_0) : nullptr;
+    bool const auraIsOrdinary = aura && aura->IsPeriodic() &&
+        aura->GetAuraScript() == nullptr && aura->GetAuraPeriodicTimer() > 0;
+    if (!auraIsOrdinary)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic damage aura did not apply as a simple Core aura (cast=%u aura=%u script=%u timer=%d cleanup=%u).",
+                 static_cast<uint32>(castResult), aura ? 1u : 0u,
+                 aura && aura->GetAuraScript() ? 1u : 0u,
+                 aura ? aura->GetAuraPeriodicTimer() : -1, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    uint32 const healthBefore = hostile.creature->GetHealth();
+    uint32 const ticksBefore = aura->GetAuraTicks();
+    float const threatBefore = hostile.creature->GetThreatManager().getThreat(caster.creature);
+
+    // Advance the ordinary active Creature/Aura update path. Do not call
+    // PeriodicTick directly and do not reimplement Core damage/threat math.
+    for (uint32 update = 0; update < 64 &&
+         aura->GetAuraTicks() == ticksBefore &&
+         aura->GetAuraDuration() > 0; ++update)
+    {
+        map.Update(250);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    uint32 const ticksAfter = aura->GetAuraTicks();
+    uint32 const healthAfter = hostile.creature->GetHealth();
+    float const threatAfter = hostile.creature->GetThreatManager().getThreat(caster.creature);
+    uint32 const appliedDamage = healthBefore > healthAfter
+        ? healthBefore - healthAfter : 0;
+    float const actualThreatDelta = threatAfter - threatBefore;
+
+    ThreatImpactEstimate const estimate = EstimateAppliedPeriodicDamageComponent(
+        caster.creature, hostile.creature, appliedDamage, spell, 88001);
+    bool const estimateShape = estimate.completeness == ThreatImpactCompleteness::Unknown &&
+        estimate.impacts.size() == 1 &&
+        estimate.impacts[0].threatOwnerGuid == caster.creature->GetObjectGuid().GetRawValue() &&
+        estimate.impacts[0].hostileGuid == hostile.creature->GetObjectGuid().GetRawValue() &&
+        estimate.impacts[0].source == ThreatImpactSource::PeriodicDamage &&
+        estimate.impacts[0].bound == ThreatImpactBound::Exact;
+    float const estimatedThreat = estimateShape ? estimate.impacts[0].threatPoints : -1.0f;
+    bool const matched = ticksAfter == ticksBefore + 1 && appliedDamage > 0 &&
+        estimateShape && std::fabs(actualThreatDelta - estimatedThreat) < 0.01f;
+
+    bool cleaned = DestroySimulatorActor(map, hostile);
+    cleaned = DestroySimulatorActor(map, caster) && cleaned;
+    sLog.Out(LOG_BASIC, matched && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Periodic damage tick: spell=%u ticks=%u>%u appliedDamage=%u estimated=%.3f actualDelta=%.3f estimateShape=%u matched=%u cleanup=%u.",
+             spellId, ticksBefore, ticksAfter, appliedDamage, estimatedThreat,
+             actualThreatDelta, estimateShape ? 1u : 0u, matched ? 1u : 0u,
+             cleaned ? 1u : 0u);
+
+    if (!matched || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core periodic-damage tick parity fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: a real Core Aura update delivered one periodic damage tick through Aura::PeriodicTick and Unit::DealDamage(DOT); the applied-tick threat component matched the actual ThreatManager delta.");
+    return true;
+}
+
 bool RunNegativeFlatSpellThreatFixture(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -4375,6 +4500,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     // remaining diagnostics; the final result still requires every stage.
     bool const creatureCombatPassed = RunCoreCombatThreatSmokeTest(*map);
     bool const negativeFlatSpellThreatPassed = RunNegativeFlatSpellThreatFixture(*map);
+    bool const periodicDamagePassed = RunPeriodicDamageThreatFixture(*map);
     bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
@@ -4392,7 +4518,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     // and F9 multi-add threat path; do not create two Groups on the same Map.
     bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
-                              creatureCombatPassed && negativeFlatSpellThreatPassed && engineExecutorPassed &&
+                              creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&

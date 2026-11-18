@@ -197,6 +197,50 @@ inline ThreatImpactEstimate EstimateDirectHealingAssistComponent(
         estimate.impacts.push_back(impact);
     }
 
+    // Spell::HandleThreatSpells adds an additional flat-threat component for
+    // positive spells. For each successful target it uses the same helpful
+    // HostileRefManager fan-out, then ThreatManager::addThreat applies the
+    // caster's spell-threat modifiers. This function covers only the supplied
+    // healed target; multi-target spell recipients must be enumerated by the
+    // caller and the enclosing action remains Unknown.
+    SpellThreatEntry const* flatThreatEntry =
+        sSpellMgr.GetSpellThreatEntry(spellInfo->Id);
+    std::uint8_t effectMask = 0;
+    for (std::uint8_t i = 0; i < MAX_EFFECT_INDEX; ++i)
+        if (spellInfo->Effect[i])
+            effectMask |= static_cast<std::uint8_t>(1u << i);
+
+    if (flatThreatEntry && flatThreatEntry->threat &&
+        spellInfo->IsPositiveSpell() && effectMask &&
+        flatThreatEntry->CanCauseThreatOnMask(effectMask)) {
+        float const flatThreatPerReference = static_cast<float>(
+            flatThreatEntry->threat / static_cast<double>(hostileGuids.size()));
+        if (!std::isfinite(flatThreatPerReference) || flatThreatPerReference < 0.0f) {
+            estimate.reason = "direct_heal_assist_component_invalid_flat_spell_threat";
+            estimate.impacts.clear();
+            return estimate;
+        }
+
+        for (Guid hostileGuid : hostileGuids) {
+            float const threatPoints = ThreatCalcHelper::CalcThreat(
+                realCaster, flatThreatPerReference, false,
+                spellInfo->GetSpellSchoolMask(), spellInfo);
+            if (!std::isfinite(threatPoints) || threatPoints < 0.0f) {
+                estimate.reason = "direct_heal_assist_component_invalid_flat_threat_modifier";
+                estimate.impacts.clear();
+                return estimate;
+            }
+
+            ThreatImpactEntry impact;
+            impact.threatOwnerGuid = casterGuid;
+            impact.hostileGuid = hostileGuid;
+            impact.threatPoints = threatPoints;
+            impact.source = ThreatImpactSource::FlatSpellThreat;
+            impact.bound = ThreatImpactBound::UpperBound;
+            estimate.impacts.push_back(impact);
+        }
+    }
+
     return estimate;
 }
 

@@ -17,6 +17,7 @@ inline bool IsValidThreatImpactSource(ThreatImpactSource source)
         case ThreatImpactSource::DirectHealAssist:
         case ThreatImpactSource::PeriodicHealAssist:
         case ThreatImpactSource::PeriodicPowerAssist:
+        case ThreatImpactSource::PeriodicManaLeech:
         case ThreatImpactSource::FlatSpellThreat:
             return true;
     }

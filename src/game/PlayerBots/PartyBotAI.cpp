@@ -461,11 +461,16 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
             return;
         }
         uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+        bool const matchesEngineAction = m_activeEngineActionId &&
+            m_activeEngineActionEncounterId == encounterId &&
+            (!m_activeEngineActionSpellId || m_activeEngineActionSpellId == spellId) &&
+            (!m_activeEngineActionTargetGuid || m_activeEngineActionTargetGuid == targetGuid);
+        uint64 const actionId = matchesEngineAction ? m_activeEngineActionId : sequence;
         if (m_decisionTrace.RecordEncounterCastAttempt(
                 me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
-                encounterId, sequence, elapsedMs, sequence, targetGuid, spellId))
+                encounterId, sequence, elapsedMs, actionId, targetGuid, spellId))
         {
-            m_pendingCastTraceActionId = sequence;
+            m_pendingCastTraceActionId = actionId;
             m_pendingCastTraceEncounterId = encounterId;
             m_pendingCastTraceTargetGuid = targetGuid;
             m_pendingCastTraceSpellId = spellId;
@@ -512,7 +517,7 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
     m_pendingCastTraceSpellBound = false;
 }
 
-uint32 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
+uint64 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
                                         uint64 coreTargetGuid, uint64& encounterId,
                                         uint64& traceTargetGuid)
 {
@@ -520,6 +525,25 @@ uint32 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
     traceTargetGuid = 0;
     if (me)
         m_partyBotEngine.InvalidateDecisionState();
+
+    // Direct Engine adapters may call Player::CastSpell without passing through
+    // CombatBotBaseAI::DoCastSpell. Bind the host's active Engine action ID here;
+    // the Core Spell object will retain it until finish/cancel.
+    if (!m_pendingCastTraceActionId && m_activeEngineActionId &&
+        m_activeEngineActionEncounterId == (m_partyCoordinator
+            ? m_partyCoordinator->GetEncounterId() : 0) &&
+        (!m_activeEngineActionSpellId || m_activeEngineActionSpellId == spellId) &&
+        (!m_activeEngineActionTargetGuid ||
+         !coreTargetGuid || m_activeEngineActionTargetGuid == coreTargetGuid))
+    {
+        m_pendingCastTraceActionId = m_activeEngineActionId;
+        m_pendingCastTraceEncounterId = m_activeEngineActionEncounterId;
+        m_pendingCastTraceTargetGuid = m_activeEngineActionTargetGuid
+            ? m_activeEngineActionTargetGuid : coreTargetGuid;
+        m_pendingCastTraceSpellId = spellId;
+        m_pendingCastTraceSpellBound = false;
+    }
+
     if (!me || !m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
         !m_partyCoordinator->HasActiveEncounter() ||
         !m_pendingCastTraceActionId || m_pendingCastTraceSpellBound ||
@@ -542,13 +566,26 @@ uint32 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
     return m_pendingCastTraceActionId;
 }
 
-void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint32 actionId,
+void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint64 actionId,
                                      uint64 encounterId, uint32 spellId,
                                      uint64 targetGuid, bool success,
                                      bool interrupted)
 {
     if (me)
         m_partyBotEngine.InvalidateDecisionState();
+
+    bool const matchingPendingCast = actionId &&
+        actionId == m_pendingCastTraceActionId &&
+        encounterId == m_pendingCastTraceEncounterId;
+    if (matchingPendingCast)
+    {
+        m_pendingCastTraceActionId = 0;
+        m_pendingCastTraceEncounterId = 0;
+        m_pendingCastTraceTargetGuid = 0;
+        m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
+    }
+
     if (!me || !m_decisionTrace.IsEnabled() || !actionId || !encounterId ||
         !m_partyCoordinator || !m_partyCoordinator->HasActiveEncounter() ||
         m_partyCoordinator->GetEncounterId() != encounterId)
@@ -574,6 +611,31 @@ void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint32 actionId,
         encounterId, sequence,
         m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
         actionId, spellId, targetGuid, success, interrupted);
+}
+
+void PartyBotAI::OnEngineActionEvent(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::EngineActionTraceEvent const& event)
+{
+    if (event.stage == PartyBotEngine::EngineActionTraceStage::Attempt)
+    {
+        m_activeEngineActionId = event.actionId;
+        m_activeEngineActionEncounterId = context.coordinator.GetEncounterId();
+        m_activeEngineActionTargetGuid = event.targetGuid;
+        m_activeEngineActionSpellId = event.spellId;
+        return;
+    }
+
+    if (m_activeEngineActionId != event.actionId)
+        return;
+
+    // A prepared Spell owns a copy of this ID and may finish asynchronously.
+    // Clearing only the active dispatch slot allows a later movement action
+    // without losing the in-flight spell's terminal correlation.
+    m_activeEngineActionId = 0;
+    m_activeEngineActionEncounterId = 0;
+    m_activeEngineActionTargetGuid = 0;
+    m_activeEngineActionSpellId = 0;
 }
 
 void PartyBotAI::OnAliveStateChanged(bool wasAlive, bool isAlive)
@@ -1640,7 +1702,7 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     }
 
     PartyBotEngine::DecisionContext context(*snapshot, *botSnapshot, *m_partyCoordinator,
-                                               nowMs, &m_decisionTrace);
+                                               nowMs, &m_decisionTrace, nullptr, this);
     PartyBotEngine::DecisionReport const report = m_partyBotEngine.Evaluate(context);
 
     if (m_engineShadowTraceMs <= PB_UPDATE_INTERVAL)

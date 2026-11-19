@@ -197,7 +197,8 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
     DecisionContext executionContext(
         context.snapshot, context.bot, context.coordinator, context.nowMs,
         context.reservationTrace,
-        context.valueCache ? context.valueCache : &m_valueCache);
+        context.valueCache ? context.valueCache : &m_valueCache,
+        context.engineActionObserver);
     auto recordReservation = [&executionContext](ReservationTraceEvent const& event) {
         if (executionContext.reservationTrace)
             executionContext.reservationTrace->RecordReservationEvent(executionContext, event);

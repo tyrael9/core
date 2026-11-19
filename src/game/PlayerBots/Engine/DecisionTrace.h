@@ -45,6 +45,12 @@ public:
     // One coordinator-throttled, bounded roster/hostile snapshot per encounter heartbeat.
     void RecordPartyHeartbeat(Player const* bot, PartySnapshot const& snapshot,
                               EncounterHeartbeat const& heartbeat) const;
+    // A successful Legacy AttackStart target switch, after Core changes the actual victim.
+    void RecordEncounterTargetChange(Player const* bot, uint32 groupId, uint32 mapId,
+                                     uint32 instanceId, uint64 encounterId,
+                                     uint32 sequence, uint32 elapsedMs,
+                                     uint64 oldVictimGuid, uint64 newVictimGuid,
+                                     char const* source) const;
 
     // Encounter-correlated Shadow summary and candidate records share the coordinator sequence.
     void RecordEncounterDecisionSummary(Player const* bot, uint32 groupId, uint32 mapId,
@@ -100,6 +106,8 @@ private:
     mutable uint32 m_recordsThisTick;
     mutable uint32 m_castTraceEventsThisTick;
     mutable bool m_castTraceLimitLogged;
+    mutable uint32 m_targetChangesThisTick;
+    mutable bool m_targetChangeLimitLogged;
     mutable bool m_enabled;
 };
 

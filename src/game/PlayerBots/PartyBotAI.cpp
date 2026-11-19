@@ -1420,6 +1420,18 @@ char const* ShadowRoleName(uint8 roleId)
     }
 }
 
+char const* ShadowTriggerStatusName(PartyBotEngine::TriggerEvaluationStatus status)
+{
+    using PartyBotEngine::TriggerEvaluationStatus;
+    switch (status)
+    {
+        case TriggerEvaluationStatus::CadenceSkipped: return "cadence_skipped";
+        case TriggerEvaluationStatus::Inactive: return "inactive";
+        case TriggerEvaluationStatus::Active: return "active";
+        default: return "unknown";
+    }
+}
+
 char const* ShadowCandidateStatusName(PartyBotEngine::CandidateStatus status)
 {
     using PartyBotEngine::CandidateStatus;
@@ -1657,6 +1669,73 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
                 static_cast<uint32>(report.selectedIndices.size()));
         }
 
+        if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter())
+        {
+            uint32 triggerEvaluated = 0;
+            uint32 triggerActive = 0;
+            uint32 triggerInactive = 0;
+            uint32 triggerCadenceSkipped = 0;
+            for (PartyBotEngine::TriggerEvaluation const& trigger : report.triggerEvaluations)
+            {
+                switch (trigger.status)
+                {
+                    case PartyBotEngine::TriggerEvaluationStatus::CadenceSkipped:
+                        ++triggerCadenceSkipped;
+                        break;
+                    case PartyBotEngine::TriggerEvaluationStatus::Inactive:
+                        ++triggerEvaluated;
+                        ++triggerInactive;
+                        break;
+                    case PartyBotEngine::TriggerEvaluationStatus::Active:
+                        ++triggerEvaluated;
+                        ++triggerActive;
+                        break;
+                }
+            }
+
+            if (AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                    m_partyCoordinator->GetEncounterId(), snapshot->groupId,
+                    snapshot->mapId, snapshot->instanceId,
+                    m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                    PartyBotEngine::EncounterTraceEventClass::Detail))
+            {
+                uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+                m_decisionTrace.RecordEncounterTriggerSummary(
+                    me, snapshot->groupId, snapshot->mapId, snapshot->instanceId,
+                    m_partyCoordinator->GetEncounterId(), sequence,
+                    m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                    static_cast<uint32>(report.triggerEvaluations.size() +
+                        report.omittedTriggerEvaluations),
+                    triggerEvaluated, triggerActive, triggerInactive,
+                    triggerCadenceSkipped, report.omittedTriggerEvaluations);
+            }
+
+            // Keep per-bot detail bounded in the existing ten-second sample window.
+            std::size_t loggedTriggers = 0;
+            for (PartyBotEngine::TriggerEvaluation const& trigger : report.triggerEvaluations)
+            {
+                if (loggedTriggers >= 4)
+                    break;
+                if (AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                        m_partyCoordinator->GetEncounterId(), snapshot->groupId,
+                        snapshot->mapId, snapshot->instanceId,
+                        m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                        PartyBotEngine::EncounterTraceEventClass::Detail))
+                {
+                    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+                    m_decisionTrace.RecordEncounterTrigger(
+                        me, snapshot->groupId, snapshot->mapId, snapshot->instanceId,
+                        m_partyCoordinator->GetEncounterId(), sequence,
+                        m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                        ShadowRoleName(botSnapshot->roleId),
+                        trigger.strategyName.c_str(), trigger.triggerName.c_str(),
+                        trigger.intervalMs, ShadowTriggerStatusName(trigger.status),
+                        trigger.candidateCount);
+                }
+                ++loggedTriggers;
+            }
+        }
+
         std::vector<std::size_t> decisionOrder;
         decisionOrder.reserve(report.candidates.size());
         for (std::size_t i = 0; i < report.candidates.size(); ++i)
@@ -1702,8 +1781,8 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
                     snapshot->epoch, m_partyCoordinator->GetEncounterId(), sequence,
                     m_partyCoordinator->GetEncounterElapsedMs(nowMs),
                     ShadowRoleName(botSnapshot->roleId),
-                    candidate.strategyName.c_str(), candidate.actionName.c_str(),
-                    candidate.targetGuid, candidate.spellId,
+                    candidate.strategyName.c_str(), candidate.triggerName.c_str(),
+                    candidate.actionName.c_str(), candidate.targetGuid, candidate.spellId,
                     static_cast<uint32>(candidate.channel), candidate.finalPriority,
                     ShadowCandidateStatusName(evaluation.status),
                     evaluation.reason.empty() ? "none" : evaluation.reason.c_str());

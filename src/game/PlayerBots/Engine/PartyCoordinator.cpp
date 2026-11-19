@@ -116,7 +116,7 @@ void PartyCoordinator::ReleaseOwner(Guid ownerGuid) {
         m_threatReservations.end());
 }
 
-ThreatActionId PartyCoordinator::NextThreatActionId() {
+ActionId PartyCoordinator::NextActionId() {
     // At most 128 IDs can be retained, so a free nonzero ID is guaranteed within
     // one pass unless the uint64_t namespace is pathologically exhausted.
     for (std::size_t attempt = 0; attempt <= m_threatReservations.size(); ++attempt) {

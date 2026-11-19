@@ -3185,6 +3185,16 @@ AHBot.itemcount = 50
 #        Default: 0 - off
 #                 1 - on
 #
+#    PlayerBot.EngineEncounterMaxDetailEvents
+#        Party-wide per-encounter limit for snapshots, target changes and Shadow candidate details.
+#        Values are clamped to 1..4096; zero/negative values become 1.
+#        Default: 1024
+#
+#    PlayerBot.EngineEncounterMaxImportantEvents
+#        Party-wide per-encounter limit for cast lifecycle, reservation and alive-state events.
+#        Values are clamped to 1..1024; zero/negative values become 1.
+#        Default: 256
+#
 #    PlayerBot.EngineShadow
 #        Builds a same-map party snapshot and evaluates PartyBotEngine without executing actions.
 #        Legacy PartyBot AI remains the only executor while this is enabled.
@@ -3249,6 +3259,8 @@ PlayerBot.AllowSaving = 0
 PlayerBot.Debug = 0
 PlayerBot.DecisionTrace = 0
 PlayerBot.EngineShadow = 0
+PlayerBot.EngineEncounterMaxDetailEvents = 1024
+PlayerBot.EngineEncounterMaxImportantEvents = 256
 PlayerBot.OwnerOfflineGraceMs = 600000
 PlayerBot.UpdateMs = 1000
 PlayerBot.ShowInWhoList = 0

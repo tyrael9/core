@@ -89,8 +89,14 @@ public:
     std::uint32_t NextEncounterSequence();
     EncounterTraceAdmission TryAdmitEncounterTraceEvent(
         std::uint64_t encounterId, EncounterTraceEventClass eventClass);
+    // Defaults keep normal encounter traces compact on the 1 OCPU ARM64 host.
     static std::uint32_t const MaxDetailTraceEvents = 1024;
     static std::uint32_t const MaxImportantTraceEvents = 256;
+    // Runtime settings may lower the defaults, but cannot make one encounter unbounded.
+    static std::uint32_t const HardMaxDetailTraceEvents = 4096;
+    static std::uint32_t const HardMaxImportantTraceEvents = 1024;
+    void ConfigureEncounterTraceBudget(std::uint32_t detailLimit,
+                                       std::uint32_t importantLimit);
     std::uint64_t GetEncounterId() const { return m_encounterId; }
     std::uint32_t GetEncounterGroupId() const { return m_encounterGroupId; }
     std::uint32_t GetEncounterMapId() const { return m_encounterMapId; }
@@ -123,6 +129,8 @@ private:
     std::uint64_t m_traceBudgetEncounterId = 0;
     std::uint32_t m_traceDetailEvents = 0;
     std::uint32_t m_traceImportantEvents = 0;
+    std::uint32_t m_traceDetailLimit = MaxDetailTraceEvents;
+    std::uint32_t m_traceImportantLimit = MaxImportantTraceEvents;
     bool m_traceLimitMarkerEmitted = false;
     bool m_traceTerminalEmitted = false;
     bool m_encounterActive = false;

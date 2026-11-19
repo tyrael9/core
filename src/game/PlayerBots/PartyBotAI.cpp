@@ -1370,6 +1370,18 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         ? std::max<uint32>(1000u, std::min<uint32>(
             static_cast<uint32>(configuredHeartbeatMs), 60000u))
         : 0u;
+    int32 const configuredDetailBudget =
+        sConfig.GetIntDefault("PlayerBot.EngineEncounterMaxDetailEvents", 1024);
+    uint32 const detailBudget = configuredDetailBudget > 0
+        ? std::min<uint32>(static_cast<uint32>(configuredDetailBudget),
+                           PartyBotEngine::PartyCoordinator::HardMaxDetailTraceEvents)
+        : 1u;
+    int32 const configuredImportantBudget =
+        sConfig.GetIntDefault("PlayerBot.EngineEncounterMaxImportantEvents", 256);
+    uint32 const importantBudget = configuredImportantBudget > 0
+        ? std::min<uint32>(static_cast<uint32>(configuredImportantBudget),
+                           PartyBotEngine::PartyCoordinator::HardMaxImportantTraceEvents)
+        : 1u;
 
     auto traceEncounter = [this](PartyBotEngine::EncounterTransition const& transition)
     {
@@ -1482,6 +1494,7 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         m_partyCoordinatorInstanceId = instanceId;
     }
 
+    m_partyCoordinator->ConfigureEncounterTraceBudget(detailBudget, importantBudget);
     m_partyCoordinator->PruneExpired(nowMs);
     PartyBotEngine::PartySnapshot const* snapshot =
         PartyBotEngine::PartySnapshotBuilder::GetOrBuild(me, *m_partyCoordinator, nowMs, 250);

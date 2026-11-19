@@ -1796,6 +1796,61 @@ void TestEncounterTraceBudgetIsPartyWideBoundedAndTerminalReserved()
         EncounterTraceAdmission::Suppressed);
 }
 
+
+void TestEncounterTraceBudgetConfigurationIsClampedAndBounded()
+{
+    PartySnapshot snapshot;
+    snapshot.groupId = 992;
+    snapshot.mapId = 1;
+    snapshot.instanceId = 9;
+    snapshot.epoch = 1;
+    PartyMemberSnapshot member;
+    member.guid = 993;
+    member.online = true;
+    member.alive = true;
+    member.inCombat = true;
+    snapshot.members.push_back(member);
+
+    PartyCoordinator small;
+    small.ConfigureEncounterTraceBudget(2, 1);
+    EncounterTransition smallStart = small.ObserveEncounter(snapshot, 1000, 10000);
+    assert(smallStart.kind == EncounterTransitionKind::Started);
+    assert(small.TryAdmitEncounterTraceEvent(
+        smallStart.encounterId, EncounterTraceEventClass::Important) ==
+        EncounterTraceAdmission::Accepted);
+    assert(small.TryAdmitEncounterTraceEvent(
+        smallStart.encounterId, EncounterTraceEventClass::Important) ==
+        EncounterTraceAdmission::EmitLimitMarker);
+    assert(small.TryAdmitEncounterTraceEvent(
+        smallStart.encounterId, EncounterTraceEventClass::Important) ==
+        EncounterTraceAdmission::Suppressed);
+
+    // Zero is clamped to one, preserving an explicit overflow marker.
+    PartyCoordinator minimum;
+    minimum.ConfigureEncounterTraceBudget(0, 0);
+    EncounterTransition minimumStart = minimum.ObserveEncounter(snapshot, 2000, 10000);
+    assert(minimumStart.kind == EncounterTransitionKind::Started);
+    assert(minimum.TryAdmitEncounterTraceEvent(
+        minimumStart.encounterId, EncounterTraceEventClass::Detail) ==
+        EncounterTraceAdmission::Accepted);
+    assert(minimum.TryAdmitEncounterTraceEvent(
+        minimumStart.encounterId, EncounterTraceEventClass::Detail) ==
+        EncounterTraceAdmission::EmitLimitMarker);
+
+    // Oversized settings are clamped to a finite hard ceiling.
+    PartyCoordinator maximum;
+    maximum.ConfigureEncounterTraceBudget(999999, 999999);
+    EncounterTransition maximumStart = maximum.ObserveEncounter(snapshot, 3000, 10000);
+    assert(maximumStart.kind == EncounterTransitionKind::Started);
+    for (std::uint32_t i = 0; i < PartyCoordinator::HardMaxDetailTraceEvents; ++i)
+        assert(maximum.TryAdmitEncounterTraceEvent(
+            maximumStart.encounterId, EncounterTraceEventClass::Detail) ==
+            EncounterTraceAdmission::Accepted);
+    assert(maximum.TryAdmitEncounterTraceEvent(
+        maximumStart.encounterId, EncounterTraceEventClass::Detail) ==
+        EncounterTraceAdmission::EmitLimitMarker);
+}
+
 }
 int main() {
     TestValueCacheEpochExpiryInvalidationAndTypeSafety();
@@ -1822,6 +1877,7 @@ int main() {
     TestEncounterLifecycleCompanionWrapAndExplicitClose();
     TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe();
     TestEncounterTraceBudgetIsPartyWideBoundedAndTerminalReserved();
+    TestEncounterTraceBudgetConfigurationIsClampedAndBounded();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();

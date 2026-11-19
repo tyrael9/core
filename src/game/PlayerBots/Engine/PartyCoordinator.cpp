@@ -332,6 +332,17 @@ std::uint32_t PartyCoordinator::NextEncounterSequence()
     return m_encounterSequence;
 }
 
+void PartyCoordinator::ConfigureEncounterTraceBudget(std::uint32_t detailLimit,
+                                                       std::uint32_t importantLimit)
+{
+    // Keep the first overflow observable while enforcing absolute per-encounter
+    // ceilings, even if an operator enters an accidentally huge value.
+    m_traceDetailLimit = std::max<std::uint32_t>(1,
+        std::min(detailLimit, HardMaxDetailTraceEvents));
+    m_traceImportantLimit = std::max<std::uint32_t>(1,
+        std::min(importantLimit, HardMaxImportantTraceEvents));
+}
+
 EncounterTraceAdmission PartyCoordinator::TryAdmitEncounterTraceEvent(
     std::uint64_t encounterId, EncounterTraceEventClass eventClass)
 {
@@ -354,7 +365,7 @@ EncounterTraceAdmission PartyCoordinator::TryAdmitEncounterTraceEvent(
     std::uint32_t& used = eventClass == EncounterTraceEventClass::Important
         ? m_traceImportantEvents : m_traceDetailEvents;
     std::uint32_t const limit = eventClass == EncounterTraceEventClass::Important
-        ? MaxImportantTraceEvents : MaxDetailTraceEvents;
+        ? m_traceImportantLimit : m_traceDetailLimit;
     if (used < limit)
     {
         ++used;

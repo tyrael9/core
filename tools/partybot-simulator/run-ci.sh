@@ -265,7 +265,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: Core Player Spell::CheckCast rejected a
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: Core Player::SetDeathState emitted exactly one alive-to-dead observer transition and suppressed the JUST_DIED-to-CORPSE duplicate." "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: Core Player::SetDeathState invoked the observer for JUST_DIED and CORPSE, while the alive-state transition filter emitted exactly one alive-to-dead event." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Player alive-state observer lifecycle PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi

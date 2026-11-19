@@ -25,6 +25,7 @@ namespace
     uint32 const MAX_RECORDS_PER_TICK = 12;
     uint32 const MAX_ENCOUNTER_CAST_EVENTS_PER_TICK = 12;
     uint32 const MAX_ENCOUNTER_TARGET_CHANGES_PER_TICK = 4;
+    uint32 const MAX_ENCOUNTER_RESERVATION_EVENTS_PER_TICK = 12;
 }
 
 namespace PartyBotEngine
@@ -32,6 +33,7 @@ namespace PartyBotEngine
 
 DecisionTrace::DecisionTrace()
     : m_recordsThisTick(0), m_castTraceEventsThisTick(0),
+      m_reservationTraceEventsThisTick(0), m_reservationTraceLimitLogged(false),
       m_castTraceLimitLogged(false), m_targetChangesThisTick(0),
       m_targetChangeLimitLogged(false), m_enabled(false)
 {
@@ -41,6 +43,8 @@ void DecisionTrace::BeginTick() const
 {
     m_recordsThisTick = 0;
     m_castTraceEventsThisTick = 0;
+    m_reservationTraceEventsThisTick = 0;
+    m_reservationTraceLimitLogged = false;
     m_castTraceLimitLogged = false;
     m_targetChangesThisTick = 0;
     m_targetChangeLimitLogged = false;
@@ -269,6 +273,78 @@ namespace
         }
         return token.empty() ? "none" : token;
     }
+}
+
+void DecisionTrace::RecordReservationEvent(
+    DecisionContext const& context, ReservationTraceEvent const& event)
+{
+    if (!m_enabled || !context.coordinator.HasActiveEncounter() ||
+        !context.bot.guid)
+        return;
+
+    uint64 const encounterId = context.coordinator.GetEncounterId();
+    uint32 const sequence = context.coordinator.NextEncounterSequence();
+    uint32 const elapsedMs = context.coordinator.GetEncounterElapsedMs(context.nowMs);
+    uint32 const groupId = context.snapshot.groupId;
+    uint32 const mapId = context.snapshot.mapId;
+    uint32 const instanceId = context.snapshot.instanceId;
+
+    if (m_reservationTraceEventsThisTick >=
+        MAX_ENCOUNTER_RESERVATION_EVENTS_PER_TICK)
+    {
+        if (!m_reservationTraceLimitLogged)
+        {
+            m_reservationTraceLimitLogged = true;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trace_limit group=%u map=%u instance=%u bot=%llu elapsed_ms=%u category=reservation per_tick_cap=%u dropped_at_least=1",
+                     static_cast<unsigned long long>(encounterId), sequence,
+                     groupId, mapId, instanceId,
+                     static_cast<unsigned long long>(context.bot.guid),
+                     elapsedMs, MAX_ENCOUNTER_RESERVATION_EVENTS_PER_TICK);
+        }
+        return;
+    }
+    ++m_reservationTraceEventsThisTick;
+
+    char const* eventName = "threat_reservation_unknown";
+    switch (event.stage)
+    {
+        case ReservationTraceStage::BudgetVeto:
+            eventName = "threat_budget_veto";
+            break;
+        case ReservationTraceStage::Attempt:
+            eventName = "threat_reservation_attempt";
+            break;
+        case ReservationTraceStage::Result:
+            eventName = event.accepted ? "threat_reservation_accepted"
+                                       : "threat_reservation_rejected";
+            break;
+        case ReservationTraceStage::Release:
+            eventName = "threat_reservation_release";
+            break;
+    }
+
+    std::string const safeReason = SafeTraceToken(event.reason);
+    bool const threatValid = std::isfinite(event.threatPoints);
+    bool const headroomValid = std::isfinite(event.rawHeadroom);
+    bool const reservedValid = std::isfinite(event.alreadyReserved);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=%s source=partybot_engine_execute group=%u map=%u instance=%u bot=%llu elapsed_ms=%u action_id=%llu owner=%llu threat_owner=%llu hostile=%llu threat_tenths=%d threat_valid=%u headroom_tenths=%d headroom_valid=%u reserved_tenths=%d reserved_valid=%u expires_at_ms=%u rows=%u accepted=%u reason=%s",
+             static_cast<unsigned long long>(encounterId), sequence, eventName,
+             groupId, mapId, instanceId,
+             static_cast<unsigned long long>(context.bot.guid), elapsedMs,
+             static_cast<unsigned long long>(event.actionId),
+             static_cast<unsigned long long>(event.ownerGuid),
+             static_cast<unsigned long long>(event.threatOwnerGuid),
+             static_cast<unsigned long long>(event.hostileGuid),
+             threatValid ? static_cast<int32>(event.threatPoints * 10.0f) : 0,
+             threatValid ? 1u : 0u,
+             headroomValid ? static_cast<int32>(event.rawHeadroom * 10.0f) : 0,
+             headroomValid ? 1u : 0u,
+             reservedValid ? static_cast<int32>(event.alreadyReserved * 10.0f) : 0,
+             reservedValid ? 1u : 0u,
+             event.expiresAtMs, event.reservationRows,
+             event.accepted ? 1u : 0u, safeReason.c_str());
 }
 
 void DecisionTrace::RecordEncounterDecisionSummary(

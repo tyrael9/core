@@ -162,7 +162,7 @@ with open(destination, "w", encoding="utf-8") as output:
     output.write(config)
 PY
 
-echo "[PartyBotSimulator] Running one-shot Stages A-F16 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Running one-shot Stages A-F17 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
 set +e
 timeout --signal=TERM --kill-after=15s 10m "$MANGOSD_BIN" -c "$CONFIG_FILE" 2>&1 | tee -a "$LOG_FILE"
 simulator_status=${PIPESTATUS[0]}
@@ -320,6 +320,22 @@ if ! grep -Fq "[PartyBotSimulator] PASS: source Map::Remove retained an encounte
     echo "[PartyBotSimulator] Missing source-map last-bot departure PASS marker." | tee -a "$LOG_FILE"
     exit 1
 fi
+if ! grep -Fq "[PartyBotSimulator] PASS: Core-backed PartyBotEngine reported one active healer trigger, two inactive role triggers, and a healing candidate correlated to its originating trigger; formatted trigger and candidate records were emitted." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] Missing Core-backed trigger telemetry PASS marker." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! grep -Eq '\[PartyBotEngineTrace\].*event=trigger_summary .*total=3 evaluated=3 active=1 inactive=2 cadence_skipped=0 omitted=0' "$LOG_FILE"; then
+    echo "[PartyBotSimulator] Missing formatted trigger summary with expected active/inactive counts." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! grep -Eq '\[PartyBotEngineTrace\].*event=trigger .*strategy=healing_triage trigger_name=healing_triage interval_ms=0 status=active candidates=1' "$LOG_FILE"; then
+    echo "[PartyBotSimulator] Missing formatted active healer trigger row." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! grep -Eq '\[PartyBotEngineTrace\].*event=candidate .*strategy=healing_triage trigger_name=healing_triage action=shadow_heal_triage' "$LOG_FILE"; then
+    echo "[PartyBotSimulator] Missing candidate-to-trigger correlation record." | tee -a "$LOG_FILE"
+    exit 1
+fi
 map_leave_end_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=encounter_end .*reason=last_partybot_left_map([^[:alnum:]_]|$)' "$LOG_FILE" || true)"
 if [[ "$map_leave_end_count" != "1" ]]; then
     echo "[PartyBotSimulator] Expected exactly one last_partybot_left_map encounter_end record, found $map_leave_end_count." | tee -a "$LOG_FILE"
@@ -377,4 +393,4 @@ if ! grep -Fq "[PartyBotSimulator] PASS: created, ran a bounded Core Creature co
     exit 1
 fi
 
-echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, periodic-healing-assist, periodic-power-assist, periodic-mana-leech and composite periodic-life-leech threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, PartyBotAI encounter-correlated death/resurrection trace records, party-wide trace-budget overflow/one-shot marker, sampled non-PlayerBots health/death/resurrection events, server-shutdown encounter flush, source-map final-bot departure closure, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, periodic-healing-assist, periodic-power-assist, periodic-mana-leech and composite periodic-life-leech threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, PartyBotAI encounter-correlated death/resurrection trace records, party-wide trace-budget overflow/one-shot marker, sampled non-PlayerBots health/death/resurrection events, server-shutdown encounter flush, source-map final-bot departure closure, sampled trigger activation/cadence and originating-trigger candidate correlation, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"

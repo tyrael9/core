@@ -315,3 +315,11 @@ Implementation slice complete: the component-scoped negative flat-threat estimat
 - [x] Require a dedicated periodic-life-leech composite PASS marker and include the stage in the final simulator aggregate.
 - [ ] Await trusted ARM64 runtime execution and inspect the artifact. The build/pure-test workflow remains separate from this runtime gate because the current Google Drive extracted-data URL is quota-limited; direct HTTPS object/PAR download support is available.
 - [ ] Keep future-tick leech/funnel action estimates Unknown while AuraScript, health-side effects, trigger/proc closure and all recipient fan-out remain unbounded.
+
+## Player alive-state trace lifecycle regression (2026-11-19)
+
+- [x] Add a simulator-only PlayerAI observer to the existing real five-Player Core Group death/recovery scenario. The observer is attached to the Main Tank immediately before Core DealDamage kills it, then restored before fixture cleanup.
+- [x] Verify the real Player::SetDeathState hook reports exactly one alive -> dead transition after Core commits the death state.
+- [x] Explicitly advance JUST_DIED -> CORPSE and verify that the observer does not report a duplicate death transition.
+- [x] Make the enclosing F10 death/recovery scenario fail if either observer assertion fails, and make run-ci.sh require the dedicated PASS marker.
+- [ ] Verify the new regression on both ARM64 Core compilation and fixture-backed runtime CI. This checks the Core callback boundary and duplicate suppression; PartyBotAI encounter-record emission and the resurrection callback still need direct runtime coverage.

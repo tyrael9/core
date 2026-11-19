@@ -27,6 +27,8 @@ public:
     ActionResult Execute(DecisionContext&, ActionCandidate const& candidate) override {
         ++executeCount;
         lastThreatActionId = candidate.threatActionId;
+        if (executionOrder)
+            executionOrder->push_back(m_name);
         return result;
     }
     ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
@@ -50,6 +52,7 @@ public:
     ThreatImpactEstimate threatImpact;
     ThreatActionId lastThreatActionId = 0;
     std::uint32_t executeCount = 0;
+    std::vector<std::string>* executionOrder = nullptr;
 private:
     std::string m_name;
 };
@@ -131,6 +134,83 @@ void TestActionQueueIsBoundedPriorityOrderedAndStable()
     assert(queue.Size() == ActionQueue::Capacity);
     queue.Clear();
     assert(queue.Empty());
+}
+
+void TestExecuteSelectedDispatchesByPriorityWithStableTies()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    DecisionReport report;
+    report.snapshotEpoch = f.snapshot.epoch;
+    std::vector<std::string> executionOrder;
+
+    auto appendSelected = [&](std::string const& name, float priority) {
+        auto action = std::make_shared<TestAction>(name);
+        action->executionOrder = &executionOrder;
+        assert(engine.RegisterAction(action));
+        CandidateEvaluation evaluation;
+        evaluation.candidate = Candidate(name, priority, ActionChannel::Utility);
+        evaluation.candidate.finalPriority = priority;
+        evaluation.status = CandidateStatus::Selected;
+        evaluation.threatImpact.completeness = ThreatImpactCompleteness::NoThreat;
+        evaluation.threatImpact.snapshotEpoch = f.snapshot.epoch;
+        std::size_t const index = report.candidates.size();
+        report.candidates.push_back(evaluation);
+        report.selectedIndices.push_back(index);
+    };
+
+    // Deliberately make report order differ from execution priority.
+    appendSelected("low", 10.0f);
+    appendSelected("high", 30.0f);
+    appendSelected("tie_first", 30.0f);
+    appendSelected("tie_second", 30.0f);
+    appendSelected("middle", 20.0f);
+
+    engine.ExecuteSelected(f.context, report);
+
+    std::vector<std::string> const expected = {
+        "high", "tie_first", "tie_second", "middle", "low"
+    };
+    assert(executionOrder == expected);
+    for (CandidateEvaluation const& evaluation : report.candidates) {
+        assert(evaluation.status == CandidateStatus::Executed);
+        assert(evaluation.actionResult == ActionResult::Success);
+    }
+}
+
+void TestExecuteSelectedHonorsPerDispatchLimit()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    DecisionReport report;
+    report.snapshotEpoch = f.snapshot.epoch;
+    std::vector<std::string> executionOrder;
+
+    for (std::size_t i = 0; i < 10; ++i) {
+        std::string const name = "bounded_" + std::to_string(i);
+        auto action = std::make_shared<TestAction>(name);
+        action->executionOrder = &executionOrder;
+        assert(engine.RegisterAction(action));
+        CandidateEvaluation evaluation;
+        evaluation.candidate = Candidate(name, static_cast<float>(i + 1), ActionChannel::Utility);
+        evaluation.candidate.finalPriority = static_cast<float>(i + 1);
+        evaluation.status = CandidateStatus::Selected;
+        evaluation.threatImpact.completeness = ThreatImpactCompleteness::NoThreat;
+        evaluation.threatImpact.snapshotEpoch = f.snapshot.epoch;
+        report.candidates.push_back(evaluation);
+        report.selectedIndices.push_back(i);
+    }
+
+    engine.ExecuteSelected(f.context, report);
+
+    assert(executionOrder.size() == 8);
+    for (std::size_t i = 0; i < 8; ++i) {
+        std::string const expected = "bounded_" + std::to_string(9 - i);
+        assert(executionOrder[i] == expected);
+        assert(report.candidates[9 - i].status == CandidateStatus::Executed);
+    }
+    assert(report.candidates[0].status == CandidateStatus::Selected);
+    assert(report.candidates[1].status == CandidateStatus::Selected);
 }
 
 void TestPriorityAndChannelArbitration() {
@@ -1402,6 +1482,8 @@ void TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe()
 }
 int main() {
     TestActionQueueIsBoundedPriorityOrderedAndStable();
+    TestExecuteSelectedDispatchesByPriorityWithStableTies();
+    TestExecuteSelectedHonorsPerDispatchLimit();
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();
     TestReservationOwnershipAndExpiry();
     TestThreatReservationAggregationAndActionRelease();

@@ -32,15 +32,16 @@ Do not rebase onto a moving upstream branch without reviewing PartyBot, lifecycl
 ## Current implementation status
 
 The repository currently contains:
-- Strategy, Trigger, Action, Value and Multiplier interfaces;
-- GUID/scalar-only party snapshots and same-map snapshot collection;
-- PartyCoordinator reservations and (group,map,instance) shard registry;
-- deterministic candidate evaluation and basic channel arbitration;
-- an opt-in read-only Shadow hook;
-- coarse candidate-only healer triage, tank peel and DPS assist strategies;
-- bounded Shadow diagnostics and standalone tests.
+- C++14 Strategy, Trigger, Action, Value and Multiplier interfaces;
+- GUID/scalar-only PartySnapshot data and same-map snapshot collection;
+- PartyCoordinator reservations and the (group,map,instance) shard registry;
+- deterministic candidate evaluation, explicit eligibility and channel arbitration;
+- a bounded per-dispatch action queue (32 entries, stable FIFO priority ties, maximum eight executions) with pure and `ExecuteSelected` integration coverage;
+- an opt-in read-only Shadow hook and coarse candidate-only healer triage, tank peel and DPS assist strategies;
+- encounter identity, versioned sequence-bearing trace records, party heartbeats, decision summaries, cast request/result/terminal correlation, target changes, reservation outcomes and PartyBotAI death/resurrection events;
+- Core-backed runtime fixtures for real attack, triggered and non-triggered Player spell execution, threat, movement/follow, five-Player Group snapshots, hostile discovery, death recovery and threat-impact component parity.
 
-The current Shadow hook is observational only: PartyBotAI still runs Legacy combat routines afterward. The candidate actions do not cast, switch targets or mutate reservations. This is a foundation smoke test, not a usable New Engine runtime.
+The current Shadow hook remains observational only: PartyBotAI still runs Legacy combat routines afterward. Shadow candidates do not own gameplay decisions or mutate world state. The repository does not yet provide the complete New Engine runtime mode; missing behavior must eventually become a traceable no-op, never a Legacy policy fallback.
 
 ## Target runtime contract
 
@@ -54,13 +55,16 @@ The current implementation does not yet provide New Engine mode. See ROADMAP.md 
 
 ## Automated combat simulation
 
-A Core-backed headless simulator is under active development. Stage A creates/registers/deletes a real Core test map. Stage B adds three template-backed Creature actors, initialized MotionMasters, probe-AI tick assertions, real direct damage, damage-generated threat, Core 110% melee target switching and explicit actor cleanup. The first fixture-backed runtime test passed all Core scenario assertions on disposable schemas using real 5875 data, and `mangosd` exited successfully. The GitHub job was marked failed only because its shell wrapper checked an obsolete PASS marker; the marker checks have been corrected and await one clean end-to-end CI run. The push-only runtime runner downloads the complete Google Drive-hosted extracted-data archive (`5875/dbc`, `maps`, `vmaps`, `mmaps`), seeds disposable DB copies and uploads a simulator log artifact. It never connects to the Oracle realm. See CORE-COMBAT-SIMULATOR.md and TESTING.md for exact scope and gates.
+The Core-backed headless simulator has fixture-backed Stages A-F12 coverage. Push CI [#44456096650](https://github.com/tyrael9/core/actions/runs/44456096650) passed the Linux ARM64 build, pure C++14 tests and full runtime scenario using the configured Vanilla 5875 extracted-data archive and disposable database schemas. It verified real Core damage/threat/target switching, Engine-selected attack and healing, Player spell completion, movement/follow, execution-time range/resource/LOS checks, multi-add party threat behavior, death recovery, non-victim/offline hostile discovery, periodic Aura threat components, and PartyBotAI's formatted death/resurrection trace records. The uploaded simulator log artifact is attached to that run.
+
+The simulator runs only in isolated CI schemas and never connects to the Oracle realm. It is a Core integration-test layer, not an alternate combat implementation; CI success is not an in-game test and does not authorize deployment. Full dungeon instance scripts and deterministic replay remain later-tier work. See CORE-COMBAT-SIMULATOR.md and TESTING.md for exact scope and gates.
+
 
 ## Logging is a required feature
 
-The current ten-second / three-candidate Shadow trace is not enough for post-fight analysis. Before meaningful New Engine combat testing, implement encounter IDs, ordered structured events, action attempt/result records, target/threat/health/death events and a bounded report collector.
+The trace foundation is partially implemented: encounter IDs and boundaries, ordered sequence numbers, party snapshots, bounded Shadow decision summaries, cast request/result/terminal correlation, target changes, threat reservations, and PartyBotAI death/resurrection events are present and have Core-backed runtime coverage.
 
-A player should be able to run one read-only diagnostic command after a fight and attach the resulting report plus raw matching log lines. See DECISION-TRACE.md.
+The remaining trace work is still a gate before meaningful New Engine gameplay testing: global encounter event budgets with terminal truncation markers, complete bounded trace configuration/performance validation, fuller bot-state/trigger/arbitration and health-change coverage (including human party members), and a read-only post-fight collector that emits one report plus raw matching lines by encounter ID. See DECISION-TRACE.md.
 
 ## Build and test
 

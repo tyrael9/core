@@ -635,6 +635,19 @@ void PartyBotAI::OnEngineActionEvent(
     if (m_activeEngineActionId != event.actionId)
         return;
 
+    // A Core cast can be rejected before Spell::prepare creates/binds a root
+    // Spell object. Do not leave that unbound action in the one-slot pending
+    // cast correlation state, or it could mask a later successful cast.
+    if (m_pendingCastTraceActionId == event.actionId &&
+        !m_pendingCastTraceSpellBound)
+    {
+        m_pendingCastTraceActionId = 0;
+        m_pendingCastTraceEncounterId = 0;
+        m_pendingCastTraceTargetGuid = 0;
+        m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
+    }
+
     // A prepared Spell owns a copy of this ID and may finish asynchronously.
     // Clearing only the active dispatch slot allows a later movement action
     // without losing the in-flight spell's terminal correlation.

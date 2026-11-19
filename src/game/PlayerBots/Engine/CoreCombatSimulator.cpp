@@ -4444,6 +4444,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     healerMember.maxHealth = healer->GetMaxHealth();
     healerMember.online = true;
     healerMember.alive = healer->IsAlive();
+    healerMember.inCombat = true; // Fixture-owned encounter scope for action trace correlation.
     snapshot.members.push_back(healerMember);
 
     PartyMemberSnapshot patientMember;
@@ -4459,7 +4460,13 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     snapshot.members.push_back(patientMember);
 
     PartyCoordinator coordinator;
-    DecisionContext context(snapshot, snapshot.members[0], coordinator, 3000);
+    coordinator.ConfigureEncounterTraceBudget(32, 16);
+    EncounterTransition const engineTraceEncounter =
+        coordinator.ObserveEncounter(snapshot, 3000, 30000);
+    DecisionTrace engineActionTrace;
+    engineActionTrace.BeginTick();
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 3000,
+                            &engineActionTrace);
     PartyBotEngine engine;
     std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
     bool const registered = engine.RegisterAction(healAction);
@@ -4473,6 +4480,11 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         report.candidates[report.selectedIndices[0]].candidate.spellId == SIMULATOR_HEAL_SPELL_ID &&
         report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
     engine.ExecuteSelected(context, report);
+    ActionId const engineActionId = report.selectedIndices.empty() ? 0 :
+        report.candidates[report.selectedIndices[0]].actionId;
+    bool const engineActionTraceSetup = engineTraceEncounter.kind ==
+        EncounterTransitionKind::Started && engineActionTrace.IsEnabled() &&
+        engineActionId != 0;
 
     bool const accepted = !report.selectedIndices.empty() &&
         report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
@@ -4493,6 +4505,9 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     uint32 const manaAfter = healer->GetPower(POWER_MANA);
     bool const completed = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
                            healthAfter > healthBefore && manaAfter < manaBefore;
+    bool const engineActionTracePassed = engineActionTraceSetup && accepted &&
+        report.candidates[report.selectedIndices[0]].actionId == engineActionId &&
+        report.candidates[report.selectedIndices[0]].candidate.actionId == engineActionId;
     bool const lifecycleCorrelated =
         lifecycleProbe->prepareCalls == 1 && lifecycleProbe->finishCalls == 1 &&
         lifecycleProbe->preparedSpellId == SIMULATOR_HEAL_SPELL_ID &&
@@ -4512,7 +4527,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     bool const cleaned = playerCleaned && patientCleaned;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u mana=%u>%u health=%u>%u completed=%u lifecycle=%u prepare=%u finish=%u cleanup=%u.",
+             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u mana=%u>%u health=%u>%u completed=%u lifecycle=%u engineActionTrace=%u actionId=%llu prepare=%u finish=%u cleanup=%u.",
              1u, selected ? 1u : 0u, accepted ? 1u : 0u,
              healAction->WasCastPendingAfterAccept() ? 1u : 0u,
              healAction->HadGcdAfterAccept() ? 1u : 0u,

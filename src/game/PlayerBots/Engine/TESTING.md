@@ -2,7 +2,7 @@
 
 ## Automated compile CI
 
-The focused workflow at .github/workflows/partybot-core-build.yml runs the standalone PartyBot engine tests and builds the pinned Vanilla 1.12.1 / build 5875 C++14 Core on Linux ARM64, matching the Oracle A1 target.
+The focused workflow at .github/workflows/partybot-core-build.yml runs the standalone PartyBot Engine tests, Python unit tests for the read-only encounter report collector, and builds the pinned Vanilla 1.12.1 / build 5875 C++14 Core on Linux ARM64, matching the Oracle A1 target.
 
 A successful run proves configure/compile/link in that CI environment. It does not prove runtime behavior, live snapshot correctness, instance persistence, database compatibility beyond compilation or successful operation on the Oracle realm. It is not permission to deploy.
 
@@ -61,7 +61,19 @@ Target experience:
 3. Attach the encounter report and raw matching log lines in chat.
 4. Analysis classifies failures as perception, policy, coordination, eligibility, execution, encounter-model or trace-gap issues.
 
-The collector should accept an encounter ID and also support a time-window fallback. It must not restart containers, change configuration, run SQL, access/mutate database volumes or deploy images.
+The repository-local collector is available from the Core checkout:
+
+```sh
+python3 tools/partybot_trace_report.py /path/to/mangosd.log --encounter-id 12345 --output-dir ./partybot-reports
+```
+
+When the encounter ID is unknown, a time window can discover encounters represented in that period:
+
+```sh
+python3 tools/partybot_trace_report.py /path/to/log-directory --since 2026-11-19T05:00:00Z --until 2026-11-19T06:00:00Z --output-dir ./partybot-reports
+```
+
+The tool writes a Markdown timeline/diagnostic summary and a companion raw log containing all available trace lines for the selected encounter IDs. Input files are never changed. Time-window arguments must use the same timezone style as source log timestamps. The repository-local collector is not yet wired into the existing `tyrael9/vmangos-deploy` diagnostics wrapper. The eventual wrapper must remain read-only: it must not restart containers, change configuration, run SQL, access/mutate database volumes or deploy images.
 
 The deployment repository currently has a Shadow diagnostics script. It must be extended only after the structured Engine trace schema is implemented; until then, the existing script is not a full encounter-report collector.
 

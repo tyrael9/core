@@ -7,7 +7,7 @@ The target is a complete independent PartyBot AI for Vanilla 1.12.1 / client bui
 - ARCHITECTURE.md: runtime authority, strategy composition, decision loop and executor boundary.
 - ROADMAP.md: development phases and acceptance criteria.
 - ACTION-QUEUE.md: per-dispatch and pending event queue semantics, expiry, deduplication and integration gates.
-- DECISION-TRACE.md: structured encounter logs and post-fight analysis contract.
+- DECISION-TRACE.md: structured encounter logs and post-fight analysis contract; `tools/partybot_trace_report.py` creates local Markdown/raw-log reports by encounter ID or time window.
 - VMANGOS-API-AUDIT.md: audited Core APIs and outstanding adapter work.
 - RESEARCH-CMANGOS.md: Strategy/Trigger/Action/Value/Multiplier and ActionNode research.
 - RESEARCH-AZEROTHCORE.md: class/role/encounter strategy research.
@@ -65,7 +65,7 @@ The simulator runs only in isolated CI schemas and never connects to the Oracle 
 
 The trace foundation is partially implemented: encounter IDs and boundaries, ordered sequence numbers, party snapshots, bounded Shadow decision summaries, cast request/result/terminal correlation, target changes, threat reservations, and PartyBotAI death/resurrection events are present and have Core-backed runtime coverage.
 
-The remaining trace work is still a gate before meaningful New Engine gameplay testing: global encounter event budgets with terminal truncation markers, complete bounded trace configuration/performance validation, fuller bot-state/trigger/arbitration and health-change coverage (including human party members), and a read-only post-fight collector that emits one report plus raw matching lines by encounter ID. See DECISION-TRACE.md.
+The remaining trace work is still a gate before meaningful New Engine gameplay testing: a global encounter event budget with terminal truncation marker, bounded trace configuration/performance validation, fuller bot-state/trigger/arbitration and health-change coverage (including human party members), and integration of the repository-local report collector into the deployment diagnostics command. The local parser already emits a Markdown report and matching raw log by encounter ID or time window. See DECISION-TRACE.md.
 
 ## Build and test
 

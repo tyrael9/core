@@ -42,6 +42,9 @@ jobs:
       - name: Run pure PartyBotEngine tests
         run: bash src/game/PlayerBots/Engine/tests/run_tests.sh
 
+      - name: Test read-only encounter report collector
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
+
       - name: Restore compiler cache
         uses: actions/cache@v4
         with:

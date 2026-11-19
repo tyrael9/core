@@ -3835,7 +3835,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
 
     bool const f10ChecksPassed = f9ChecksPassed && petCleanupPassed &&
         f12ChecksPassed && healerHoldsAggroOverDps &&
-        tankDied && tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
+        tankDied && tankDeathObserverValid && tankCorpseTransitionSuppressed &&
+        tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&
         healerDeathSnapshotValid && healerDeathRosterValid && healerDeathThreatSnapshotValid;

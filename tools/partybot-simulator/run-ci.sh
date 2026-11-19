@@ -162,7 +162,7 @@ with open(destination, "w", encoding="utf-8") as output:
     output.write(config)
 PY
 
-echo "[PartyBotSimulator] Running one-shot Stages A-F21 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Running one-shot Stages A-F22 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
 set +e
 timeout --signal=TERM --kill-after=15s 10m "$MANGOSD_BIN" -c "$CONFIG_FILE" 2>&1 | tee -a "$LOG_FILE"
 simulator_status=${PIPESTATUS[0]}
@@ -255,6 +255,15 @@ fi
 f21_heartbeat_count="$(grep -E '\[PartyBotEngineTrace\].*event=party_snapshot .*facts=.*form=1,' "$LOG_FILE" | grep -Ec 'cast=2050:[0-9]+:[0-9]+:[0-9]+,pos=-?[0-9]+/-?[0-9]+/-?[0-9]+.*entry=[0-9]+,rank=[0-9]+,boss=[01]' || true)"
 if [[ "$f21_heartbeat_count" != "1" ]]; then
     echo "[PartyBotSimulator] Expected exactly one F21 heartbeat containing the real form/cast/position and hostile identity fields, found $f21_heartbeat_count." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! grep -Fq "[PartyBotSimulator] PASS: F22 recorded the real Core Unit::DealDamage health delta through PlayerAI/PartyBotAI with attacker, spell and damage-type attribution." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F22 damage_taken PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f22_damage_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=damage_taken .*attacker=[1-9][0-9]* damage=[1-9][0-9]* health_before=[1-9][0-9]* health_after=0 spell=0 damage_type=[0-9]+' "$LOG_FILE" || true)"
+if [[ "$f22_damage_count" != "1" ]]; then
+    echo "[PartyBotSimulator] Expected exactly one real lethal Player damage_taken event, found $f22_damage_count." | tee -a "$LOG_FILE"
     exit 1
 fi
 engine_action_attempt_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=engine_action_attempt .*action=core_player_heal([[:space:]]|$)' "$LOG_FILE" || true)"

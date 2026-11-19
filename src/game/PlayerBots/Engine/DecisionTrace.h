@@ -57,6 +57,12 @@ public:
                                    uint32 instanceId, uint64 encounterId,
                                    uint32 sequence, uint32 elapsedMs,
                                    bool wasAlive, bool isAlive) const;
+    void RecordEncounterDamageTaken(Player const* bot, uint32 groupId, uint32 mapId,
+                                    uint32 instanceId, uint64 encounterId,
+                                    uint32 sequence, uint32 elapsedMs,
+                                    uint64 attackerGuid, uint32 damage,
+                                    uint32 healthBefore, uint32 healthAfter,
+                                    uint32 spellId, uint8 damageType) const;
     bool RecordEncounterPartyMemberState(
         Player const* bot, PartyCoordinator& coordinator,
         uint32 groupId, uint32 mapId, uint32 instanceId,

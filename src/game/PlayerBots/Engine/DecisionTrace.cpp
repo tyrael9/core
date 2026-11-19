@@ -236,6 +236,24 @@ void DecisionTrace::RecordEncounterAliveState(
              isAlive ? 1u : 0u, bot->GetHealth(), bot->GetMaxHealth());
 }
 
+void DecisionTrace::RecordEncounterDamageTaken(
+    Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
+    uint64 encounterId, uint32 sequence, uint32 elapsedMs,
+    uint64 attackerGuid, uint32 damage, uint32 healthBefore,
+    uint32 healthAfter, uint32 spellId, uint8 damageType) const
+{
+    if (!m_enabled || !bot || !encounterId || !sequence || !attackerGuid ||
+        !damage || healthBefore <= healthAfter)
+        return;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=damage_taken group=%u map=%u instance=%u bot=%u elapsed_ms=%u attacker=%llu damage=%u health_before=%u health_after=%u spell=%u damage_type=%u",
+             static_cast<unsigned long long>(encounterId), sequence,
+             groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
+             static_cast<unsigned long long>(attackerGuid), damage,
+             healthBefore, healthAfter, spellId, static_cast<uint32>(damageType));
+}
+
 bool DecisionTrace::RecordEncounterPartyMemberState(
     Player const* bot, PartyCoordinator& coordinator,
     uint32 groupId, uint32 mapId, uint32 instanceId,

@@ -3953,10 +3953,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         tank->ResurrectPlayer(1.0f, false);
     }
     uint32 const partyTraceSequenceAfter = partyTraceCoordinator->NextEncounterSequence();
+    bool const partyBotDamageTracePassed =
+        partyTraceStarted.kind == EncounterTransitionKind::Started &&
+        partyTraceDeathDamage > 0 &&
+        partyTraceSequenceAfter == partyTraceSequenceBefore + 4;
     bool const partyBotEncounterLifecycleTraced =
         partyTraceStarted.kind == EncounterTransitionKind::Started &&
-        partyTraceDied && tank->IsAlive() &&
-        partyTraceSequenceAfter == partyTraceSequenceBefore + 3;
+        partyTraceDied && tank->IsAlive() && partyBotDamageTracePassed;
 
     EncounterHeartbeat f21Heartbeat;
     bool const f21HeartbeatReady = partyTraceCoordinator->TryBeginEncounterHeartbeat(
@@ -3984,6 +3987,25 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     secondPartyTraceAI.m_decisionTrace.BeginTick();
     PlayerAI* const previousDpsAIForPartyTrace = dps->AI();
     dps->SetAI(&secondPartyTraceAI);
+
+    // Use a fresh coordinator for the exact F13 1,024-detail budget test;
+    // F22's damage event remains part of the separate F10/F21 encounter.
+    std::shared_ptr<PartyCoordinator> traceBudgetCoordinator(new PartyCoordinator());
+    traceBudgetCoordinator->ConfigureEncounterTraceBudget(
+        PartyCoordinator::MaxDetailTraceEvents, PartyCoordinator::MaxImportantTraceEvents);
+    PartySnapshot traceBudgetSnapshot = partyTraceSnapshot;
+    traceBudgetSnapshot.epoch = 3;
+    uint32 const traceBudgetNow = WorldTimer::getMSTime();
+    EncounterTransition const traceBudgetStarted =
+        traceBudgetCoordinator->ObserveEncounter(traceBudgetSnapshot, traceBudgetNow, 30000);
+    partyTraceAI.m_partyCoordinator = traceBudgetCoordinator;
+    secondPartyTraceAI.m_partyCoordinator = traceBudgetCoordinator;
+    if (traceBudgetStarted.kind == EncounterTransitionKind::Started)
+        partyTraceAI.m_decisionTrace.RecordEncounterBoundary(
+            tank, "encounter_start", traceBudgetStarted.groupId,
+            traceBudgetStarted.mapId, traceBudgetStarted.instanceId,
+            traceBudgetStarted.encounterId, traceBudgetStarted.sequence,
+            traceBudgetStarted.elapsedMs, traceBudgetStarted.reason);
 
     auto switchPartyBotTargets = [&](PartyBotAI& ai, Player* actor, uint32 count)
     {
@@ -4015,9 +4037,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         PartyCoordinator::MaxDetailTraceEvents / 2 + 1);
     uint32 const sharedTraceSwitches = firstBotSwitches + secondBotSwitches;
     bool const traceBudgetSuppressedAfterOverflow =
+        traceBudgetStarted.kind == EncounterTransitionKind::Started &&
         sharedTraceSwitches == PartyCoordinator::MaxDetailTraceEvents + 1 &&
-        partyTraceCoordinator->TryAdmitEncounterTraceEvent(
-            partyTraceStarted.encounterId, EncounterTraceEventClass::Detail) ==
+        traceBudgetCoordinator->TryAdmitEncounterTraceEvent(
+            traceBudgetStarted.encounterId, EncounterTraceEventClass::Detail) ==
             EncounterTraceAdmission::Suppressed;
     bool const partyBotTraceBudgetPassed = partyBotEncounterLifecycleTraced &&
         traceBudgetSuppressedAfterOverflow;
@@ -4030,6 +4053,19 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     if (partyBotTraceBudgetPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: two real PartyBotAI instances shared one coordinator detail budget, admitted 1,024 target-change events, emitted one trace_limit on overflow and suppressed subsequent detail events.");
+
+    EncounterTransition const traceBudgetEnded =
+        traceBudgetCoordinator->CloseEncounter(WorldTimer::getMSTime(), "trace_budget_fixture_complete");
+    if (traceBudgetEnded.kind == EncounterTransitionKind::Ended &&
+        traceBudgetCoordinator->TryAdmitEncounterTraceEvent(
+            traceBudgetEnded.encounterId, EncounterTraceEventClass::Terminal) ==
+            EncounterTraceAdmission::Accepted)
+        partyTraceAI.m_decisionTrace.RecordEncounterBoundary(
+            tank, "encounter_end", traceBudgetEnded.groupId, traceBudgetEnded.mapId,
+            traceBudgetEnded.instanceId, traceBudgetEnded.encounterId,
+            traceBudgetEnded.sequence, traceBudgetEnded.elapsedMs, traceBudgetEnded.reason);
+    partyTraceAI.m_partyCoordinator = partyTraceCoordinator;
+    secondPartyTraceAI.m_partyCoordinator = partyTraceCoordinator;
 
     // F14: observe an ordinary Player (no CombatBotBaseAI) through fresh
     // map-thread snapshots. Damage and resurrection are real Core operations.
@@ -4409,6 +4445,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     if (partyBotEncounterLifecycleTraced)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: PartyBotAI emitted encounter-correlated death and resurrection trace records through Core PlayerAI callbacks, while the repeated CORPSE state was suppressed.");
+    if (partyBotDamageTracePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F22 recorded the real Core Unit::DealDamage health delta through PlayerAI/PartyBotAI with attacker, spell and damage-type attribution.");
     if (f21BotStateTracePassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: F21 copied real Core shapeshift form, pending spell ID/state/target and member position, plus hostile creature entry/rank/world-boss identity into the bounded party heartbeat.");

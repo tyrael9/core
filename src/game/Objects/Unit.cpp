@@ -23,6 +23,7 @@
 #include "Pet.h"
 #include "Totem.h"
 #include "Player.h"
+#include "AI/PlayerAI.h"
 #include "Log.h"
 #include "Opcodes.h"
 #include "WorldPacket.h"
@@ -760,6 +761,18 @@ uint32 Unit::DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDa
 #endif
 
     uint32 health = pVictim->GetHealth();
+    auto NotifyPlayerDamageTaken = [&](uint32 healthBefore, uint32 healthAfter)
+    {
+        if (healthBefore <= healthAfter)
+            return;
+        Player* victimPlayer = pVictim->ToPlayer();
+        PlayerAI* observer = victimPlayer ? victimPlayer->AI() : nullptr;
+        if (observer)
+            observer->OnDamageTaken(
+                GetObjectGuid().GetRawValue(), healthBefore - healthAfter,
+                healthBefore, healthAfter, spellProto ? spellProto->Id : 0,
+                static_cast<uint8>(damagetype));
+    };
     // duel ends when player has 1 or less hp
     bool duel_hasEnded = false;
     if (pVictim->IsPlayer() && ((Player*)pVictim)->m_duel && (damage + 1) >= health)
@@ -826,6 +839,7 @@ uint32 Unit::DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDa
     {
         DEBUG_FILTER_LOG(LOG_FILTER_DAMAGE, "DealDamage: victim just died");
         Kill(pVictim, spellProto, durabilityLoss);
+        NotifyPlayerDamageTaken(health, pVictim->GetHealth());
 
         // last damage from non duel opponent or opponent controlled creature
         if (duel_hasEnded)
@@ -847,6 +861,7 @@ uint32 Unit::DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDa
         {
             uint32 dmg = std::min<uint32>(health - pVictim->GetInvincibilityHpThreshold(), damage);
             pVictim->ModifyHealth(-(int32)dmg);
+            NotifyPlayerDamageTaken(health, pVictim->GetHealth());
         }
 
         if (damagetype != DOT && damagetype != SELF_DAMAGE)

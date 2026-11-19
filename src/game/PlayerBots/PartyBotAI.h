@@ -63,6 +63,9 @@ public:
                              uint64 targetGuid, bool success,
                              bool interrupted) final;
     void OnAliveStateChanged(bool wasAlive, bool isAlive) final;
+    void OnDamageTaken(uint64 attackerGuid, uint32 damage,
+                       uint32 healthBefore, uint32 healthAfter,
+                       uint32 spellId, uint8 damageType) final;
     void OnServerShutdown() final;
     void OnMapLeave(uint32 mapId, uint32 instanceId) final;
     void OnEngineActionEvent(PartyBotEngine::DecisionContext const& context,

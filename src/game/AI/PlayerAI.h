@@ -58,6 +58,10 @@ class PlayerAI
                                          bool /*interrupted*/) {}
         // Notify observers only when the Core changes a Player between alive and dead.
         virtual void OnAliveStateChanged(bool /*wasAlive*/, bool /*isAlive*/) {}
+        // Called after Core applies one hit to a Player; values are actual health before/after.
+        virtual void OnDamageTaken(uint64 /*attackerGuid*/, uint32 /*damage*/,
+                                   uint32 /*healthBefore*/, uint32 /*healthAfter*/,
+                                   uint32 /*spellId*/, uint8 /*damageType*/) {}
         // Called once after world updates stop and before bot/player teardown.
         virtual void OnServerShutdown() {}
         // Called on the source Map thread before this Player is detached from it.

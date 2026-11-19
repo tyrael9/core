@@ -690,6 +690,41 @@ void PartyBotAI::OnAliveStateChanged(bool wasAlive, bool isAlive)
         wasAlive, isAlive);
 }
 
+void PartyBotAI::OnDamageTaken(uint64 attackerGuid, uint32 damage,
+                                  uint32 healthBefore, uint32 healthAfter,
+                                  uint32 spellId, uint8 damageType)
+{
+    if (!me || !damage || healthBefore <= healthAfter)
+        return;
+    m_partyBotEngine.InvalidateDecisionState();
+    if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
+        !m_partyCoordinator->HasActiveEncounter())
+        return;
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    if (m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId ||
+        m_partyCoordinator->GetEncounterMapId() != mapId ||
+        m_partyCoordinator->GetEncounterInstanceId() != instanceId)
+        return;
+
+    uint64 const encounterId = m_partyCoordinator->GetEncounterId();
+    uint32 const elapsedMs =
+        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime());
+    if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+            encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+            instanceId, elapsedMs,
+            PartyBotEngine::EncounterTraceEventClass::Detail))
+        return;
+    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+    m_decisionTrace.RecordEncounterDamageTaken(
+        me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+        encounterId, sequence,
+        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
+        attackerGuid, damage, healthBefore, healthAfter, spellId, damageType);
+}
+
 bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const
 {
     if (IsInDuel())

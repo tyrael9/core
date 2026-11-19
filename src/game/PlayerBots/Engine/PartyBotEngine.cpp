@@ -424,3 +424,4 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
         }
     }
 }
+} // namespace PartyBotEngine

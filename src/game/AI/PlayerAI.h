@@ -56,6 +56,8 @@ class PlayerAI
                                          uint64 /*encounterId*/, uint32 /*spellId*/,
                                          uint64 /*traceTargetGuid*/, bool /*success*/,
                                          bool /*interrupted*/) {}
+        // Notify observers only when the Core changes a Player between alive and dead.
+        virtual void OnAliveStateChanged(bool /*wasAlive*/, bool /*isAlive*/) {}
 
         // == Helpers =====================================
         bool CanCastSpell(Unit* pTarget, SpellEntry const* pSpell, bool isTriggered, bool checkControlled = true);

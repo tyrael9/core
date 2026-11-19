@@ -3949,6 +3949,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         lifecycleProbe->finishedSpellId == SIMULATOR_HEAL_SPELL_ID &&
         lifecycleProbe->finishedTargetGuid == patient.creature->GetObjectGuid().GetRawValue() &&
         lifecycleProbe->finishedSuccessfully && !lifecycleProbe->finishedInterrupted;
+    uint32 const lifecyclePrepareCalls = lifecycleProbe->prepareCalls;
+    uint32 const lifecycleFinishCalls = lifecycleProbe->finishCalls;
 
     healerSession.LogoutPlayer(false);
     bool const playerCleaned = healerSession.GetPlayer() == nullptr;
@@ -3964,7 +3966,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              static_cast<uint32>(healAction->GetLastCastResult()),
              manaBefore, manaAfter, healthBefore, healthAfter,
              completed ? 1u : 0u, lifecycleCorrelated ? 1u : 0u,
-             lifecycleProbe->prepareCalls, lifecycleProbe->finishCalls,
+             lifecyclePrepareCalls, lifecycleFinishCalls,
              cleaned ? 1u : 0u);
 
     if (!registered || !selected || !accepted || !completed ||

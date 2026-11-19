@@ -150,6 +150,40 @@ inline std::vector<std::size_t> SelectPriorityTriggerEvaluationIndices(
     return indices;
 }
 
+inline std::vector<std::size_t> SelectPriorityCandidateEvaluationIndices(
+    DecisionReport const& report, std::size_t maxRows) {
+    std::vector<std::size_t> indices;
+    if (!maxRows)
+        return indices;
+
+    // selectedIndices remains authoritative after ExecuteSelected rewrites
+    // Selected -> Executed/ExecutionFailed.
+    std::vector<std::uint8_t> selected(report.candidates.size(), 0);
+    for (std::size_t index : report.selectedIndices)
+        if (index < selected.size())
+            selected[index] = 1;
+
+    indices.reserve(report.candidates.size());
+    for (std::size_t i = 0; i < report.candidates.size(); ++i)
+        indices.push_back(i);
+
+    auto priority = [&report](std::size_t index) {
+        float const value = report.candidates[index].candidate.finalPriority;
+        return std::isfinite(value) ? value : -std::numeric_limits<float>::max();
+    };
+    std::stable_sort(indices.begin(), indices.end(),
+        [&selected, &priority](std::size_t left, std::size_t right) {
+            bool const leftSelected = selected[left] != 0;
+            bool const rightSelected = selected[right] != 0;
+            if (leftSelected != rightSelected)
+                return leftSelected;
+            return priority(left) > priority(right);
+        });
+    if (indices.size() > maxRows)
+        indices.resize(maxRows);
+    return indices;
+}
+
 struct DecisionSummary {
     std::uint32_t candidateCount = 0;
     std::uint32_t candidateDetailLimit = 0;

@@ -121,6 +121,8 @@ public:
     uint32 m_partyCoordinatorInstanceId = 0;
     uint32 m_engineShadowTraceMs = 0;
     bool m_engineShadowStrategiesRegistered = false;
+    mutable uint32 m_pendingCastTraceActionId = 0;
+    mutable uint64 m_pendingCastTraceEncounterId = 0;
 
     void UpdatePartyBotEngineShadow();
 };

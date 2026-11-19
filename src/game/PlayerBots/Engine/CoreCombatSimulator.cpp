@@ -4534,11 +4534,12 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              static_cast<uint32>(healAction->GetLastCastResult()),
              manaBefore, manaAfter, healthBefore, healthAfter,
              completed ? 1u : 0u, lifecycleCorrelated ? 1u : 0u,
-             lifecyclePrepareCalls, lifecycleFinishCalls,
-             cleaned ? 1u : 0u);
+             engineActionTracePassed ? 1u : 0u,
+             static_cast<unsigned long long>(engineActionId),
+             lifecyclePrepareCalls, lifecycleFinishCalls, cleaned ? 1u : 0u);
 
     if (!registered || !selected || !accepted || !completed ||
-        !lifecycleCorrelated || !cleaned)
+        !lifecycleCorrelated || !engineActionTracePassed || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Engine-to-Player normal spell/heal smoke test failed.");
@@ -4546,7 +4547,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PASS: PartyBotEngine selected a known Player spell, Core accepted a non-triggered cast with GCD, Core Spell prepare/finish callbacks preserved action/encounter/target identity exactly once, and the cast completed with real healing and mana cost.");
+             "[PartyBotSimulator] PASS: Engine action attempt/result shared one nonzero action_id around the real Player heal adapter; Action::Execute returned Success and the Core Player cast later completed with the expected healing and mana effects.");
     return true;
 }
 

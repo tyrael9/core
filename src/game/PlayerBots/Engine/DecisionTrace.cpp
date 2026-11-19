@@ -220,6 +220,24 @@ namespace
     std::string SafeTraceToken(char const* value);
 }
 
+void DecisionTrace::RecordEncounterAliveState(
+    Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
+    uint64 encounterId, uint32 sequence, uint32 elapsedMs,
+    bool wasAlive, bool isAlive) const
+{
+    if (!m_enabled || !bot || !encounterId || !sequence || wasAlive == isAlive)
+        return;
+
+    // Death and resurrection are low-frequency, high-value events. They bypass
+    // the ordinary per-tick detail budgets so a wipe cannot disappear in noise.
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=%s group=%u map=%u instance=%u bot=%u elapsed_ms=%u alive_before=%u alive_after=%u health=%u max_health=%u",
+             static_cast<unsigned long long>(encounterId), sequence,
+             isAlive ? "resurrect" : "death", groupId, mapId, instanceId,
+             bot->GetGUIDLow(), elapsedMs, wasAlive ? 1u : 0u,
+             isAlive ? 1u : 0u, bot->GetHealth(), bot->GetMaxHealth());
+}
+
 void DecisionTrace::RecordEncounterTargetChange(
     Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
     uint64 encounterId, uint32 sequence, uint32 elapsedMs,

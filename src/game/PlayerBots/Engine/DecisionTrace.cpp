@@ -23,7 +23,7 @@
 namespace
 {
     uint32 const MAX_RECORDS_PER_TICK = 12;
-    uint32 const MAX_ENCOUNTER_CAST_EVENTS_PER_TICK = 8;
+    uint32 const MAX_ENCOUNTER_CAST_EVENTS_PER_TICK = 12;
 }
 
 namespace PartyBotEngine
@@ -272,7 +272,7 @@ bool DecisionTrace::RecordEncounterCastAttempt(
         {
             m_castTraceLimitLogged = true;
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                     "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trace_limit group=%u map=%u instance=%u bot=%u elapsed_ms=%u category=cast_request per_tick_cap=%u dropped_at_least=1",
+                     "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trace_limit group=%u map=%u instance=%u bot=%u elapsed_ms=%u category=cast_lifecycle per_tick_cap=%u dropped_at_least=1",
                      static_cast<unsigned long long>(encounterId), sequence,
                      groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
                      MAX_ENCOUNTER_CAST_EVENTS_PER_TICK);
@@ -320,6 +320,40 @@ void DecisionTrace::RecordEncounterCastResult(
              groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
              static_cast<unsigned long long>(targetGuid), spellId,
              resultCode, accepted ? 1u : 0u, safeReason.c_str());
+}
+
+void DecisionTrace::RecordEncounterCastTerminal(
+    Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
+    uint64 encounterId, uint32 sequence, uint32 elapsedMs,
+    uint32 actionId, uint32 spellId, uint64 targetGuid,
+    bool success, bool interrupted) const
+{
+    if (!m_enabled || !bot || !encounterId || !sequence || !actionId)
+        return;
+
+    if (m_castTraceEventsThisTick >= MAX_ENCOUNTER_CAST_EVENTS_PER_TICK)
+    {
+        if (!m_castTraceLimitLogged)
+        {
+            m_castTraceLimitLogged = true;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trace_limit group=%u map=%u instance=%u bot=%u elapsed_ms=%u category=cast_lifecycle per_tick_cap=%u dropped_at_least=1",
+                     static_cast<unsigned long long>(encounterId), sequence,
+                     groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
+                     MAX_ENCOUNTER_CAST_EVENTS_PER_TICK);
+        }
+        return;
+    }
+
+    ++m_castTraceEventsThisTick;
+    char const* outcome = interrupted ? "interrupted" :
+                          (success ? "completed" : "failed");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=cast_terminal source=core_spell_finish action_id=%u group=%u map=%u instance=%u bot=%u elapsed_ms=%u spell=%u target=%llu success=%u interrupted=%u outcome=%s",
+             static_cast<unsigned long long>(encounterId), sequence, actionId,
+             groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
+             spellId, static_cast<unsigned long long>(targetGuid),
+             success ? 1u : 0u, interrupted ? 1u : 0u, outcome);
 }
 
 void DecisionTrace::RecordShadowStatus(Player const* bot, char const* status,

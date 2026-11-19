@@ -62,6 +62,7 @@ public:
                              uint64 encounterId, uint32 spellId,
                              uint64 targetGuid, bool success,
                              bool interrupted) final;
+    void OnAliveStateChanged(bool wasAlive, bool isAlive) final;
     Player* GetPartyLeader() const;
     bool IsPartyInCombat() const;
     bool AttackStart(Unit* pVictim);

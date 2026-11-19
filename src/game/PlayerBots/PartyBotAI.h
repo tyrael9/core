@@ -24,7 +24,7 @@
 #include "Engine/PartyBotEngine.h"
 #include "Engine/PartyCoordinator.h"
 
-class PartyBotAI : public CombatBotBaseAI
+class PartyBotAI : public CombatBotBaseAI, public PartyBotEngine::EngineActionObserver
 {
 public:
 
@@ -55,16 +55,18 @@ public:
     bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const final;
     void TraceDecision(char const* event, Unit const* pTarget, SpellEntry const* pSpellEntry,
                        char const* reason, uint32 detail = 0) const final;
-    uint32 OnSpellCastPreparing(Spell const* spell, uint32 spellId,
+    uint64 OnSpellCastPreparing(Spell const* spell, uint32 spellId,
                                 uint64 coreTargetGuid, uint64& encounterId,
                                 uint64& traceTargetGuid) final;
-    void OnSpellCastFinished(Spell const* spell, uint32 actionId,
+    void OnSpellCastFinished(Spell const* spell, uint64 actionId,
                              uint64 encounterId, uint32 spellId,
                              uint64 targetGuid, bool success,
                              bool interrupted) final;
     void OnAliveStateChanged(bool wasAlive, bool isAlive) final;
     void OnServerShutdown() final;
     void OnMapLeave(uint32 mapId, uint32 instanceId) final;
+    void OnEngineActionEvent(PartyBotEngine::DecisionContext const& context,
+                             PartyBotEngine::EngineActionTraceEvent const& event) final;
     Player* GetPartyLeader() const;
     bool IsPartyInCombat() const;
     bool AttackStart(Unit* pVictim);
@@ -131,7 +133,11 @@ public:
     uint32 m_partyCoordinatorInstanceId = 0;
     uint32 m_engineShadowTraceMs = 0;
     bool m_engineShadowStrategiesRegistered = false;
-    mutable uint32 m_pendingCastTraceActionId = 0;
+    mutable uint64 m_pendingCastTraceActionId = 0;
+    uint64 m_activeEngineActionId = 0;
+    uint64 m_activeEngineActionEncounterId = 0;
+    uint64 m_activeEngineActionTargetGuid = 0;
+    uint32 m_activeEngineActionSpellId = 0;
     mutable uint64 m_pendingCastTraceEncounterId = 0;
     mutable uint64 m_pendingCastTraceTargetGuid = 0;
     mutable uint32 m_pendingCastTraceSpellId = 0;

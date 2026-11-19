@@ -293,6 +293,7 @@ class Spell
         // Optional PartyBot trace correlation copied from the owning PlayerAI.
         uint32 m_partyBotTraceActionId = 0;
         uint64 m_partyBotTraceEncounterId = 0;
+        uint64 m_partyBotTraceTargetGuid = 0;
         bool m_partyBotTraceInterrupted = false;
 
         void SetCastTime(int32 castTime) { m_casttime = castTime; }

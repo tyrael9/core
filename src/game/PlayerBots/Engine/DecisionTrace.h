@@ -106,12 +106,6 @@ public:
 
 private:
     mutable uint32 m_recordsThisTick;
-    mutable uint32 m_castTraceEventsThisTick;
-    mutable uint32 m_reservationTraceEventsThisTick;
-    mutable bool m_reservationTraceLimitLogged;
-    mutable bool m_castTraceLimitLogged;
-    mutable uint32 m_targetChangesThisTick;
-    mutable bool m_targetChangeLimitLogged;
     mutable bool m_enabled;
 };
 

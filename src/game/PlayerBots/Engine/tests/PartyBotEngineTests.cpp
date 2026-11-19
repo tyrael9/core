@@ -1727,6 +1727,75 @@ void TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe()
     assert(duplicate.elapsedMs == 2000);
 }
 
+
+void TestEncounterTraceBudgetIsPartyWideBoundedAndTerminalReserved()
+{
+    PartyCoordinator coordinator;
+    PartySnapshot snapshot;
+    snapshot.groupId = 990;
+    snapshot.mapId = 1;
+    snapshot.instanceId = 9;
+    snapshot.epoch = 1;
+    PartyMemberSnapshot member;
+    member.guid = 991;
+    member.online = true;
+    member.alive = true;
+    member.inCombat = true;
+    snapshot.members.push_back(member);
+
+    EncounterTransition started = coordinator.ObserveEncounter(snapshot, 1000, 10000);
+    assert(started.kind == EncounterTransitionKind::Started);
+    assert(coordinator.TryAdmitEncounterTraceEvent(
+        started.encounterId, EncounterTraceEventClass::Important) ==
+        EncounterTraceAdmission::Accepted); // encounter_start
+
+    for (std::uint32_t i = 0; i < PartyCoordinator::MaxDetailTraceEvents; ++i)
+        assert(coordinator.TryAdmitEncounterTraceEvent(
+            started.encounterId, EncounterTraceEventClass::Detail) ==
+            EncounterTraceAdmission::Accepted);
+    assert(coordinator.TryAdmitEncounterTraceEvent(
+        started.encounterId, EncounterTraceEventClass::Detail) ==
+        EncounterTraceAdmission::EmitLimitMarker);
+    assert(coordinator.TryAdmitEncounterTraceEvent(
+        started.encounterId, EncounterTraceEventClass::Detail) ==
+        EncounterTraceAdmission::Suppressed);
+
+    // The terminal event remains admissible after the encounter is closed,
+    // even after the ordinary budget has been exhausted.
+    EncounterTransition ended = coordinator.CloseEncounter(2000, "test_close");
+    assert(ended.kind == EncounterTransitionKind::Ended);
+    assert(coordinator.TryAdmitEncounterTraceEvent(
+        ended.encounterId, EncounterTraceEventClass::Terminal) ==
+        EncounterTraceAdmission::Accepted);
+    assert(coordinator.TryAdmitEncounterTraceEvent(
+        ended.encounterId, EncounterTraceEventClass::Terminal) ==
+        EncounterTraceAdmission::Suppressed);
+
+    // A new encounter receives a fresh budget and a distinct encounter ID.
+    snapshot.epoch = 2;
+    EncounterTransition restarted = coordinator.ObserveEncounter(snapshot, 3000, 10000);
+    assert(restarted.kind == EncounterTransitionKind::Started);
+    assert(restarted.encounterId != started.encounterId);
+    assert(coordinator.TryAdmitEncounterTraceEvent(
+        restarted.encounterId, EncounterTraceEventClass::Detail) ==
+        EncounterTraceAdmission::Accepted);
+
+    PartyCoordinator importantCoordinator;
+    EncounterTransition importantStart =
+        importantCoordinator.ObserveEncounter(snapshot, 4000, 10000);
+    assert(importantStart.kind == EncounterTransitionKind::Started);
+    for (std::uint32_t i = 0; i < PartyCoordinator::MaxImportantTraceEvents; ++i)
+        assert(importantCoordinator.TryAdmitEncounterTraceEvent(
+            importantStart.encounterId, EncounterTraceEventClass::Important) ==
+            EncounterTraceAdmission::Accepted);
+    assert(importantCoordinator.TryAdmitEncounterTraceEvent(
+        importantStart.encounterId, EncounterTraceEventClass::Important) ==
+        EncounterTraceAdmission::EmitLimitMarker);
+    assert(importantCoordinator.TryAdmitEncounterTraceEvent(
+        importantStart.encounterId, EncounterTraceEventClass::Important) ==
+        EncounterTraceAdmission::Suppressed);
+}
+
 }
 int main() {
     TestValueCacheEpochExpiryInvalidationAndTypeSafety();
@@ -1752,6 +1821,7 @@ int main() {
     TestEncounterLifecycleStartSettleAndSequence();
     TestEncounterLifecycleCompanionWrapAndExplicitClose();
     TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe();
+    TestEncounterTraceBudgetIsPartyWideBoundedAndTerminalReserved();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();

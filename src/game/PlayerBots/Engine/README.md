@@ -65,7 +65,7 @@ The simulator runs only in isolated CI schemas and never connects to the Oracle 
 
 The trace foundation is partially implemented: encounter IDs and boundaries, ordered sequence numbers, party snapshots, bounded Shadow decision summaries, cast request/result/terminal correlation, target changes, threat reservations, and PartyBotAI death/resurrection events are present and have Core-backed runtime coverage.
 
-The remaining trace work is still a gate before meaningful New Engine gameplay testing: a global encounter event budget with terminal truncation marker, bounded trace configuration/performance validation, fuller bot-state/trigger/arbitration and health-change coverage (including human party members), and integration of the repository-local report collector into the deployment diagnostics command. The local parser already emits a Markdown report and matching raw log by encounter ID or time window. See DECISION-TRACE.md.
+The remaining trace work is still a gate before meaningful New Engine gameplay testing: a runtime-configurable trace budgets and performance validation, fuller bot-state/trigger/arbitration and health-change coverage (including human party members), shutdown flush, and integration of the repository-local report collector into the deployment diagnostics command. The fixed party-wide 1,024-detail / 256-important event budget and one-shot terminal/overflow paths are now implemented and unit-tested. The local parser already emits a Markdown report and matching raw log by encounter ID or time window. See DECISION-TRACE.md.
 
 ## Build and test
 

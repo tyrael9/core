@@ -35,6 +35,20 @@ struct EncounterHeartbeat
     std::uint32_t elapsedMs = 0;
 };
 
+enum class EncounterTraceEventClass : std::uint8_t
+{
+    Detail,
+    Important,
+    Terminal
+};
+
+enum class EncounterTraceAdmission : std::uint8_t
+{
+    Accepted,
+    Suppressed,
+    EmitLimitMarker
+};
+
 struct EncounterTransition {
     EncounterTransitionKind kind = EncounterTransitionKind::None;
     std::uint64_t encounterId = 0;
@@ -73,6 +87,10 @@ public:
     bool TryBeginEncounterHeartbeat(std::uint32_t nowMs, std::uint32_t intervalMs,
                                     EncounterHeartbeat& heartbeat);
     std::uint32_t NextEncounterSequence();
+    EncounterTraceAdmission TryAdmitEncounterTraceEvent(
+        std::uint64_t encounterId, EncounterTraceEventClass eventClass);
+    static std::uint32_t const MaxDetailTraceEvents = 1024;
+    static std::uint32_t const MaxImportantTraceEvents = 256;
     std::uint64_t GetEncounterId() const { return m_encounterId; }
     std::uint32_t GetEncounterGroupId() const { return m_encounterGroupId; }
     std::uint32_t GetEncounterMapId() const { return m_encounterMapId; }
@@ -102,6 +120,11 @@ private:
     std::uint32_t m_lastCombatAtMs = 0;
     std::uint32_t m_lastEncounterHeartbeatAtMs = 0;
     std::uint32_t m_nextSnapshotEpoch = 0;
+    std::uint64_t m_traceBudgetEncounterId = 0;
+    std::uint32_t m_traceDetailEvents = 0;
+    std::uint32_t m_traceImportantEvents = 0;
+    bool m_traceLimitMarkerEmitted = false;
+    bool m_traceTerminalEmitted = false;
     bool m_encounterActive = false;
     bool m_hasEncounterHeartbeat = false;
     bool m_hasSnapshot = false;

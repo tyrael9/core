@@ -51,6 +51,31 @@ enum PartyBotSpells
 #define PB_MIN_FOLLOW_ANGLE 0.0f
 #define PB_MAX_FOLLOW_ANGLE 6.0f
 
+namespace
+{
+    bool AdmitPartyEncounterTrace(
+        PartyBotEngine::DecisionTrace const& trace, Player const* bot,
+        PartyBotEngine::PartyCoordinator& coordinator, uint64 encounterId,
+        uint32 groupId, uint32 mapId, uint32 instanceId, uint32 elapsedMs,
+        PartyBotEngine::EncounterTraceEventClass eventClass)
+    {
+        PartyBotEngine::EncounterTraceAdmission const admission =
+            coordinator.TryAdmitEncounterTraceEvent(encounterId, eventClass);
+        if (admission == PartyBotEngine::EncounterTraceAdmission::EmitLimitMarker)
+        {
+            uint32 const sequence = coordinator.NextEncounterSequence();
+            if (sequence)
+            {
+                char const* reason = eventClass == PartyBotEngine::EncounterTraceEventClass::Important
+                    ? "important_budget_exhausted" : "detail_budget_exhausted";
+                trace.RecordEncounterBoundary(bot, "trace_limit", groupId, mapId,
+                    instanceId, encounterId, sequence, elapsedMs, reason);
+            }
+        }
+        return admission == PartyBotEngine::EncounterTraceAdmission::Accepted;
+    }
+}
+
 bool PartyBotAI::OnSessionLoaded(PlayerBotEntry* entry, WorldSession* sess)
 {
     if (!m_race && !m_class)
@@ -423,6 +448,18 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
 
     if (castAttempt)
     {
+        if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+                instanceId, elapsedMs,
+                PartyBotEngine::EncounterTraceEventClass::Important))
+        {
+            m_pendingCastTraceActionId = 0;
+            m_pendingCastTraceEncounterId = 0;
+            m_pendingCastTraceTargetGuid = 0;
+            m_pendingCastTraceSpellId = 0;
+            m_pendingCastTraceSpellBound = false;
+            return;
+        }
         uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
         if (m_decisionTrace.RecordEncounterCastAttempt(
                 me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
@@ -450,6 +487,18 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         return;
     }
 
+    if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+            encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+            instanceId, elapsedMs,
+            PartyBotEngine::EncounterTraceEventClass::Important))
+    {
+        m_pendingCastTraceActionId = 0;
+        m_pendingCastTraceEncounterId = 0;
+        m_pendingCastTraceTargetGuid = 0;
+        m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
+        return;
+    }
     uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
     m_decisionTrace.RecordEncounterCastResult(
         me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
@@ -513,6 +562,12 @@ void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint32 actionId,
         m_partyCoordinator->GetEncounterInstanceId() != instanceId)
         return;
 
+    uint32 const elapsedMs = m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime());
+    if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+            encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+            instanceId, elapsedMs,
+            PartyBotEngine::EncounterTraceEventClass::Important))
+        return;
     uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
     m_decisionTrace.RecordEncounterCastTerminal(
         me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
@@ -538,6 +593,13 @@ void PartyBotAI::OnAliveStateChanged(bool wasAlive, bool isAlive)
         m_partyCoordinator->GetEncounterInstanceId() != instanceId)
         return;
 
+    uint32 const elapsedMs = m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime());
+    uint64 const encounterId = m_partyCoordinator->GetEncounterId();
+    if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+            encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+            instanceId, elapsedMs,
+            PartyBotEngine::EncounterTraceEventClass::Important))
+        return;
     uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
     m_decisionTrace.RecordEncounterAliveState(
         me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
@@ -590,12 +652,19 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
                 m_partyCoordinator->GetEncounterMapId() == mapId &&
                 m_partyCoordinator->GetEncounterInstanceId() == instanceId)
             {
-                uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
-                m_decisionTrace.RecordEncounterTargetChange(
-                    me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
-                    m_partyCoordinator->GetEncounterId(), sequence,
-                    m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
-                    oldVictimGuid, newVictimGuid, "legacy_attack_start");
+                uint64 const encounterId = m_partyCoordinator->GetEncounterId();
+                uint32 const elapsedMs = m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime());
+                if (AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                        encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+                        instanceId, elapsedMs,
+                        PartyBotEngine::EncounterTraceEventClass::Detail))
+                {
+                    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+                    m_decisionTrace.RecordEncounterTargetChange(
+                        me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+                        encounterId, sequence, elapsedMs,
+                        oldVictimGuid, newVictimGuid, "legacy_attack_start");
+                }
             }
         }
 
@@ -1304,12 +1373,27 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
 
     auto traceEncounter = [this](PartyBotEngine::EncounterTransition const& transition)
     {
-        if (transition.kind == PartyBotEngine::EncounterTransitionKind::None)
+        if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
+            transition.kind == PartyBotEngine::EncounterTransitionKind::None)
             return;
 
         m_partyBotEngine.InvalidateDecisionState();
         bool const started =
             transition.kind == PartyBotEngine::EncounterTransitionKind::Started;
+        if (started)
+        {
+            if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                    transition.encounterId, transition.groupId, transition.mapId,
+                    transition.instanceId, transition.elapsedMs,
+                    PartyBotEngine::EncounterTraceEventClass::Important))
+                return;
+        }
+        else if (m_partyCoordinator->TryAdmitEncounterTraceEvent(
+                     transition.encounterId,
+                     PartyBotEngine::EncounterTraceEventClass::Terminal) !=
+                 PartyBotEngine::EncounterTraceAdmission::Accepted)
+            return;
+
         m_decisionTrace.RecordEncounterBoundary(
             me, started ? "encounter_start" : "encounter_end",
             transition.groupId, transition.mapId, transition.instanceId,
@@ -1408,7 +1492,11 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     if (heartbeatMs && m_decisionTrace.IsEnabled())
     {
         PartyBotEngine::EncounterHeartbeat heartbeat;
-        if (m_partyCoordinator->TryBeginEncounterHeartbeat(nowMs, heartbeatMs, heartbeat))
+        if (m_partyCoordinator->TryBeginEncounterHeartbeat(nowMs, heartbeatMs, heartbeat) &&
+            AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                heartbeat.encounterId, heartbeat.groupId, heartbeat.mapId,
+                heartbeat.instanceId, heartbeat.elapsedMs,
+                PartyBotEngine::EncounterTraceEventClass::Detail))
             m_decisionTrace.RecordPartyHeartbeat(me, *snapshot, heartbeat);
     }
 
@@ -1433,7 +1521,12 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
             static_cast<uint32>(report.candidates.size()),
             static_cast<uint32>(report.selectedIndices.size()));
 
-        if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter())
+        if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter() &&
+            AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                m_partyCoordinator->GetEncounterId(), snapshot->groupId,
+                snapshot->mapId, snapshot->instanceId,
+                m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                PartyBotEngine::EncounterTraceEventClass::Detail))
         {
             uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
             m_decisionTrace.RecordEncounterDecisionSummary(
@@ -1477,7 +1570,12 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
                 candidate.targetGuid, candidate.finalPriority,
                 ShadowCandidateStatusName(evaluation.status),
                 evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
-            if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter())
+            if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter() &&
+                AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                    m_partyCoordinator->GetEncounterId(), snapshot->groupId,
+                    snapshot->mapId, snapshot->instanceId,
+                    m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                    PartyBotEngine::EncounterTraceEventClass::Detail))
             {
                 uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
                 m_decisionTrace.RecordEncounterCandidate(

@@ -238,6 +238,11 @@ EncounterTransition PartyCoordinator::ObserveEncounter(PartySnapshot const& snap
             m_encounterMapId = snapshot.mapId;
             m_encounterInstanceId = snapshot.instanceId;
             m_encounterStartedAtMs = nowMs;
+            m_traceBudgetEncounterId = encounterId;
+            m_traceDetailEvents = 0;
+            m_traceImportantEvents = 0;
+            m_traceLimitMarkerEmitted = false;
+            m_traceTerminalEmitted = false;
             m_lastCombatAtMs = nowMs;
             m_lastEncounterHeartbeatAtMs = 0;
             m_hasEncounterHeartbeat = false;
@@ -325,6 +330,43 @@ std::uint32_t PartyCoordinator::NextEncounterSequence()
     if (!m_encounterSequence)
         ++m_encounterSequence;
     return m_encounterSequence;
+}
+
+EncounterTraceAdmission PartyCoordinator::TryAdmitEncounterTraceEvent(
+    std::uint64_t encounterId, EncounterTraceEventClass eventClass)
+{
+    // Keep the budget tied to the last encounter ID after CloseEncounter so
+    // its terminal boundary can still be emitted through the reserved path.
+    if (!encounterId || encounterId != m_traceBudgetEncounterId)
+        return EncounterTraceAdmission::Suppressed;
+
+    if (eventClass == EncounterTraceEventClass::Terminal)
+    {
+        if (m_traceTerminalEmitted)
+            return EncounterTraceAdmission::Suppressed;
+        m_traceTerminalEmitted = true;
+        return EncounterTraceAdmission::Accepted;
+    }
+
+    if (!m_encounterActive || m_encounterId != encounterId)
+        return EncounterTraceAdmission::Suppressed;
+
+    std::uint32_t& used = eventClass == EncounterTraceEventClass::Important
+        ? m_traceImportantEvents : m_traceDetailEvents;
+    std::uint32_t const limit = eventClass == EncounterTraceEventClass::Important
+        ? MaxImportantTraceEvents : MaxDetailTraceEvents;
+    if (used < limit)
+    {
+        ++used;
+        return EncounterTraceAdmission::Accepted;
+    }
+
+    if (!m_traceLimitMarkerEmitted)
+    {
+        m_traceLimitMarkerEmitted = true;
+        return EncounterTraceAdmission::EmitLimitMarker;
+    }
+    return EncounterTraceAdmission::Suppressed;
 }
 
 std::uint32_t PartyCoordinator::NextSnapshotEpoch() {

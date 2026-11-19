@@ -23,6 +23,7 @@
 #include "Pet.h"
 #include "Player.h"
 #include "AI/PlayerAI.h"
+#include "PlayerBots/PartyBotAI.h"
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "SpellMgr.h"
@@ -3856,10 +3857,64 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         !tankResurrectionObserver.lastWasAlive && tankResurrectionObserver.lastIsAlive;
     tank->SetAI(previousTankAIForResurrection);
 
+    // Exercise the actual PartyBotAI callback and formatted encounter trace,
+    // not only the Core PlayerAI observer boundary. Use a fresh active
+    // coordinator so both emitted events have a deterministic shared identity.
+    std::shared_ptr<PartyCoordinator> partyTraceCoordinator(new PartyCoordinator());
+    PartySnapshot partyTraceSnapshot;
+    partyTraceSnapshot.groupId = group->GetId();
+    partyTraceSnapshot.mapId = map.GetId();
+    partyTraceSnapshot.instanceId = map.GetInstanceId();
+    partyTraceSnapshot.epoch = 1;
+    PartyMemberSnapshot partyTraceTank;
+    partyTraceTank.guid = tankGuid.GetRawValue();
+    partyTraceTank.mapId = map.GetId();
+    partyTraceTank.instanceId = map.GetInstanceId();
+    partyTraceTank.online = true;
+    partyTraceTank.alive = true;
+    partyTraceTank.inCombat = true;
+    partyTraceSnapshot.members.push_back(partyTraceTank);
+    uint32 const partyTraceNow = WorldTimer::getMSTime();
+    EncounterTransition const partyTraceStarted =
+        partyTraceCoordinator->ObserveEncounter(partyTraceSnapshot, partyTraceNow, 30000);
+
+    PartyBotAI partyTraceAI(
+        dps, map.GetId(), map.GetInstanceId(),
+        tank->GetPositionX(), tank->GetPositionY(),
+        tank->GetPositionZ(), tank->GetOrientation());
+    partyTraceAI.SetPlayer(tank);
+    partyTraceAI.m_partyCoordinator = partyTraceCoordinator;
+    partyTraceAI.m_partyCoordinatorMapId = map.GetId();
+    partyTraceAI.m_partyCoordinatorInstanceId = map.GetInstanceId();
+    partyTraceAI.m_decisionTrace.BeginTick();
+    PlayerAI* const previousTankAIForPartyTrace = tank->AI();
+    tank->SetAI(&partyTraceAI);
+
+    uint32 const partyTraceSequenceBefore = partyTraceCoordinator->NextEncounterSequence();
+    tank->SetHealth(tank->GetMaxHealth());
+    uint32 const partyTraceDeathDamage = partyTraceStarted.kind == EncounterTransitionKind::Started
+        ? hostiles[0].creature->DealDamage(
+            tank, tank->GetHealth(), nullptr, DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    bool const partyTraceDied = partyTraceDeathDamage > 0 &&
+        !tank->IsAlive() && tank->GetHealth() == 0;
+    if (partyTraceDied)
+    {
+        // Core's JUST_DIED -> CORPSE callback must not consume another sequence.
+        tank->SetDeathState(CORPSE);
+        tank->ResurrectPlayer(1.0f, false);
+    }
+    uint32 const partyTraceSequenceAfter = partyTraceCoordinator->NextEncounterSequence();
+    bool const partyBotEncounterLifecycleTraced =
+        partyTraceStarted.kind == EncounterTransitionKind::Started &&
+        partyTraceDied && tank->IsAlive() &&
+        partyTraceSequenceAfter == partyTraceSequenceBefore + 3;
+    tank->SetAI(previousTankAIForPartyTrace);
+
     bool const f10ChecksPassed = f9ChecksPassed && petCleanupPassed &&
         f12ChecksPassed && healerHoldsAggroOverDps &&
         tankDied && tankDeathObserverValid && tankCorpseTransitionSuppressed &&
-        tankResurrectionObserved &&
+        tankResurrectionObserved && partyBotEncounterLifecycleTraced &&
         tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&
@@ -3891,6 +3946,17 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     if (tankDeathObserverValid && tankCorpseTransitionSuppressed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: Core Player::SetDeathState invoked the observer for JUST_DIED and CORPSE, while the alive-state transition filter emitted exactly one alive-to-dead event.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PartyBotAI encounter lifecycle: started=%u death=%u resurrection=%u sequenceDelta=%u alive=%u.",
+             partyTraceStarted.kind == EncounterTransitionKind::Started ? 1u : 0u,
+             partyTraceDied ? 1u : 0u,
+             partyBotEncounterLifecycleTraced ? 1u : 0u,
+             partyTraceSequenceAfter - partyTraceSequenceBefore - 1u,
+             tank->IsAlive() ? 1u : 0u);
+    if (partyBotEncounterLifecycleTraced)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: PartyBotAI emitted encounter-correlated death and resurrection trace records through Core PlayerAI callbacks, while the repeated CORPSE state was suppressed.");
+
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] Group death recovery: dpsDamage=%u/%u dpsThreat=%.1f/%.1f healerHoldsAggro=%u tankDeath=%u tankRefsRemoved=%u healerRetargetAfterTankDeath=%u/%u tankSnapshot=%u tankRoster=%u tankThreatSnapshot=%u healerDeath=%u healerRefsRemoved=%u dpsRetargetAfterHealerDeath=%u/%u healerSnapshot=%u healerRoster=%u healerThreatSnapshot=%u registered=%u groupRemoved=%u cleanup=%u.",
              dpsDamage0, dpsDamage1, dpsThreat0, dpsThreat1,

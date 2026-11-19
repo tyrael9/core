@@ -149,6 +149,7 @@ replacements = {
     "PartyBot.Simulator.Enable": "1",
     "PartyBot.Simulator.DatabaseNamePrefix": "partybot_sim_",
     "PartyBot.Simulator.MapId": "33",
+    "PlayerBot.DecisionTrace": "1",
 }
 
 for key, value in replacements.items():
@@ -275,6 +276,19 @@ if ! grep -Fq "[PartyBotSimulator] PASS: Core Player::SetDeathState invoked the 
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotAI emitted encounter-correlated death and resurrection trace records through Core PlayerAI callbacks, while the repeated CORPSE state was suppressed." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The PartyBotAI encounter lifecycle trace PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! grep -Eq "event=death .*alive_before=1 alive_after=0" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The formatted PartyBotAI death trace record was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! grep -Eq "event=resurrect .*alive_before=0 alive_after=1" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The formatted PartyBotAI resurrection trace record was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Core Tank/Healer death-reference recovery PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
@@ -315,4 +329,4 @@ if ! grep -Fq "[PartyBotSimulator] PASS: created, ran a bounded Core Creature co
     exit 1
 fi
 
-echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, periodic-healing-assist, periodic-power-assist, periodic-mana-leech and composite periodic-life-leech threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, periodic-healing-assist, periodic-power-assist, periodic-mana-leech and composite periodic-life-leech threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, PartyBotAI encounter-correlated death/resurrection trace records, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"

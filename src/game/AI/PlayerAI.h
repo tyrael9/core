@@ -58,6 +58,8 @@ class PlayerAI
                                          bool /*interrupted*/) {}
         // Notify observers only when the Core changes a Player between alive and dead.
         virtual void OnAliveStateChanged(bool /*wasAlive*/, bool /*isAlive*/) {}
+        // Called once after world updates stop and before bot/player teardown.
+        virtual void OnServerShutdown() {}
 
         // == Helpers =====================================
         bool CanCastSpell(Unit* pTarget, SpellEntry const* pSpell, bool isTriggered, bool checkControlled = true);

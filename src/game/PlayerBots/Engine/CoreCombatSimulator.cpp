@@ -4106,6 +4106,26 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 unmanagedEnded.reason);
     }
 
+    // F15: the explicit server-shutdown hook closes the shared encounter once.
+    // The second bot observes the already-closed coordinator and cannot emit a
+    // duplicate terminal record. The reserved terminal admission must be consumed
+    // even though the ordinary detail budget was exhausted by F13.
+    uint64 const shutdownEncounterId = partyTraceCoordinator->GetEncounterId();
+    partyTraceAI.OnServerShutdown();
+    bool const shutdownFlushClosedEncounter = shutdownEncounterId != 0 &&
+        !partyTraceCoordinator->HasActiveEncounter() &&
+        partyTraceCoordinator->TryAdmitEncounterTraceEvent(
+            shutdownEncounterId, EncounterTraceEventClass::Terminal) ==
+            EncounterTraceAdmission::Suppressed;
+    secondPartyTraceAI.OnServerShutdown();
+    bool const shutdownFlushNoDuplicate = shutdownFlushClosedEncounter &&
+        partyTraceCoordinator->TryAdmitEncounterTraceEvent(
+            shutdownEncounterId, EncounterTraceEventClass::Terminal) ==
+            EncounterTraceAdmission::Suppressed;
+    if (shutdownFlushNoDuplicate)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: server-shutdown hook closed an active shared encounter and consumed exactly one reserved terminal admission across two PartyBotAI instances.");
+
     dps->SetAI(previousDpsAIForPartyTrace);
     secondPartyTraceAI.Remove();
     tank->SetAI(previousTankAIForPartyTrace);
@@ -4116,6 +4136,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         tankDied && tankDeathObserverValid && tankCorpseTransitionSuppressed &&
         tankResurrectionObserved && partyBotEncounterLifecycleTraced &&
         partyBotTraceBudgetPassed && unmanagedMemberStateTracePassed &&
+        shutdownFlushNoDuplicate &&
         tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&

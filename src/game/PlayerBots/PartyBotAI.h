@@ -63,6 +63,7 @@ public:
                              uint64 targetGuid, bool success,
                              bool interrupted) final;
     void OnAliveStateChanged(bool wasAlive, bool isAlive) final;
+    void OnServerShutdown() final;
     Player* GetPartyLeader() const;
     bool IsPartyInCombat() const;
     bool AttackStart(Unit* pVictim);

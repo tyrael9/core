@@ -923,6 +923,37 @@ void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
     CombatBotBaseAI::OnPacketReceived(packet);
 }
 
+void PartyBotAI::OnServerShutdown()
+{
+    if (!me || !m_partyCoordinator || !m_partyCoordinator->HasActiveEncounter())
+        return;
+
+    // Shutdown runs after the world update loop has stopped, so all coordinator
+    // shards are quiescent. Still require this AI's retained shard identity to
+    // match before closing it; a stale cross-map AI must never close another shard.
+    if (m_partyCoordinatorMapId != m_partyCoordinator->GetEncounterMapId() ||
+        m_partyCoordinatorInstanceId != m_partyCoordinator->GetEncounterInstanceId())
+        return;
+
+    uint32 const nowMs = WorldTimer::getMSTime();
+    PartyBotEngine::EncounterTransition const transition =
+        m_partyCoordinator->CloseEncounter(nowMs, "server_shutdown");
+    m_partyBotEngine.InvalidateDecisionState();
+    if (transition.kind != PartyBotEngine::EncounterTransitionKind::Ended ||
+        !m_decisionTrace.IsEnabled())
+        return;
+
+    if (m_partyCoordinator->TryAdmitEncounterTraceEvent(
+            transition.encounterId, PartyBotEngine::EncounterTraceEventClass::Terminal) !=
+        PartyBotEngine::EncounterTraceAdmission::Accepted)
+        return;
+
+    m_decisionTrace.RecordEncounterBoundary(
+        me, "encounter_end", transition.groupId, transition.mapId,
+        transition.instanceId, transition.encounterId, transition.sequence,
+        transition.elapsedMs, transition.reason);
+}
+
 void PartyBotAI::OnPlayerLogin()
 {
     if (!m_initialized)

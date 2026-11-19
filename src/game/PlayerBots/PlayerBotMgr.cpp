@@ -145,6 +145,18 @@ void PlayerBotMgr::Load()
     }
 }
 
+void PlayerBotMgr::FlushEncounterTracesForShutdown()
+{
+    // World::Shutdown calls this after the world update loop has stopped but
+    // before KickAll tears down online Player objects. Only online entries have
+    // a live Player pointer in their retained AI instance.
+    for (auto const& entry : m_bots)
+    {
+        if (entry.second && entry.second->state == PB_STATE_ONLINE && entry.second->ai)
+            entry.second->ai->OnServerShutdown();
+    }
+}
+
 void PlayerBotMgr::DeleteAll()
 {
     m_stats.onlineCount = 0;

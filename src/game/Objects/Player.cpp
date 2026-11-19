@@ -1553,6 +1553,11 @@ void Player::SetDeathState(DeathState s)
 
     Unit::SetDeathState(s);
 
+    // Let an attached PlayerAI observe only real alive/dead transitions. The
+    // callback runs after Core has committed the new death state.
+    if (PlayerAI* playerAI = AI())
+        playerAI->OnAliveStateChanged(cur, IsAlive());
+
     // restore resurrection spell id for player after aura remove
     if (s == JUST_DIED && cur && ressSpellId)
     {

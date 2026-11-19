@@ -195,3 +195,10 @@ Stage F13 extends the existing real five-Player Group fixture. It attaches two d
 Acceptance requires 1,025 successful Core victim changes across the two bots: the shared coordinator admits exactly 1,024 `target_change` detail records, the 1,025th request emits one `event=trace_limit reason=detail_budget_exhausted` record, and subsequent over-budget requests do not emit a second marker. The CI shell runner independently requires the PASS marker and exactly one formatted global detail-budget marker line. This closes the gap between pure coordinator admission/configuration tests and the actual PartyBotAI logging path if the fixture passes.
 
 The runtime test is intentionally limited to the structured encounter log stream. It does not prove a zero-loss guarantee for legacy compatibility logs, shutdown flush, or realistic long-duration production log volume.
+
+
+## Sampled non-PlayerBots party-member state trace (Stage F14, pending CI)
+
+The map-thread PartyCoordinator now tracks value-only health/max-health/alive baselines for online party members without `CombatBotBaseAI`. The first observation is a baseline, unchanged snapshots emit nothing, health changes consume the detail budget, and alive transitions consume the important budget. PartyBots are excluded because their attached PlayerAI callbacks are authoritative. A member absent from the current map snapshot loses its baseline, so rejoining begins with a new observation.
+
+The five-Player Core simulator drives actual `Unit::DealDamage` (nonlethal and lethal) and `Player::ResurrectPlayer`, captures fresh `PartySnapshotBuilder` values after each operation, and emits through the same DecisionTrace admission/formatting method. Runtime acceptance requires exactly one `party_member_health`, `party_member_death`, and `party_member_resurrect` record for the same member GUID. These are sampled deltas, not a per-hit damage stream.

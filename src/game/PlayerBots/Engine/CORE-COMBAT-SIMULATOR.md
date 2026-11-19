@@ -465,3 +465,10 @@ Runtime verification for the latest Power/Mana-Leech fixtures is still pending. 
 ### Periodic-life-leech composite runtime slice (pending)
 
 A further fixture covers Core's shared `SPELL_AURA_PERIODIC_LEECH` damage/self-heal path. It creates one friendly caster and two real hostile references on that caster, applies a native ordinary periodic-leech Aura to hostile A, and waits for one real Core tick. The fixture compares hostile A's ThreatManager delta against the sum of its applied periodic-damage component plus half of the caster's actual self-heal assist, and compares hostile B against the other half of the heal-assist fan-out. It reuses the damage/heal component rows and deliberately leaves the full action estimate Unknown. The CI runner requires a dedicated PASS marker. Build/pure-test validation is separate; this full runtime stage remains pending until a trusted push can download the extracted 5875 fixture and reaches final Runtime PASS.
+
+
+## Stage F14 — sampled non-PlayerBots member health and lifecycle trace
+
+F14 validates sampled state-delta tracing for an ordinary Player without `CombatBotBaseAI` in the real five-Player Group. The fixture captures a baseline through `PartySnapshotBuilder`, applies actual Core `Unit::DealDamage` for nonlethal and lethal health changes, then calls `Player::ResurrectPlayer`. A fresh map-thread snapshot after each Core operation is diffed by a PartyCoordinator and emitted through the same DecisionTrace formatter/admission path used by PartyBotAI.
+
+The runtime runner requires exactly one `party_member_health`, `party_member_death`, and `party_member_resurrect` record for the same member GUID. Initial baselines and unchanged snapshots emit nothing. PartyBot members are excluded because their PlayerAI callbacks are authoritative. These are sampled health/alive deltas, not a per-hit damage stream.

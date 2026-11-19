@@ -338,3 +338,6 @@ The first runtime attempt correctly exposed a Core lifecycle nuance: Player::Set
 - [x] Attach a fresh PlayerAI observer and require exactly one dead -> alive transition, with the Player alive after the call.
 - [x] Gate F10 and run-ci.sh on the dedicated resurrection PASS marker.
 - [x] Verify the corrected death + resurrection observer suite and formatted PartyBotAI encounter events on fixture-backed ARM64 runtime CI. Push CI [#44456096650](https://github.com/tyrael9/core/actions/runs/44456096650) asserts exactly one semantic death and resurrection event, filters the repeated CORPSE state, and requires both formatted `event=death` and `event=resurrect` records with consecutive encounter sequences.
+
+
+- [~] Extend encounter trace to ordinary party members (Stage F14). PartyBots retain authoritative PlayerAI death/resurrection callbacks; online members without `CombatBotBaseAI` are sampled from map-thread PartySnapshot health/alive state. Health/max-health deltas use the detail budget; sampled alive transitions use the important budget. The Core simulator now drives real `Unit::DealDamage` and `Player::ResurrectPlayer` and the runtime runner requires exactly one health/death/resurrection event for the same member GUID. This is sampled state evidence, not a per-hit damage log; changes between snapshots may be coalesced. Awaiting Core-backed CI.

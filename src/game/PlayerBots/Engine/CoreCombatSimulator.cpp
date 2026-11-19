@@ -3972,6 +3972,140 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: two real PartyBotAI instances shared one coordinator detail budget, admitted 1,024 target-change events, emitted one trace_limit on overflow and suppressed subsequent detail events.");
 
+    // F14: observe an ordinary Player (no CombatBotBaseAI) through fresh
+    // map-thread snapshots. Damage and resurrection are real Core operations.
+    Player* const unmanagedMember = players.size() > 4 ? players[4] : nullptr;
+    PartyCoordinator unmanagedCoordinator;
+    unmanagedCoordinator.ConfigureEncounterTraceBudget(32, 16);
+    EncounterTransition const unmanagedStarted =
+        unmanagedMember ? unmanagedCoordinator.ObserveEncounter(
+            partyTraceSnapshot, WorldTimer::getMSTime(), 30000) : EncounterTransition();
+    auto captureUnmanagedSnapshot = [&](PartySnapshot& snapshot) -> bool
+    {
+        unmanagedCoordinator.InvalidateSnapshot();
+        PartySnapshot const* fresh = PartySnapshotBuilder::GetOrBuild(
+            tank, unmanagedCoordinator, WorldTimer::getMSTime(), 0);
+        if (!fresh)
+            return false;
+        snapshot = *fresh;
+        return true;
+    };
+    auto recordUnmanagedChanges = [&](std::vector<PartyMemberStateChange> const& changes)
+    {
+        uint32 recorded = 0;
+        for (PartyMemberStateChange const& change : changes)
+            if (partyTraceAI.m_decisionTrace.RecordEncounterPartyMemberState(
+                    tank, unmanagedCoordinator, group->GetId(), map.GetId(),
+                    map.GetInstanceId(), unmanagedStarted.encounterId,
+                    unmanagedCoordinator.GetEncounterElapsedMs(WorldTimer::getMSTime()),
+                    change))
+                ++recorded;
+        return recorded;
+    };
+
+    PartySnapshot unmanagedBaselineSnapshot;
+    bool const unmanagedBaselineBuilt = unmanagedMember &&
+        unmanagedStarted.kind == EncounterTransitionKind::Started &&
+        captureUnmanagedSnapshot(unmanagedBaselineSnapshot);
+    PartyMemberSnapshot const* unmanagedBaselineMember = unmanagedBaselineBuilt
+        ? unmanagedBaselineSnapshot.FindMember(
+            unmanagedMember->GetObjectGuid().GetRawValue()) : nullptr;
+    std::vector<PartyMemberStateChange> const unmanagedBaselineChanges =
+        unmanagedBaselineBuilt
+        ? unmanagedCoordinator.ObserveNonBotPartyMemberStateChanges(
+            unmanagedBaselineSnapshot) : std::vector<PartyMemberStateChange>();
+    bool const unmanagedBaselineValid = unmanagedBaselineMember &&
+        !unmanagedBaselineMember->isPlayerBot && unmanagedBaselineMember->online &&
+        unmanagedBaselineMember->alive && unmanagedBaselineChanges.empty();
+
+    uint32 const unmanagedHealthBefore = unmanagedMember
+        ? unmanagedMember->GetHealth() : 0;
+    uint32 const unmanagedHealthDamage = unmanagedBaselineValid
+        ? hostiles[0].creature->DealDamage(
+            unmanagedMember, 100, nullptr, DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    PartySnapshot unmanagedHealthSnapshot;
+    bool const unmanagedHealthSnapshotBuilt = unmanagedHealthDamage > 0 &&
+        unmanagedMember->GetHealth() < unmanagedHealthBefore &&
+        captureUnmanagedSnapshot(unmanagedHealthSnapshot);
+    std::vector<PartyMemberStateChange> const unmanagedHealthChanges =
+        unmanagedHealthSnapshotBuilt
+        ? unmanagedCoordinator.ObserveNonBotPartyMemberStateChanges(
+            unmanagedHealthSnapshot) : std::vector<PartyMemberStateChange>();
+    uint32 const unmanagedHealthRecords =
+        unmanagedHealthChanges.size() == 1 &&
+        unmanagedHealthChanges[0].memberGuid ==
+            unmanagedMember->GetObjectGuid().GetRawValue() &&
+        unmanagedHealthChanges[0].wasAlive && unmanagedHealthChanges[0].isAlive
+        ? recordUnmanagedChanges(unmanagedHealthChanges) : 0;
+
+    uint32 const unmanagedHealthAtDeath = unmanagedMember
+        ? unmanagedMember->GetHealth() : 0;
+    uint32 const unmanagedDeathDamage = unmanagedHealthRecords == 1
+        ? hostiles[0].creature->DealDamage(
+            unmanagedMember, unmanagedHealthAtDeath + 10000u, nullptr,
+            DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    PartySnapshot unmanagedDeathSnapshot;
+    bool const unmanagedDeathSnapshotBuilt = unmanagedDeathDamage > 0 &&
+        !unmanagedMember->IsAlive() && unmanagedMember->GetHealth() == 0 &&
+        captureUnmanagedSnapshot(unmanagedDeathSnapshot);
+    std::vector<PartyMemberStateChange> const unmanagedDeathChanges =
+        unmanagedDeathSnapshotBuilt
+        ? unmanagedCoordinator.ObserveNonBotPartyMemberStateChanges(
+            unmanagedDeathSnapshot) : std::vector<PartyMemberStateChange>();
+    uint32 const unmanagedDeathRecords =
+        unmanagedDeathChanges.size() == 1 &&
+        unmanagedDeathChanges[0].wasAlive && !unmanagedDeathChanges[0].isAlive
+        ? recordUnmanagedChanges(unmanagedDeathChanges) : 0;
+
+    if (unmanagedDeathRecords == 1)
+        unmanagedMember->ResurrectPlayer(1.0f, false);
+    PartySnapshot unmanagedResurrectionSnapshot;
+    bool const unmanagedResurrectionSnapshotBuilt = unmanagedDeathRecords == 1 &&
+        unmanagedMember->IsAlive() && unmanagedMember->GetHealth() > 0 &&
+        captureUnmanagedSnapshot(unmanagedResurrectionSnapshot);
+    std::vector<PartyMemberStateChange> const unmanagedResurrectionChanges =
+        unmanagedResurrectionSnapshotBuilt
+        ? unmanagedCoordinator.ObserveNonBotPartyMemberStateChanges(
+            unmanagedResurrectionSnapshot) : std::vector<PartyMemberStateChange>();
+    uint32 const unmanagedResurrectionRecords =
+        unmanagedResurrectionChanges.size() == 1 &&
+        !unmanagedResurrectionChanges[0].wasAlive &&
+        unmanagedResurrectionChanges[0].isAlive
+        ? recordUnmanagedChanges(unmanagedResurrectionChanges) : 0;
+
+    bool const unmanagedMemberStateTracePassed =
+        unmanagedBaselineValid && unmanagedHealthDamage > 0 &&
+        unmanagedHealthRecords == 1 && unmanagedDeathDamage > 0 &&
+        unmanagedDeathRecords == 1 && unmanagedResurrectionRecords == 1;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Unmanaged member state trace: baseline=%u healthDamage=%u healthRecord=%u deathDamage=%u deathRecord=%u resurrectionRecord=%u member_guid=%llu.",
+             unmanagedBaselineValid ? 1u : 0u, unmanagedHealthDamage,
+             unmanagedHealthRecords, unmanagedDeathDamage, unmanagedDeathRecords,
+             unmanagedResurrectionRecords,
+             static_cast<unsigned long long>(unmanagedMember
+                 ? unmanagedMember->GetObjectGuid().GetRawValue() : 0));
+    if (unmanagedMemberStateTracePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: real Core DealDamage and Player::ResurrectPlayer produced one sampled health, death and resurrection trace for a non-PlayerBots Group member; member_guid=%llu.",
+                 static_cast<unsigned long long>(
+                     unmanagedMember->GetObjectGuid().GetRawValue()));
+    if (unmanagedCoordinator.HasActiveEncounter())
+    {
+        EncounterTransition const unmanagedEnded =
+            unmanagedCoordinator.CloseEncounter(WorldTimer::getMSTime(),
+                                                  "simulator_member_state_complete");
+        if (unmanagedEnded.kind == EncounterTransitionKind::Ended &&
+            unmanagedCoordinator.TryAdmitEncounterTraceEvent(
+                unmanagedEnded.encounterId, EncounterTraceEventClass::Terminal) ==
+                EncounterTraceAdmission::Accepted)
+            partyTraceAI.m_decisionTrace.RecordEncounterBoundary(
+                tank, "encounter_end", unmanagedEnded.groupId, unmanagedEnded.mapId,
+                unmanagedEnded.instanceId, unmanagedEnded.encounterId,
+                unmanagedEnded.sequence, unmanagedEnded.elapsedMs,
+                unmanagedEnded.reason);
+    }
+
     dps->SetAI(previousDpsAIForPartyTrace);
     secondPartyTraceAI.Remove();
     tank->SetAI(previousTankAIForPartyTrace);
@@ -3981,7 +4115,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f12ChecksPassed && healerHoldsAggroOverDps &&
         tankDied && tankDeathObserverValid && tankCorpseTransitionSuppressed &&
         tankResurrectionObserved && partyBotEncounterLifecycleTraced &&
-        partyBotTraceBudgetPassed && tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
+        partyBotTraceBudgetPassed && unmanagedMemberStateTracePassed &&
+        tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&
         healerDeathSnapshotValid && healerDeathRosterValid && healerDeathThreatSnapshotValid;

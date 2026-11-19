@@ -162,7 +162,7 @@ with open(destination, "w", encoding="utf-8") as output:
     output.write(config)
 PY
 
-echo "[PartyBotSimulator] Running one-shot Stages A-F13 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Running one-shot Stages A-F14 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
 set +e
 timeout --signal=TERM --kill-after=15s 10m "$MANGOSD_BIN" -c "$CONFIG_FILE" 2>&1 | tee -a "$LOG_FILE"
 simulator_status=${PIPESTATUS[0]}
@@ -288,6 +288,24 @@ if ! grep -Eq "event=resurrect .*alive_before=0 alive_after=1" "$LOG_FILE"; then
     echo "[PartyBotSimulator] The formatted PartyBotAI resurrection trace record was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
+if ! grep -Fq "[PartyBotSimulator] PASS: real Core DealDamage and Player::ResurrectPlayer produced one sampled health, death and resurrection trace for a non-PlayerBots Group member;" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] Missing non-PlayerBots party-member state trace PASS marker." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+human_member_guid="$(sed -n 's/.*non-PlayerBots Group member; member_guid=\([0-9][0-9]*\)\.$/\1/p' "$LOG_FILE" | tail -n 1)"
+if [[ -z "$human_member_guid" ]]; then
+    echo "[PartyBotSimulator] Could not extract the non-PlayerBots member GUID from the F14 PASS marker." | tee -a "$LOG_FILE"
+    exit 1
+fi
+for event in party_member_health party_member_death party_member_resurrect; do
+    event_count="$(grep -Ec "\[PartyBotEngineTrace\].*event=$event .*member_guid=$human_member_guid([[:space:]]|$)" "$LOG_FILE" || true)"
+    if [[ "$event_count" != "1" ]]; then
+        echo "[PartyBotSimulator] Expected exactly one $event record for member $human_member_guid, found $event_count." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
 if ! grep -Fq "[PartyBotSimulator] PASS: two real PartyBotAI instances shared one coordinator detail budget, admitted 1,024 target-change events, emitted one trace_limit on overflow and suppressed subsequent detail events." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The PartyBotAI shared encounter trace budget PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
@@ -339,4 +357,4 @@ if ! grep -Fq "[PartyBotSimulator] PASS: created, ran a bounded Core Creature co
     exit 1
 fi
 
-echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, periodic-healing-assist, periodic-power-assist, periodic-mana-leech and composite periodic-life-leech threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, PartyBotAI encounter-correlated death/resurrection trace records, party-wide trace-budget overflow/one-shot marker, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, periodic-healing-assist, periodic-power-assist, periodic-mana-leech and composite periodic-life-leech threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, PartyBotAI encounter-correlated death/resurrection trace records, party-wide trace-budget overflow/one-shot marker, sampled non-PlayerBots health/death/resurrection events, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"

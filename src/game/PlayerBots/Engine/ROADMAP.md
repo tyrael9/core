@@ -323,3 +323,8 @@ Implementation slice complete: the component-scoped negative flat-threat estimat
 - [x] Explicitly advance JUST_DIED -> CORPSE and verify that the observer does not report a duplicate death transition.
 - [x] Make the enclosing F10 death/recovery scenario fail if either observer assertion fails, and make run-ci.sh require the dedicated PASS marker.
 - [ ] Verify the new regression on both ARM64 Core compilation and fixture-backed runtime CI. This checks the Core callback boundary and duplicate suppression; PartyBotAI encounter-record emission and the resurrection callback still need direct runtime coverage.
+
+
+### Death-state callback semantics correction
+
+The first runtime attempt correctly exposed a Core lifecycle nuance: Player::SetDeathState invokes the observer after both JUST_DIED and the subsequent CORPSE state assignment. The callback is therefore a state sample, not a promise that each invocation represents a transition. PartyBotAI's OnAliveStateChanged correctly filters unchanged states (wasAlive == isAlive). The regression now records raw callback count separately from actual transitions and requires two callbacks (JUST_DIED + CORPSE), exactly one unchanged-state callback, and exactly one alive -> dead transition. The earlier wording that Core suppressed the CORPSE callback was inaccurate and has been replaced.

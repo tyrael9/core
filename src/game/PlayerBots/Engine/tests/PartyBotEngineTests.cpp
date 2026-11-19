@@ -57,8 +57,15 @@ class CaptureReservationTraceSink final : public ReservationTraceSink {
 public:
     void RecordReservationEvent(DecisionContext const&,
                                 ReservationTraceEvent const& event) override {
-        events.push_back(event);
+        reasonStorage.push_back(std::make_shared<std::string>(
+            event.reason ? event.reason : "none"));
+        ReservationTraceEvent captured = event;
+        captured.reason = reasonStorage.back()->c_str();
+        events.push_back(captured);
     }
+    // ReservationTraceEvent exposes a borrowed reason pointer for synchronous
+    // observers. Keep captured test events' backing strings alive with them.
+    std::vector<std::shared_ptr<std::string>> reasonStorage;
     std::vector<ReservationTraceEvent> events;
 };
 class TestTrigger : public Trigger {
@@ -497,7 +504,6 @@ void TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness() {
     assert(IsThreatImpactEstimateForSnapshot(unknown, f.snapshot.epoch));
     assert(!IsThreatImpactEstimateForSnapshot(unknown, f.snapshot.epoch + 1));
     assert(!IsThreatImpactEstimateForSnapshot(unknown, 0));
-
     ThreatImpactEstimate noThreat;
     noThreat.completeness = ThreatImpactCompleteness::NoThreat;
     noThreat.snapshotEpoch = f.snapshot.epoch;
@@ -997,8 +1003,7 @@ void TestEngineRollsBackPartialFanoutWhenReservationCapacityIsReached() {
     assert(report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected);
 
     engine.ExecuteSelected(f.context, report);
-    CandidateEvaluation const& result = report.candidates[report.selectedIndices[0]];
-    assert(result.status == CandidateStatus::ExecutionFailed);
+    CandidateEvaluation const& result = report.candidates[report.selectedIndices[0]];    assert(result.status == CandidateStatus::ExecutionFailed);
     assert(result.reason == "threat_reservation_failed");
     assert(result.threatActionId == 0);
     assert(action->executeCount == 0);
@@ -1376,6 +1381,7 @@ int main() {
     TestCoordinatorRegistryIdentityAndBattlegroundBypass();
     TestEncounterLifecycleStartSettleAndSequence();
     TestEncounterLifecycleCompanionWrapAndExplicitClose();
+    TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();

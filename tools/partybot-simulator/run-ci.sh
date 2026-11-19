@@ -293,7 +293,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: real Core DealDamage and Player::Resurr
     exit 1
 fi
 
-human_member_guid="$(sed -n 's/.*non-PlayerBots Group member; member_guid=\([0-9][0-9]*\)\.$/\1/p' "$LOG_FILE" | tail -n 1)"
+human_member_guid="$(grep -F "PASS: real Core DealDamage and Player::ResurrectPlayer produced one sampled health, death and resurrection trace for a non-PlayerBots Group member;" "$LOG_FILE" | grep -Eo 'member_guid=[0-9]+' | tail -n 1 | cut -d= -f2)"
 if [[ -z "$human_member_guid" ]]; then
     echo "[PartyBotSimulator] Could not extract the non-PlayerBots member GUID from the F14 PASS marker." | tee -a "$LOG_FILE"
     exit 1

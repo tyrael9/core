@@ -315,6 +315,14 @@ PartyCoordinator::ObserveNonBotPartyMemberStateChanges(PartySnapshot const& snap
         return changes;
     }
 
+    // A coordinator belongs to one (group, map, instance) shard. A stale or
+    // cross-shard snapshot must neither emit events nor replace that shard's
+    // last known member baselines.
+    if (snapshot.groupId != m_encounterGroupId ||
+        snapshot.mapId != m_encounterMapId ||
+        snapshot.instanceId != m_encounterInstanceId)
+        return changes;
+
     std::vector<TrackedNonBotPartyMemberState> current;
     current.reserve(snapshot.members.size());
     for (PartyMemberSnapshot const& member : snapshot.members)

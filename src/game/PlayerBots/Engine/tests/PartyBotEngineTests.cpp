@@ -806,6 +806,51 @@ void TestNonBotPartyMemberStateChangesAreSampledWithoutDuplicates() {
     assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
 }
 
+void TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots() {
+    PartyCoordinator coordinator;
+    PartySnapshot snapshot;
+    snapshot.groupId = 995;
+    snapshot.mapId = 1;
+    snapshot.instanceId = 9;
+    PartyMemberSnapshot human;
+    human.guid = 996;
+    human.online = true;
+    human.alive = true;
+    human.health = 100;
+    human.maxHealth = 100;
+    human.inCombat = true;
+    snapshot.members.push_back(human);
+
+    assert(coordinator.ObserveEncounter(snapshot, 1000, 30000).kind ==
+           EncounterTransitionKind::Started);
+    assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
+
+    // Each mismatched identity is ignored without destroying the valid
+    // baseline. Returning to the owning shard must report the accumulated
+    // state delta against the original observation.
+    snapshot.members[0].health = 80;
+    snapshot.groupId = 996;
+    assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
+    snapshot.groupId = 995;
+
+    snapshot.members[0].health = 70;
+    snapshot.mapId = 2;
+    assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
+    snapshot.mapId = 1;
+
+    snapshot.members[0].health = 60;
+    snapshot.instanceId = 10;
+    assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
+    snapshot.instanceId = 9;
+
+    std::vector<PartyMemberStateChange> changes =
+        coordinator.ObserveNonBotPartyMemberStateChanges(snapshot);
+    assert(changes.size() == 1);
+    assert(changes[0].memberGuid == human.guid);
+    assert(changes[0].healthBefore == 100 && changes[0].healthAfter == 60);
+    assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
+}
+
 void TestHealingTriageShadowStrategy() {
     PartySnapshot snapshot; snapshot.epoch = 81;
     PartyMemberSnapshot healer, tank, damage;
@@ -1928,6 +1973,7 @@ int main() {
     TestEncounterTraceBudgetIsPartyWideBoundedAndTerminalReserved();
     TestEncounterTraceBudgetConfigurationIsClampedAndBounded();
     TestNonBotPartyMemberStateChangesAreSampledWithoutDuplicates();
+    TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();

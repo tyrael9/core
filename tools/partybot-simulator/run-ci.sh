@@ -260,12 +260,12 @@ if [[ -z "$engine_action_attempt_id" || "$engine_action_attempt_id" != "$engine_
     echo "[PartyBotSimulator] Core Player heal action trace did not preserve one action_id/encounter_id and ordered attempt/result sequences." | tee -a "$LOG_FILE"
     exit 1
 fi
-engine_cast_terminal_count="$(grep -Ec "\\[PartyBotEngineTrace\\].*event=cast_terminal .*encounter_id=$engine_action_attempt_encounter .*action_id=$engine_action_attempt_id .*spell=2050 .*success=1 interrupted=0 outcome=completed([^[:alnum:]_]|$)" "$LOG_FILE" || true)"
+engine_cast_terminal_count="$(grep -Ec "\\[PartyBotEngineTrace\\].*encounter_id=$engine_action_attempt_encounter .*event=cast_terminal .*action_id=$engine_action_attempt_id .*spell=2050 .*success=1 interrupted=0 outcome=completed([^[:alnum:]_]|$)" "$LOG_FILE" || true)"
 if [[ "$engine_cast_terminal_count" != "1" ]]; then
     echo "[PartyBotSimulator] Expected exactly one successful Core cast_terminal for Engine action_id=$engine_action_attempt_id, found $engine_cast_terminal_count." | tee -a "$LOG_FILE"
     exit 1
 fi
-engine_cast_terminal_line="$(grep -E "\\[PartyBotEngineTrace\\].*event=cast_terminal .*encounter_id=$engine_action_attempt_encounter .*action_id=$engine_action_attempt_id .*spell=2050 .*success=1 interrupted=0 outcome=completed([^[:alnum:]_]|$)" "$LOG_FILE" | tail -n 1)"
+engine_cast_terminal_line="$(grep -E "\\[PartyBotEngineTrace\\].*encounter_id=$engine_action_attempt_encounter .*event=cast_terminal .*action_id=$engine_action_attempt_id .*spell=2050 .*success=1 interrupted=0 outcome=completed([^[:alnum:]_]|$)" "$LOG_FILE" | tail -n 1)"
 engine_cast_terminal_seq="$(printf '%s\n' "$engine_cast_terminal_line" | grep -Eo 'seq=[0-9]+' | cut -d= -f2)"
 if [[ -z "$engine_cast_terminal_seq" || "$engine_cast_terminal_seq" -le "$engine_action_result_seq" ]]; then
     echo "[PartyBotSimulator] Core cast_terminal must follow the Engine action adapter result in encounter sequence order." | tee -a "$LOG_FILE"

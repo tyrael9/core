@@ -4631,7 +4631,7 @@ bool RunPeriodicDamageThreatFixture(Map& map)
     // generic creature template happened to resist a periodic tick's initial cast.
     caster.creature->SetLevel(63);
     hostile.creature->SetLevel(60);
-    hostile.creature->SetResistance(SPELL_SCHOOL_SHADOW, 0);
+    hostile.creature->SetInt32Value(UNIT_FIELD_RESISTANCES + SPELL_SCHOOL_SHADOW, 0);
 
     // Shadow Word: Pain (rank 8) is an ordinary one-effect periodic-damage aura
     // in the pinned 5875 data. Reject data drift instead of silently exercising

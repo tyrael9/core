@@ -213,6 +213,112 @@ void TestExecuteSelectedHonorsPerDispatchLimit()
     assert(report.candidates[1].status == CandidateStatus::Selected);
 }
 
+void TestPendingActionQueueDeduplicatesAndPreservesOriginalExpiry()
+{
+    PendingActionQueue queue;
+    ActionCandidate candidate = Candidate("heal", 10.0f, ActionChannel::GlobalCooldown);
+    candidate.strategyName = "routine_heal";
+    candidate.spellId = 2050;
+    candidate.finalPriority = 10.0f;
+
+    assert(queue.Enqueue(candidate, 1000, 200) == PendingActionEnqueueResult::Queued);
+    assert(queue.Size() == 1);
+
+    ActionCandidate refreshed = candidate;
+    refreshed.strategyName = "emergency_heal";
+    refreshed.finalPriority = 30.0f;
+    // Same logical action identity updates its current payload/priority, but
+    // does not get a new FIFO position or a later expiry deadline.
+    assert(queue.Enqueue(refreshed, 1050, 500) ==
+           PendingActionEnqueueResult::UpdatedExisting);
+    assert(queue.Size() == 1);
+
+    PendingActionQueue::Entry entry;
+    assert(queue.PopNext(1199, entry));
+    assert(entry.candidate.strategyName == "emergency_heal");
+    assert(entry.candidate.spellId == 2050);
+    assert(entry.priority == 30.0f);
+    assert(entry.enqueuedAtMs == 1000);
+    assert(entry.expiresAtMs == 1200);
+
+    PendingActionQueue expiryQueue;
+    assert(expiryQueue.Enqueue(candidate, 1000, 200) == PendingActionEnqueueResult::Queued);
+    assert(expiryQueue.Enqueue(refreshed, 1050, 500) ==
+           PendingActionEnqueueResult::UpdatedExisting);
+    assert(!expiryQueue.PopNext(1200, entry));
+    assert(expiryQueue.Empty());
+}
+
+void TestPendingActionQueuePriorityFifoExpiryAndClockWrap()
+{
+    PendingActionQueue queue;
+    PendingActionQueue::Entry entry;
+    ActionCandidate low = Candidate("low", 10.0f, ActionChannel::Utility);
+    ActionCandidate high = Candidate("high", 30.0f, ActionChannel::Utility);
+    ActionCandidate tie = Candidate("tie", 30.0f, ActionChannel::Utility);
+    low.finalPriority = 10.0f;
+    high.finalPriority = 30.0f;
+    tie.finalPriority = 30.0f;
+
+    assert(queue.Enqueue(low, 100, 1000) == PendingActionEnqueueResult::Queued);
+    assert(queue.Enqueue(high, 100, 1000) == PendingActionEnqueueResult::Queued);
+    assert(queue.Enqueue(tie, 100, 1000) == PendingActionEnqueueResult::Queued);
+    assert(queue.PopNext(100, entry) && entry.candidate.actionName == "high");
+    assert(queue.PopNext(100, entry) && entry.candidate.actionName == "tie");
+    assert(queue.PopNext(100, entry) && entry.candidate.actionName == "low");
+
+    assert(queue.Enqueue(low, 1000, 100) == PendingActionEnqueueResult::Queued);
+    assert(queue.PruneExpired(1099) == 0);
+    assert(queue.PruneExpired(1100) == 1);
+    assert(queue.Empty());
+
+    PendingActionQueue wrapped;
+    std::uint32_t const start = 0xfffffff0u;
+    assert(wrapped.Enqueue(low, start, 32) == PendingActionEnqueueResult::Queued);
+    assert(wrapped.PruneExpired(0x0fu) == 0);
+    assert(wrapped.PruneExpired(0x10u) == 1);
+    assert(wrapped.Empty());
+}
+
+void TestPendingActionQueueRejectsInvalidAndFullEntries()
+{
+    PendingActionQueue queue;
+    ActionCandidate valid = Candidate("valid", 1.0f, ActionChannel::Utility);
+    valid.finalPriority = 1.0f;
+
+    assert(queue.Enqueue(valid, 100, 0) == PendingActionEnqueueResult::Invalid);
+    assert(queue.Enqueue(valid, 100, 0x80000000u) == PendingActionEnqueueResult::Invalid);
+
+    ActionCandidate noName = valid;
+    noName.actionName.clear();
+    assert(queue.Enqueue(noName, 100, 100) == PendingActionEnqueueResult::Invalid);
+
+    ActionCandidate nanPriority = valid;
+    nanPriority.finalPriority = std::numeric_limits<float>::quiet_NaN();
+    assert(queue.Enqueue(nanPriority, 100, 100) == PendingActionEnqueueResult::Invalid);
+
+    ActionCandidate invalidDestination = valid;
+    invalidDestination.hasDestination = true;
+    invalidDestination.destinationX = std::numeric_limits<float>::infinity();
+    assert(queue.Enqueue(invalidDestination, 100, 100) == PendingActionEnqueueResult::Invalid);
+
+    for (std::size_t i = 0; i < PendingActionQueue::Capacity; ++i) {
+        ActionCandidate candidate = Candidate(
+            "pending_" + std::to_string(i), static_cast<float>(i), ActionChannel::Utility);
+        candidate.finalPriority = static_cast<float>(i);
+        assert(queue.Enqueue(candidate, 100, 1000) == PendingActionEnqueueResult::Queued);
+    }
+    assert(queue.Size() == PendingActionQueue::Capacity);
+
+    ActionCandidate overflow = Candidate("overflow", 1000.0f, ActionChannel::Utility);
+    overflow.finalPriority = 1000.0f;
+    assert(queue.Enqueue(overflow, 100, 1000) == PendingActionEnqueueResult::Full);
+    assert(queue.Size() == PendingActionQueue::Capacity);
+
+    queue.Clear();
+    assert(queue.Empty());
+}
+
 void TestPriorityAndChannelArbitration() {
     Fixture f; PartyBotEngine::PartyBotEngine engine;
     auto heal = std::make_shared<TestAction>("heal");
@@ -1482,6 +1588,9 @@ void TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe()
 }
 int main() {
     TestActionQueueIsBoundedPriorityOrderedAndStable();
+    TestPendingActionQueueDeduplicatesAndPreservesOriginalExpiry();
+    TestPendingActionQueuePriorityFifoExpiryAndClockWrap();
+    TestPendingActionQueueRejectsInvalidAndFullEntries();
     TestExecuteSelectedDispatchesByPriorityWithStableTies();
     TestExecuteSelectedHonorsPerDispatchLimit();
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();

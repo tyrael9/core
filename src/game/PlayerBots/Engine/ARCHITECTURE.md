@@ -130,6 +130,12 @@ The current candidate vector and one-winner-per-channel arbitration are only the
 
 Do not implement the full CMaNGOS surface mechanically. Add a semantic only when a concrete Vanilla behavior needs it, while preserving the same clear decision lifecycle.
 
+Current implementation slices:
+- `ActionQueue` is a per-dispatch, report-index queue. It is bounded to 32 entries, orders by priority with stable FIFO ties and is drained by `ExecuteSelected` with an eight-action ceiling. It does not retain work across updates.
+- `PendingActionQueue` is a separate bounded event-storage primitive. It copies only `ActionCandidate` scalar/string fields, deduplicates by action/target/spell/channel/destination identity, refreshes the latest payload/priority without extending the original deadline, and prunes expiry with uint32 wrap-safe comparisons. It is not yet owned or consumed by the Engine update loop.
+- Before connecting pending events to execution, the Engine must define map/party/encounter teardown clearing, current-snapshot Possible/Useful/threat revalidation, channel arbitration across old and new events, and traceable expired/deferred/skipped outcomes. A queued candidate is never permission to retain or dereference a Core object.
+
+
 ## 8. Values and trigger scheduling
 
 Value is the shared, named interface to decision facts. Values should be typed and cached for a bounded epoch or duration. Values must read from PartySnapshot/coordinator/Core adapters; they must not retain unsafe Core pointers across updates.

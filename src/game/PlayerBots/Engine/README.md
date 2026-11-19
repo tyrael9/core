@@ -6,6 +6,7 @@ The target is a complete independent PartyBot AI for Vanilla 1.12.1 / client bui
 
 - ARCHITECTURE.md: runtime authority, strategy composition, decision loop and executor boundary.
 - ROADMAP.md: development phases and acceptance criteria.
+- ACTION-QUEUE.md: per-dispatch and pending event queue semantics, expiry, deduplication and integration gates.
 - DECISION-TRACE.md: structured encounter logs and post-fight analysis contract.
 - VMANGOS-API-AUDIT.md: audited Core APIs and outstanding adapter work.
 - RESEARCH-CMANGOS.md: Strategy/Trigger/Action/Value/Multiplier and ActionNode research.
@@ -36,7 +37,7 @@ The repository currently contains:
 - GUID/scalar-only PartySnapshot data and same-map snapshot collection;
 - PartyCoordinator reservations and the (group,map,instance) shard registry;
 - deterministic candidate evaluation, explicit eligibility and channel arbitration;
-- a bounded per-dispatch action queue (32 entries, stable FIFO priority ties, maximum eight executions) with pure and `ExecuteSelected` integration coverage;
+- a bounded per-dispatch action queue (32 entries, stable FIFO priority ties, maximum eight executions) with pure and `ExecuteSelected` integration coverage, plus a separate bounded pending-event queue primitive with deduplication and wrap-safe TTL expiry (not yet connected to Engine tick scheduling);
 - an opt-in read-only Shadow hook and coarse candidate-only healer triage, tank peel and DPS assist strategies;
 - encounter identity, versioned sequence-bearing trace records, party heartbeats, decision summaries, cast request/result/terminal correlation, target changes, reservation outcomes and PartyBotAI death/resurrection events;
 - Core-backed runtime fixtures for real attack, triggered and non-triggered Player spell execution, threat, movement/follow, five-Player Group snapshots, hostile discovery, death recovery and threat-impact component parity.

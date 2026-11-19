@@ -3432,12 +3432,14 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool currentCastSnapshotValid = false;
     if (healCastResult == SPELL_CAST_OK)
     {
+        // Use an isolated coordinator: the F9 heal-assist estimate retains the
+        // original coordinator snapshot epoch until its own validation ends.
+        PartyCoordinator f21Coordinator;
         // Keep the tank in Cat Form only for this immutable snapshot sample;
         // restore the live Player immediately before normal Core updates.
         tank->SetShapeshiftForm(FORM_CAT);
-        coordinator.InvalidateSnapshot();
         PartySnapshot const* castStateSnapshot =
-            PartySnapshotBuilder::GetOrBuild(healer, coordinator, 15601, 0);
+            PartySnapshotBuilder::GetOrBuild(healer, f21Coordinator, 15601, 0);
         PartyMemberSnapshot const* healerCastState = castStateSnapshot
             ? castStateSnapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
         PartyMemberSnapshot const* tankCastState = castStateSnapshot
@@ -3451,7 +3453,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         if (castStateSnapshot)
             f21CastStateTraceSnapshot = *castStateSnapshot;
         tank->SetShapeshiftForm(FORM_NONE);
-        coordinator.InvalidateSnapshot();
     }
 
     for (uint32 tick = 0; tick < 20 &&

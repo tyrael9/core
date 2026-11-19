@@ -586,7 +586,8 @@ void DecisionTrace::RecordEncounterCastTerminal(
                           (success ? "completed" : "failed");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=cast_terminal source=core_spell_finish action_id=%llu group=%u map=%u instance=%u bot=%u elapsed_ms=%u spell=%u target=%llu success=%u interrupted=%u outcome=%s",
-             static_cast<unsigned long long>(encounterId), sequence, actionId,
+             static_cast<unsigned long long>(encounterId), sequence,
+             static_cast<unsigned long long>(actionId),
              groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
              spellId, static_cast<unsigned long long>(targetGuid),
              success ? 1u : 0u, interrupted ? 1u : 0u, outcome);

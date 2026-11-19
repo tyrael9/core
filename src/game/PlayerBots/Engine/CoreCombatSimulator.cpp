@@ -3432,18 +3432,25 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool currentCastSnapshotValid = false;
     if (healCastResult == SPELL_CAST_OK)
     {
+        // Keep the tank in Cat Form only for this immutable snapshot sample;
+        // restore the live Player immediately before normal Core updates.
+        tank->SetShapeshiftForm(FORM_CAT);
         coordinator.InvalidateSnapshot();
         PartySnapshot const* castStateSnapshot =
             PartySnapshotBuilder::GetOrBuild(healer, coordinator, 15601, 0);
         PartyMemberSnapshot const* healerCastState = castStateSnapshot
             ? castStateSnapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
-        currentCastSnapshotValid = healerCastState &&
+        PartyMemberSnapshot const* tankCastState = castStateSnapshot
+            ? castStateSnapshot->FindMember(tankGuid.GetRawValue()) : nullptr;
+        currentCastSnapshotValid = healerCastState && tankCastState &&
             healerCastState->currentSpellId == healSpell->Id &&
             healerCastState->currentSpellType == CURRENT_GENERIC_SPELL &&
             healerCastState->currentSpellState != 0 &&
-            healerCastState->currentSpellTargetGuid == tankGuid.GetRawValue();
+            healerCastState->currentSpellTargetGuid == tankGuid.GetRawValue() &&
+            tankCastState->shapeshiftForm == static_cast<std::uint8_t>(FORM_CAT);
         if (castStateSnapshot)
             f21CastStateTraceSnapshot = *castStateSnapshot;
+        tank->SetShapeshiftForm(FORM_NONE);
         coordinator.InvalidateSnapshot();
     }
 

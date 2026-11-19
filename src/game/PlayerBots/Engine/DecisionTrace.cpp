@@ -540,7 +540,7 @@ void DecisionTrace::RecordEncounterCandidate(
 bool DecisionTrace::RecordEncounterCastAttempt(
     Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
     uint64 encounterId, uint32 sequence, uint32 elapsedMs,
-    uint32 actionId, uint64 targetGuid, uint32 spellId) const
+    uint64 actionId, uint64 targetGuid, uint32 spellId) const
 {
     if (!m_enabled || !bot || !encounterId || !sequence || !actionId)
         return false;
@@ -556,7 +556,7 @@ bool DecisionTrace::RecordEncounterCastAttempt(
 void DecisionTrace::RecordEncounterCastResult(
     Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
     uint64 encounterId, uint32 sequence, uint32 elapsedMs,
-    uint32 actionId, uint64 targetGuid, uint32 spellId, uint32 resultCode,
+    uint64 actionId, uint64 targetGuid, uint32 spellId, uint32 resultCode,
     bool accepted, char const* reason) const
 {
     if (!m_enabled || !bot || !encounterId || !sequence || !actionId)
@@ -574,7 +574,7 @@ void DecisionTrace::RecordEncounterCastResult(
 void DecisionTrace::RecordEncounterCastTerminal(
     Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
     uint64 encounterId, uint32 sequence, uint32 elapsedMs,
-    uint32 actionId, uint32 spellId, uint64 targetGuid,
+    uint64 actionId, uint32 spellId, uint64 targetGuid,
     bool success, bool interrupted) const
 {
     if (!m_enabled || !bot || !encounterId || !sequence || !actionId)

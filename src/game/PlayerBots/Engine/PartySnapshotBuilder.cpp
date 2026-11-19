@@ -145,7 +145,9 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         memberData.guid = member->GetObjectGuid().GetRawValue();
         memberData.classId = member->GetClass();
         memberData.roleId = static_cast<std::uint8_t>(PartyRole::Unknown);
-        if (CombatBotBaseAI* combatAI = dynamic_cast<CombatBotBaseAI*>(member->AI()))
+        CombatBotBaseAI* combatAI = dynamic_cast<CombatBotBaseAI*>(member->AI());
+        memberData.isPlayerBot = combatAI != nullptr;
+        if (combatAI)
             memberData.roleId = static_cast<std::uint8_t>(ToPartyRole(combatAI->GetRole()));
         memberData.isMainTank = member->GetObjectGuid() == mainTankGuid;
         memberData.level = member->GetLevel();

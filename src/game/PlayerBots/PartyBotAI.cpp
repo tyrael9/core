@@ -1506,6 +1506,17 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
 
     traceEncounter(m_partyCoordinator->ObserveEncounter(*snapshot, nowMs, settleMs));
 
+    if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter())
+    {
+        std::vector<PartyBotEngine::PartyMemberStateChange> const changes =
+            m_partyCoordinator->ObserveNonBotPartyMemberStateChanges(*snapshot);
+        for (PartyBotEngine::PartyMemberStateChange const& change : changes)
+            m_decisionTrace.RecordEncounterPartyMemberState(
+                me, *m_partyCoordinator, snapshot->groupId, snapshot->mapId,
+                snapshot->instanceId, m_partyCoordinator->GetEncounterId(),
+                m_partyCoordinator->GetEncounterElapsedMs(nowMs), change);
+    }
+
     if (heartbeatMs && m_decisionTrace.IsEnabled())
     {
         PartyBotEngine::EncounterHeartbeat heartbeat;

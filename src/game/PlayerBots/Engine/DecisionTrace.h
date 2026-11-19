@@ -17,6 +17,8 @@ class SpellEntry;
 
 namespace PartyBotEngine
 {
+class PartyCoordinator;
+struct PartyMemberStateChange;
 
 class DecisionTrace : public ReservationTraceSink
 {
@@ -53,6 +55,11 @@ public:
                                    uint32 instanceId, uint64 encounterId,
                                    uint32 sequence, uint32 elapsedMs,
                                    bool wasAlive, bool isAlive) const;
+    bool RecordEncounterPartyMemberState(
+        Player const* bot, PartyCoordinator& coordinator,
+        uint32 groupId, uint32 mapId, uint32 instanceId,
+        uint64 encounterId, uint32 elapsedMs,
+        PartyMemberStateChange const& change) const;
 
     // Encounter-correlated Shadow summary and candidate records share the coordinator sequence.
     void RecordEncounterDecisionSummary(Player const* bot, uint32 groupId, uint32 mapId,

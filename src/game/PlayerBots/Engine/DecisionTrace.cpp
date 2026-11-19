@@ -226,6 +226,47 @@ void DecisionTrace::RecordEncounterAliveState(
              isAlive ? 1u : 0u, bot->GetHealth(), bot->GetMaxHealth());
 }
 
+bool DecisionTrace::RecordEncounterPartyMemberState(
+    Player const* bot, PartyCoordinator& coordinator,
+    uint32 groupId, uint32 mapId, uint32 instanceId,
+    uint64 encounterId, uint32 elapsedMs,
+    PartyMemberStateChange const& change) const
+{
+    if (!m_enabled || !bot || !encounterId || !change.memberGuid)
+        return false;
+    bool const lifecycle = change.wasAlive != change.isAlive;
+    EncounterTraceEventClass const eventClass = lifecycle
+        ? EncounterTraceEventClass::Important : EncounterTraceEventClass::Detail;
+    EncounterTraceAdmission const admission =
+        coordinator.TryAdmitEncounterTraceEvent(encounterId, eventClass);
+    if (admission == EncounterTraceAdmission::EmitLimitMarker)
+    {
+        uint32 const markerSequence = coordinator.NextEncounterSequence();
+        if (markerSequence)
+            RecordEncounterBoundary(bot, "trace_limit", groupId, mapId,
+                instanceId, encounterId, markerSequence, elapsedMs,
+                lifecycle ? "important_budget_exhausted" : "detail_budget_exhausted");
+        return false;
+    }
+    if (admission != EncounterTraceAdmission::Accepted)
+        return false;
+    uint32 const sequence = coordinator.NextEncounterSequence();
+    if (!sequence)
+        return false;
+    char const* event = lifecycle
+        ? (change.isAlive ? "party_member_resurrect" : "party_member_death")
+        : "party_member_health";
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=%s group=%u map=%u instance=%u bot=%u elapsed_ms=%u member_guid=%llu health_before=%u health_after=%u max_health_before=%u max_health_after=%u alive_before=%u alive_after=%u",
+             static_cast<unsigned long long>(encounterId), sequence, event,
+             groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
+             static_cast<unsigned long long>(change.memberGuid),
+             change.healthBefore, change.healthAfter,
+             change.maxHealthBefore, change.maxHealthAfter,
+             change.wasAlive ? 1u : 0u, change.isAlive ? 1u : 0u);
+    return true;
+}
+
 void DecisionTrace::RecordEncounterTargetChange(
     Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
     uint64 encounterId, uint32 sequence, uint32 elapsedMs,

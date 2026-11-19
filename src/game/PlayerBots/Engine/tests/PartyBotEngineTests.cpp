@@ -757,6 +757,55 @@ void ConfigureMember(PartyMemberSnapshot& member, Guid guid, PartyRole role,
     member.alive = true;
     member.isMainTank = mainTank;
 }
+void TestNonBotPartyMemberStateChangesAreSampledWithoutDuplicates() {
+    PartyCoordinator coordinator;
+    PartySnapshot snapshot;
+    snapshot.groupId = 995;
+    snapshot.mapId = 1;
+    snapshot.instanceId = 9;
+    snapshot.epoch = 1;
+    PartyMemberSnapshot human;
+    human.guid = 996; human.online = true; human.alive = true;
+    human.health = 100; human.maxHealth = 100; human.inCombat = true;
+    PartyMemberSnapshot bot = human;
+    bot.guid = 997; bot.isPlayerBot = true; bot.health = 80;
+    snapshot.members.push_back(human);
+    snapshot.members.push_back(bot);
+
+    assert(coordinator.ObserveEncounter(snapshot, 1000, 30000).kind ==
+           EncounterTransitionKind::Started);
+    assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
+    snapshot.members[0].health = 65;
+    snapshot.members[1].health = 40;
+    std::vector<PartyMemberStateChange> changes =
+        coordinator.ObserveNonBotPartyMemberStateChanges(snapshot);
+    assert(changes.size() == 1 && changes[0].memberGuid == human.guid);
+    assert(changes[0].healthBefore == 100 && changes[0].healthAfter == 65);
+    assert(changes[0].wasAlive && changes[0].isAlive);
+    assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
+
+    snapshot.members[0].health = 0; snapshot.members[0].alive = false;
+    changes = coordinator.ObserveNonBotPartyMemberStateChanges(snapshot);
+    assert(changes.size() == 1 && changes[0].wasAlive && !changes[0].isAlive);
+    assert(changes[0].healthBefore == 65 && changes[0].healthAfter == 0);
+    assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
+
+    snapshot.members[0].health = 50; snapshot.members[0].alive = true;
+    changes = coordinator.ObserveNonBotPartyMemberStateChanges(snapshot);
+    assert(changes.size() == 1 && !changes[0].wasAlive && changes[0].isAlive);
+
+    snapshot.members.erase(snapshot.members.begin());
+    assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
+    snapshot.members.insert(snapshot.members.begin(), human);
+    snapshot.members[0].health = 25;
+    assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
+
+    assert(coordinator.CloseEncounter(2000, "test_close").kind ==
+           EncounterTransitionKind::Ended);
+    snapshot.members[0].health = 10;
+    assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
+}
+
 void TestHealingTriageShadowStrategy() {
     PartySnapshot snapshot; snapshot.epoch = 81;
     PartyMemberSnapshot healer, tank, damage;
@@ -1878,6 +1927,7 @@ int main() {
     TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe();
     TestEncounterTraceBudgetIsPartyWideBoundedAndTerminalReserved();
     TestEncounterTraceBudgetConfigurationIsClampedAndBounded();
+    TestNonBotPartyMemberStateChangesAreSampledWithoutDuplicates();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();

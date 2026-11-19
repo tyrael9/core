@@ -251,6 +251,7 @@ EncounterTransition PartyCoordinator::ObserveEncounter(PartySnapshot const& snap
             m_lastCombatAtMs = nowMs;
             m_lastEncounterHeartbeatAtMs = 0;
             m_hasEncounterHeartbeat = false;
+            m_trackedNonBotPartyMembers.clear();
 
             transition.kind = EncounterTransitionKind::Started;
             transition.encounterId = m_encounterId;
@@ -300,7 +301,59 @@ EncounterTransition PartyCoordinator::CloseEncounter(std::uint32_t nowMs, char c
     m_lastCombatAtMs = 0;
     m_lastEncounterHeartbeatAtMs = 0;
     m_hasEncounterHeartbeat = false;
+    m_trackedNonBotPartyMembers.clear();
     return transition;
+}
+
+std::vector<PartyMemberStateChange>
+PartyCoordinator::ObserveNonBotPartyMemberStateChanges(PartySnapshot const& snapshot)
+{
+    std::vector<PartyMemberStateChange> changes;
+    if (!m_encounterActive)
+    {
+        m_trackedNonBotPartyMembers.clear();
+        return changes;
+    }
+
+    std::vector<TrackedNonBotPartyMemberState> current;
+    current.reserve(snapshot.members.size());
+    for (PartyMemberSnapshot const& member : snapshot.members)
+    {
+        if (!member.guid || !member.online || member.isPlayerBot)
+            continue;
+
+        auto previous = std::find_if(
+            m_trackedNonBotPartyMembers.begin(), m_trackedNonBotPartyMembers.end(),
+            [&member](TrackedNonBotPartyMemberState const& state)
+            {
+                return state.memberGuid == member.guid;
+            });
+        if (previous != m_trackedNonBotPartyMembers.end() &&
+            (previous->health != member.health ||
+             previous->maxHealth != member.maxHealth ||
+             previous->alive != member.alive))
+        {
+            PartyMemberStateChange change;
+            change.memberGuid = member.guid;
+            change.healthBefore = previous->health;
+            change.healthAfter = member.health;
+            change.maxHealthBefore = previous->maxHealth;
+            change.maxHealthAfter = member.maxHealth;
+            change.wasAlive = previous->alive;
+            change.isAlive = member.alive;
+            changes.push_back(change);
+        }
+
+        TrackedNonBotPartyMemberState state;
+        state.memberGuid = member.guid;
+        state.health = member.health;
+        state.maxHealth = member.maxHealth;
+        state.alive = member.alive;
+        current.push_back(state);
+    }
+    // Leaving this map drops the baseline; rejoining starts a fresh observation.
+    m_trackedNonBotPartyMembers.swap(current);
+    return changes;
 }
 
 bool PartyCoordinator::TryBeginEncounterHeartbeat(std::uint32_t nowMs,

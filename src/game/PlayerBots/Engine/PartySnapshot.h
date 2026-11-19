@@ -10,6 +10,7 @@ struct PartyMemberSnapshot {
     Guid victimGuid = 0;
     float x = 0.0f, y = 0.0f, z = 0.0f;
     bool online = false, alive = false, inCombat = false, isMainTank = false;
+    bool isPlayerBot = false;
 };
 struct PartyCompanionSnapshot {
     Guid guid = 0, ownerGuid = 0, victimGuid = 0;

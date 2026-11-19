@@ -25,6 +25,14 @@ struct ThreatReservation {
 
 enum class EncounterTransitionKind : std::uint8_t { None, Started, Ended };
 
+struct PartyMemberStateChange
+{
+    Guid memberGuid = 0;
+    std::uint32_t healthBefore = 0, healthAfter = 0;
+    std::uint32_t maxHealthBefore = 0, maxHealthAfter = 0;
+    bool wasAlive = false, isAlive = false;
+};
+
 struct EncounterHeartbeat
 {
     std::uint64_t encounterId = 0;
@@ -86,6 +94,8 @@ public:
     // Emit one shared, interval-limited party snapshot heartbeat per active encounter.
     bool TryBeginEncounterHeartbeat(std::uint32_t nowMs, std::uint32_t intervalMs,
                                     EncounterHeartbeat& heartbeat);
+    std::vector<PartyMemberStateChange> ObserveNonBotPartyMemberStateChanges(
+        PartySnapshot const& snapshot);
     std::uint32_t NextEncounterSequence();
     EncounterTraceAdmission TryAdmitEncounterTraceEvent(
         std::uint64_t encounterId, EncounterTraceEventClass eventClass);
@@ -115,6 +125,13 @@ private:
     static bool IsExpired(std::uint32_t nowMs, std::uint32_t expiresAtMs);
     std::vector<Reservation> m_reservations;
     std::vector<ThreatReservation> m_threatReservations;
+    struct TrackedNonBotPartyMemberState
+    {
+        Guid memberGuid = 0;
+        std::uint32_t health = 0, maxHealth = 0;
+        bool alive = false;
+    };
+    std::vector<TrackedNonBotPartyMemberState> m_trackedNonBotPartyMembers;
     PartySnapshot m_snapshot;
     ThreatActionId m_nextThreatActionId = 0;
     std::uint64_t m_encounterId = 0;

@@ -440,14 +440,24 @@ The runtime fixture uses one real five-Player Group, two hostile Creatures and o
 Runtime CI `#44215877767` on commit `1a3aa02` passed on the Linux ARM64 / Vanilla 5875 runner. The fixture reported `outsideVictim=1 noPartyAttacker=1 tankRef=1 offlineSnapshot=1 nonVictimHostile=1 restored=1`; the runner required the explicit F12 PASS marker, the prior F10 death-recovery assertions, and the full simulator final Runtime PASS. The offline reference was toggled only through the Core HostileReference API to exercise the offline-container seam; PartySnapshotBuilder itself only read and copied Core state. F12 is complete.
 
 
-### Stage F13 — shared PartyBotAI encounter trace budget overflow (pending)
+### Stage F13 — shared PartyBotAI encounter trace budget overflow (passed)
 
 The shared encounter budget is owned by the map/instance PartyCoordinator rather than by each bot. Stage F13 uses two distinct PartyBotAI objects attached to two real Players in the five-member Core Group fixture. Both AI objects share one PartyCoordinator and each alternates its actual Core victim between the same two live hostile Creature fixtures using `PartyBotAI::AttackStart`.
 
 The fixture requests 512 successful victim switches from the first bot and 513 from the second. The coordinator must admit 1,024 detail events across both instances, then allow the first overflow to emit the one shared `trace_limit` marker. The simulator requires the combined successful switch count to equal 1,025 and verifies the coordinator suppresses any subsequent detail admission. The runner separately greps for exactly one formatted `event=trace_limit reason=detail_budget_exhausted` line and the explicit Stage F13 PASS marker.
 
-This is a Core integration test of PartyBotAI's real target-change observer and shared encounter budget. It does not simulate combat damage or replace Core target selection. Runtime verification is pending the next trusted ARM64 push workflow.
+This is a Core integration test of PartyBotAI's real target-change observer and shared encounter budget. It does not simulate combat damage or replace Core target selection. The scenario passed again as part of the full F13-F17 fixture-backed run [#44581612462](https://github.com/tyrael9/core/actions/runs/44581612462).
 
+
+
+
+## Stage F17 — bounded trigger telemetry and originating-trigger correlation (passed)
+
+The fixture registers the real candidate-only Shadow strategy set and evaluates it with a value-only party snapshot containing a healer and one injured party member. The expected report contains three Trigger observations: `healing_triage` active with one candidate, `tank_target` inactive and `dps_target` inactive. The candidate must retain both its strategy name and the originating `trigger_name=healing_triage`.
+
+The fixture passes those observations through the production `DecisionTrace` formatters and the same coordinator detail admission used by encounter traces. `tools/partybot-simulator/run-ci.sh` requires the exact `trigger_summary` counts, all three formatted Trigger rows, the correlated candidate record and the dedicated F17 PASS marker. Trusted ARM64 / Vanilla 5875 push CI [#44581612462](https://github.com/tyrael9/core/actions/runs/44581612462), commit `0ce8cb28aa2e1af47982d8775728ba3b8d772f84`, passed the complete simulator and final Runtime PASS.
+
+This proves bounded decision-observation formatting and Trigger-to-candidate correlation. It does not prove that these Shadow candidates execute or that Legacy policy has been replaced.
 
 ## P7.3b applied periodic threat-component fixtures (2026-11-18)
 

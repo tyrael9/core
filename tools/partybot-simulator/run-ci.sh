@@ -310,7 +310,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: server-shutdown hook closed an active s
     echo "[PartyBotSimulator] Missing server-shutdown encounter-flush PASS marker." | tee -a "$LOG_FILE"
     exit 1
 fi
-shutdown_end_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=encounter_end .*reason=server_shutdown([[:space:]]|$)' "$LOG_FILE" || true)"
+shutdown_end_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=encounter_end .*reason=server_shutdown([^[:alnum:]_]|$)' "$LOG_FILE" || true)"
 if [[ "$shutdown_end_count" != "1" ]]; then
     echo "[PartyBotSimulator] Expected exactly one server_shutdown encounter_end record, found $shutdown_end_count." | tee -a "$LOG_FILE"
     exit 1
@@ -320,7 +320,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: source Map::Remove retained an encounte
     echo "[PartyBotSimulator] Missing source-map last-bot departure PASS marker." | tee -a "$LOG_FILE"
     exit 1
 fi
-map_leave_end_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=encounter_end .*reason=last_partybot_left_map([[:space:]]|$)' "$LOG_FILE" || true)"
+map_leave_end_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=encounter_end .*reason=last_partybot_left_map([^[:alnum:]_]|$)' "$LOG_FILE" || true)"
 if [[ "$map_leave_end_count" != "1" ]]; then
     echo "[PartyBotSimulator] Expected exactly one last_partybot_left_map encounter_end record, found $map_leave_end_count." | tee -a "$LOG_FILE"
     exit 1

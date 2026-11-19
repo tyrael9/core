@@ -139,6 +139,11 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
     return report;
 }
 void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& report) const {
+    auto recordReservation = [&context](ReservationTraceEvent const& event) {
+        if (context.reservationTrace)
+            context.reservationTrace->RecordReservationEvent(context, event);
+    };
+
     for (std::size_t index : report.selectedIndices) {
         if (index >= report.candidates.size()) continue;
         CandidateEvaluation& evaluation = report.candidates[index];
@@ -156,6 +161,18 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
             context.snapshot, evaluation.threatImpact, context.coordinator,
             context.nowMs, 250, nullptr);
         if (threatBudget.status != ThreatImpactBudgetStatus::Safe) {
+            if (threatBudget.status == ThreatImpactBudgetStatus::Exceeded) {
+                ReservationTraceEvent event;
+                event.stage = ReservationTraceStage::BudgetVeto;
+                event.ownerGuid = context.bot.guid;
+                event.threatOwnerGuid = threatBudget.threatOwnerGuid;
+                event.hostileGuid = threatBudget.hostileGuid;
+                event.threatPoints = static_cast<float>(threatBudget.candidateThreat);
+                event.rawHeadroom = threatBudget.rawHeadroom;
+                event.alreadyReserved = threatBudget.alreadyReserved;
+                event.reason = threatBudget.reason.c_str();
+                recordReservation(event);
+            }
             evaluation.status = CandidateStatus::ExecutionFailed;
             evaluation.actionResult = ActionResult::Failed;
             evaluation.reason = threatBudget.reason;
@@ -174,6 +191,12 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
             if (!totals.empty()) {
                 actionId = context.coordinator.NextThreatActionId();
                 if (!actionId) {
+                    ReservationTraceEvent event;
+                    event.stage = ReservationTraceStage::Result;
+                    event.ownerGuid = context.bot.guid;
+                    event.accepted = false;
+                    event.reason = "threat_action_id_unavailable";
+                    recordReservation(event);
                     evaluation.status = CandidateStatus::ExecutionFailed;
                     evaluation.actionResult = ActionResult::Failed;
                     evaluation.reason = "threat_action_id_unavailable";
@@ -183,28 +206,64 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
                 std::uint32_t const expiresAtMs =
                     context.nowMs + evaluation.threatImpact.reservationDurationMs;
                 bool reservationAccepted = true;
+                std::uint32_t reservedRows = 0;
                 for (auto const& entry : totals) {
-                    if (!std::isfinite(entry.second) ||
-                        entry.second > static_cast<double>(std::numeric_limits<float>::max())) {
-                        reservationAccepted = false;
-                        break;
-                    }
-
                     ThreatReservation reservation;
                     reservation.ownerGuid = context.bot.guid;
                     reservation.threatOwnerGuid = entry.first.second;
                     reservation.hostileGuid = entry.first.first;
                     reservation.actionId = actionId;
-                    reservation.threatPoints = static_cast<float>(entry.second);
+                    reservation.threatPoints = std::isfinite(entry.second) &&
+                        entry.second <= static_cast<double>(std::numeric_limits<float>::max())
+                        ? static_cast<float>(entry.second) : 0.0f;
                     reservation.expiresAtMs = expiresAtMs;
-                    if (!context.coordinator.TryReserveThreatImpact(reservation, context.nowMs)) {
+
+                    ReservationTraceEvent attempt;
+                    attempt.stage = ReservationTraceStage::Attempt;
+                    attempt.actionId = actionId;
+                    attempt.ownerGuid = reservation.ownerGuid;
+                    attempt.threatOwnerGuid = reservation.threatOwnerGuid;
+                    attempt.hostileGuid = reservation.hostileGuid;
+                    attempt.threatPoints = reservation.threatPoints;
+                    attempt.expiresAtMs = expiresAtMs;
+                    attempt.reason = "execute_selected";
+                    recordReservation(attempt);
+
+                    bool const validThreat = std::isfinite(entry.second) &&
+                        entry.second > 0.0 &&
+                        entry.second <= static_cast<double>(std::numeric_limits<float>::max());
+                    bool const accepted = validThreat &&
+                        context.coordinator.TryReserveThreatImpact(reservation, context.nowMs);
+
+                    ReservationTraceEvent result;
+                    result.stage = ReservationTraceStage::Result;
+                    result.actionId = actionId;
+                    result.ownerGuid = reservation.ownerGuid;
+                    result.threatOwnerGuid = reservation.threatOwnerGuid;
+                    result.hostileGuid = reservation.hostileGuid;
+                    result.threatPoints = reservation.threatPoints;
+                    result.expiresAtMs = expiresAtMs;
+                    result.accepted = accepted;
+                    result.reason = !validThreat ? "invalid_threat_reservation_row" :
+                        (accepted ? "coordinator_accepted" : "coordinator_rejected");
+                    recordReservation(result);
+
+                    if (!accepted) {
                         reservationAccepted = false;
                         break;
                     }
+                    ++reservedRows;
                 }
 
                 if (!reservationAccepted) {
                     context.coordinator.ReleaseThreatAction(actionId);
+                    ReservationTraceEvent release;
+                    release.stage = ReservationTraceStage::Release;
+                    release.actionId = actionId;
+                    release.ownerGuid = context.bot.guid;
+                    release.reservationRows = reservedRows;
+                    release.reason = "partial_acquire_rollback";
+                    recordReservation(release);
                     evaluation.status = CandidateStatus::ExecutionFailed;
                     evaluation.actionResult = ActionResult::Failed;
                     evaluation.reason = "threat_reservation_failed";
@@ -219,8 +278,17 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
         if (evaluation.actionResult == ActionResult::Success)
             evaluation.status = CandidateStatus::Executed;
         else {
-            if (actionId)
+            if (actionId) {
                 context.coordinator.ReleaseThreatAction(actionId);
+                ReservationTraceEvent release;
+                release.stage = ReservationTraceStage::Release;
+                release.actionId = actionId;
+                release.ownerGuid = context.bot.guid;
+                release.reason = "action_execution_failed";
+                release.reservationRows = static_cast<std::uint32_t>(
+                    evaluation.threatImpact.impacts.size());
+                recordReservation(release);
+            }
             evaluation.status = CandidateStatus::ExecutionFailed;
             if (evaluation.reason.empty()) evaluation.reason = "action_execution_not_successful";
         }

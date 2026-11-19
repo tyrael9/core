@@ -9,6 +9,7 @@
 #define MANGOS_PARTY_BOT_DECISION_TRACE_H
 
 #include "Common.h"
+#include "Engine/DecisionContext.h"
 
 class Player;
 class Unit;
@@ -16,14 +17,8 @@ class SpellEntry;
 
 namespace PartyBotEngine
 {
-struct PartySnapshot;
-struct EncounterHeartbeat;
-}
 
-namespace PartyBotEngine
-{
-
-class DecisionTrace
+class DecisionTrace : public ReservationTraceSink
 {
 public:
     DecisionTrace();
@@ -31,6 +26,8 @@ public:
     // Begin a bounded trace window for one PartyBot AI update.
     void BeginTick() const;
     bool IsEnabled() const { return m_enabled; }
+    void RecordReservationEvent(DecisionContext const& context,
+                                ReservationTraceEvent const& event) override;
 
     // Record one eligibility rejection or spell execution result.
     void Record(Player const* bot, char const* event, Unit const* target,
@@ -105,6 +102,8 @@ public:
 private:
     mutable uint32 m_recordsThisTick;
     mutable uint32 m_castTraceEventsThisTick;
+    mutable uint32 m_reservationTraceEventsThisTick;
+    mutable bool m_reservationTraceLimitLogged;
     mutable bool m_castTraceLimitLogged;
     mutable uint32 m_targetChangesThisTick;
     mutable bool m_targetChangeLimitLogged;

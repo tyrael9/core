@@ -265,6 +265,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: Core Player Spell::CheckCast rejected a
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: Core Player::SetDeathState emitted exactly one alive-to-dead observer transition and suppressed the JUST_DIED-to-CORPSE duplicate." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The Player alive-state observer lifecycle PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Core Tank/Healer death-reference recovery PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

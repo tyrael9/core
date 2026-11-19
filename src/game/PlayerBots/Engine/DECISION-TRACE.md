@@ -104,6 +104,10 @@ A log analysis must not assume that a selected candidate was executed. Only an a
 
 ## Current implementation status and gap
 
+- The Engine threat-budget veto, reservation attempt/accepted/rejected and release/rollback outcomes now emit bounded encounter events through the optional `DecisionContext` observer. The observer is read-only during Shadow evaluation and only receives actual reservation outcomes from `ExecuteSelected`.
+- `Player::SetDeathState` calls an optional `PlayerAI::OnAliveStateChanged` observer after Core commits the transition. PartyBotAI emits `death` / `resurrect` encounter records with the bot GUID and health/max-health. Only actual alive/dead transitions are recorded; JUST_DIED-to-CORPSE does not duplicate the death event. These high-value records bypass ordinary per-tick detail caps. Human party-member health/death events and damage-by-damage health deltas are not yet covered.
+
+
 The first encounter-lifecycle slice is now implemented in the map/instance-scoped PartyCoordinator and the existing mangosd logging path:
 
 - A shared, process-unique encounter ID is allocated once when a live, online party member or primary companion is observed in combat. Multiple bots observing the same party snapshot do not create duplicate starts.

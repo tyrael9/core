@@ -408,12 +408,50 @@ void DecisionTrace::RecordEncounterDecisionSummary(
              snapshotEpoch, safeRole.c_str(), candidateCount, selectedCount);
 }
 
+void DecisionTrace::RecordEncounterTriggerSummary(
+    Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
+    uint64 encounterId, uint32 sequence, uint32 elapsedMs,
+    uint32 total, uint32 evaluated, uint32 active, uint32 inactive,
+    uint32 cadenceSkipped, uint32 omitted) const
+{
+    if (!m_enabled || !bot || !encounterId || !sequence)
+        return;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trigger_summary group=%u map=%u instance=%u bot=%u elapsed_ms=%u total=%u evaluated=%u active=%u inactive=%u cadence_skipped=%u omitted=%u",
+             static_cast<unsigned long long>(encounterId), sequence,
+             groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
+             total, evaluated, active, inactive, cadenceSkipped, omitted);
+}
+
+void DecisionTrace::RecordEncounterTrigger(
+    Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
+    uint64 encounterId, uint32 sequence, uint32 elapsedMs,
+    char const* role, char const* strategy, char const* trigger,
+    uint32 intervalMs, char const* status, uint32 candidateCount) const
+{
+    if (!m_enabled || !bot || !encounterId || !sequence)
+        return;
+
+    std::string const safeRole = SafeTraceToken(role);
+    std::string const safeStrategy = SafeTraceToken(strategy);
+    std::string const safeTrigger = SafeTraceToken(trigger);
+    std::string const safeStatus = SafeTraceToken(status);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trigger group=%u map=%u instance=%u bot=%u elapsed_ms=%u role=%s strategy=%s trigger_name=%s interval_ms=%u status=%s candidates=%u",
+             static_cast<unsigned long long>(encounterId), sequence,
+             groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
+             safeRole.c_str(), safeStrategy.c_str(), safeTrigger.c_str(),
+             intervalMs, safeStatus.c_str(), candidateCount);
+}
+
 void DecisionTrace::RecordEncounterCandidate(
     Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
     uint32 snapshotEpoch, uint64 encounterId, uint32 sequence,
     uint32 elapsedMs, char const* role, char const* strategy,
-    char const* action, uint64 targetGuid, uint32 spellId, uint32 channel,
-    float priority, char const* status, char const* reason) const
+    char const* trigger, char const* action, uint64 targetGuid,
+    uint32 spellId, uint32 channel, float priority,
+    char const* status, char const* reason) const
 {
     // PartyBotAI bounds this to a summary plus at most three candidates per
     // bot in its ten-second Shadow detail window. Preserve those correlated
@@ -423,16 +461,17 @@ void DecisionTrace::RecordEncounterCandidate(
 
     std::string const safeRole = SafeTraceToken(role);
     std::string const safeStrategy = SafeTraceToken(strategy);
+    std::string const safeTrigger = SafeTraceToken(trigger);
     std::string const safeAction = SafeTraceToken(action);
     std::string const safeStatus = SafeTraceToken(status);
     std::string const safeReason = SafeTraceToken(reason);
     bool const priorityValid = std::isfinite(priority);
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=candidate group=%u map=%u instance=%u bot=%u elapsed_ms=%u snapshot_epoch=%u role=%s strategy=%s action=%s spell=%u channel=%u target=%llu priority=%.2f priority_valid=%u status=%s reason=%s",
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=candidate group=%u map=%u instance=%u bot=%u elapsed_ms=%u snapshot_epoch=%u role=%s strategy=%s trigger_name=%s action=%s spell=%u channel=%u target=%llu priority=%.2f priority_valid=%u status=%s reason=%s",
              static_cast<unsigned long long>(encounterId), sequence,
              groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
              snapshotEpoch, safeRole.c_str(), safeStrategy.c_str(),
-             safeAction.c_str(), spellId, channel,
+             safeTrigger.c_str(), safeAction.c_str(), spellId, channel,
              static_cast<unsigned long long>(targetGuid),
              priorityValid ? priority : 0.0f, priorityValid ? 1u : 0u,
              safeStatus.c_str(), safeReason.c_str());

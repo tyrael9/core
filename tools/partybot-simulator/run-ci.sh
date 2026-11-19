@@ -233,7 +233,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine selected healer triage a
 fi
 
 
-if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine selected a known Player spell, Core accepted a non-triggered cast with GCD, and the cast completed with real healing and mana cost." "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine selected a known Player spell, Core accepted a non-triggered cast with GCD, Core Spell prepare/finish callbacks preserved action/encounter/target identity exactly once, and the cast completed with real healing and mana cost." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Player-backed non-triggered spell/heal PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi

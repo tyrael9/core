@@ -178,7 +178,7 @@ The repository-local collector `tools/partybot_trace_report.py` uses only the Py
 
 A time window discovers which encounters were active in that period, then includes all available lines for those encounter IDs so the generated timeline is not clipped to the selected window. `--all` generates a report pair for each encounter ID found in the input. Both Markdown and raw-log report files are chmod 0600 because they contain player/party identifiers and diagnostic details. The parser does not infer that a candidate executed: it distinguishes candidate/decision summary records from cast request results and Core cast terminal outcomes. Sequence gaps are reported as possible rate limiting or incomplete log collection, not automatically as server faults. Tests cover exact encounter selection, timestamp-window discovery, malformed lines, sequence gaps, truncation warnings, raw-line preservation and timezone-style mismatches.
 
-This first version deliberately reads and writes local files only. It is not yet wired into `tyrael9/vmangos-deploy`'s existing diagnostic wrapper, and it does not close the remaining global encounter-budget or trace-coverage gaps.
+The collector itself remains a local-file-only utility. A read-only integration into `tyrael9/vmangos-deploy`'s diagnostics wrapper is proposed in Draft PR [#1](https://github.com/tyrael9/vmangos-deploy/pull/1); its default selector reports all encounters in the captured log tail, with optional exact-ID and time-window selectors. The deployment PR currently has no Actions check runs, so integration validation remains pending. This does not close the remaining terminal/shutdown or trace-coverage gaps.
 
 
 ## Shared encounter trace budget (2026-11-19)

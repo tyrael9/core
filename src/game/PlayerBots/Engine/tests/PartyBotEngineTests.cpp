@@ -499,7 +499,7 @@ void TestEngineTriggerCadenceAndExplicitInvalidation()
 void TestTriggerTraceSelectionPrioritizesActionableRows()
 {
     DecisionReport report;
-    auto add = [&report](TriggerEvaluationStatus status, uint32 candidateCount,
+    auto add = [&report](TriggerEvaluationStatus status, std::uint32_t candidateCount,
                          char const* name) {
         TriggerEvaluation evaluation;
         evaluation.status = status;

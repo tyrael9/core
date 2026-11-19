@@ -48,6 +48,11 @@ public:
                                      uint32 sequence, uint32 elapsedMs,
                                      uint64 oldVictimGuid, uint64 newVictimGuid,
                                      char const* source) const;
+    // Death/resurrection transitions are high-value encounter events, not per-tick detail.
+    void RecordEncounterAliveState(Player const* bot, uint32 groupId, uint32 mapId,
+                                   uint32 instanceId, uint64 encounterId,
+                                   uint32 sequence, uint32 elapsedMs,
+                                   bool wasAlive, bool isAlive) const;
 
     // Encounter-correlated Shadow summary and candidate records share the coordinator sequence.
     void RecordEncounterDecisionSummary(Player const* bot, uint32 groupId, uint32 mapId,

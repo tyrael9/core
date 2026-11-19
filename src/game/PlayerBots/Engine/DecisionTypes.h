@@ -59,8 +59,21 @@ enum class CandidateStatus : std::uint8_t {
     ExecutionFailed
 };
 enum class ReservationType : std::uint8_t { Heal, CrowdControl, Interrupt, Target, Dispel, Resurrection };
+enum class TriggerEvaluationStatus : std::uint8_t {
+    CadenceSkipped,
+    Inactive,
+    Active
+};
+struct TriggerEvaluation {
+    std::string strategyName;
+    std::string triggerName;
+    std::uint32_t intervalMs = 0;
+    std::uint32_t candidateCount = 0;
+    TriggerEvaluationStatus status = TriggerEvaluationStatus::CadenceSkipped;
+};
 struct ActionCandidate {
     std::string strategyName;
+    std::string triggerName;
     std::string actionName;
     Guid targetGuid = 0;
     std::uint32_t spellId = 0;

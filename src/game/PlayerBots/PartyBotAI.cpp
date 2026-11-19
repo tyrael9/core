@@ -529,9 +529,10 @@ uint64 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
     // Direct Engine adapters may call Player::CastSpell without passing through
     // CombatBotBaseAI::DoCastSpell. Bind the host's active Engine action ID here;
     // the Core Spell object will retain it until finish/cancel.
-    if (!m_pendingCastTraceActionId && m_activeEngineActionId &&
-        m_activeEngineActionEncounterId == (m_partyCoordinator
-            ? m_partyCoordinator->GetEncounterId() : 0) &&
+    if (!m_pendingCastTraceActionId && m_decisionTrace.IsEnabled() &&
+        m_partyCoordinator && m_partyCoordinator->HasActiveEncounter() &&
+        m_activeEngineActionId &&
+        m_activeEngineActionEncounterId == m_partyCoordinator->GetEncounterId() &&
         (!m_activeEngineActionSpellId || m_activeEngineActionSpellId == spellId) &&
         (!m_activeEngineActionTargetGuid ||
          !coreTargetGuid || m_activeEngineActionTargetGuid == coreTargetGuid))

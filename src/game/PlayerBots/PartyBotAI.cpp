@@ -464,14 +464,16 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
 }
 
 uint32 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
-                                        uint64 targetGuid, uint64& encounterId)
+                                        uint64 coreTargetGuid, uint64& encounterId,
+                                        uint64& traceTargetGuid)
 {
     encounterId = 0;
+    traceTargetGuid = 0;
     if (!me || !m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
         !m_partyCoordinator->HasActiveEncounter() ||
         !m_pendingCastTraceActionId || m_pendingCastTraceSpellBound ||
         m_pendingCastTraceSpellId != spellId ||
-        m_pendingCastTraceTargetGuid != targetGuid)
+        (coreTargetGuid && coreTargetGuid != m_pendingCastTraceTargetGuid))
         return 0;
 
     uint32 const mapId = me->GetMapId();
@@ -485,6 +487,7 @@ uint32 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
 
     m_pendingCastTraceSpellBound = true;
     encounterId = m_pendingCastTraceEncounterId;
+    traceTargetGuid = m_pendingCastTraceTargetGuid;
     return m_pendingCastTraceActionId;
 }
 

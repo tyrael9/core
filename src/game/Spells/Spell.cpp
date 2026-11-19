@@ -31,6 +31,7 @@
 #include "ObjectMgr.h"
 #include "SpellMgr.h"
 #include "Player.h"
+#include "PlayerAI.h"
 #include "Pet.h"
 #include "DynamicObject.h"
 #include "Group.h"
@@ -3358,6 +3359,22 @@ SpellCastResult Spell::prepare(SpellCastTargets targets, Aura* triggeredByAura, 
 SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
 {
     m_spellState = SPELL_STATE_PREPARING;
+
+    // The owning PlayerAI may associate this Core Spell object with a
+    // previously traced DoCastSpell attempt. The action ID then survives
+    // synchronous instant casts and asynchronous cast/channel completion.
+    if (!m_partyBotTraceActionId && m_casterUnit && m_casterUnit->IsPlayer())
+    {
+        if (Player* player = m_casterUnit->ToPlayer())
+        {
+            if (PlayerAI* ai = player->AI())
+                m_partyBotTraceActionId = ai->OnSpellCastPreparing(
+                    this, m_spellInfo->Id,
+                    m_targets.getUnitTargetGuid().GetRawValue(),
+                    m_partyBotTraceEncounterId);
+        }
+    }
+
     m_delayed = m_spellInfo->speed > 0.0f || CanDelaySpellDueToBatching();
 
     UpdateCastStartPosition();
@@ -3521,6 +3538,8 @@ void Spell::cancel()
 {
     if (m_spellState == SPELL_STATE_FINISHED)
         return;
+
+    m_partyBotTraceInterrupted = true;
 
     // channeled spells don't display interrupted message even if they are interrupted, possible other cases with no "Interrupted" message
     bool sendInterrupt = !(m_channeled && m_spellState != SPELL_STATE_PREPARING);
@@ -4328,6 +4347,18 @@ void Spell::finish(bool ok)
         return;
 
     m_spellState = SPELL_STATE_FINISHED;
+
+    if (m_partyBotTraceActionId && m_casterUnit && m_casterUnit->IsPlayer())
+    {
+        if (Player* player = m_casterUnit->ToPlayer())
+        {
+            if (PlayerAI* ai = player->AI())
+                ai->OnSpellCastFinished(
+                    this, m_partyBotTraceActionId, m_partyBotTraceEncounterId,
+                    m_spellInfo->Id, m_targets.getUnitTargetGuid().GetRawValue(),
+                    ok, m_partyBotTraceInterrupted);
+        }
+    }
 
     // Clear the creature's casting target so it faces victim
     if (m_setCreatureTarget)

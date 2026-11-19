@@ -54,6 +54,23 @@ private:
     uint32& m_updateCount;
 };
 
+class SimulatorAliveStateObserver final : public PlayerAI
+{
+public:
+    explicit SimulatorAliveStateObserver(Player* player) : PlayerAI(player) {}
+
+    void OnAliveStateChanged(bool wasAlive, bool isAlive) override
+    {
+        ++transitionCount;
+        lastWasAlive = wasAlive;
+        lastIsAlive = isAlive;
+    }
+
+    uint32 transitionCount = 0;
+    bool lastWasAlive = false;
+    bool lastIsAlive = false;
+};
+
 struct SimulatorActor
 {
     Creature* creature = nullptr;
@@ -3711,12 +3728,25 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     // Kill the Main Tank through normal Core damage. Unit::DealDamage and
     // Unit::SetDeathState must remove its HostileRefManager links from both
     // hostile ThreatManagers; native selection then retains the living healer.
+    SimulatorAliveStateObserver tankAliveObserver(tank);
+    PlayerAI* const previousTankAI = tank->AI();
+    tank->SetAI(&tankAliveObserver);
+
     uint32 const tankHealthAtDeath = tank->GetHealth();
     uint32 const tankDeathDamage = f9ChecksPassed && healerHoldsAggroOverDps
         ? hostiles[0].creature->DealDamage(
             tank, tankHealthAtDeath, nullptr, DIRECT_DAMAGE,
             SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
     bool const tankDied = tankDeathDamage > 0 && !tank->IsAlive() && tank->GetHealth() == 0;
+    bool const tankDeathObserverValid = tankAliveObserver.transitionCount == 1 &&
+        tankAliveObserver.lastWasAlive && !tankAliveObserver.lastIsAlive;
+
+    // Core advances JUST_DIED to CORPSE without another alive/dead transition.
+    // Verify the observer does not emit a duplicate death record for that step.
+    if (tankDied)
+        tank->SetDeathState(CORPSE);
+    bool const tankCorpseTransitionSuppressed = tankAliveObserver.transitionCount == 1;
+    tank->SetAI(previousTankAI);
     bool const tankThreatReferencesRemoved =
         hostiles[0].creature->GetThreatManager().getThreat(tank) == 0.0f &&
         hostiles[1].creature->GetThreatManager().getThreat(tank) == 0.0f;
@@ -3817,6 +3847,14 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool const groupRemoved = sObjectMgr.GetGroupById(groupIdAfterEvents) == nullptr;
     bool const cleanupPassed = cleaned && groupRemoved;
 
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Player alive-state observer: death=%u corpseDuplicateSuppressed=%u transitions=%u cleanup=1.",
+             tankDeathObserverValid ? 1u : 0u,
+             tankCorpseTransitionSuppressed ? 1u : 0u,
+             tankAliveObserver.transitionCount);
+    if (tankDeathObserverValid && tankCorpseTransitionSuppressed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: Core Player::SetDeathState emitted exactly one alive-to-dead observer transition and suppressed the JUST_DIED-to-CORPSE duplicate.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] Group death recovery: dpsDamage=%u/%u dpsThreat=%.1f/%.1f healerHoldsAggro=%u tankDeath=%u tankRefsRemoved=%u healerRetargetAfterTankDeath=%u/%u tankSnapshot=%u tankRoster=%u tankThreatSnapshot=%u healerDeath=%u healerRefsRemoved=%u dpsRetargetAfterHealerDeath=%u/%u healerSnapshot=%u healerRoster=%u healerThreatSnapshot=%u registered=%u groupRemoved=%u cleanup=%u.",
              dpsDamage0, dpsDamage1, dpsThreat0, dpsThreat1,

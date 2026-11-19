@@ -61,11 +61,20 @@ public:
 
     void OnAliveStateChanged(bool wasAlive, bool isAlive) override
     {
+        ++callbackCount;
+        if (wasAlive == isAlive)
+        {
+            ++sameStateCallbacks;
+            return;
+        }
+
         ++transitionCount;
         lastWasAlive = wasAlive;
         lastIsAlive = isAlive;
     }
 
+    uint32 callbackCount = 0;
+    uint32 sameStateCallbacks = 0;
     uint32 transitionCount = 0;
     bool lastWasAlive = false;
     bool lastIsAlive = false;
@@ -3745,7 +3754,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     // Verify the observer does not emit a duplicate death record for that step.
     if (tankDied)
         tank->SetDeathState(CORPSE);
-    bool const tankCorpseTransitionSuppressed = tankAliveObserver.transitionCount == 1;
+    bool const tankCorpseTransitionSuppressed =
+        tankAliveObserver.callbackCount == 2 &&
+        tankAliveObserver.sameStateCallbacks == 1 &&
+        tankAliveObserver.transitionCount == 1;
     tank->SetAI(previousTankAI);
     bool const tankThreatReferencesRemoved =
         hostiles[0].creature->GetThreatManager().getThreat(tank) == 0.0f &&
@@ -3849,13 +3861,15 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool const cleanupPassed = cleaned && groupRemoved;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Player alive-state observer: death=%u corpseDuplicateSuppressed=%u transitions=%u cleanup=1.",
+             "[PartyBotSimulator] Player alive-state observer: death=%u sameStateFiltered=%u callbacks=%u sameStateCallbacks=%u transitions=%u cleanup=1.",
              tankDeathObserverValid ? 1u : 0u,
              tankCorpseTransitionSuppressed ? 1u : 0u,
+             tankAliveObserver.callbackCount,
+             tankAliveObserver.sameStateCallbacks,
              tankAliveObserver.transitionCount);
     if (tankDeathObserverValid && tankCorpseTransitionSuppressed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: Core Player::SetDeathState emitted exactly one alive-to-dead observer transition and suppressed the JUST_DIED-to-CORPSE duplicate.");
+                 "[PartyBotSimulator] PASS: Core Player::SetDeathState invoked the observer for JUST_DIED and CORPSE, while the alive-state transition filter emitted exactly one alive-to-dead event.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] Group death recovery: dpsDamage=%u/%u dpsThreat=%.1f/%.1f healerHoldsAggro=%u tankDeath=%u tankRefsRemoved=%u healerRetargetAfterTankDeath=%u/%u tankSnapshot=%u tankRoster=%u tankThreatSnapshot=%u healerDeath=%u healerRefsRemoved=%u dpsRetargetAfterHealerDeath=%u/%u healerSnapshot=%u healerRoster=%u healerThreatSnapshot=%u registered=%u groupRemoved=%u cleanup=%u.",
              dpsDamage0, dpsDamage1, dpsThreat0, dpsThreat1,

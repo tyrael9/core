@@ -124,7 +124,7 @@ For the current Shadow path, both PlayerBot.EngineShadow and PlayerBot.DecisionT
 
 ### Alive-state observer regression
 
-The Core-backed simulator now attaches a temporary PlayerAI observer to the Main Tank in the existing real five-Player death/recovery fixture. It requires exactly one alive -> dead callback from the real Core damage/death path and explicitly advances JUST_DIED -> CORPSE to prove that the latter does not emit a duplicate. The simulator restores the previous AI pointer before cleanup. This regression validates the Core callback boundary; it does not yet validate PartyBotAI's formatted encounter event end-to-end, human-member observation, or resurrection.
+The Core-backed simulator now attaches a temporary PlayerAI observer to the Main Tank in the existing real five-Player death/recovery fixture. It requires exactly one alive -> dead callback from the real Core damage/death path and explicitly advances JUST_DIED -> CORPSE to prove that the latter does not emit a duplicate. The simulator restores the previous AI pointer before cleanup. Fixture-backed ARM64 runtime run [#44448514086](https://github.com/tyrael9/core/actions/runs/44448514086) passed the death regression and the corresponding resurrection regression. This validates the Core callback boundary; it does not yet validate PartyBotAI's formatted encounter event end-to-end or human-member observation.
 
 
 Core callback semantics: Player::SetDeathState invokes OnAliveStateChanged after each state assignment, including JUST_DIED followed by CORPSE. The hook is a state sample; PartyBotAI suppresses duplicate semantic events by returning when wasAlive == isAlive. The simulator regression explicitly distinguishes raw callback count from actual alive/dead transitions.
@@ -132,4 +132,4 @@ Core callback semantics: Player::SetDeathState invokes OnAliveStateChanged after
 
 ### Resurrection lifecycle coverage
 
-The five-Player Core death/recovery fixture now resurrects the Main Tank only after all death-state roster and threat snapshots have been captured. A fresh PlayerAI observer must receive exactly one dead -> alive transition from Core Player::ResurrectPlayer, and the runtime CI script requires the corresponding PASS marker. This tests the Core callback boundary; PartyBotAI's encounter trace formatting remains a separate integration test.
+The five-Player Core death/recovery fixture resurrects the Main Tank only after all death-state roster and threat snapshots have been captured. A fresh PlayerAI observer must receive exactly one dead -> alive transition from Core Player::ResurrectPlayer, and the runtime CI script requires the corresponding PASS marker. Fixture-backed ARM64 runtime run [#44448514086](https://github.com/tyrael9/core/actions/runs/44448514086) passed both the death and resurrection markers. This tests the Core callback boundary; PartyBotAI's encounter trace formatting remains a separate integration test.

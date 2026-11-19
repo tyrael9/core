@@ -127,6 +127,7 @@ void TestActionQueueIsBoundedPriorityOrderedAndStable()
         assert(queue.Push(i, static_cast<float>(i)));
     assert(queue.Size() == ActionQueue::Capacity);
     assert(!queue.Push(999, 1000.0f)); // Full queues fail closed; no queued item is evicted.
+    assert(!queue.Push(1000, std::numeric_limits<float>::quiet_NaN()));
     assert(queue.Size() == ActionQueue::Capacity);
     queue.Clear();
     assert(queue.Empty());

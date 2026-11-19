@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <vector>
 
 namespace PartyBotEngine
@@ -24,7 +25,7 @@ public:
 
     bool Push(std::size_t reportIndex, float priority)
     {
-        if (m_entries.size() >= Capacity)
+        if (m_entries.size() >= Capacity || !std::isfinite(priority))
             return false; // Fail closed; never evict an already queued action.
         Entry entry;
         entry.reportIndex = reportIndex;

@@ -1945,6 +1945,77 @@ void TestEncounterLifecycleStartSettleAndSequence()
            EncounterTransitionKind::None);
 }
 
+void TestEncounterLifecycleRejectsForeignShardSnapshots()
+{
+    PartyCoordinator coordinator;
+    PartySnapshot snapshot;
+    snapshot.groupId = 710;
+    snapshot.mapId = 11;
+    snapshot.instanceId = 12;
+    snapshot.epoch = 1;
+
+    PartyMemberSnapshot member;
+    member.guid = 711;
+    member.online = true;
+    member.alive = true;
+    member.inCombat = true;
+    snapshot.members.push_back(member);
+
+    EncounterTransition const started =
+        coordinator.ObserveEncounter(snapshot, 1000, 5000);
+    assert(started.kind == EncounterTransitionKind::Started);
+    assert(started.encounterId != 0);
+
+    auto rejectForeignShard = [&coordinator, &started](PartySnapshot foreign)
+    {
+        // Combat on another shard must not refresh this encounter's settle clock.
+        foreign.epoch += 1;
+        foreign.members[0].inCombat = true;
+        EncounterTransition const foreignCombat =
+            coordinator.ObserveEncounter(foreign, 9000, 5000);
+        assert(foreignCombat.kind == EncounterTransitionKind::None);
+        assert(coordinator.HasActiveEncounter());
+        assert(coordinator.GetEncounterId() == started.encounterId);
+
+        // Nor may an idle snapshot from another shard close the old encounter.
+        foreign.epoch += 1;
+        foreign.members[0].inCombat = false;
+        EncounterTransition const foreignIdle =
+            coordinator.ObserveEncounter(foreign, 9500, 5000);
+        assert(foreignIdle.kind == EncounterTransitionKind::None);
+        assert(coordinator.HasActiveEncounter());
+        assert(coordinator.GetEncounterId() == started.encounterId);
+    };
+
+    PartySnapshot foreignGroup = snapshot;
+    ++foreignGroup.groupId;
+    rejectForeignShard(foreignGroup);
+
+    PartySnapshot foreignMap = snapshot;
+    ++foreignMap.mapId;
+    rejectForeignShard(foreignMap);
+
+    PartySnapshot foreignInstance = snapshot;
+    ++foreignInstance.instanceId;
+    rejectForeignShard(foreignInstance);
+
+    // Only a valid observation on the owning shard may settle/close the trace.
+    snapshot.members[0].inCombat = false;
+    snapshot.epoch = 2;
+    EncounterTransition const beforeSettle =
+        coordinator.ObserveEncounter(snapshot, 5999, 5000);
+    assert(beforeSettle.kind == EncounterTransitionKind::None);
+    assert(coordinator.HasActiveEncounter());
+
+    EncounterTransition const ended =
+        coordinator.ObserveEncounter(snapshot, 6000, 5000);
+    assert(ended.kind == EncounterTransitionKind::Ended);
+    assert(ended.encounterId == started.encounterId);
+    assert(ended.elapsedMs == 5000);
+    assert(std::string(ended.reason) == "combat_settled");
+    assert(!coordinator.HasActiveEncounter());
+}
+
 void TestEncounterLifecycleCompanionWrapAndExplicitClose()
 {
     PartyCoordinator coordinator;
@@ -2217,6 +2288,7 @@ int main() {
     TestSnapshotCacheFreshnessAndEpoch();
     TestCoordinatorRegistryIdentityAndBattlegroundBypass();
     TestEncounterLifecycleStartSettleAndSequence();
+    TestEncounterLifecycleRejectsForeignShardSnapshots();
     TestEncounterLifecycleCompanionWrapAndExplicitClose();
     TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe();
     TestEncounterTraceBudgetIsPartyWideBoundedAndTerminalReserved();

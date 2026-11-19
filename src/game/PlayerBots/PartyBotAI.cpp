@@ -377,6 +377,8 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         // be paired with it even though the result gets its own later sequence.
         m_pendingCastTraceActionId = 0;
         m_pendingCastTraceEncounterId = 0;
+        m_pendingCastTraceTargetGuid = 0;
+        m_pendingCastTraceSpellId = 0;
     }
 
     if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
@@ -386,6 +388,8 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         {
             m_pendingCastTraceActionId = 0;
             m_pendingCastTraceEncounterId = 0;
+            m_pendingCastTraceTargetGuid = 0;
+            m_pendingCastTraceSpellId = 0;
         }
         return;
     }
@@ -401,6 +405,8 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         {
             m_pendingCastTraceActionId = 0;
             m_pendingCastTraceEncounterId = 0;
+            m_pendingCastTraceTargetGuid = 0;
+            m_pendingCastTraceSpellId = 0;
         }
         return;
     }
@@ -421,6 +427,8 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         {
             m_pendingCastTraceActionId = sequence;
             m_pendingCastTraceEncounterId = encounterId;
+            m_pendingCastTraceTargetGuid = targetGuid;
+            m_pendingCastTraceSpellId = spellId;
         }
         return;
     }
@@ -432,6 +440,8 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
     {
         m_pendingCastTraceActionId = 0;
         m_pendingCastTraceEncounterId = 0;
+        m_pendingCastTraceTargetGuid = 0;
+        m_pendingCastTraceSpellId = 0;
         return;
     }
 
@@ -443,6 +453,58 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         reason ? reason : "unspecified");
     m_pendingCastTraceActionId = 0;
     m_pendingCastTraceEncounterId = 0;
+    m_pendingCastTraceTargetGuid = 0;
+    m_pendingCastTraceSpellId = 0;
+}
+
+uint32 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
+                                        uint64 targetGuid, uint64& encounterId)
+{
+    encounterId = 0;
+    if (!me || !m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
+        !m_partyCoordinator->HasActiveEncounter() ||
+        !m_pendingCastTraceActionId ||
+        m_pendingCastTraceSpellId != spellId ||
+        m_pendingCastTraceTargetGuid != targetGuid)
+        return 0;
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    if (m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId ||
+        m_partyCoordinator->GetEncounterMapId() != mapId ||
+        m_partyCoordinator->GetEncounterInstanceId() != instanceId ||
+        m_partyCoordinator->GetEncounterId() != m_pendingCastTraceEncounterId)
+        return 0;
+
+    encounterId = m_pendingCastTraceEncounterId;
+    return m_pendingCastTraceActionId;
+}
+
+void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint32 actionId,
+                                     uint64 encounterId, uint32 spellId,
+                                     uint64 targetGuid, bool success,
+                                     bool interrupted)
+{
+    if (!me || !m_decisionTrace.IsEnabled() || !actionId || !encounterId ||
+        !m_partyCoordinator || !m_partyCoordinator->HasActiveEncounter() ||
+        m_partyCoordinator->GetEncounterId() != encounterId)
+        return;
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    if (m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId ||
+        m_partyCoordinator->GetEncounterMapId() != mapId ||
+        m_partyCoordinator->GetEncounterInstanceId() != instanceId)
+        return;
+
+    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+    m_decisionTrace.RecordEncounterCastTerminal(
+        me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+        encounterId, sequence,
+        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
+        actionId, spellId, targetGuid, success, interrupted);
 }
 
 bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const

@@ -1178,7 +1178,7 @@ class SimulatorSpellLifecycleProbeAI final : public PlayerAI
 public:
     explicit SimulatorSpellLifecycleProbeAI(Player* player) : PlayerAI(player) {}
 
-    uint32 OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
+    uint64 OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
                                 uint64 coreTargetGuid, uint64& encounterId,
                                 uint64& traceTargetGuid) override
     {
@@ -1198,7 +1198,7 @@ public:
         return expectedActionId;
     }
 
-    void OnSpellCastFinished(Spell const* /*spell*/, uint32 actionId,
+    void OnSpellCastFinished(Spell const* /*spell*/, uint64 actionId,
                              uint64 encounterId, uint32 spellId,
                              uint64 targetGuid, bool success,
                              bool interrupted) override
@@ -1219,7 +1219,7 @@ public:
     uint32 finishCalls = 0;
     uint32 preparedSpellId = 0;
     uint64 coreTargetGuidAtPrepare = 0;
-    uint32 finishedActionId = 0;
+    uint64 finishedActionId = 0;
     uint64 finishedEncounterId = 0;
     uint32 finishedSpellId = 0;
     uint64 finishedTargetGuid = 0;

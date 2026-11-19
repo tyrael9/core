@@ -30,6 +30,8 @@ public:
     bool IsEnabled() const { return m_enabled; }
     void RecordReservationEvent(DecisionContext const& context,
                                 ReservationTraceEvent const& event) override;
+    void RecordEngineActionEvent(DecisionContext const& context,
+                                 EngineActionTraceEvent const& event) override;
 
     // Record one eligibility rejection or spell execution result.
     void Record(Player const* bot, char const* event, Unit const* target,

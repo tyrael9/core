@@ -95,7 +95,10 @@ struct CandidateEvaluation {
     std::string reason;
 };
 struct DecisionReport {
+    static std::size_t const MaxTriggerEvaluations = 64;
     std::uint32_t snapshotEpoch = 0;
+    std::vector<TriggerEvaluation> triggerEvaluations;
+    std::uint32_t omittedTriggerEvaluations = 0;
     std::vector<CandidateEvaluation> candidates;
     std::vector<std::size_t> selectedIndices;
 };

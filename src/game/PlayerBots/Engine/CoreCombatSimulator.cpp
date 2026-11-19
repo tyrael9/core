@@ -3910,6 +3910,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         partyTraceDied && tank->IsAlive() &&
         partyTraceSequenceAfter == partyTraceSequenceBefore + 3;
     tank->SetAI(previousTankAIForPartyTrace);
+    partyTraceAI.Remove(); // The simulator logs out/deletes Players before this stack frame ends.
 
     bool const f10ChecksPassed = f9ChecksPassed && petCleanupPassed &&
         f12ChecksPassed && healerHoldsAggroOverDps &&

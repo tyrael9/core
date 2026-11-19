@@ -1373,11 +1373,15 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
 
     auto traceEncounter = [this](PartyBotEngine::EncounterTransition const& transition)
     {
-        if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
-            transition.kind == PartyBotEngine::EncounterTransitionKind::None)
+        if (transition.kind == PartyBotEngine::EncounterTransitionKind::None)
             return;
 
+        // State invalidation is required even when structured tracing is off:
+        // cache/cadence correctness must not depend on diagnostic configuration.
         m_partyBotEngine.InvalidateDecisionState();
+        if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator)
+            return;
+
         bool const started =
             transition.kind == PartyBotEngine::EncounterTransitionKind::Started;
         if (started)

@@ -210,6 +210,11 @@ void DecisionTrace::RecordPartyHeartbeat(Player const* bot,
              payload.c_str(), truncated ? 1u : 0u);
 }
 
+namespace
+{
+    std::string SafeTraceToken(char const* value);
+}
+
 void DecisionTrace::RecordEncounterTargetChange(
     Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
     uint64 encounterId, uint32 sequence, uint32 elapsedMs,

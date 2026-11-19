@@ -328,3 +328,11 @@ Implementation slice complete: the component-scoped negative flat-threat estimat
 ### Death-state callback semantics correction
 
 The first runtime attempt correctly exposed a Core lifecycle nuance: Player::SetDeathState invokes the observer after both JUST_DIED and the subsequent CORPSE state assignment. The callback is therefore a state sample, not a promise that each invocation represents a transition. PartyBotAI's OnAliveStateChanged correctly filters unchanged states (wasAlive == isAlive). The regression now records raw callback count separately from actual transitions and requires two callbacks (JUST_DIED + CORPSE), exactly one unchanged-state callback, and exactly one alive -> dead transition. The earlier wording that Core suppressed the CORPSE callback was inaccurate and has been replaced.
+
+
+### Resurrection observer runtime coverage added (2026-11-19)
+
+- [x] Extend the real five-Player death/recovery fixture: after both post-death snapshots and target-retarget assertions are captured, resurrect the Main Tank through Core Player::ResurrectPlayer(1.0f, false).
+- [x] Attach a fresh PlayerAI observer and require exactly one dead -> alive transition, with the Player alive after the call.
+- [x] Gate F10 and run-ci.sh on the dedicated resurrection PASS marker.
+- [ ] Verify the corrected death + resurrection observer suite on fixture-backed ARM64 runtime CI. This validates the Core callback boundary and transition semantics, not PartyBotAI's formatted trace emission end-to-end.

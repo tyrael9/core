@@ -4516,6 +4516,31 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         engineActionAI.m_activeEngineActionId == 0 &&
         engineActionAI.m_pendingCastTraceActionId == 0;
 
+    DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
+    bool decisionSummaryTracePassed = engineActionTracePassed &&
+        decisionSummary.candidateCount == 1 &&
+        decisionSummary.selectedCount == 1 &&
+        decisionSummary.executedCount == 1 &&
+        decisionSummary.executionFailedCount == 0;
+    if (decisionSummaryTracePassed && coordinator->HasActiveEncounter() &&
+        AdmitPartyEncounterTrace(
+            engineActionAI.m_decisionTrace, healer, *coordinator,
+            coordinator->GetEncounterId(), snapshot.groupId, snapshot.mapId,
+            snapshot.instanceId, coordinator->GetEncounterElapsedMs(3000),
+            EncounterTraceEventClass::Detail))
+    {
+        uint32 const sequence = coordinator->NextEncounterSequence();
+        if (sequence)
+            engineActionAI.m_decisionTrace.RecordEncounterDecisionSummary(
+                healer, snapshot.groupId, snapshot.mapId, snapshot.instanceId,
+                snapshot.epoch, coordinator->GetEncounterId(), sequence,
+                coordinator->GetEncounterElapsedMs(3000), "healer", decisionSummary);
+        else
+            decisionSummaryTracePassed = false;
+    }
+    else
+        decisionSummaryTracePassed = false;
+
     healer->SetAI(nullptr);
     engineActionAI.Remove();
     healerSession.LogoutPlayer(false);
@@ -4525,7 +4550,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     bool const cleaned = playerCleaned && patientCleaned;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u mana=%u>%u health=%u>%u completed=%u engineActionTrace=%u actionId=%llu cleanup=%u.",
+             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u mana=%u>%u health=%u>%u completed=%u engineActionTrace=%u decisionSummaryTrace=%u actionId=%llu cleanup=%u.",
              1u, selected ? 1u : 0u, accepted ? 1u : 0u,
              healAction->WasCastPendingAfterAccept() ? 1u : 0u,
              healAction->HadGcdAfterAccept() ? 1u : 0u,
@@ -4533,10 +4558,11 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              manaBefore, manaAfter, healthBefore, healthAfter,
              completed ? 1u : 0u,
              engineActionTracePassed ? 1u : 0u,
+             decisionSummaryTracePassed ? 1u : 0u,
              static_cast<unsigned long long>(engineActionId), cleaned ? 1u : 0u);
 
     if (!registered || !selected || !accepted || !completed ||
-        !engineActionTracePassed || !cleaned)
+        !engineActionTracePassed || !decisionSummaryTracePassed || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Engine-to-Player normal spell/heal smoke test failed.");
@@ -4545,6 +4571,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: Engine action ID flowed through PartyBotAI into Core Spell::prepare/finish; one action_id correlated the adapter attempt/result and the later successful Core cast terminal, with real healing and mana effects.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F20 DecisionSummary aggregated the complete executed Core Player heal report and emitted the bounded encounter summary.");
     return true;
 }
 

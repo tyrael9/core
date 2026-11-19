@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include <limits>
 namespace PartyBotEngine {
 using Guid = std::uint64_t;
 using ActionId = std::uint64_t;
@@ -107,5 +108,77 @@ struct DecisionReport {
     std::vector<CandidateEvaluation> candidates;
     std::vector<std::size_t> selectedIndices;
 };
+
+struct DecisionSummary {
+    std::uint32_t candidateCount = 0;
+    // Count arbitration winners from selectedIndices, even after execution
+    // changes their CandidateStatus to Executed or ExecutionFailed.
+    std::uint32_t selectedCount = 0;
+    std::uint32_t channelLoserCount = 0;
+    std::uint32_t missingActionCount = 0;
+    std::uint32_t impossibleCount = 0;
+    std::uint32_t uselessCount = 0;
+    std::uint32_t multiplierVetoCount = 0;
+    std::uint32_t invalidPriorityCount = 0;
+    std::uint32_t threatUnknownCount = 0;
+    std::uint32_t threatBudgetVetoCount = 0;
+    std::uint32_t executedCount = 0;
+    std::uint32_t executionFailedCount = 0;
+};
+
+inline std::uint32_t BoundedDecisionCount(std::size_t count) {
+    return count > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())
+        ? std::numeric_limits<std::uint32_t>::max()
+        : static_cast<std::uint32_t>(count);
+}
+
+inline void IncrementDecisionSummaryCount(std::uint32_t& count) {
+    if (count != std::numeric_limits<std::uint32_t>::max())
+        ++count;
+}
+
+inline DecisionSummary SummarizeDecisionReport(DecisionReport const& report) {
+    DecisionSummary summary;
+    summary.candidateCount = BoundedDecisionCount(report.candidates.size());
+    summary.selectedCount = BoundedDecisionCount(report.selectedIndices.size());
+    for (CandidateEvaluation const& evaluation : report.candidates) {
+        switch (evaluation.status) {
+            case CandidateStatus::RejectedMissingAction:
+                IncrementDecisionSummaryCount(summary.missingActionCount);
+                break;
+            case CandidateStatus::RejectedImpossible:
+                IncrementDecisionSummaryCount(summary.impossibleCount);
+                break;
+            case CandidateStatus::RejectedUseless:
+                IncrementDecisionSummaryCount(summary.uselessCount);
+                break;
+            case CandidateStatus::RejectedMultiplier:
+                IncrementDecisionSummaryCount(summary.multiplierVetoCount);
+                break;
+            case CandidateStatus::RejectedInvalidPriority:
+                IncrementDecisionSummaryCount(summary.invalidPriorityCount);
+                break;
+            case CandidateStatus::RejectedThreatUnknown:
+                IncrementDecisionSummaryCount(summary.threatUnknownCount);
+                break;
+            case CandidateStatus::RejectedThreatBudget:
+                IncrementDecisionSummaryCount(summary.threatBudgetVetoCount);
+                break;
+            case CandidateStatus::NotSelected:
+                if (evaluation.reason == "lower_priority_same_channel")
+                    IncrementDecisionSummaryCount(summary.channelLoserCount);
+                break;
+            case CandidateStatus::Executed:
+                IncrementDecisionSummaryCount(summary.executedCount);
+                break;
+            case CandidateStatus::ExecutionFailed:
+                IncrementDecisionSummaryCount(summary.executionFailedCount);
+                break;
+            case CandidateStatus::Selected:
+                break;
+        }
+    }
+    return summary;
+}
 }
 #endif

@@ -1727,6 +1727,8 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
 
     if (m_engineShadowTraceMs <= PB_UPDATE_INTERVAL)
     {
+        PartyBotEngine::DecisionSummary const decisionSummary =
+            PartyBotEngine::SummarizeDecisionReport(report);
         m_decisionTrace.RecordShadowSummary(
             me, snapshot->groupId, snapshot->mapId, snapshot->instanceId, snapshot->epoch,
             static_cast<uint32>(snapshot->members.size()),
@@ -1746,9 +1748,7 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
                 me, snapshot->groupId, snapshot->mapId, snapshot->instanceId,
                 snapshot->epoch, m_partyCoordinator->GetEncounterId(), sequence,
                 m_partyCoordinator->GetEncounterElapsedMs(nowMs),
-                ShadowRoleName(botSnapshot->roleId),
-                static_cast<uint32>(report.candidates.size()),
-                static_cast<uint32>(report.selectedIndices.size()));
+                ShadowRoleName(botSnapshot->roleId), decisionSummary);
         }
 
         if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter())

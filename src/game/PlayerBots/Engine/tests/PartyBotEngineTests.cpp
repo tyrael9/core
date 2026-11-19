@@ -589,6 +589,47 @@ void TestEngineActionAttemptAndResultTrace()
     assert(report.candidates[report.selectedIndices[0]].threatActionId == 0);
 }
 
+void TestDecisionSummaryCountsAllArbitrationOutcomes()
+{
+    DecisionReport report;
+    report.selectedIndices = {0, 1, 2};
+
+    auto add = [&report](CandidateStatus status, char const* reason) {
+        CandidateEvaluation evaluation;
+        evaluation.status = status;
+        evaluation.reason = reason ? reason : "";
+        report.candidates.push_back(evaluation);
+    };
+
+    add(CandidateStatus::Selected, "");
+    add(CandidateStatus::Executed, "");
+    add(CandidateStatus::ExecutionFailed, "adapter_failed");
+    add(CandidateStatus::NotSelected, "lower_priority_same_channel");
+    add(CandidateStatus::RejectedMissingAction, "action_not_registered");
+    add(CandidateStatus::RejectedImpossible, "out_of_range");
+    add(CandidateStatus::RejectedUseless, "already_full_health");
+    add(CandidateStatus::RejectedMultiplier, "hard_safety_veto");
+    add(CandidateStatus::RejectedInvalidPriority, "non_finite_final_priority");
+    add(CandidateStatus::RejectedThreatUnknown, "threat_impact_unknown");
+    add(CandidateStatus::RejectedThreatBudget, "threat_budget_exceeded");
+    // NotSelected without the channel-arbitration reason is not a channel loser.
+    add(CandidateStatus::NotSelected, "other_not_selected");
+
+    DecisionSummary const summary = SummarizeDecisionReport(report);
+    assert(summary.candidateCount == 12);
+    assert(summary.selectedCount == 3);
+    assert(summary.channelLoserCount == 1);
+    assert(summary.missingActionCount == 1);
+    assert(summary.impossibleCount == 1);
+    assert(summary.uselessCount == 1);
+    assert(summary.multiplierVetoCount == 1);
+    assert(summary.invalidPriorityCount == 1);
+    assert(summary.threatUnknownCount == 1);
+    assert(summary.threatBudgetVetoCount == 1);
+    assert(summary.executedCount == 1);
+    assert(summary.executionFailedCount == 1);
+}
+
 void TestPriorityAndChannelArbitration() {
     Fixture f; PartyBotEngine::PartyBotEngine engine;
     auto heal = std::make_shared<TestAction>("heal");
@@ -2092,6 +2133,7 @@ int main() {
     TestEngineTriggerCadenceAndExplicitInvalidation();
     TestEngineTriggerObservationCapacityIsBounded();
     TestEngineActionAttemptAndResultTrace();
+    TestDecisionSummaryCountsAllArbitrationOutcomes();
     TestActionQueueIsBoundedPriorityOrderedAndStable();
     TestPendingActionQueueDeduplicatesAndPreservesOriginalExpiry();
     TestPendingActionQueuePriorityFifoExpiryAndClockWrap();

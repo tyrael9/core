@@ -162,7 +162,7 @@ with open(destination, "w", encoding="utf-8") as output:
     output.write(config)
 PY
 
-echo "[PartyBotSimulator] Running one-shot Stages A-F19 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Running one-shot Stages A-F20 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
 set +e
 timeout --signal=TERM --kill-after=15s 10m "$MANGOSD_BIN" -c "$CONFIG_FILE" 2>&1 | tee -a "$LOG_FILE"
 simulator_status=${PIPESTATUS[0]}
@@ -236,6 +236,16 @@ fi
 
 if ! grep -Fq "[PartyBotSimulator] PASS: Engine action ID flowed through PartyBotAI into Core Spell::prepare/finish; one action_id correlated the adapter attempt/result and the later successful Core cast terminal, with real healing and mana effects." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The PartyBotAI-to-Core-Spell action correlation PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+if ! grep -Fq "[PartyBotSimulator] PASS: F20 DecisionSummary aggregated the complete executed Core Player heal report and emitted the bounded encounter summary." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F20 DecisionSummary Core fixture PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+decision_summary_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=decision_summary .*candidates=1 selected=1 executed=1 execution_failed=0 channel_losers=0 missing_action=0 impossible=0 useless=0 multiplier_veto=0 invalid_priority=0 threat_unknown=0 threat_budget_veto=0([^[:alnum:]_]|$)' "$LOG_FILE" || true)"
+if [[ "$decision_summary_count" != "1" ]]; then
+    echo "[PartyBotSimulator] Expected exactly one complete F20 decision_summary for the executed Core Player heal, found $decision_summary_count." | tee -a "$LOG_FILE"
     exit 1
 fi
 engine_action_attempt_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=engine_action_attempt .*action=core_player_heal([[:space:]]|$)' "$LOG_FILE" || true)"

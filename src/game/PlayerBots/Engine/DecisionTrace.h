@@ -74,6 +74,12 @@ public:
                                    uint32 actionId, uint64 targetGuid,
                                    uint32 spellId, uint32 resultCode,
                                    bool accepted, char const* reason) const;
+    void RecordEncounterCastTerminal(Player const* bot, uint32 groupId, uint32 mapId,
+                                     uint32 instanceId, uint64 encounterId,
+                                     uint32 sequence, uint32 elapsedMs,
+                                     uint32 actionId, uint32 spellId,
+                                     uint64 targetGuid, bool success,
+                                     bool interrupted) const;
 
     // Record a bounded status when Shadow cannot produce an evaluation.
     void RecordShadowStatus(Player const* bot, char const* status,

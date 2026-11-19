@@ -9,6 +9,11 @@
 #include <utility>
 
 namespace PartyBotEngine {
+// These integral constants are passed by reference to std::min in both the
+// coordinator and map-thread config adapter, so C++14 requires definitions.
+std::uint32_t const PartyCoordinator::HardMaxDetailTraceEvents;
+std::uint32_t const PartyCoordinator::HardMaxImportantTraceEvents;
+
 namespace {
 using RegistryKey = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>;
 using Registry = std::map<RegistryKey, std::weak_ptr<PartyCoordinator>>;

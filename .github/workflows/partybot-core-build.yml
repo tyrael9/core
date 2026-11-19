@@ -31,6 +31,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PUSH_BEFORE: ${{ github.event.before || '' }}
+          PR_ACTION: ${{ github.event.action || '' }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
         run: |
@@ -46,8 +47,19 @@ jobs:
             base="$PUSH_BEFORE"
             head="$GITHUB_SHA"
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base="$PR_BASE_SHA"
             head="$PR_HEAD_SHA"
+            if [[ "$PR_ACTION" == "synchronize" && -n "$PUSH_BEFORE" ]]; then
+              # A synchronize event carries the previous PR head in the before field.
+              # Classify only this update range: the push event validates the
+              # complete before-to-after push, while this avoids rerunning the
+              # PR older C++ diff for a documentation-only follow-up commit.
+              base="$PUSH_BEFORE"
+              echo "PR synchronize: classifying the current head update."
+            else
+              # Opening/reopening a PR, or an unavailable update boundary,
+              # must validate the complete base-to-head diff.
+              base="$PR_BASE_SHA"
+            fi
           else
             # Unknown event types fail safe and run the full build.
             echo "code_changed=true" >> "$GITHUB_OUTPUT"

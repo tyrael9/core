@@ -4126,6 +4126,30 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: server-shutdown hook closed an active shared encounter and consumed exactly one reserved terminal admission across two PartyBotAI instances.");
 
+    // F16: exercise the actual source-Map Remove path. The first bot leaving
+    // must not close while its party bot partner remains; the final bot leaving
+    // must close on the old map thread and consume one terminal admission.
+    uint32 const mapLeaveNow = WorldTimer::getMSTime();
+    PartySnapshot mapLeaveSnapshot = partyTraceSnapshot;
+    mapLeaveSnapshot.epoch = 2;
+    EncounterTransition const mapLeaveStarted =
+        partyTraceCoordinator->ObserveEncounter(mapLeaveSnapshot, mapLeaveNow, 30000);
+    if (mapLeaveStarted.kind == EncounterTransitionKind::Started)
+    {
+        map.Remove(tank, false);
+        bool const firstLeaveKeptEncounter = partyTraceCoordinator->HasActiveEncounter();
+        map.Remove(dps, false);
+        bool const lastLeaveClosedEncounter = !partyTraceCoordinator->HasActiveEncounter() &&
+            partyTraceCoordinator->TryAdmitEncounterTraceEvent(
+                mapLeaveStarted.encounterId, EncounterTraceEventClass::Terminal) ==
+                EncounterTraceAdmission::Suppressed;
+        bool const restoredTank = map.Add(tank);
+        bool const restoredDps = map.Add(dps);
+        if (firstLeaveKeptEncounter && lastLeaveClosedEncounter && restoredTank && restoredDps)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[PartyBotSimulator] PASS: source Map::Remove retained an encounter while another PartyBotAI remained, then the last bot closed the old map shard exactly once before both Players were re-added.");
+    }
+
     dps->SetAI(previousDpsAIForPartyTrace);
     secondPartyTraceAI.Remove();
     tank->SetAI(previousTankAIForPartyTrace);

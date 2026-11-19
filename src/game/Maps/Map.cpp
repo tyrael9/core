@@ -22,6 +22,7 @@
 #include "Map.h"
 #include "MapManager.h"
 #include "Player.h"
+#include "AI/PlayerAI.h"
 #include "GridNotifiers.h"
 #include "Log.h"
 #include "GridStates.h"
@@ -1215,6 +1216,11 @@ void ScriptedEvent::SendEventToAllTargets(uint32 uiData)
 
 void Map::Remove(Player* player, bool remove)
 {
+    // Map removal/transfer is executed by this Map's owner thread. Let the
+    // attached PlayerAI close its old map shard before the Player is detached.
+    if (player->AI())
+        player->AI()->OnMapLeave(GetId(), GetInstanceId());
+
     if (m_data)
         m_data->OnPlayerLeave(player);
 

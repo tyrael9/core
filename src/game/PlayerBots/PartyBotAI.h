@@ -64,6 +64,7 @@ public:
                              bool interrupted) final;
     void OnAliveStateChanged(bool wasAlive, bool isAlive) final;
     void OnServerShutdown() final;
+    void OnMapLeave(uint32 mapId, uint32 instanceId) final;
     Player* GetPartyLeader() const;
     bool IsPartyInCombat() const;
     bool AttackStart(Unit* pVictim);

@@ -60,6 +60,8 @@ class PlayerAI
         virtual void OnAliveStateChanged(bool /*wasAlive*/, bool /*isAlive*/) {}
         // Called once after world updates stop and before bot/player teardown.
         virtual void OnServerShutdown() {}
+        // Called on the source Map thread before this Player is detached from it.
+        virtual void OnMapLeave(uint32 /*mapId*/, uint32 /*instanceId*/) {}
 
         // == Helpers =====================================
         bool CanCastSpell(Unit* pTarget, SpellEntry const* pSpell, bool isTriggered, bool checkControlled = true);

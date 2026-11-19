@@ -923,6 +923,66 @@ void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
     CombatBotBaseAI::OnPacketReceived(packet);
 }
 
+void PartyBotAI::OnMapLeave(uint32 mapId, uint32 instanceId)
+{
+    if (!me || !m_partyCoordinator ||
+        m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId)
+        return;
+
+    // This callback runs from Map::Remove on the source Map thread. Keep the
+    // encounter alive while another PartyBotAI from this Group still belongs
+    // to the old (map, instance) shard; the last bot leaving owns the close.
+    bool anotherPartyBotRemains = false;
+    Group* group = me->GetGroup();
+    Map* map = me->GetMap();
+    if (group && map)
+    {
+        for (Group::MemberSlotList::const_iterator itr = group->GetMemberSlots().begin();
+             itr != group->GetMemberSlots().end(); ++itr)
+        {
+            if (itr->guid == me->GetObjectGuid())
+                continue;
+
+            Unit* unit = map->GetUnit(itr->guid);
+            if (!unit || unit->GetTypeId() != TYPEID_PLAYER)
+                continue;
+
+            Player* member = static_cast<Player*>(unit);
+            if (member->GetMapId() == mapId && member->GetInstanceId() == instanceId &&
+                dynamic_cast<CombatBotBaseAI*>(member->AI()))
+            {
+                anotherPartyBotRemains = true;
+                break;
+            }
+        }
+    }
+
+    m_partyBotEngine.ResetDecisionState();
+    m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+    if (!anotherPartyBotRemains && m_partyCoordinator->HasActiveEncounter())
+    {
+        uint32 const nowMs = WorldTimer::getMSTime();
+        PartyBotEngine::EncounterTransition const transition =
+            m_partyCoordinator->CloseEncounter(nowMs, "last_partybot_left_map");
+        if (transition.kind == PartyBotEngine::EncounterTransitionKind::Ended &&
+            m_decisionTrace.IsEnabled() &&
+            m_partyCoordinator->TryAdmitEncounterTraceEvent(
+                transition.encounterId, PartyBotEngine::EncounterTraceEventClass::Terminal) ==
+                PartyBotEngine::EncounterTraceAdmission::Accepted)
+            m_decisionTrace.RecordEncounterBoundary(
+                me, "encounter_end", transition.groupId, transition.mapId,
+                transition.instanceId, transition.encounterId, transition.sequence,
+                transition.elapsedMs, transition.reason);
+    }
+
+    // Drop only this AI's reference. Any remaining bots keep the old shard alive
+    // and will close it when the final bot leaves; a later return can reacquire it.
+    m_partyCoordinator.reset();
+    m_partyCoordinatorMapId = 0;
+    m_partyCoordinatorInstanceId = 0;
+}
+
 void PartyBotAI::OnServerShutdown()
 {
     if (!me || !m_partyCoordinator || !m_partyCoordinator->HasActiveEncounter())

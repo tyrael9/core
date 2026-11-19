@@ -566,7 +566,8 @@ void DecisionTrace::RecordEncounterCastResult(
     std::string const safeReason = SafeTraceToken(reason);
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=cast_request_result source=legacy executor=DoCastSpell action_id=%llu group=%u map=%u instance=%u bot=%u elapsed_ms=%u target=%llu spell=%u result_code=%u accepted=%u reason=%s",
-             static_cast<unsigned long long>(encounterId), sequence, actionId,
+             static_cast<unsigned long long>(encounterId), sequence,
+             static_cast<unsigned long long>(actionId),
              groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
              static_cast<unsigned long long>(targetGuid), spellId,
              resultCode, accepted ? 1u : 0u, safeReason.c_str());

@@ -78,3 +78,7 @@ The focused GitHub Actions workflow performs the pure tests and full Linux ARM64
 ## Operational boundaries
 
 No Oracle deployment, server restart, configuration change or database modification is performed as part of repository development. Deployment is a separately authorized user-operated step.
+
+## CI path selection
+
+The PartyBot Core workflow classifies each push/PR diff before the expensive job. Markdown, MDX, reStructuredText, AsciiDoc and TXT-only changes run a lightweight whitespace check and a documentation-only success job; they do not install ARM64 build dependencies, compile the server or run the Core combat simulator. Any source/config/workflow change, unknown or empty diff, unavailable base commit, or manual workflow dispatch runs the full Linux ARM64 / Vanilla 5875 validation. Heavy-job cancellation is scoped only to that job, so a docs-only push cannot cancel an in-flight simulator run.

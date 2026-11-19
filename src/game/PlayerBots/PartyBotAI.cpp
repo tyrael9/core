@@ -1382,7 +1382,8 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         return;
     }
 
-    PartyBotEngine::DecisionContext context(*snapshot, *botSnapshot, *m_partyCoordinator, nowMs);
+    PartyBotEngine::DecisionContext context(*snapshot, *botSnapshot, *m_partyCoordinator,
+                                               nowMs, &m_decisionTrace);
     PartyBotEngine::DecisionReport const report = m_partyBotEngine.Evaluate(context);
 
     if (m_engineShadowTraceMs <= PB_UPDATE_INTERVAL)

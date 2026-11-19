@@ -207,6 +207,15 @@ EncounterTransition PartyCoordinator::ObserveEncounter(PartySnapshot const& snap
     if (!snapshot.groupId || !snapshot.epoch)
         return transition;
 
+    // An active coordinator is owned by one (group, map, instance) shard.
+    // A stale snapshot from another shard must never refresh this encounter's
+    // quiet-settle clock or close it from a different Map update thread.
+    if (m_encounterActive &&
+        (snapshot.groupId != m_encounterGroupId ||
+         snapshot.mapId != m_encounterMapId ||
+         snapshot.instanceId != m_encounterInstanceId))
+        return transition;
+
     bool combatObserved = false;
     for (PartyMemberSnapshot const& member : snapshot.members)
     {

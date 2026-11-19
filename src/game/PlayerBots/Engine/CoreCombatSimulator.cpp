@@ -3845,9 +3845,21 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         !containsThreat(healerDeathBossSnapshot, healerGuid.GetRawValue(), healerThreat0) &&
         !containsThreat(healerDeathAddSnapshot, healerGuid.GetRawValue(), healerThreat1);
 
+    SimulatorAliveStateObserver tankResurrectionObserver(tank);
+    PlayerAI* const previousTankAIForResurrection = tank->AI();
+    tank->SetAI(&tankResurrectionObserver);
+    if (tankDied && healerDied)
+        tank->ResurrectPlayer(1.0f, false);
+    bool const tankResurrectionObserved = tankDied && healerDied &&
+        tank->IsAlive() && tankResurrectionObserver.callbackCount == 1 &&
+        tankResurrectionObserver.transitionCount == 1 &&
+        !tankResurrectionObserver.lastWasAlive && tankResurrectionObserver.lastIsAlive;
+    tank->SetAI(previousTankAIForResurrection);
+
     bool const f10ChecksPassed = f9ChecksPassed && petCleanupPassed &&
         f12ChecksPassed && healerHoldsAggroOverDps &&
         tankDied && tankDeathObserverValid && tankCorpseTransitionSuppressed &&
+        tankResurrectionObserved &&
         tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&
@@ -3860,6 +3872,15 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool const groupRemoved = sObjectMgr.GetGroupById(groupIdAfterEvents) == nullptr;
     bool const cleanupPassed = cleaned && groupRemoved;
 
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Player resurrection observer: observed=%u callbacks=%u transitions=%u alive=%u cleanup=1.",
+             tankResurrectionObserved ? 1u : 0u,
+             tankResurrectionObserver.callbackCount,
+             tankResurrectionObserver.transitionCount,
+             tank->IsAlive() ? 1u : 0u);
+    if (tankResurrectionObserved)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: Core Player::ResurrectPlayer emitted exactly one dead-to-alive observer transition after tank death recovery snapshots were captured.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] Player alive-state observer: death=%u sameStateFiltered=%u callbacks=%u sameStateCallbacks=%u transitions=%u cleanup=1.",
              tankDeathObserverValid ? 1u : 0u,

@@ -95,19 +95,19 @@ public:
     bool RecordEncounterCastAttempt(Player const* bot, uint32 groupId, uint32 mapId,
                                     uint32 instanceId, uint64 encounterId,
                                     uint32 sequence, uint32 elapsedMs,
-                                    uint32 actionId, uint64 targetGuid,
+                                    uint64 actionId, uint64 targetGuid,
                                     uint32 spellId) const;
     // SPELL_CAST_OK means accepted, not that a non-triggered cast has completed.
     void RecordEncounterCastResult(Player const* bot, uint32 groupId, uint32 mapId,
                                    uint32 instanceId, uint64 encounterId,
                                    uint32 sequence, uint32 elapsedMs,
-                                   uint32 actionId, uint64 targetGuid,
+                                   uint64 actionId, uint64 targetGuid,
                                    uint32 spellId, uint32 resultCode,
                                    bool accepted, char const* reason) const;
     void RecordEncounterCastTerminal(Player const* bot, uint32 groupId, uint32 mapId,
                                      uint32 instanceId, uint64 encounterId,
                                      uint32 sequence, uint32 elapsedMs,
-                                     uint32 actionId, uint32 spellId,
+                                     uint64 actionId, uint32 spellId,
                                      uint64 targetGuid, bool success,
                                      bool interrupted) const;
 

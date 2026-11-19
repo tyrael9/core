@@ -50,22 +50,45 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
         context.valueCache ? context.valueCache : &m_valueCache);
     DecisionReport report;
     report.snapshotEpoch = evaluationContext.snapshot.epoch;
+    auto retainTriggerEvaluation = [&report](TriggerEvaluation&& observation) {
+        if (report.triggerEvaluations.size() < DecisionReport::MaxTriggerEvaluations)
+            report.triggerEvaluations.push_back(std::move(observation));
+        else
+            ++report.omittedTriggerEvaluations;
+    };
     for (auto const& strategy : m_strategies) {
         if (!strategy) continue;
         for (auto const& trigger : strategy->GetTriggers()) {
             if (!trigger) continue;
+            TriggerEvaluation observation;
+            observation.strategyName = strategy->GetName();
+            observation.triggerName = trigger->GetName();
+            observation.intervalMs = trigger->GetCheckIntervalMs();
             std::string const triggerKey = strategy->GetName() + "/" + trigger->GetName();
             if (!m_triggerScheduler.ShouldEvaluate(
-                    triggerKey, trigger->GetCheckIntervalMs(), evaluationContext.nowMs))
+                    triggerKey, observation.intervalMs, evaluationContext.nowMs)) {
+                observation.status = TriggerEvaluationStatus::CadenceSkipped;
+                retainTriggerEvaluation(std::move(observation));
                 continue;
-            if (!trigger->IsActive(evaluationContext)) continue;
+            }
+            if (!trigger->IsActive(evaluationContext)) {
+                observation.status = TriggerEvaluationStatus::Inactive;
+                retainTriggerEvaluation(std::move(observation));
+                continue;
+            }
+            observation.status = TriggerEvaluationStatus::Active;
             std::vector<ActionCandidate> candidates;
             trigger->CollectCandidates(evaluationContext, candidates);
+            observation.candidateCount = static_cast<std::uint32_t>(
+                std::min<std::size_t>(candidates.size(),
+                    std::numeric_limits<std::uint32_t>::max()));
+            retainTriggerEvaluation(std::move(observation));
             for (auto const& candidate : candidates) {
                 CandidateEvaluation evaluation;
                 evaluation.candidate = candidate;
                 if (evaluation.candidate.strategyName.empty())
                     evaluation.candidate.strategyName = strategy->GetName();
+                evaluation.candidate.triggerName = trigger->GetName();
                 ActionCandidate const& evaluatedCandidate = evaluation.candidate;
                 std::shared_ptr<Action> action = FindAction(evaluatedCandidate.actionName);
                 if (!action) {

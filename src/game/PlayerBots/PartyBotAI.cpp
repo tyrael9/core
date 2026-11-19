@@ -529,7 +529,8 @@ uint64 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
     // Direct Engine adapters may call Player::CastSpell without passing through
     // CombatBotBaseAI::DoCastSpell. Bind the host's active Engine action ID here;
     // the Core Spell object will retain it until finish/cancel.
-    if (!m_pendingCastTraceActionId && m_decisionTrace.IsEnabled() &&
+    if (!m_pendingCastTraceActionId && !m_activeEngineActionSpellBound &&
+        m_decisionTrace.IsEnabled() &&
         m_partyCoordinator && m_partyCoordinator->HasActiveEncounter() &&
         m_activeEngineActionId &&
         m_activeEngineActionEncounterId == m_partyCoordinator->GetEncounterId() &&
@@ -562,6 +563,9 @@ uint64 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
         return 0;
 
     m_pendingCastTraceSpellBound = true;
+    if (m_activeEngineActionId == m_pendingCastTraceActionId &&
+        m_activeEngineActionEncounterId == m_pendingCastTraceEncounterId)
+        m_activeEngineActionSpellBound = true;
     encounterId = m_pendingCastTraceEncounterId;
     traceTargetGuid = m_pendingCastTraceTargetGuid;
     return m_pendingCastTraceActionId;
@@ -624,6 +628,7 @@ void PartyBotAI::OnEngineActionEvent(
         m_activeEngineActionEncounterId = context.coordinator.GetEncounterId();
         m_activeEngineActionTargetGuid = event.targetGuid;
         m_activeEngineActionSpellId = event.spellId;
+        m_activeEngineActionSpellBound = false;
         return;
     }
 
@@ -637,6 +642,7 @@ void PartyBotAI::OnEngineActionEvent(
     m_activeEngineActionEncounterId = 0;
     m_activeEngineActionTargetGuid = 0;
     m_activeEngineActionSpellId = 0;
+    m_activeEngineActionSpellBound = false;
 }
 
 void PartyBotAI::OnAliveStateChanged(bool wasAlive, bool isAlive)

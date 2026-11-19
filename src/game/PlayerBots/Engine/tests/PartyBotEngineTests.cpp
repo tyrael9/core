@@ -812,6 +812,7 @@ void TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots() {
     snapshot.groupId = 995;
     snapshot.mapId = 1;
     snapshot.instanceId = 9;
+    snapshot.epoch = 1;
     PartyMemberSnapshot human;
     human.guid = 996;
     human.online = true;

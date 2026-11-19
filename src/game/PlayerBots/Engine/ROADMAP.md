@@ -400,3 +400,10 @@ The runtime emitted exactly one `event=damage_taken` for the lethal Player hit: 
 - [x] Pure C++ regression covers foreign group, map and instance snapshots in both combat and idle states, verifies the active encounter ID is retained, and proves only a valid source-shard idle snapshot can close at the exact settle boundary.
 - [x] CI [#44635173205](https://github.com/tyrael9/core/actions/runs/44635173205), commit `53f7d059573c19f5c3c7afd093015168c9087ef9`, passed PartyBotEngine tests, collector tests, the full Linux ARM64 server/realm build and simulator harness syntax validation.
 - [ ] Core-backed map/instance transfer fixture and complete source-to-destination transition closure remain open. This validation run skipped the optional simulator runtime step, so F25 has pure-test/build evidence only; no new Core runtime PASS is claimed.
+
+
+## F26 — incremental documentation-only PR validation (verification pending)
+
+- [x] On `pull_request` `synchronize` events, the PartyBot Core classifier now uses the event's previous-head SHA (`github.event.before`) as the diff base when available. The corresponding push event classifies the complete push range, so multiple commits in one push are still checked together.
+- [x] New/reopened PRs, manual dispatches, unknown events and missing/unavailable boundaries retain fail-safe full validation against the complete PR base/head range.
+- [ ] Confirm with a documentation-only follow-up commit that the PR synchronize classifier selects the lightweight documentation job and skips Linux ARM64 build/simulator. The earlier docs-only commit `fcc8410` still ran the heavy PR job because the previous classifier compared the entire PR diff; that run passed but exposed this gap.

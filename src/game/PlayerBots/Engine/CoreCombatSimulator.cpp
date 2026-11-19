@@ -3909,6 +3909,71 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         partyTraceStarted.kind == EncounterTransitionKind::Started &&
         partyTraceDied && tank->IsAlive() &&
         partyTraceSequenceAfter == partyTraceSequenceBefore + 3;
+
+    // Exercise the actual PartyBotAI target-change callback across two distinct
+    // bots sharing the same map/instance PartyCoordinator. The first 1,024
+    // structured detail events are admitted; the next one must emit the one
+    // shared trace_limit marker, and every later event must be suppressed.
+    PartyBotAI secondPartyTraceAI(
+        tank, map.GetId(), map.GetInstanceId(),
+        dps->GetPositionX(), dps->GetPositionY(),
+        dps->GetPositionZ(), dps->GetOrientation());
+    secondPartyTraceAI.SetPlayer(dps);
+    secondPartyTraceAI.m_partyCoordinator = partyTraceCoordinator;
+    secondPartyTraceAI.m_partyCoordinatorMapId = map.GetId();
+    secondPartyTraceAI.m_partyCoordinatorInstanceId = map.GetInstanceId();
+    secondPartyTraceAI.m_decisionTrace.BeginTick();
+    PlayerAI* const previousDpsAIForPartyTrace = dps->AI();
+    dps->SetAI(&secondPartyTraceAI);
+
+    auto switchPartyBotTargets = [&](PartyBotAI& ai, Player* actor, uint32 count)
+    {
+        Unit* const hostileA = hostiles[0].creature;
+        Unit* const hostileB = hostiles[1].creature;
+        Unit* const firstTarget = actor->GetVictim() == hostileA ? hostileB : hostileA;
+        Unit* const secondTarget = firstTarget == hostileA ? hostileB : hostileA;
+        uint32 switches = 0;
+        for (uint32 i = 0; i < count; ++i)
+        {
+            uint64 const oldVictim = actor->GetVictim()
+                ? actor->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+            Unit* const nextTarget = (i & 1u) ? secondTarget : firstTarget;
+            if (!ai.AttackStart(nextTarget))
+                break;
+            uint64 const newVictim = actor->GetVictim()
+                ? actor->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+            if (oldVictim == newVictim)
+                break;
+            ++switches;
+        }
+        return switches;
+    };
+
+    uint32 const firstBotSwitches = switchPartyBotTargets(
+        partyTraceAI, tank, PartyCoordinator::MaxDetailTraceEvents / 2);
+    uint32 const secondBotSwitches = switchPartyBotTargets(
+        secondPartyTraceAI, dps,
+        PartyCoordinator::MaxDetailTraceEvents / 2 + 1);
+    uint32 const sharedTraceSwitches = firstBotSwitches + secondBotSwitches;
+    bool const traceBudgetSuppressedAfterOverflow =
+        sharedTraceSwitches == PartyCoordinator::MaxDetailTraceEvents + 1 &&
+        partyTraceCoordinator->TryAdmitEncounterTraceEvent(
+            partyTraceStarted.encounterId, EncounterTraceEventClass::Detail) ==
+            EncounterTraceAdmission::Suppressed;
+    bool const partyBotTraceBudgetPassed = partyBotEncounterLifecycleTraced &&
+        traceBudgetSuppressedAfterOverflow;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PartyBotAI shared trace budget: firstBot=%u secondBot=%u total=%u expected=%u suppressedAfterOverflow=%u.",
+             firstBotSwitches, secondBotSwitches, sharedTraceSwitches,
+             PartyCoordinator::MaxDetailTraceEvents + 1,
+             traceBudgetSuppressedAfterOverflow ? 1u : 0u);
+    if (partyBotTraceBudgetPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: two real PartyBotAI instances shared one coordinator detail budget, admitted 1,024 target-change events, emitted one trace_limit on overflow and suppressed subsequent detail events.");
+
+    dps->SetAI(previousDpsAIForPartyTrace);
+    secondPartyTraceAI.Remove();
     tank->SetAI(previousTankAIForPartyTrace);
     partyTraceAI.Remove(); // The simulator logs out/deletes Players before this stack frame ends.
 
@@ -3916,7 +3981,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f12ChecksPassed && healerHoldsAggroOverDps &&
         tankDied && tankDeathObserverValid && tankCorpseTransitionSuppressed &&
         tankResurrectionObserved && partyBotEncounterLifecycleTraced &&
-        tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
+        partyBotTraceBudgetPassed && tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&
         healerDeathSnapshotValid && healerDeathRosterValid && healerDeathThreatSnapshotValid;

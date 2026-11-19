@@ -440,6 +440,15 @@ The runtime fixture uses one real five-Player Group, two hostile Creatures and o
 Runtime CI `#44215877767` on commit `1a3aa02` passed on the Linux ARM64 / Vanilla 5875 runner. The fixture reported `outsideVictim=1 noPartyAttacker=1 tankRef=1 offlineSnapshot=1 nonVictimHostile=1 restored=1`; the runner required the explicit F12 PASS marker, the prior F10 death-recovery assertions, and the full simulator final Runtime PASS. The offline reference was toggled only through the Core HostileReference API to exercise the offline-container seam; PartySnapshotBuilder itself only read and copied Core state. F12 is complete.
 
 
+### Stage F13 — shared PartyBotAI encounter trace budget overflow (pending)
+
+The shared encounter budget is owned by the map/instance PartyCoordinator rather than by each bot. Stage F13 uses two distinct PartyBotAI objects attached to two real Players in the five-member Core Group fixture. Both AI objects share one PartyCoordinator and each alternates its actual Core victim between the same two live hostile Creature fixtures using `PartyBotAI::AttackStart`.
+
+The fixture requests 512 successful victim switches from the first bot and 513 from the second. The coordinator must admit 1,024 detail events across both instances, then allow the first overflow to emit the one shared `trace_limit` marker. The simulator requires the combined successful switch count to equal 1,025 and verifies the coordinator suppresses any subsequent detail admission. The runner separately greps for exactly one formatted `event=trace_limit reason=detail_budget_exhausted` line and the explicit Stage F13 PASS marker.
+
+This is a Core integration test of PartyBotAI's real target-change observer and shared encounter budget. It does not simulate combat damage or replace Core target selection. Runtime verification is pending the next trusted ARM64 push workflow.
+
+
 ## P7.3b applied periodic threat-component fixtures (2026-11-18)
 
 The existing simulator now carries separate bounded applied-event fixtures for periodic DoT, HoT, helpful power restoration and Mana Leech. These are **one completed Core tick** checks; none is a forecast of future ticks or a complete pre-action estimate.

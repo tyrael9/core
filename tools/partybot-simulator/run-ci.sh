@@ -162,7 +162,7 @@ with open(destination, "w", encoding="utf-8") as output:
     output.write(config)
 PY
 
-echo "[PartyBotSimulator] Running one-shot Stages A-F17 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Running one-shot Stages A-F18 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
 set +e
 timeout --signal=TERM --kill-after=15s 10m "$MANGOSD_BIN" -c "$CONFIG_FILE" 2>&1 | tee -a "$LOG_FILE"
 simulator_status=${PIPESTATUS[0]}
@@ -234,8 +234,26 @@ if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine selected healer triage a
 fi
 
 
-if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine selected a known Player spell, Core accepted a non-triggered cast with GCD, Core Spell prepare/finish callbacks preserved action/encounter/target identity exactly once, and the cast completed with real healing and mana cost." "$LOG_FILE"; then
-    echo "[PartyBotSimulator] The Player-backed non-triggered spell/heal PASS marker was not found." | tee -a "$LOG_FILE"
+if ! grep -Fq "[PartyBotSimulator] PASS: Engine action attempt/result shared one nonzero action_id around the real Player heal adapter; Action::Execute returned Success and the Core Player cast later completed with the expected healing and mana effects." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The Core Player Engine action attempt/result PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+engine_action_attempt_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=engine_action_attempt .*action=core_player_heal([[:space:]]|$)' "$LOG_FILE" || true)"
+engine_action_result_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=engine_action_result .*action=core_player_heal .*attempted=1 result=success reason=adapter_returned_success([^[:alnum:]_]|$)' "$LOG_FILE" || true)"
+if [[ "$engine_action_attempt_count" != "1" || "$engine_action_result_count" != "1" ]]; then
+    echo "[PartyBotSimulator] Expected exactly one Core Player heal adapter attempt/result pair, found attempts=$engine_action_attempt_count results=$engine_action_result_count." | tee -a "$LOG_FILE"
+    exit 1
+fi
+engine_action_attempt_line="$(grep -E '\[PartyBotEngineTrace\].*event=engine_action_attempt .*action=core_player_heal([[:space:]]|$)' "$LOG_FILE" | tail -n 1)"
+engine_action_result_line="$(grep -E '\[PartyBotEngineTrace\].*event=engine_action_result .*action=core_player_heal .*attempted=1 result=success reason=adapter_returned_success([^[:alnum:]_]|$)' "$LOG_FILE" | tail -n 1)"
+engine_action_attempt_id="$(printf '%s\n' "$engine_action_attempt_line" | grep -Eo 'action_id=[0-9]+' | cut -d= -f2)"
+engine_action_result_id="$(printf '%s\n' "$engine_action_result_line" | grep -Eo 'action_id=[0-9]+' | cut -d= -f2)"
+engine_action_attempt_seq="$(printf '%s\n' "$engine_action_attempt_line" | grep -Eo 'seq=[0-9]+' | cut -d= -f2)"
+engine_action_result_seq="$(printf '%s\n' "$engine_action_result_line" | grep -Eo 'seq=[0-9]+' | cut -d= -f2)"
+if [[ -z "$engine_action_attempt_id" || "$engine_action_attempt_id" != "$engine_action_result_id" ||
+      -z "$engine_action_attempt_seq" || -z "$engine_action_result_seq" ||
+      "$engine_action_result_seq" -le "$engine_action_attempt_seq" ]]; then
+    echo "[PartyBotSimulator] Core Player heal action trace did not preserve one nonzero action_id and ordered attempt/result sequences." | tee -a "$LOG_FILE"
     exit 1
 fi
 
@@ -393,4 +411,4 @@ if ! grep -Fq "[PartyBotSimulator] PASS: created, ran a bounded Core Creature co
     exit 1
 fi
 
-echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, periodic-healing-assist, periodic-power-assist, periodic-mana-leech and composite periodic-life-leech threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, PartyBotAI encounter-correlated death/resurrection trace records, party-wide trace-budget overflow/one-shot marker, sampled non-PlayerBots health/death/resurrection events, server-shutdown encounter flush, source-map final-bot departure closure, sampled trigger activation/cadence and originating-trigger candidate correlation, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, periodic-healing-assist, periodic-power-assist, periodic-mana-leech and composite periodic-life-leech threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, PartyBotAI encounter-correlated death/resurrection trace records, party-wide trace-budget overflow/one-shot marker, sampled non-PlayerBots health/death/resurrection events, server-shutdown encounter flush, source-map final-bot departure closure, sampled trigger activation/cadence and originating-trigger candidate correlation, Engine action attempt/result correlation with Core Player spell completion, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup." | tee -a "$LOG_FILE"

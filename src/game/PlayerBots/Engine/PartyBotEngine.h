@@ -16,6 +16,8 @@ public:
     void AddMultiplier(std::shared_ptr<Multiplier> multiplier);
     bool InvalidateValue(std::string const& name) const;
     void InvalidateAllValues() const;
+    void InvalidateDecisionState() const;
+    void ResetDecisionState() const;
     bool InvalidateTrigger(std::string const& strategyName,
                            std::string const& triggerName) const;
     void InvalidateAllTriggers() const;

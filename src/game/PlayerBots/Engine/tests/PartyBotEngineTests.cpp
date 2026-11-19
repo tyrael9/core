@@ -450,10 +450,15 @@ void TestEngineTriggerCadenceAndExplicitInvalidation()
     DecisionReport invalidated = engine.Evaluate(invalidatedContext);
     assert(!invalidated.candidates.empty() && trigger->activeChecks == 2);
 
-    engine.InvalidateAllTriggers();
+    engine.InvalidateDecisionState();
     DecisionContext allInvalidatedContext(f.snapshot, f.bot, f.coordinator, 1501);
     DecisionReport allInvalidated = engine.Evaluate(allInvalidatedContext);
     assert(!allInvalidated.candidates.empty() && trigger->activeChecks == 3);
+
+    engine.ResetDecisionState();
+    DecisionContext resetContext(f.snapshot, f.bot, f.coordinator, 1502);
+    DecisionReport reset = engine.Evaluate(resetContext);
+    assert(!reset.candidates.empty() && trigger->activeChecks == 4);
 }
 
 void TestPriorityAndChannelArbitration() {

@@ -23,6 +23,14 @@ bool PartyBotEngine::InvalidateValue(std::string const& name) const {
 void PartyBotEngine::InvalidateAllValues() const {
     m_valueCache.InvalidateAll();
 }
+void PartyBotEngine::InvalidateDecisionState() const {
+    m_valueCache.InvalidateAll();
+    m_triggerScheduler.InvalidateAll();
+}
+void PartyBotEngine::ResetDecisionState() const {
+    m_valueCache.InvalidateAll();
+    m_triggerScheduler.Clear();
+}
 bool PartyBotEngine::InvalidateTrigger(std::string const& strategyName,
                                        std::string const& triggerName) const {
     if (strategyName.empty() || triggerName.empty()) return false;

@@ -469,6 +469,8 @@ uint32 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
 {
     encounterId = 0;
     traceTargetGuid = 0;
+    if (me)
+        m_partyBotEngine.InvalidateDecisionState();
     if (!me || !m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
         !m_partyCoordinator->HasActiveEncounter() ||
         !m_pendingCastTraceActionId || m_pendingCastTraceSpellBound ||
@@ -496,6 +498,8 @@ void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint32 actionId,
                                      uint64 targetGuid, bool success,
                                      bool interrupted)
 {
+    if (me)
+        m_partyBotEngine.InvalidateDecisionState();
     if (!me || !m_decisionTrace.IsEnabled() || !actionId || !encounterId ||
         !m_partyCoordinator || !m_partyCoordinator->HasActiveEncounter() ||
         m_partyCoordinator->GetEncounterId() != encounterId)
@@ -519,8 +523,11 @@ void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint32 actionId,
 
 void PartyBotAI::OnAliveStateChanged(bool wasAlive, bool isAlive)
 {
-    if (!me || wasAlive == isAlive || !m_decisionTrace.IsEnabled() ||
-        !m_partyCoordinator || !m_partyCoordinator->HasActiveEncounter())
+    if (!me || wasAlive == isAlive)
+        return;
+    m_partyBotEngine.InvalidateDecisionState();
+    if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
+        !m_partyCoordinator->HasActiveEncounter())
         return;
 
     uint32 const mapId = me->GetMapId();
@@ -571,6 +578,8 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
     {
         uint64 const newVictimGuid = me->GetVictim()
             ? me->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+        if (oldVictimGuid != newVictimGuid)
+            m_partyBotEngine.InvalidateDecisionState();
         if (oldVictimGuid != newVictimGuid && m_decisionTrace.IsEnabled() &&
             m_partyCoordinator && m_partyCoordinator->HasActiveEncounter())
         {
@@ -976,6 +985,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             TraceDecision("owner_offline_expired", me, nullptr, "reconnect_grace_elapsed", graceMs);
         }
 
+        m_partyBotEngine.ResetDecisionState();
         if (m_partyCoordinator && m_partyCoordinatorMapId == me->GetMapId() &&
             m_partyCoordinatorInstanceId == me->GetInstanceId())
             m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
@@ -987,6 +997,8 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     }
 
     // A returning owner resumes control of the existing PartyBot group.
+    if (m_ownerOfflineTimer)
+        m_partyBotEngine.InvalidateDecisionState();
     m_ownerOfflineTimer = 0;
 
     // Opt-in read-only evaluation; Legacy remains the only action executor.
@@ -1295,6 +1307,7 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         if (transition.kind == PartyBotEngine::EncounterTransitionKind::None)
             return;
 
+        m_partyBotEngine.InvalidateDecisionState();
         bool const started =
             transition.kind == PartyBotEngine::EncounterTransitionKind::Started;
         m_decisionTrace.RecordEncounterBoundary(
@@ -1306,6 +1319,7 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
 
     if (!enabled)
     {
+        m_partyBotEngine.ResetDecisionState();
         // A bot can change maps before its next AI tick. Never mutate a shard owned by another map thread.
         if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
             m_partyCoordinatorInstanceId == instanceId)
@@ -1342,6 +1356,7 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     Group* group = me->GetGroup();
     if (!group || group->isBGGroup() || group->GetId() == 0)
     {
+        m_partyBotEngine.ResetDecisionState();
         if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
             m_partyCoordinatorInstanceId == instanceId)
         {
@@ -1365,6 +1380,7 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
 
     if (m_partyCoordinator != coordinator)
     {
+        m_partyBotEngine.ResetDecisionState();
         // Release only when the old shard belongs to this same map update thread.
         if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
             m_partyCoordinatorInstanceId == instanceId)

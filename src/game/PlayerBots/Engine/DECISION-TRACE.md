@@ -202,3 +202,18 @@ The runtime test is intentionally limited to the structured encounter log stream
 The map-thread PartyCoordinator now tracks value-only health/max-health/alive baselines for online party members without `CombatBotBaseAI`. The first observation is a baseline, unchanged snapshots emit nothing, health changes consume the detail budget, and alive transitions consume the important budget. PartyBots are excluded because their attached PlayerAI callbacks are authoritative. A member absent from the current map snapshot loses its baseline, so rejoining begins with a new observation.
 
 The five-Player Core simulator drives actual `Unit::DealDamage` (nonlethal and lethal) and `Player::ResurrectPlayer`, captures fresh `PartySnapshotBuilder` values after each operation, and emits through the same DecisionTrace admission/formatting method. Runtime acceptance requires exactly one `party_member_health`, `party_member_death`, and `party_member_resurrect` record for the same member GUID. These are sampled deltas, not a per-hit damage stream.
+
+
+## Runtime verification update (2026-11-19, F13/F14)
+
+Fixture-backed Push CI run [#44556650342](https://github.com/tyrael9/core/actions/runs/44556650342), commit `7f53e5e305aa36f84b191a7af517c01ea79fe405`, passed the complete Linux ARM64 / Vanilla 5875 build and Core-backed simulator runtime.
+
+The runtime log proves:
+
+- **F13 party-wide budget:** two real PartyBotAI instances shared one PartyCoordinator; 1,024 real target-change detail events were admitted, one `trace_limit` marker was emitted on overflow, and subsequent detail events were suppressed.
+- **F14 ordinary party member sampling:** real Core `Unit::DealDamage` and `Player::ResurrectPlayer` produced exactly one sampled `party_member_health`, `party_member_death`, and `party_member_resurrect` record for the same non-PlayerBots Group member GUID. The CI assertion matched the member GUID in the PASS record to the structured trace.
+- The simulator also passed PartyBotAI death/resurrection callback records, periodic damage/healing/power/mana-leech/life-leech threat parity, real Group roster and multi-add threat scenarios, spell/movement/follow behavior, cleanup and the final `Runtime PASS` marker.
+
+The runner's GUID assertion was hardened to tolerate ANSI color sequences. A pure C++ regression also proves that health sampling rejects snapshots from a different group, map or instance without replacing the active shard's baseline; the same-shard follow-up still emits the correct health transition.
+
+F13 and F14 are now runtime-verified, not merely implemented or unit-tested. Remaining Phase 3 gaps include shutdown flush, cross-map/instance closure, broader trigger/arbitration/action-result coverage, full per-bot state, damage-by-damage health deltas and deployment diagnostics integration. No server deployment or image publication was performed.

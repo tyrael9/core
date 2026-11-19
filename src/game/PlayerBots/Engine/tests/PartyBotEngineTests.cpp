@@ -67,10 +67,24 @@ public:
         captured.reason = reasonStorage.back()->c_str();
         events.push_back(captured);
     }
-    // ReservationTraceEvent exposes a borrowed reason pointer for synchronous
-    // observers. Keep captured test events' backing strings alive with them.
+    void RecordEngineActionEvent(DecisionContext const&,
+                                 EngineActionTraceEvent const& event) override {
+        actionNameStorage.push_back(std::make_shared<std::string>(
+            event.actionName ? event.actionName : "none"));
+        actionReasonStorage.push_back(std::make_shared<std::string>(
+            event.reason ? event.reason : "none"));
+        EngineActionTraceEvent captured = event;
+        captured.actionName = actionNameStorage.back()->c_str();
+        captured.reason = actionReasonStorage.back()->c_str();
+        actionEvents.push_back(captured);
+    }
+    // Trace event strings are borrowed synchronously; retain backing strings
+    // so assertions can inspect the captured values after dispatch.
     std::vector<std::shared_ptr<std::string>> reasonStorage;
+    std::vector<std::shared_ptr<std::string>> actionNameStorage;
+    std::vector<std::shared_ptr<std::string>> actionReasonStorage;
     std::vector<ReservationTraceEvent> events;
+    std::vector<EngineActionTraceEvent> actionEvents;
 };
 class TestTrigger : public Trigger {
 public:
@@ -497,6 +511,82 @@ void TestEngineTriggerObservationCapacityIsBounded()
     DecisionReport report = engine.Evaluate(f.context);
     assert(report.triggerEvaluations.size() == DecisionReport::MaxTriggerEvaluations);
     assert(report.omittedTriggerEvaluations == 6);
+}
+
+void TestEngineActionAttemptAndResultTrace()
+{
+    Fixture f;
+    f.snapshot.groupId = 91;
+    f.snapshot.mapId = 33;
+    f.snapshot.instanceId = 101;
+    PartyMemberSnapshot inCombatBot = f.bot;
+    inCombatBot.inCombat = true;
+    f.snapshot.members.push_back(inCombatBot);
+    EncounterTransition const started =
+        f.coordinator.ObserveEncounter(f.snapshot, 1000, 30000);
+    assert(started.kind == EncounterTransitionKind::Started);
+
+    CaptureReservationTraceSink traceSink;
+    f.context.reservationTrace = &traceSink;
+
+    PartyBotEngine::PartyBotEngine engine;
+    auto success = std::make_shared<TestAction>("engine_heal");
+    auto failure = std::make_shared<TestAction>("engine_move");
+    failure->result = ActionResult::Failed;
+    assert(engine.RegisterAction(success));
+    assert(engine.RegisterAction(failure));
+
+    ActionCandidate heal = Candidate("engine_heal", 20.0f, ActionChannel::Utility);
+    heal.spellId = 2050;
+    ActionCandidate move = Candidate("engine_move", 10.0f, ActionChannel::Movement);
+    move.targetGuid = 44;
+    auto trigger = std::make_shared<TestTrigger>("adapter_outcomes");
+    trigger->generated.push_back(heal);
+    trigger->generated.push_back(move);
+    auto strategy = std::make_shared<Strategy>("engine_adapter");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 2);
+    engine.ExecuteSelected(f.context, report);
+
+    assert(success->executeCount == 1 && failure->executeCount == 1);
+    assert(traceSink.actionEvents.size() == 4);
+    EngineActionTraceEvent const& firstAttempt = traceSink.actionEvents[0];
+    EngineActionTraceEvent const& firstResult = traceSink.actionEvents[1];
+    EngineActionTraceEvent const& secondAttempt = traceSink.actionEvents[2];
+    EngineActionTraceEvent const& secondResult = traceSink.actionEvents[3];
+
+    assert(firstAttempt.stage == EngineActionTraceStage::Attempt);
+    assert(firstAttempt.actionId != 0);
+    assert(firstAttempt.actionId == firstResult.actionId);
+    assert(firstAttempt.actionName == std::string("engine_heal"));
+    assert(firstAttempt.targetGuid == 22 && firstAttempt.spellId == 2050);
+    assert(firstAttempt.attempted && firstAttempt.result == ActionResult::NotAttempted);
+    assert(firstResult.stage == EngineActionTraceStage::Result);
+    assert(firstResult.attempted && firstResult.result == ActionResult::Success);
+    assert(firstResult.reason == std::string("adapter_returned_success"));
+
+    assert(secondAttempt.stage == EngineActionTraceStage::Attempt);
+    assert(secondAttempt.actionId != 0 && secondAttempt.actionId != firstAttempt.actionId);
+    assert(secondAttempt.actionId == secondResult.actionId);
+    assert(secondAttempt.actionName == std::string("engine_move"));
+    assert(secondAttempt.targetGuid == 44);
+    assert(secondAttempt.attempted);
+    assert(secondResult.stage == EngineActionTraceStage::Result);
+    assert(secondResult.attempted && secondResult.result == ActionResult::Failed);
+    assert(secondResult.reason == std::string("action_execution_not_successful"));
+
+    for (std::size_t index : report.selectedIndices)
+    {
+        CandidateEvaluation const& evaluation = report.candidates[index];
+        assert(evaluation.actionId != 0);
+        assert(evaluation.actionId == evaluation.candidate.actionId);
+    }
+    assert(report.candidates[report.selectedIndices[0]].actionId !=
+           report.candidates[report.selectedIndices[1]].actionId);
+    assert(report.candidates[report.selectedIndices[0]].threatActionId == 0);
 }
 
 void TestPriorityAndChannelArbitration() {
@@ -1446,6 +1536,14 @@ void TestEngineRevalidatesReservationsImmediatelyBeforeExecution() {
     assert(traceSink.events[0].threatOwnerGuid == f.bot.guid);
     assert(std::fabs(traceSink.events[0].alreadyReserved - 6.0f) < 0.0001f);
     assert(traceSink.events[0].reason == std::string("projected_threat_exceeds_core_headroom"));
+    assert(result.actionId != 0);
+    assert(traceSink.actionEvents.size() == 1);
+    assert(traceSink.actionEvents[0].stage == EngineActionTraceStage::Result);
+    assert(traceSink.actionEvents[0].actionId == result.actionId);
+    assert(!traceSink.actionEvents[0].attempted);
+    assert(traceSink.actionEvents[0].result == ActionResult::Failed);
+    assert(traceSink.actionEvents[0].reason ==
+           std::string("projected_threat_exceeds_core_headroom"));
 }
 
 void TestEngineRollsBackPartialFanoutWhenReservationCapacityIsReached() {
@@ -1993,6 +2091,7 @@ int main() {
     TestTriggerSchedulerCapacityFailsOpen();
     TestEngineTriggerCadenceAndExplicitInvalidation();
     TestEngineTriggerObservationCapacityIsBounded();
+    TestEngineActionAttemptAndResultTrace();
     TestActionQueueIsBoundedPriorityOrderedAndStable();
     TestPendingActionQueueDeduplicatesAndPreservesOriginalExpiry();
     TestPendingActionQueuePriorityFifoExpiryAndClockWrap();

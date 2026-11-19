@@ -131,6 +131,7 @@ public:
     mutable uint64 m_pendingCastTraceEncounterId = 0;
     mutable uint64 m_pendingCastTraceTargetGuid = 0;
     mutable uint32 m_pendingCastTraceSpellId = 0;
+    mutable bool m_pendingCastTraceSpellBound = false;
 
     void UpdatePartyBotEngineShadow();
 };

@@ -181,3 +181,9 @@ During an active encounter, the read-only Shadow evaluation emits one bounded de
 
 These records currently rely on the existing pure evaluation/cadence tests plus ARM64 compile/runtime regression. A dedicated log-format parser test and authoritative action-result correlation remain open.
 
+## Encounter-correlated Legacy cast request result trace
+
+The existing `CombatBotBaseAI::DoCastSpell` path calls the real `Player::CastSpell` and then invokes the virtual `TraceDecision("spell_cast_result", ...)` hook with the actual `SpellCastResult`. PartyBotAI now associates that result with the active map/instance coordinator and emits a `cast_request_result` record containing encounter ID/sequence, source/executor, target GUID, spell ID, numeric result and accepted flag. The accepted flag is true only when the returned code is `SPELL_CAST_OK`; it must not be interpreted as cast completion. Up to four results per bot AI tick are retained, with one `trace_limit` marker if further results are suppressed.
+
+Validation in this slice consists of the C++14/API build plus the full fixture-backed Core regression. The simulator independently proves the Core Player cast acceptance, pending-cast/GCD, completion, mana and healing semantics, but it does not yet assert the PartyBotAI log line itself. A dedicated trace-output parser/integration assertion remains open. Direct raw `Player::CastSpell` sites outside `DoCastSpell`, cast finish/interruption events and downstream damage/heal application are not yet traced by this hook.
+

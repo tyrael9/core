@@ -8,7 +8,10 @@ struct PartyMemberSnapshot {
     std::uint32_t mapId = 0, instanceId = 0;
     std::uint32_t health = 0, maxHealth = 0, power = 0, maxPower = 0;
     Guid victimGuid = 0;
-    float x = 0.0f, y = 0.0f, z = 0.0f;
+    float x = 0.0f, y = 0.0f, z = 0.0f, orientation = 0.0f;
+    std::uint32_t currentSpellId = 0, currentSpellState = 0;
+    Guid currentSpellTargetGuid = 0;
+    std::uint8_t shapeshiftForm = 0, currentSpellType = 0xff;
     bool online = false, alive = false, inCombat = false, isMainTank = false;
     bool isPlayerBot = false;
 };
@@ -26,8 +29,9 @@ struct ThreatEntrySnapshot {
 };
 struct HostileSnapshot {
     Guid guid = 0, victimGuid = 0;
+    std::uint32_t entry = 0, rank = 0;
     std::uint32_t health = 0, maxHealth = 0;
-    bool alive = false, crowdControlProtected = false;
+    bool alive = false, worldBoss = false, crowdControlProtected = false;
     std::vector<ThreatEntrySnapshot> threat;
 };
 // Immutable-by-convention value data. Never store live Core object pointers here.

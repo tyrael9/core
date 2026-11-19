@@ -1,9 +1,11 @@
 #include "PartySnapshotBuilder.h"
 #include "CombatBotBaseAI.h"
+#include "Creature.h"
 #include "Group.h"
 #include "Map.h"
 #include "Pet.h"
 #include "Player.h"
+#include "Spell.h"
 #include "ThreatManager.h"
 #include "Unit.h"
 #include <map>
@@ -74,6 +76,16 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         hostile.guid = hostileGuid;
         hostile.victimGuid = hostileUnit->GetVictim()
             ? hostileUnit->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+        if (Creature* creature = hostileUnit->ToCreature())
+        {
+            CreatureInfo const* info = creature->GetCreatureInfo();
+            if (info)
+            {
+                hostile.entry = info->entry;
+                hostile.rank = info->rank;
+                hostile.worldBoss = creature->IsWorldBoss();
+            }
+        }
         hostile.health = hostileUnit->GetHealth();
         hostile.maxHealth = hostileUnit->GetMaxHealth();
         hostile.alive = hostileUnit->IsAlive();
@@ -163,6 +175,29 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         memberData.x = member->GetPositionX();
         memberData.y = member->GetPositionY();
         memberData.z = member->GetPositionZ();
+        memberData.orientation = member->GetOrientation();
+        memberData.shapeshiftForm = static_cast<std::uint8_t>(member->GetShapeshiftForm());
+
+        Spell* currentSpell = member->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        std::uint8_t currentSpellType = CURRENT_GENERIC_SPELL;
+        if (!currentSpell)
+        {
+            currentSpell = member->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+            currentSpellType = CURRENT_CHANNELED_SPELL;
+        }
+        if (!currentSpell)
+        {
+            currentSpell = member->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL);
+            currentSpellType = CURRENT_AUTOREPEAT_SPELL;
+        }
+        if (currentSpell && currentSpell->m_spellInfo)
+        {
+            memberData.currentSpellId = currentSpell->m_spellInfo->Id;
+            memberData.currentSpellState = currentSpell->getState();
+            memberData.currentSpellType = currentSpellType;
+            memberData.currentSpellTargetGuid =
+                currentSpell->m_targets.getUnitTargetGuid().GetRawValue();
+        }
         memberData.online = member->IsInWorld();
         memberData.alive = member->IsAlive();
         memberData.inCombat = member->IsInCombat();

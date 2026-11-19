@@ -2963,8 +2963,17 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     // Do not create and tear down a second five-Player Group on this test Map.
     PartyCoordinator coordinator;
     PartySnapshot const* initialSnapshot = nullptr;
+    bool const formProbeApplied = membersAdded && players[0];
+    if (formProbeApplied)
+        players[0]->SetShapeshiftForm(FORM_CAT);
     if (membersAdded && mainTankAssigned && allPlayersOnSameMap)
         initialSnapshot = PartySnapshotBuilder::GetOrBuild(players[0], coordinator, 15000, 250);
+    PartyMemberSnapshot const* initialTankState = initialSnapshot
+        ? initialSnapshot->FindMember(players[0]->GetObjectGuid().GetRawValue()) : nullptr;
+    bool const initialFormCopied = initialTankState &&
+        initialTankState->shapeshiftForm == static_cast<std::uint8_t>(FORM_CAT);
+    if (formProbeApplied)
+        players[0]->SetShapeshiftForm(FORM_NONE);
 
     bool const initialSnapshotValid = initialSnapshot &&
         initialSnapshot->groupId == group->GetId() &&
@@ -2991,7 +3000,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 member->maxPower == player->GetMaxPower(player->GetPowerType()) &&
                 member->x == player->GetPositionX() &&
                 member->y == player->GetPositionY() &&
-                member->z == player->GetPositionZ();
+                member->z == player->GetPositionZ() &&
+                member->orientation == player->GetOrientation();
             initialRolesUnknown = initialRolesUnknown &&
                 member->roleId == static_cast<std::uint8_t>(PartyRole::Unknown);
         }
@@ -3416,6 +3426,27 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     healer->SetFacingToObject(tank);
     SpellCastResult const healCastResult = healSpell && tankAliveAndInjured
         ? healer->CastSpell(tank, healSpell, false) : SPELL_FAILED_UNKNOWN;
+
+    // Capture the real pending Core cast before Player::Update finishes it.
+    PartySnapshot f21CastStateTraceSnapshot;
+    bool currentCastSnapshotValid = false;
+    if (healCastResult == SPELL_CAST_OK)
+    {
+        coordinator.InvalidateSnapshot();
+        PartySnapshot const* castStateSnapshot =
+            PartySnapshotBuilder::GetOrBuild(healer, coordinator, 15601, 0);
+        PartyMemberSnapshot const* healerCastState = castStateSnapshot
+            ? castStateSnapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
+        currentCastSnapshotValid = healerCastState &&
+            healerCastState->currentSpellId == healSpell->Id &&
+            healerCastState->currentSpellType == CURRENT_GENERIC_SPELL &&
+            healerCastState->currentSpellState != 0 &&
+            healerCastState->currentSpellTargetGuid == tankGuid.GetRawValue();
+        if (castStateSnapshot)
+            f21CastStateTraceSnapshot = *castStateSnapshot;
+        coordinator.InvalidateSnapshot();
+    }
+
     for (uint32 tick = 0; tick < 20 &&
          healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
     {
@@ -3510,6 +3541,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         bossSnapshot->alive && addSnapshot->alive &&
         bossSnapshot->victimGuid == healerGuid.GetRawValue() &&
         addSnapshot->victimGuid == healerGuid.GetRawValue();
+    bool const hostileIdentityCopied = bossSnapshot && addSnapshot &&
+        bossSnapshot->entry == hostiles[0].creature->GetCreatureInfo()->entry &&
+        bossSnapshot->rank == hostiles[0].creature->GetCreatureInfo()->rank &&
+        bossSnapshot->worldBoss == hostiles[0].creature->IsWorldBoss() &&
+        addSnapshot->entry == hostiles[1].creature->GetCreatureInfo()->entry &&
+        addSnapshot->rank == hostiles[1].creature->GetCreatureInfo()->rank &&
+        addSnapshot->worldBoss == hostiles[1].creature->IsWorldBoss();
     bool const threatValuesCopied = containsThreat(
             bossSnapshot, tankGuid.GetRawValue(), tankThreat0) &&
         containsThreat(bossSnapshot, healerGuid.GetRawValue(), healerThreat0) &&
@@ -3557,14 +3595,15 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
 
     bool const f9ChecksPassed = hostileAIReady && membersAdded && mainTankAssigned &&
         allPlayersOnSameMap && initialSnapshotValid && initialRosterResolved &&
-        initialValuesCopied && initialRolesUnknown && initialCacheRetained &&
+        initialValuesCopied && initialFormCopied && initialRolesUnknown && initialCacheRetained &&
         registeredBeforeCleanup && bothHostilesInitiallyTargetTank &&
         threatBudgetSnapshotValid && overBudgetRejected && executionReservationRaceRejected &&
         safeBudgetSelectedAndReserved && enginePreservedCoreThreatState &&
         enginePreservedCoreVictims && reservationReleased &&
         tankAliveAndInjured && healCompleted && healAssistBoundValid && healerPulledBothAdds &&
-        snapshotValid && rosterRoleStateValid && bothAddsResolved && threatValuesCopied &&
-        coreReachabilityCopied && companionSnapshotValid && companionBudgetValid;
+        snapshotValid && rosterRoleStateValid && bothAddsResolved && hostileIdentityCopied &&
+        currentCastSnapshotValid && threatValuesCopied && coreReachabilityCopied &&
+        companionSnapshotValid && companionBudgetValid;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u petCreated=%u petSnapshot=%u petBudget=%u petThreat=%.1f petHeadroom=%.1f petMelee=%u budgetSnapshot=%u overBudgetRejected=%u executionRaceRejected=%u safeSelectedReserved=%u threatUnchanged=%u victimUnchanged=%u reservationReleased=%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u healAssistBound=%u upper=%.1f/%.1f delta=%.1f/%.1f assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u meleeReachability=%u/4 reachable=%u unreachable=%u.",
@@ -3910,6 +3949,17 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         partyTraceStarted.kind == EncounterTransitionKind::Started &&
         partyTraceDied && tank->IsAlive() &&
         partyTraceSequenceAfter == partyTraceSequenceBefore + 3;
+
+    EncounterHeartbeat f21Heartbeat;
+    bool const f21HeartbeatReady = partyTraceCoordinator->TryBeginEncounterHeartbeat(
+        partyTraceNow, 2000, f21Heartbeat);
+    if (f21HeartbeatReady)
+        partyTraceAI.m_decisionTrace.RecordPartyHeartbeat(
+            tank, f21CastStateTraceSnapshot, f21Heartbeat);
+    bool const f21BotStateTracePassed = f21HeartbeatReady &&
+        partyTraceAI.m_decisionTrace.IsEnabled() && initialFormCopied &&
+        currentCastSnapshotValid && hostileIdentityCopied &&
+        f21CastStateTraceSnapshot.members.size() == MAX_GROUP_SIZE;
 
     // Exercise the actual PartyBotAI target-change callback across two distinct
     // bots sharing the same map/instance PartyCoordinator. The first 1,024
@@ -4351,6 +4401,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     if (partyBotEncounterLifecycleTraced)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: PartyBotAI emitted encounter-correlated death and resurrection trace records through Core PlayerAI callbacks, while the repeated CORPSE state was suppressed.");
+    if (f21BotStateTracePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F21 copied real Core shapeshift form, pending spell ID/state/target and member position, plus hostile creature entry/rank/world-boss identity into the bounded party heartbeat.");
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] Group death recovery: dpsDamage=%u/%u dpsThreat=%.1f/%.1f healerHoldsAggro=%u tankDeath=%u tankRefsRemoved=%u healerRetargetAfterTankDeath=%u/%u tankSnapshot=%u tankRoster=%u tankThreatSnapshot=%u healerDeath=%u healerRefsRemoved=%u dpsRetargetAfterHealerDeath=%u/%u healerSnapshot=%u healerRoster=%u healerThreatSnapshot=%u registered=%u groupRemoved=%u cleanup=%u.",

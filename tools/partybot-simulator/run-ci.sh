@@ -162,7 +162,7 @@ with open(destination, "w", encoding="utf-8") as output:
     output.write(config)
 PY
 
-echo "[PartyBotSimulator] Running one-shot Stages A-F20 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Running one-shot Stages A-F21 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
 set +e
 timeout --signal=TERM --kill-after=15s 10m "$MANGOSD_BIN" -c "$CONFIG_FILE" 2>&1 | tee -a "$LOG_FILE"
 simulator_status=${PIPESTATUS[0]}
@@ -246,6 +246,15 @@ fi
 decision_summary_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=decision_summary .*candidates=1 selected=1 executed=1 execution_failed=0 channel_losers=0 missing_action=0 impossible=0 useless=0 multiplier_veto=0 invalid_priority=0 threat_unknown=0 threat_budget_veto=0([^[:alnum:]_]|$)' "$LOG_FILE" || true)"
 if [[ "$decision_summary_count" != "1" ]]; then
     echo "[PartyBotSimulator] Expected exactly one complete F20 decision_summary for the executed Core Player heal, found $decision_summary_count." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! grep -Fq "[PartyBotSimulator] PASS: F21 copied real Core shapeshift form, pending spell ID/state/target and member position, plus hostile creature entry/rank/world-boss identity into the bounded party heartbeat." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F21 Core snapshot/heartbeat PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f21_heartbeat_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=party_snapshot .*facts=.*form=1,cast=2050:[0-9]+:[0-9]+:[0-9]+,pos=-?[0-9]+/-?[0-9]+/-?[0-9]+.*entry=[0-9]+,rank=[0-9]+,boss=[01]' "$LOG_FILE" || true)"
+if [[ "$f21_heartbeat_count" != "1" ]]; then
+    echo "[PartyBotSimulator] Expected exactly one F21 heartbeat containing the real form/cast/position and hostile identity fields, found $f21_heartbeat_count." | tee -a "$LOG_FILE"
     exit 1
 fi
 engine_action_attempt_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=engine_action_attempt .*action=core_player_heal([[:space:]]|$)' "$LOG_FILE" || true)"

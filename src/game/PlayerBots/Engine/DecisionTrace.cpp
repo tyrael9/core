@@ -123,7 +123,14 @@ void DecisionTrace::RecordPartyHeartbeat(Player const* bot,
               << ',' << member.health << '/' << member.maxHealth
               << ',' << static_cast<uint32>(member.powerType)
               << ':' << member.power << '/' << member.maxPower
-              << ',' << member.victimGuid;
+              << ',' << member.victimGuid
+              << ",form=" << static_cast<uint32>(member.shapeshiftForm)
+              << ",cast=" << member.currentSpellId << ':' << member.currentSpellState
+              << ':' << static_cast<uint32>(member.currentSpellType)
+              << ':' << member.currentSpellTargetGuid
+              << ",pos=" << static_cast<int32>(member.x * 10.0f)
+              << '/' << static_cast<int32>(member.y * 10.0f)
+              << '/' << static_cast<int32>(member.z * 10.0f);
     }
 
     facts << ";companions=";
@@ -148,7 +155,10 @@ void DecisionTrace::RecordPartyHeartbeat(Player const* bot,
         HostileSnapshot const& hostile = snapshot.hostiles[i];
         if (i)
             facts << '|';
-        facts << hostile.guid << ',' << (hostile.alive ? 1 : 0)
+        facts << hostile.guid << ",entry=" << hostile.entry
+              << ",rank=" << hostile.rank
+              << ",boss=" << (hostile.worldBoss ? 1 : 0)
+              << ',' << (hostile.alive ? 1 : 0)
               << ',' << (hostile.crowdControlProtected ? 1 : 0)
               << ',' << hostile.health << '/' << hostile.maxHealth
               << ',' << hostile.victimGuid;

@@ -55,6 +55,12 @@ public:
     bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const final;
     void TraceDecision(char const* event, Unit const* pTarget, SpellEntry const* pSpellEntry,
                        char const* reason, uint32 detail = 0) const final;
+    uint32 OnSpellCastPreparing(Spell const* spell, uint32 spellId,
+                                uint64 targetGuid, uint64& encounterId) final;
+    void OnSpellCastFinished(Spell const* spell, uint32 actionId,
+                             uint64 encounterId, uint32 spellId,
+                             uint64 targetGuid, bool success,
+                             bool interrupted) final;
     Player* GetPartyLeader() const;
     bool IsPartyInCombat() const;
     bool AttackStart(Unit* pVictim);
@@ -123,6 +129,8 @@ public:
     bool m_engineShadowStrategiesRegistered = false;
     mutable uint32 m_pendingCastTraceActionId = 0;
     mutable uint64 m_pendingCastTraceEncounterId = 0;
+    mutable uint64 m_pendingCastTraceTargetGuid = 0;
+    mutable uint32 m_pendingCastTraceSpellId = 0;
 
     void UpdatePartyBotEngineShadow();
 };

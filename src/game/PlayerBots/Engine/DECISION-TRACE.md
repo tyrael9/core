@@ -133,3 +133,17 @@ Core callback semantics: Player::SetDeathState invokes OnAliveStateChanged after
 ### Resurrection lifecycle coverage
 
 The five-Player Core death/recovery fixture resurrects the Main Tank only after all death-state roster and threat snapshots have been captured. A fresh PlayerAI observer must receive exactly one dead -> alive transition from Core Player::ResurrectPlayer, and the runtime CI script requires the corresponding PASS marker. Fixture-backed ARM64 runtime run [#44448514086](https://github.com/tyrael9/core/actions/runs/44448514086) passed both the death and resurrection markers. This tests the Core callback boundary; PartyBotAI's encounter trace formatting remains a separate integration test.
+
+
+## Runtime-verified PartyBotAI lifecycle trace
+
+Fixture-backed ARM64 Runtime CI run [#44452478936](https://github.com/tyrael9/core/actions/runs/44452478936), commit `2afd7cb`, verified the actual PartyBotAI callback and formatted event path, not just the Core observer seam. The simulator enabled `PlayerBot.DecisionTrace`, attached a real PartyBotAI to the five-Player Group fixture, opened a coordinator encounter, and drove the tank through Core `DealDamage`, the repeated `JUST_DIED -> CORPSE` state, and Core `ResurrectPlayer`.
+
+The runtime log contained two encounter-correlated records with the same encounter ID and consecutive sequence numbers:
+
+- `event=death`, `alive_before=1`, `alive_after=0`
+- `event=resurrect`, `alive_before=0`, `alive_after=1`
+
+The simulator also asserted that the sequence advanced by exactly two events; the repeated CORPSE callback emitted no third event. The CI script requires both formatted records and the dedicated PartyBotAI lifecycle PASS marker.
+
+This proves the PartyBotAI lifecycle trace end-to-end on the pinned Core fixture. It does not yet cover human party-member lifecycle events, damage-by-damage health deltas, or trace-budget overflow.

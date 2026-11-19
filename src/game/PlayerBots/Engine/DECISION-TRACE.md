@@ -125,3 +125,6 @@ For the current Shadow path, both PlayerBot.EngineShadow and PlayerBot.DecisionT
 ### Alive-state observer regression
 
 The Core-backed simulator now attaches a temporary PlayerAI observer to the Main Tank in the existing real five-Player death/recovery fixture. It requires exactly one alive -> dead callback from the real Core damage/death path and explicitly advances JUST_DIED -> CORPSE to prove that the latter does not emit a duplicate. The simulator restores the previous AI pointer before cleanup. This regression validates the Core callback boundary; it does not yet validate PartyBotAI's formatted encounter event end-to-end, human-member observation, or resurrection.
+
+
+Core callback semantics: Player::SetDeathState invokes OnAliveStateChanged after each state assignment, including JUST_DIED followed by CORPSE. The hook is a state sample; PartyBotAI suppresses duplicate semantic events by returning when wasAlive == isAlive. The simulator regression explicitly distinguishes raw callback count from actual alive/dead transitions.

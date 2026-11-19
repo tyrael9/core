@@ -37,9 +37,9 @@ std::shared_ptr<Action> PartyBotEngine::FindAction(std::string const& name) cons
 }
 DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
     DecisionContext evaluationContext(
-        evaluationContext.snapshot, evaluationContext.bot, evaluationContext.coordinator, evaluationContext.nowMs,
-        evaluationContext.reservationTrace,
-        evaluationContext.valueCache ? evaluationContext.valueCache : &m_valueCache);
+        context.snapshot, context.bot, context.coordinator, context.nowMs,
+        context.reservationTrace,
+        context.valueCache ? context.valueCache : &m_valueCache);
     DecisionReport report;
     report.snapshotEpoch = evaluationContext.snapshot.epoch;
     for (auto const& strategy : m_strategies) {
@@ -163,9 +163,9 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
 }
 void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& report) const {
     DecisionContext executionContext(
-        executionContext.snapshot, executionContext.bot, executionContext.coordinator, executionContext.nowMs,
-        executionContext.reservationTrace,
-        executionContext.valueCache ? executionContext.valueCache : &m_valueCache);
+        context.snapshot, context.bot, context.coordinator, context.nowMs,
+        context.reservationTrace,
+        context.valueCache ? context.valueCache : &m_valueCache);
     auto recordReservation = [&executionContext](ReservationTraceEvent const& event) {
         if (executionContext.reservationTrace)
             executionContext.reservationTrace->RecordReservationEvent(executionContext, event);

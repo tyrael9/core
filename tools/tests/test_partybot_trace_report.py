@@ -87,9 +87,9 @@ class PartyBotTraceReportTests(unittest.TestCase):
             source = root / "mangosd.log"
             output = root / "reports"
             source.write_text(
-                "2026-11-19T05:00:00Z [PartyBotEngineTrace] encounter_id=41 seq=1 event=encounter_start\\n"
-                "2026-11-19T05:00:01Z [PartyBotEngineTrace] encounter_id=41 seq=2 event=encounter_end\\n"
-                "2026-11-19T05:00:02Z [PartyBotEngineTrace] encounter_id=42 seq=1 event=encounter_start\\n",
+                "2026-11-19T05:00:00Z [PartyBotEngineTrace] encounter_id=41 seq=1 event=encounter_start\n"
+                "2026-11-19T05:00:01Z [PartyBotEngineTrace] encounter_id=41 seq=2 event=encounter_end\n"
+                "2026-11-19T05:00:02Z [PartyBotEngineTrace] encounter_id=42 seq=1 event=encounter_start\n",
                 encoding="utf-8",
             )
 

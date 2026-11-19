@@ -322,7 +322,7 @@ Implementation slice complete: the component-scoped negative flat-threat estimat
 - [x] Verify the real Player::SetDeathState hook reports after both JUST_DIED and CORPSE state assignments.
 - [x] Explicitly advance JUST_DIED -> CORPSE and verify PartyBotAI's same-state filter semantics: two raw callbacks, one unchanged-state callback, and exactly one alive -> dead semantic transition.
 - [x] Make the enclosing F10 death/recovery scenario fail if either observer assertion fails, and make run-ci.sh require the dedicated PASS marker.
-- [ ] Verify the corrected regression on ARM64 Core compilation and fixture-backed runtime CI. PartyBotAI formatted encounter-record emission and resurrection callback still need direct runtime coverage.
+- [x] Verify the corrected death + resurrection observer suite on ARM64 Core compilation and fixture-backed runtime CI. Push run [#44448514086](https://github.com/tyrael9/core/actions/runs/44448514086) on `66cdc447` passed the full Core build, pure tests and fixture-backed runtime; both dedicated death and resurrection PASS markers were present. This validates the Core callback boundary and transition semantics, not PartyBotAI formatted encounter-record emission end-to-end.
 
 
 ### Death-state callback semantics correction

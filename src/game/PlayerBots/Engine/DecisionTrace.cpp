@@ -388,6 +388,66 @@ void DecisionTrace::RecordReservationEvent(
              event.accepted ? 1u : 0u, safeReason.c_str());
 }
 
+void DecisionTrace::RecordEngineActionEvent(
+    DecisionContext const& context, EngineActionTraceEvent const& event)
+{
+    if (!m_enabled || !context.coordinator.HasActiveEncounter() ||
+        !context.bot.guid)
+        return;
+
+    uint64 const encounterId = context.coordinator.GetEncounterId();
+    uint32 const elapsedMs = context.coordinator.GetEncounterElapsedMs(context.nowMs);
+    uint32 const groupId = context.snapshot.groupId;
+    uint32 const mapId = context.snapshot.mapId;
+    uint32 const instanceId = context.snapshot.instanceId;
+
+    EncounterTraceAdmission const admission =
+        context.coordinator.TryAdmitEncounterTraceEvent(
+            encounterId, EncounterTraceEventClass::Important);
+    if (admission == EncounterTraceAdmission::EmitLimitMarker)
+    {
+        uint32 const markerSequence = context.coordinator.NextEncounterSequence();
+        if (markerSequence)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trace_limit group=%u map=%u instance=%u bot=%llu elapsed_ms=%u reason=important_budget_exhausted",
+                     static_cast<unsigned long long>(encounterId), markerSequence,
+                     groupId, mapId, instanceId,
+                     static_cast<unsigned long long>(context.bot.guid), elapsedMs);
+    }
+    if (admission != EncounterTraceAdmission::Accepted)
+        return;
+    uint32 const sequence = context.coordinator.NextEncounterSequence();
+    if (!sequence)
+        return;
+
+    char const* eventName = event.stage == EngineActionTraceStage::Attempt
+        ? "engine_action_attempt" : "engine_action_result";
+    char const* resultName = "not_attempted";
+    switch (event.result)
+    {
+        case ActionResult::NotAttempted: resultName = "not_attempted"; break;
+        case ActionResult::Success: resultName = "success"; break;
+        case ActionResult::Impossible: resultName = "impossible"; break;
+        case ActionResult::Useless: resultName = "useless"; break;
+        case ActionResult::Failed: resultName = "failed"; break;
+        case ActionResult::Skipped: resultName = "skipped"; break;
+    }
+
+    std::string const safeAction = SafeTraceToken(event.actionName);
+    std::string const safeReason = SafeTraceToken(event.reason);
+    bool const priorityValid = std::isfinite(event.priority);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=%s source=partybot_engine_execute group=%u map=%u instance=%u bot=%llu elapsed_ms=%u action_id=%llu action=%s target=%llu spell=%u channel=%u priority=%.2f priority_valid=%u attempted=%u result=%s reason=%s",
+             static_cast<unsigned long long>(encounterId), sequence, eventName,
+             groupId, mapId, instanceId,
+             static_cast<unsigned long long>(context.bot.guid), elapsedMs,
+             static_cast<unsigned long long>(event.actionId), safeAction.c_str(),
+             static_cast<unsigned long long>(event.targetGuid), event.spellId,
+             static_cast<uint32>(event.channel),
+             priorityValid ? event.priority : 0.0f, priorityValid ? 1u : 0u,
+             event.attempted ? 1u : 0u, resultName, safeReason.c_str());
+}
+
 void DecisionTrace::RecordEncounterDecisionSummary(
     Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
     uint32 snapshotEpoch, uint64 encounterId, uint32 sequence,

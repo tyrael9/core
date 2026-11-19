@@ -201,6 +201,25 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
         if (executionContext.reservationTrace)
             executionContext.reservationTrace->RecordReservationEvent(executionContext, event);
     };
+    auto recordAction = [&executionContext](
+        CandidateEvaluation& evaluation, ActionId actionId,
+        EngineActionTraceStage stage, bool attempted,
+        ActionResult result, char const* reason) {
+        if (!executionContext.reservationTrace)
+            return;
+        EngineActionTraceEvent event;
+        event.stage = stage;
+        event.actionId = actionId;
+        event.actionName = evaluation.candidate.actionName.c_str();
+        event.targetGuid = evaluation.candidate.targetGuid;
+        event.spellId = evaluation.candidate.spellId;
+        event.channel = evaluation.candidate.channel;
+        event.priority = evaluation.candidate.finalPriority;
+        event.result = result;
+        event.attempted = attempted;
+        event.reason = reason ? reason : "none";
+        executionContext.reservationTrace->RecordEngineActionEvent(executionContext, event);
+    };
 
     // Materialize selected decisions into a bounded queue. The queue contains
     // indices only; all Core-facing validity, range, LOS, resource and threat
@@ -209,15 +228,19 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
     for (std::size_t index : report.selectedIndices) {
         if (index >= report.candidates.size())
             continue;
-        CandidateEvaluation const& queued = report.candidates[index];
+        CandidateEvaluation& queued = report.candidates[index];
         if (queued.status != CandidateStatus::Selected)
             continue;
         if (!std::isfinite(queued.candidate.finalPriority) ||
             !queue.Push(index, queued.candidate.finalPriority)) {
-            CandidateEvaluation& rejected = report.candidates[index];
-            rejected.status = CandidateStatus::ExecutionFailed;
-            rejected.actionResult = ActionResult::Failed;
-            rejected.reason = "action_queue_capacity_or_priority_rejected";
+            queued.status = CandidateStatus::ExecutionFailed;
+            queued.actionResult = ActionResult::Failed;
+            queued.reason = "action_queue_capacity_or_priority_rejected";
+            ActionId const rejectedActionId = executionContext.coordinator.NextActionId();
+            queued.actionId = rejectedActionId;
+            queued.candidate.actionId = rejectedActionId;
+            recordAction(queued, rejectedActionId, EngineActionTraceStage::Result,
+                         false, ActionResult::Failed, queued.reason.c_str());
         }
     }
 
@@ -227,16 +250,37 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
     while (processed < maxActionsPerDispatch && queue.PopNext(queuedEntry)) {
         ++processed;
         std::size_t const index = queuedEntry.reportIndex;
-        if (index >= report.candidates.size()) continue;
+        if (index >= report.candidates.size())
+            continue;
         CandidateEvaluation& evaluation = report.candidates[index];
-        if (evaluation.status != CandidateStatus::Selected) continue;
+        if (evaluation.status != CandidateStatus::Selected)
+            continue;
+
+        // One coordinator-local ID identifies the logical Engine action whether
+        // or not it creates a threat reservation. Reservation rows, when any,
+        // reuse the same ID.
+        ActionId const actionId = executionContext.coordinator.NextActionId();
+        evaluation.actionId = actionId;
+        evaluation.candidate.actionId = actionId;
+        if (!actionId) {
+            evaluation.status = CandidateStatus::ExecutionFailed;
+            evaluation.actionResult = ActionResult::Failed;
+            evaluation.reason = "engine_action_id_unavailable";
+            recordAction(evaluation, 0, EngineActionTraceStage::Result,
+                         false, ActionResult::Failed, evaluation.reason.c_str());
+            continue;
+        }
+
         std::shared_ptr<Action> action = FindAction(evaluation.candidate.actionName);
         if (!action) {
             evaluation.status = CandidateStatus::ExecutionFailed;
             evaluation.actionResult = ActionResult::Failed;
             evaluation.reason = "action_unregistered_before_execution";
+            recordAction(evaluation, actionId, EngineActionTraceStage::Result,
+                         false, ActionResult::Failed, evaluation.reason.c_str());
             continue;
         }
+
         // Recheck the action's exact estimate against current coordinator reservations
         // immediately before execution. New Engine mode never falls back to Legacy.
         ThreatImpactBudgetResult const threatBudget = AssessThreatImpactBudget(
@@ -258,10 +302,12 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
             evaluation.status = CandidateStatus::ExecutionFailed;
             evaluation.actionResult = ActionResult::Failed;
             evaluation.reason = threatBudget.reason;
+            recordAction(evaluation, actionId, EngineActionTraceStage::Result,
+                         false, ActionResult::Failed, evaluation.reason.c_str());
             continue;
         }
 
-        ThreatActionId actionId = 0;
+        bool hasThreatReservation = false;
         if (evaluation.threatImpact.completeness == ThreatImpactCompleteness::Complete) {
             ThreatImpactTotals totals;
             for (ThreatImpactEntry const& impact : evaluation.threatImpact.impacts) {
@@ -271,20 +317,6 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
             }
 
             if (!totals.empty()) {
-                actionId = executionContext.coordinator.NextThreatActionId();
-                if (!actionId) {
-                    ReservationTraceEvent event;
-                    event.stage = ReservationTraceStage::Result;
-                    event.ownerGuid = executionContext.bot.guid;
-                    event.accepted = false;
-                    event.reason = "threat_action_id_unavailable";
-                    recordReservation(event);
-                    evaluation.status = CandidateStatus::ExecutionFailed;
-                    evaluation.actionResult = ActionResult::Failed;
-                    evaluation.reason = "threat_action_id_unavailable";
-                    continue;
-                }
-
                 std::uint32_t const expiresAtMs =
                     executionContext.nowMs + evaluation.threatImpact.reservationDurationMs;
                 bool reservationAccepted = true;
@@ -315,7 +347,8 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
                         entry.second > 0.0 &&
                         entry.second <= static_cast<double>(std::numeric_limits<float>::max());
                     bool const accepted = validThreat &&
-                        executionContext.coordinator.TryReserveThreatImpact(reservation, executionContext.nowMs);
+                        executionContext.coordinator.TryReserveThreatImpact(
+                            reservation, executionContext.nowMs);
 
                     ReservationTraceEvent result;
                     result.stage = ReservationTraceStage::Result;
@@ -349,18 +382,30 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
                     evaluation.status = CandidateStatus::ExecutionFailed;
                     evaluation.actionResult = ActionResult::Failed;
                     evaluation.reason = "threat_reservation_failed";
+                    recordAction(evaluation, actionId, EngineActionTraceStage::Result,
+                                 false, ActionResult::Failed, evaluation.reason.c_str());
                     continue;
                 }
+
+                hasThreatReservation = true;
+                evaluation.threatActionId = actionId;
+                evaluation.candidate.threatActionId = actionId;
             }
         }
 
-        evaluation.threatActionId = actionId;
-        evaluation.candidate.threatActionId = actionId;
+        // This event brackets the synchronous adapter call. A successful result
+        // means Action::Execute returned Success, not that a later spell/movement
+        // effect necessarily completed; Core terminal events remain separate.
+        recordAction(evaluation, actionId, EngineActionTraceStage::Attempt,
+                     true, ActionResult::NotAttempted, "adapter_dispatch");
         evaluation.actionResult = action->Execute(executionContext, evaluation.candidate);
-        if (evaluation.actionResult == ActionResult::Success)
+        if (evaluation.actionResult == ActionResult::Success) {
             evaluation.status = CandidateStatus::Executed;
-        else {
-            if (actionId) {
+            evaluation.reason.clear();
+            recordAction(evaluation, actionId, EngineActionTraceStage::Result,
+                         true, evaluation.actionResult, "adapter_returned_success");
+        } else {
+            if (hasThreatReservation) {
                 executionContext.coordinator.ReleaseThreatAction(actionId);
                 ReservationTraceEvent release;
                 release.stage = ReservationTraceStage::Release;
@@ -372,8 +417,10 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
                 recordReservation(release);
             }
             evaluation.status = CandidateStatus::ExecutionFailed;
-            if (evaluation.reason.empty()) evaluation.reason = "action_execution_not_successful";
+            if (evaluation.reason.empty())
+                evaluation.reason = "action_execution_not_successful";
+            recordAction(evaluation, actionId, EngineActionTraceStage::Result,
+                         true, evaluation.actionResult, evaluation.reason.c_str());
         }
     }
-}
 }

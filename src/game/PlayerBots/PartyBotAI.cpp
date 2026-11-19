@@ -388,7 +388,7 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
         pTarget ? pTarget->GetObjectGuid().GetRawValue() : 0,
         pSpellEntry ? pSpellEntry->Id : 0, detail,
-        reason && std::strcmp(reason, "success") == 0,
+        detail == SPELL_CAST_OK,
         reason ? reason : "unspecified");
 }
 

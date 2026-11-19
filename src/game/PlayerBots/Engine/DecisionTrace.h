@@ -67,12 +67,25 @@ public:
                                         uint64 encounterId, uint32 sequence,
                                         uint32 elapsedMs, char const* role,
                                         uint32 candidateCount, uint32 selectedCount) const;
+    void RecordEncounterTriggerSummary(Player const* bot, uint32 groupId, uint32 mapId,
+                                       uint32 instanceId, uint64 encounterId,
+                                       uint32 sequence, uint32 elapsedMs,
+                                       uint32 total, uint32 evaluated,
+                                       uint32 active, uint32 inactive,
+                                       uint32 cadenceSkipped, uint32 omitted) const;
+    void RecordEncounterTrigger(Player const* bot, uint32 groupId, uint32 mapId,
+                                uint32 instanceId, uint64 encounterId,
+                                uint32 sequence, uint32 elapsedMs,
+                                char const* role, char const* strategy,
+                                char const* trigger, uint32 intervalMs,
+                                char const* status, uint32 candidateCount) const;
     void RecordEncounterCandidate(Player const* bot, uint32 groupId, uint32 mapId,
                                   uint32 instanceId, uint32 snapshotEpoch,
                                   uint64 encounterId, uint32 sequence,
                                   uint32 elapsedMs, char const* role,
-                                  char const* strategy, char const* action,
-                                  uint64 targetGuid, uint32 spellId, uint32 channel,
+                                  char const* strategy, char const* trigger,
+                                  char const* action, uint64 targetGuid,
+                                  uint32 spellId, uint32 channel,
                                   float priority, char const* status,
                                   char const* reason) const;
 

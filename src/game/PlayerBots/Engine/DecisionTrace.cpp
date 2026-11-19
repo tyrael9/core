@@ -546,8 +546,9 @@ bool DecisionTrace::RecordEncounterCastAttempt(
         return false;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=cast_request_attempt source=legacy executor=DoCastSpell action_id=%u group=%u map=%u instance=%u bot=%u elapsed_ms=%u target=%llu spell=%u",
-             static_cast<unsigned long long>(encounterId), sequence, actionId,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=cast_request_attempt source=legacy executor=DoCastSpell action_id=%llu group=%u map=%u instance=%u bot=%u elapsed_ms=%u target=%llu spell=%u",
+             static_cast<unsigned long long>(encounterId), sequence,
+             static_cast<unsigned long long>(actionId),
              groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
              static_cast<unsigned long long>(targetGuid), spellId);
     return true;
@@ -564,7 +565,7 @@ void DecisionTrace::RecordEncounterCastResult(
 
     std::string const safeReason = SafeTraceToken(reason);
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=cast_request_result source=legacy executor=DoCastSpell action_id=%u group=%u map=%u instance=%u bot=%u elapsed_ms=%u target=%llu spell=%u result_code=%u accepted=%u reason=%s",
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=cast_request_result source=legacy executor=DoCastSpell action_id=%llu group=%u map=%u instance=%u bot=%u elapsed_ms=%u target=%llu spell=%u result_code=%u accepted=%u reason=%s",
              static_cast<unsigned long long>(encounterId), sequence, actionId,
              groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
              static_cast<unsigned long long>(targetGuid), spellId,
@@ -583,7 +584,7 @@ void DecisionTrace::RecordEncounterCastTerminal(
     char const* outcome = interrupted ? "interrupted" :
                           (success ? "completed" : "failed");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=cast_terminal source=core_spell_finish action_id=%u group=%u map=%u instance=%u bot=%u elapsed_ms=%u spell=%u target=%llu success=%u interrupted=%u outcome=%s",
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=cast_terminal source=core_spell_finish action_id=%llu group=%u map=%u instance=%u bot=%u elapsed_ms=%u spell=%u target=%llu success=%u interrupted=%u outcome=%s",
              static_cast<unsigned long long>(encounterId), sequence, actionId,
              groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
              spellId, static_cast<unsigned long long>(targetGuid),

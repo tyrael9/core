@@ -1145,6 +1145,64 @@ private:
 
 
 
+class SimulatorSpellLifecycleProbeAI final : public PlayerAI
+{
+public:
+    explicit SimulatorSpellLifecycleProbeAI(Player* player) : PlayerAI(player) {}
+
+    uint32 OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
+                                uint64 coreTargetGuid, uint64& encounterId,
+                                uint64& traceTargetGuid) override
+    {
+        encounterId = 0;
+        traceTargetGuid = 0;
+        // Only the first Spell created by the observed Player::CastSpell call
+        // receives the test action ID. Triggered child spells must not inherit it.
+        if (m_bound)
+            return 0;
+
+        m_bound = true;
+        ++prepareCalls;
+        preparedSpellId = spellId;
+        coreTargetGuidAtPrepare = coreTargetGuid;
+        encounterId = expectedEncounterId;
+        traceTargetGuid = coreTargetGuid;
+        return expectedActionId;
+    }
+
+    void OnSpellCastFinished(Spell const* /*spell*/, uint32 actionId,
+                             uint64 encounterId, uint32 spellId,
+                             uint64 targetGuid, bool success,
+                             bool interrupted) override
+    {
+        ++finishCalls;
+        finishedActionId = actionId;
+        finishedEncounterId = encounterId;
+        finishedSpellId = spellId;
+        finishedTargetGuid = targetGuid;
+        finishedSuccessfully = success;
+        finishedInterrupted = interrupted;
+    }
+
+    static uint32 const expectedActionId = 0x51a7u;
+    static uint64 const expectedEncounterId = 0x50424f54ull;
+
+    uint32 prepareCalls = 0;
+    uint32 finishCalls = 0;
+    uint32 preparedSpellId = 0;
+    uint64 coreTargetGuidAtPrepare = 0;
+    uint32 finishedActionId = 0;
+    uint64 finishedEncounterId = 0;
+    uint32 finishedSpellId = 0;
+    uint64 finishedTargetGuid = 0;
+    bool finishedSuccessfully = false;
+    bool finishedInterrupted = false;
+
+private:
+    bool m_bound = false;
+};
+
+
 bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -1173,6 +1231,10 @@ bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
         DestroySimulatorActor(map, patient);
         return false;
     }
+
+    SimulatorSpellLifecycleProbeAI* lifecycleProbe =
+        new SimulatorSpellLifecycleProbeAI(healer);
+    healer->SetAI(lifecycleProbe);
 
     patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
     uint32 const healthBefore = patient.creature->GetHealth();
@@ -1299,6 +1361,17 @@ bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
     uint32 const healthAfter = patient.creature->GetHealth();
     bool const castCancelled = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
                                healthAfter == healthBefore;
+    bool const lifecycleInterrupted =
+        lifecycleProbe->prepareCalls == 1 && lifecycleProbe->finishCalls == 1 &&
+        lifecycleProbe->preparedSpellId == SIMULATOR_HEAL_SPELL_ID &&
+        lifecycleProbe->coreTargetGuidAtPrepare == patient.creature->GetObjectGuid().GetRawValue() &&
+        lifecycleProbe->finishedActionId == SimulatorSpellLifecycleProbeAI::expectedActionId &&
+        lifecycleProbe->finishedEncounterId == SimulatorSpellLifecycleProbeAI::expectedEncounterId &&
+        lifecycleProbe->finishedSpellId == SIMULATOR_HEAL_SPELL_ID &&
+        lifecycleProbe->finishedTargetGuid == patient.creature->GetObjectGuid().GetRawValue() &&
+        !lifecycleProbe->finishedSuccessfully && lifecycleProbe->finishedInterrupted;
+    uint32 const lifecyclePrepareCalls = lifecycleProbe->prepareCalls;
+    uint32 const lifecycleFinishCalls = lifecycleProbe->finishCalls;
     float const finalDx = healer->GetPositionX() - destinationX;
     float const finalDy = healer->GetPositionY() - destinationY;
     float const finalDz = healer->GetPositionZ() - destinationZ;
@@ -1312,15 +1385,16 @@ bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
     bool const cleaned = playerCleaned && patientCleaned;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Movement interrupts Player cast: healRegistered=%u healSelected=%u castAccepted=%u moveRegistered=%u moveSelected=%u moveExecuted=%u castCancelled=%u health=%u>%u movementCompleted=%u cleanup=%u.",
+             "[PartyBotSimulator] Movement interrupts Player cast: healRegistered=%u healSelected=%u castAccepted=%u moveRegistered=%u moveSelected=%u moveExecuted=%u castCancelled=%u lifecycle=%u prepare=%u finish=%u health=%u>%u movementCompleted=%u cleanup=%u.",
              healRegistered ? 1u : 0u, healSelected ? 1u : 0u, castAccepted ? 1u : 0u,
              moveRegistered ? 1u : 0u, moveSelected ? 1u : 0u, moveExecuted ? 1u : 0u,
-             castCancelled ? 1u : 0u, healthBefore, healthAfter,
+             castCancelled ? 1u : 0u, lifecycleInterrupted ? 1u : 0u,
+             lifecyclePrepareCalls, lifecycleFinishCalls, healthBefore, healthAfter,
              movementCompleted ? 1u : 0u, cleaned ? 1u : 0u);
 
     if (!healRegistered || !healSelected || !castAccepted ||
         !moveRegistered || !moveSelected || !moveExecuted ||
-        !castCancelled || !movementCompleted || !cleaned)
+        !castCancelled || !lifecycleInterrupted || !movementCompleted || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Engine movement/cast-interrupt smoke test failed.");
@@ -3779,62 +3853,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
 
 
 
-class SimulatorSpellLifecycleProbeAI final : public PlayerAI
-{
-public:
-    explicit SimulatorSpellLifecycleProbeAI(Player* player) : PlayerAI(player) {}
-
-    uint32 OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
-                                uint64 coreTargetGuid, uint64& encounterId,
-                                uint64& traceTargetGuid) override
-    {
-        encounterId = 0;
-        traceTargetGuid = 0;
-        // Only the first Spell created by the observed Player::CastSpell call
-        // receives the test action ID. Triggered child spells must not inherit it.
-        if (m_bound)
-            return 0;
-
-        m_bound = true;
-        ++prepareCalls;
-        preparedSpellId = spellId;
-        coreTargetGuidAtPrepare = coreTargetGuid;
-        encounterId = expectedEncounterId;
-        traceTargetGuid = coreTargetGuid;
-        return expectedActionId;
-    }
-
-    void OnSpellCastFinished(Spell const* /*spell*/, uint32 actionId,
-                             uint64 encounterId, uint32 spellId,
-                             uint64 targetGuid, bool success,
-                             bool interrupted) override
-    {
-        ++finishCalls;
-        finishedActionId = actionId;
-        finishedEncounterId = encounterId;
-        finishedSpellId = spellId;
-        finishedTargetGuid = targetGuid;
-        finishedSuccessfully = success;
-        finishedInterrupted = interrupted;
-    }
-
-    static uint32 const expectedActionId = 0x51a7u;
-    static uint64 const expectedEncounterId = 0x50424f54ull;
-
-    uint32 prepareCalls = 0;
-    uint32 finishCalls = 0;
-    uint32 preparedSpellId = 0;
-    uint64 coreTargetGuidAtPrepare = 0;
-    uint32 finishedActionId = 0;
-    uint64 finishedEncounterId = 0;
-    uint32 finishedSpellId = 0;
-    uint64 finishedTargetGuid = 0;
-    bool finishedSuccessfully = false;
-    bool finishedInterrupted = false;
-
-private:
-    bool m_bound = false;
-};
 
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {

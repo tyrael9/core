@@ -4,6 +4,7 @@
 #include "PartySnapshot.h"
 namespace PartyBotEngine {
 struct DecisionContext;
+class ValueCache;
 
 enum class ReservationTraceStage : std::uint8_t {
     BudgetVeto,
@@ -39,14 +40,16 @@ public:
 struct DecisionContext {
     DecisionContext(PartySnapshot const& partySnapshot, PartyMemberSnapshot const& botSnapshot,
                     PartyCoordinator& partyCoordinator, std::uint32_t timeMs,
-                    ReservationTraceSink* traceSink = nullptr)
+                    ReservationTraceSink* traceSink = nullptr,
+                    ValueCache* decisionValueCache = nullptr)
         : snapshot(partySnapshot), bot(botSnapshot), coordinator(partyCoordinator),
-          nowMs(timeMs), reservationTrace(traceSink) {}
+          nowMs(timeMs), reservationTrace(traceSink), valueCache(decisionValueCache) {}
     PartySnapshot const& snapshot;
     PartyMemberSnapshot const& bot;
     PartyCoordinator& coordinator;
     std::uint32_t nowMs;
     ReservationTraceSink* reservationTrace;
+    ValueCache* valueCache;
 };
 }
 #endif

@@ -4,6 +4,8 @@
 #include "ActionQueue.h"
 #include "Multiplier.h"
 #include "Strategy.h"
+#include "TriggerScheduler.h"
+#include "ValueCache.h"
 #include <map>
 #include <memory>
 namespace PartyBotEngine {
@@ -12,6 +14,11 @@ public:
     void AddStrategy(std::shared_ptr<Strategy> strategy);
     bool RegisterAction(std::shared_ptr<Action> action);
     void AddMultiplier(std::shared_ptr<Multiplier> multiplier);
+    bool InvalidateValue(std::string const& name) const;
+    void InvalidateAllValues() const;
+    bool InvalidateTrigger(std::string const& strategyName,
+                           std::string const& triggerName) const;
+    void InvalidateAllTriggers() const;
     DecisionReport Evaluate(DecisionContext const& context) const;
     // Only call when Strategy mode owns the relevant decision domain.
     void ExecuteSelected(DecisionContext& context, DecisionReport& report) const;
@@ -20,6 +27,8 @@ private:
     std::vector<std::shared_ptr<Strategy>> m_strategies;
     std::map<std::string, std::shared_ptr<Action>> m_actions;
     std::vector<std::shared_ptr<Multiplier>> m_multipliers;
+    mutable ValueCache m_valueCache;
+    mutable TriggerScheduler m_triggerScheduler;
 };
 }
 #endif

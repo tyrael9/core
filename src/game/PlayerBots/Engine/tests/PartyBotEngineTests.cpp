@@ -1,4 +1,5 @@
 #include "PartyBotEngine.h"
+#include "Value.h"
 #include "ShadowStrategies.h"
 #include "ThreatBudget.h"
 #include "ThreatBudgetPolicy.h"
@@ -75,11 +76,14 @@ class TestTrigger : public Trigger {
 public:
     explicit TestTrigger(std::string name) : m_name(std::move(name)) {}
     std::string const& GetName() const override { return m_name; }
-    bool IsActive(DecisionContext const&) const override { return active; }
+    std::uint32_t GetCheckIntervalMs() const override { return intervalMs; }
+    bool IsActive(DecisionContext const&) const override { ++activeChecks; return active; }
     void CollectCandidates(DecisionContext const&, std::vector<ActionCandidate>& out) const override {
         out.insert(out.end(), generated.begin(), generated.end());
     }
     bool active = true;
+    std::uint32_t intervalMs = 0;
+    mutable std::uint32_t activeChecks = 0;
     std::vector<ActionCandidate> generated;
 private:
     std::string m_name;
@@ -317,6 +321,139 @@ void TestPendingActionQueueRejectsInvalidAndFullEntries()
 
     queue.Clear();
     assert(queue.Empty());
+}
+
+void TestValueCacheEpochExpiryInvalidationAndTypeSafety()
+{
+    ValueCache cache;
+    std::uint32_t computeCount = 0;
+    auto compute = [&computeCount]() { return ++computeCount; };
+    assert(cache.GetOrCompute<int>("party.health", 7, 1000, 200, compute) == 1);
+    assert(cache.GetOrCompute<int>("party.health", 7, 1100, 200, compute) == 1);
+    assert(computeCount == 1 && cache.Size() == 1);
+    assert(cache.GetOrCompute<int>("party.health", 8, 1150, 200, compute) == 2);
+    assert(computeCount == 2);
+    assert(cache.Invalidate("party.health"));
+    assert(cache.GetOrCompute<int>("party.health", 8, 1160, 200, compute) == 3);
+    assert(!cache.Invalidate("missing"));
+
+    std::uint32_t stringComputes = 0;
+    std::string const typed = cache.GetOrCompute<std::string>(
+        "party.health", 8, 1170, 200,
+        [&stringComputes]() { ++stringComputes; return std::string("typed"); });
+    assert(typed == "typed" && stringComputes == 1);
+    assert(cache.PruneExpired(1370) == 1);
+    assert(cache.Size() == 0);
+    cache.GetOrCompute<int>("wrapped", 1, 0xfffffff0u, 32, []() { return 42; });
+    assert(cache.PruneExpired(0x0fu) == 0);
+    assert(cache.PruneExpired(0x10u) == 1);
+    assert(cache.GetOrCompute<int>("uncached", 1, 10, 0, compute) == 4);
+    assert(cache.GetOrCompute<int>("uncached", 1, 10, 0x80000000u, compute) == 5);
+}
+
+void TestValueCacheCapacityFailsOpenWithoutEvictingLiveEntries()
+{
+    ValueCache cache;
+    for (std::size_t i = 0; i < ValueCache::Capacity; ++i) {
+        std::string const key = "value_" + std::to_string(i);
+        assert(cache.GetOrCompute<std::uint32_t>(
+            key, 1, 100, 1000, [i]() { return static_cast<std::uint32_t>(i); }) == i);
+    }
+    assert(cache.Size() == ValueCache::Capacity);
+    std::uint32_t overflowComputes = 0;
+    auto overflow = [&overflowComputes]() { return ++overflowComputes; };
+    assert(cache.GetOrCompute<std::uint32_t>("overflow", 1, 100, 1000, overflow) == 1);
+    assert(cache.GetOrCompute<std::uint32_t>("overflow", 1, 101, 1000, overflow) == 2);
+    assert(overflowComputes == 2 && cache.Size() == ValueCache::Capacity);
+    assert(cache.GetOrCompute<std::uint32_t>(
+        "value_0", 1, 101, 1000, []() { return 999u; }) == 0);
+}
+
+void TestCachedValueUsesContextEpochAndExplicitInvalidation()
+{
+    Fixture f;
+    ValueCache cache;
+    DecisionContext context(f.snapshot, f.bot, f.coordinator, 1000, nullptr, &cache);
+    std::uint32_t computeCount = 0;
+    CachedValue<std::uint32_t> value(
+        "party.member_count", 500,
+        [&computeCount](DecisionContext const& decision) {
+            ++computeCount;
+            return static_cast<std::uint32_t>(decision.snapshot.members.size());
+        });
+    f.snapshot.members.resize(2);
+    assert(value.Get(context) == 2);
+    f.snapshot.members.resize(3);
+    assert(value.Get(context) == 2);
+    assert(computeCount == 1);
+    f.snapshot.epoch++;
+    assert(value.Get(context) == 3 && computeCount == 2);
+    assert(cache.Invalidate(value.GetName()));
+    f.snapshot.members.resize(4);
+    assert(value.Get(context) == 4 && computeCount == 3);
+}
+
+void TestTriggerSchedulerCadenceInvalidationAndClockWrap()
+{
+    TriggerScheduler scheduler;
+    assert(scheduler.ShouldEvaluate("healer/emergency", 500, 1000));
+    assert(!scheduler.ShouldEvaluate("healer/emergency", 500, 1499));
+    assert(scheduler.ShouldEvaluate("healer/emergency", 500, 1500));
+    assert(scheduler.Invalidate("healer/emergency"));
+    assert(scheduler.ShouldEvaluate("healer/emergency", 500, 1501));
+    assert(!scheduler.ShouldEvaluate("healer/emergency", 500, 1502));
+    assert(scheduler.ShouldEvaluate("always", 0, 10));
+    assert(scheduler.ShouldEvaluate("always", 0, 11));
+
+    TriggerScheduler wrapped;
+    std::uint32_t const start = 0xfffffff0u;
+    assert(wrapped.ShouldEvaluate("wrapped", 32, start));
+    assert(!wrapped.ShouldEvaluate("wrapped", 32, 0x0fu));
+    assert(wrapped.ShouldEvaluate("wrapped", 32, 0x10u));
+}
+
+void TestTriggerSchedulerCapacityFailsOpen()
+{
+    TriggerScheduler scheduler;
+    for (std::size_t i = 0; i < TriggerScheduler::Capacity; ++i) {
+        std::string const key = "trigger_" + std::to_string(i);
+        assert(scheduler.ShouldEvaluate(key, 1000, 100));
+        assert(!scheduler.ShouldEvaluate(key, 1000, 101));
+    }
+    assert(scheduler.Size() == TriggerScheduler::Capacity);
+    assert(scheduler.ShouldEvaluate("overflow", 1000, 100));
+    assert(scheduler.ShouldEvaluate("overflow", 1000, 101));
+    assert(scheduler.Size() == TriggerScheduler::Capacity);
+}
+
+void TestEngineTriggerCadenceAndExplicitInvalidation()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    auto action = std::make_shared<TestAction>("cadenced");
+    assert(engine.RegisterAction(action));
+    auto trigger = std::make_shared<TestTrigger>("periodic");
+    trigger->intervalMs = 500;
+    trigger->generated.push_back(Candidate("cadenced", 10.0f, ActionChannel::Utility));
+    auto strategy = std::make_shared<Strategy>("test_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport first = engine.Evaluate(f.context);
+    assert(!first.candidates.empty() && trigger->activeChecks == 1);
+    DecisionContext earlyContext(f.snapshot, f.bot, f.coordinator, 1499);
+    DecisionReport early = engine.Evaluate(earlyContext);
+    assert(early.candidates.empty() && trigger->activeChecks == 1);
+
+    assert(engine.InvalidateTrigger("test_strategy", "periodic"));
+    DecisionContext invalidatedContext(f.snapshot, f.bot, f.coordinator, 1500);
+    DecisionReport invalidated = engine.Evaluate(invalidatedContext);
+    assert(!invalidated.candidates.empty() && trigger->activeChecks == 2);
+
+    engine.InvalidateAllTriggers();
+    DecisionContext allInvalidatedContext(f.snapshot, f.bot, f.coordinator, 1501);
+    DecisionReport allInvalidated = engine.Evaluate(allInvalidatedContext);
+    assert(!allInvalidated.candidates.empty() && trigger->activeChecks == 3);
 }
 
 void TestPriorityAndChannelArbitration() {
@@ -1587,6 +1724,12 @@ void TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe()
 
 }
 int main() {
+    TestValueCacheEpochExpiryInvalidationAndTypeSafety();
+    TestValueCacheCapacityFailsOpenWithoutEvictingLiveEntries();
+    TestCachedValueUsesContextEpochAndExplicitInvalidation();
+    TestTriggerSchedulerCadenceInvalidationAndClockWrap();
+    TestTriggerSchedulerCapacityFailsOpen();
+    TestEngineTriggerCadenceAndExplicitInvalidation();
     TestActionQueueIsBoundedPriorityOrderedAndStable();
     TestPendingActionQueueDeduplicatesAndPreservesOriginalExpiry();
     TestPendingActionQueuePriorityFifoExpiryAndClockWrap();

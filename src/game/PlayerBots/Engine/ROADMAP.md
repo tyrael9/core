@@ -39,7 +39,7 @@ These tests validate lifecycle-host behavior, not new combat AI behavior.
 - [x] Add expiring party reservation primitives.
 - [x] Add deterministic candidate evaluation, explicit eligibility results and basic channel arbitration.
 - [x] Add standalone tests for decision ordering, invalid candidates, reservations, cache freshness and registry identity.
-- [~] Complete production-grade value caching, trigger cadence and queue lifecycle. A standalone `PendingActionQueue` now provides bounded copied action events, identity-based duplicate refresh, immutable initial expiry and wrap-safe TTL pruning; integrating it into the Engine update/dispatch lifecycle remains open.
+- [~] Complete production-grade value caching, trigger cadence and queue lifecycle. The per-bot Engine now owns a bounded typed ValueCache and TriggerScheduler, and `PendingActionQueue` provides copied cross-tick event storage; real state-transition invalidation hooks and pending-queue Engine lifecycle integration remain open.
 - [~] Replace candidate-list-only arbitration with the required action/event queue semantics. The per-dispatch path materializes selected report entries into a bounded 32-entry priority queue with stable FIFO ties, fail-closed overflow, index-only payloads and immediate pre-dispatch Core/threat revalidation; `ExecuteSelected` integration tests prove priority/FIFO call order and the eight-action ceiling. A separate bounded `PendingActionQueue` now stores copied ActionCandidate events with identity-based deduplication, latest-priority refresh, non-extendable TTL expiry, wrap-safe time comparisons and fail-closed overflow. It is not yet wired into Engine tick scheduling or execution; trigger insertion, stale-context revalidation and continuation/result listeners remain open.
 
 The current role-aware Shadow slice is a proof of the data-to-candidate path only. It is not a shipped behavior and does not justify further expanding coarse candidate-only rules.
@@ -98,8 +98,8 @@ Trace design: DECISION-TRACE.md.
 
 ## Phase 4 — complete decision loop and exclusive execution runtime
 
-- [ ] Implement typed named Values with bounded cache, expiry and explicit invalidation.
-- [ ] Implement Trigger check intervals/cadence and state-transition events.
+- [~] Implement typed named Values with bounded cache, expiry and explicit invalidation. The `CachedValue<T>` adapter uses the per-Engine cache; snapshot epoch changes and TTL invalidate automatically, with explicit value/all invalidation APIs.
+- [~] Implement Trigger check intervals/cadence and state-transition events. Engine Evaluate now consults a per-bot scheduler; existing triggers default to every update until they opt into a nonzero interval. Named and global invalidation APIs are available; connecting real state-transition notifications remains open.
 - [~] Implement action queue priorities, deterministic ordering and bounded processing. The 32-entry per-dispatch queue has stable FIFO ties, fail-closed overflow, index-only entries and an eight-action execution ceiling; pure tests and `ExecuteSelected` integration tests verify ordering and the ceiling. The separate 32-entry `PendingActionQueue` provides scalar/string-only candidate copies, identity-based duplicate refresh, immutable expiry deadlines and wrap-safe pruning. Engine-owned cross-tick event insertion/dispatch, party/map lifecycle clearing, stale-context revalidation, retry/continuation semantics and result listeners remain open.
 - [ ] Implement prerequisites, alternatives, continuers and action result listeners where required by real Vanilla behavior.
 - [ ] Implement useful/possible checks and real multiplier composition with hard safety vetoes.

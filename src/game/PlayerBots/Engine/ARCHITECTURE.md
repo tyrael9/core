@@ -142,7 +142,10 @@ Value is the shared, named interface to decision facts. Values should be typed a
 
 Trigger definitions include name, cadence/check interval, active predicate and action/event handlers. Triggers that depend on the same party facts must reuse the same cached value/snapshot rather than rescan the group or hostile set for each bot/trigger. State transitions and explicit invalidation can force refresh before the normal interval.
 
-The current Value interface and direct trigger evaluation are not yet a complete value/cache/scheduler implementation.
+Implemented cache/scheduler foundation:
+- `CachedValue<T>` is a named typed adapter over a per-bot, map-thread-confined `ValueCache`. Cache keys include C++ value type and snapshot epoch; entries expire at a wrap-safe TTL deadline and may be invalidated by name or all at once. Zero/ambiguous TTL metadata bypasses storage. The cache holds at most 128 entries and computes without caching when full rather than evicting live facts.
+- `Trigger::GetCheckIntervalMs()` defaults to zero, preserving every-update evaluation. Nonzero intervals are gated by a bounded per-bot `TriggerScheduler`; explicit trigger/all invalidation can force an early poll. If the scheduler table is full, an untracked trigger is evaluated every update rather than starved.
+- The Engine attaches its cache to evaluation and execution contexts. Existing Shadow triggers remain every-tick until a concrete strategy opts into a slower cadence. Actual state-transition call sites must invoke invalidation APIs; the scheduler does not infer that a state change occurred.
 
 ## 9. PartySnapshot and coordinator
 

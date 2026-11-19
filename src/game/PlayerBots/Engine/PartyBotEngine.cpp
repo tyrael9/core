@@ -17,19 +17,42 @@ bool PartyBotEngine::RegisterAction(std::shared_ptr<Action> action) {
 void PartyBotEngine::AddMultiplier(std::shared_ptr<Multiplier> multiplier) {
     if (multiplier) m_multipliers.push_back(std::move(multiplier));
 }
+bool PartyBotEngine::InvalidateValue(std::string const& name) const {
+    return m_valueCache.Invalidate(name);
+}
+void PartyBotEngine::InvalidateAllValues() const {
+    m_valueCache.InvalidateAll();
+}
+bool PartyBotEngine::InvalidateTrigger(std::string const& strategyName,
+                                       std::string const& triggerName) const {
+    if (strategyName.empty() || triggerName.empty()) return false;
+    return m_triggerScheduler.Invalidate(strategyName + "/" + triggerName);
+}
+void PartyBotEngine::InvalidateAllTriggers() const {
+    m_triggerScheduler.InvalidateAll();
+}
 std::shared_ptr<Action> PartyBotEngine::FindAction(std::string const& name) const {
     auto itr = m_actions.find(name);
     return itr == m_actions.end() ? std::shared_ptr<Action>() : itr->second;
 }
 DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
+    DecisionContext evaluationContext(
+        evaluationContext.snapshot, evaluationContext.bot, evaluationContext.coordinator, evaluationContext.nowMs,
+        evaluationContext.reservationTrace,
+        evaluationContext.valueCache ? evaluationContext.valueCache : &m_valueCache);
     DecisionReport report;
-    report.snapshotEpoch = context.snapshot.epoch;
+    report.snapshotEpoch = evaluationContext.snapshot.epoch;
     for (auto const& strategy : m_strategies) {
         if (!strategy) continue;
         for (auto const& trigger : strategy->GetTriggers()) {
-            if (!trigger || !trigger->IsActive(context)) continue;
+            if (!trigger) continue;
+            std::string const triggerKey = strategy->GetName() + "/" + trigger->GetName();
+            if (!m_triggerScheduler.ShouldEvaluate(
+                    triggerKey, trigger->GetCheckIntervalMs(), evaluationContext.nowMs))
+                continue;
+            if (!trigger->IsActive(evaluationContext)) continue;
             std::vector<ActionCandidate> candidates;
-            trigger->CollectCandidates(context, candidates);
+            trigger->CollectCandidates(evaluationContext, candidates);
             for (auto const& candidate : candidates) {
                 CandidateEvaluation evaluation;
                 evaluation.candidate = candidate;
@@ -49,23 +72,23 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
                     report.candidates.push_back(std::move(evaluation));
                     continue;
                 }
-                if (!action->IsPossible(context, evaluatedCandidate, evaluation.reason)) {
+                if (!action->IsPossible(evaluationContext, evaluatedCandidate, evaluation.reason)) {
                     evaluation.status = CandidateStatus::RejectedImpossible;
                     if (evaluation.reason.empty()) evaluation.reason = "action_not_possible";
                     report.candidates.push_back(std::move(evaluation));
                     continue;
                 }
                 evaluation.reason.clear();
-                if (!action->IsUseful(context, evaluatedCandidate, evaluation.reason)) {
+                if (!action->IsUseful(evaluationContext, evaluatedCandidate, evaluation.reason)) {
                     evaluation.status = CandidateStatus::RejectedUseless;
                     if (evaluation.reason.empty()) evaluation.reason = "action_not_useful";
                     report.candidates.push_back(std::move(evaluation));
                     continue;
                 }
 
-                evaluation.threatImpact = action->EstimateThreatImpact(context, evaluatedCandidate);
+                evaluation.threatImpact = action->EstimateThreatImpact(evaluationContext, evaluatedCandidate);
                 if (!IsWellFormedThreatImpactEstimate(evaluation.threatImpact) ||
-                    evaluation.threatImpact.snapshotEpoch != context.snapshot.epoch) {
+                    evaluation.threatImpact.snapshotEpoch != evaluationContext.snapshot.epoch) {
                     evaluation.status = CandidateStatus::RejectedThreatUnknown;
                     evaluation.reason = "threat_impact_estimate_invalid_or_stale";
                     report.candidates.push_back(std::move(evaluation));
@@ -76,7 +99,7 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
                 bool vetoed = false;
                 for (auto const& multiplier : m_multipliers) {
                     if (!multiplier) continue;
-                    float const factor = multiplier->GetValue(context, evaluatedCandidate);
+                    float const factor = multiplier->GetValue(evaluationContext, evaluatedCandidate);
                     if (!std::isfinite(factor) || factor <= 0.0f) {
                         evaluation.status = CandidateStatus::RejectedMultiplier;
                         evaluation.reason = multiplier->GetName();
@@ -119,8 +142,8 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
         }
 
         ThreatImpactBudgetResult const threatBudget = AssessThreatImpactBudget(
-            context.snapshot, evaluation.threatImpact, context.coordinator,
-            context.nowMs, 250, &selectedThreatInReport);
+            evaluationContext.snapshot, evaluation.threatImpact, evaluationContext.coordinator,
+            evaluationContext.nowMs, 250, &selectedThreatInReport);
         if (threatBudget.status == ThreatImpactBudgetStatus::Unknown) {
             evaluation.status = CandidateStatus::RejectedThreatUnknown;
             evaluation.reason = threatBudget.reason;
@@ -139,9 +162,13 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
     return report;
 }
 void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& report) const {
-    auto recordReservation = [&context](ReservationTraceEvent const& event) {
-        if (context.reservationTrace)
-            context.reservationTrace->RecordReservationEvent(context, event);
+    DecisionContext executionContext(
+        executionContext.snapshot, executionContext.bot, executionContext.coordinator, executionContext.nowMs,
+        executionContext.reservationTrace,
+        executionContext.valueCache ? executionContext.valueCache : &m_valueCache);
+    auto recordReservation = [&executionContext](ReservationTraceEvent const& event) {
+        if (executionContext.reservationTrace)
+            executionContext.reservationTrace->RecordReservationEvent(executionContext, event);
     };
 
     // Materialize selected decisions into a bounded queue. The queue contains
@@ -182,13 +209,13 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
         // Recheck the action's exact estimate against current coordinator reservations
         // immediately before execution. New Engine mode never falls back to Legacy.
         ThreatImpactBudgetResult const threatBudget = AssessThreatImpactBudget(
-            context.snapshot, evaluation.threatImpact, context.coordinator,
-            context.nowMs, 250, nullptr);
+            executionContext.snapshot, evaluation.threatImpact, executionContext.coordinator,
+            executionContext.nowMs, 250, nullptr);
         if (threatBudget.status != ThreatImpactBudgetStatus::Safe) {
             if (threatBudget.status == ThreatImpactBudgetStatus::Exceeded) {
                 ReservationTraceEvent event;
                 event.stage = ReservationTraceStage::BudgetVeto;
-                event.ownerGuid = context.bot.guid;
+                event.ownerGuid = executionContext.bot.guid;
                 event.threatOwnerGuid = threatBudget.threatOwnerGuid;
                 event.hostileGuid = threatBudget.hostileGuid;
                 event.threatPoints = static_cast<float>(threatBudget.candidateThreat);
@@ -213,11 +240,11 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
             }
 
             if (!totals.empty()) {
-                actionId = context.coordinator.NextThreatActionId();
+                actionId = executionContext.coordinator.NextThreatActionId();
                 if (!actionId) {
                     ReservationTraceEvent event;
                     event.stage = ReservationTraceStage::Result;
-                    event.ownerGuid = context.bot.guid;
+                    event.ownerGuid = executionContext.bot.guid;
                     event.accepted = false;
                     event.reason = "threat_action_id_unavailable";
                     recordReservation(event);
@@ -228,12 +255,12 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
                 }
 
                 std::uint32_t const expiresAtMs =
-                    context.nowMs + evaluation.threatImpact.reservationDurationMs;
+                    executionContext.nowMs + evaluation.threatImpact.reservationDurationMs;
                 bool reservationAccepted = true;
                 std::uint32_t reservedRows = 0;
                 for (auto const& entry : totals) {
                     ThreatReservation reservation;
-                    reservation.ownerGuid = context.bot.guid;
+                    reservation.ownerGuid = executionContext.bot.guid;
                     reservation.threatOwnerGuid = entry.first.second;
                     reservation.hostileGuid = entry.first.first;
                     reservation.actionId = actionId;
@@ -257,7 +284,7 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
                         entry.second > 0.0 &&
                         entry.second <= static_cast<double>(std::numeric_limits<float>::max());
                     bool const accepted = validThreat &&
-                        context.coordinator.TryReserveThreatImpact(reservation, context.nowMs);
+                        executionContext.coordinator.TryReserveThreatImpact(reservation, executionContext.nowMs);
 
                     ReservationTraceEvent result;
                     result.stage = ReservationTraceStage::Result;
@@ -280,11 +307,11 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
                 }
 
                 if (!reservationAccepted) {
-                    context.coordinator.ReleaseThreatAction(actionId);
+                    executionContext.coordinator.ReleaseThreatAction(actionId);
                     ReservationTraceEvent release;
                     release.stage = ReservationTraceStage::Release;
                     release.actionId = actionId;
-                    release.ownerGuid = context.bot.guid;
+                    release.ownerGuid = executionContext.bot.guid;
                     release.reservationRows = reservedRows;
                     release.reason = "partial_acquire_rollback";
                     recordReservation(release);
@@ -298,16 +325,16 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
 
         evaluation.threatActionId = actionId;
         evaluation.candidate.threatActionId = actionId;
-        evaluation.actionResult = action->Execute(context, evaluation.candidate);
+        evaluation.actionResult = action->Execute(executionContext, evaluation.candidate);
         if (evaluation.actionResult == ActionResult::Success)
             evaluation.status = CandidateStatus::Executed;
         else {
             if (actionId) {
-                context.coordinator.ReleaseThreatAction(actionId);
+                executionContext.coordinator.ReleaseThreatAction(actionId);
                 ReservationTraceEvent release;
                 release.stage = ReservationTraceStage::Release;
                 release.actionId = actionId;
-                release.ownerGuid = context.bot.guid;
+                release.ownerGuid = executionContext.bot.guid;
                 release.reason = "action_execution_failed";
                 release.reservationRows = static_cast<std::uint32_t>(
                     evaluation.threatImpact.impacts.size());

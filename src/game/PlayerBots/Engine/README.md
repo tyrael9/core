@@ -33,7 +33,7 @@ Do not rebase onto a moving upstream branch without reviewing PartyBot, lifecycl
 ## Current implementation status
 
 The repository currently contains:
-- C++14 Strategy, Trigger, Action, Value and Multiplier interfaces;
+- C++14 Strategy, Trigger, Action, Value and Multiplier interfaces, a bounded typed per-bot ValueCache and opt-in TriggerScheduler cadence/invalidation;
 - GUID/scalar-only PartySnapshot data and same-map snapshot collection;
 - PartyCoordinator reservations and the (group,map,instance) shard registry;
 - deterministic candidate evaluation, explicit eligibility and channel arbitration;

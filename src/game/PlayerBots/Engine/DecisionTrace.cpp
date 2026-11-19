@@ -24,6 +24,7 @@ namespace
 {
     uint32 const MAX_RECORDS_PER_TICK = 12;
     uint32 const MAX_ENCOUNTER_CAST_EVENTS_PER_TICK = 12;
+    uint32 const MAX_ENCOUNTER_TARGET_CHANGES_PER_TICK = 4;
 }
 
 namespace PartyBotEngine
@@ -31,7 +32,8 @@ namespace PartyBotEngine
 
 DecisionTrace::DecisionTrace()
     : m_recordsThisTick(0), m_castTraceEventsThisTick(0),
-      m_castTraceLimitLogged(false), m_enabled(false)
+      m_castTraceLimitLogged(false), m_targetChangesThisTick(0),
+      m_targetChangeLimitLogged(false), m_enabled(false)
 {
 }
 
@@ -40,6 +42,8 @@ void DecisionTrace::BeginTick() const
     m_recordsThisTick = 0;
     m_castTraceEventsThisTick = 0;
     m_castTraceLimitLogged = false;
+    m_targetChangesThisTick = 0;
+    m_targetChangeLimitLogged = false;
     m_enabled = sConfig.GetBoolDefault("PlayerBot.DecisionTrace", false);
 }
 
@@ -155,6 +159,26 @@ void DecisionTrace::RecordPartyHeartbeat(Player const* bot,
               << ',' << (hostile.crowdControlProtected ? 1 : 0)
               << ',' << hostile.health << '/' << hostile.maxHealth
               << ',' << hostile.victimGuid;
+
+        // Preserve a small sample of the real Core ThreatManager references.
+        // Values are in tenths to keep the one-line payload compact.
+        std::size_t const threatLimit = 2;
+        std::size_t const threatEmitted = std::min(hostile.threat.size(), threatLimit);
+        facts << ",refs=" << static_cast<uint32>(hostile.threat.size()) << '[';
+        for (std::size_t threatIndex = 0; threatIndex < threatEmitted; ++threatIndex)
+        {
+            ThreatEntrySnapshot const& threat = hostile.threat[threatIndex];
+            if (threatIndex)
+                facts << '|';
+            facts << threat.unitGuid << ':'
+                  << static_cast<int32>(threat.threat * 10.0f) << ':'
+                  << (threat.online ? 1 : 0)
+                  << (threat.accessible ? 1 : 0)
+                  << (threat.meleeReachable ? 1 : 0);
+        }
+        facts << "],refs_omitted="
+              << static_cast<uint32>(hostile.threat.size() > threatLimit
+                  ? hostile.threat.size() - threatLimit : 0);
     }
 
     std::string payload = facts.str();
@@ -184,6 +208,40 @@ void DecisionTrace::RecordPartyHeartbeat(Player const* bot,
              static_cast<uint32>(snapshot.hostiles.size() > hostileLimit
                  ? snapshot.hostiles.size() - hostileLimit : 0),
              payload.c_str(), truncated ? 1u : 0u);
+}
+
+void DecisionTrace::RecordEncounterTargetChange(
+    Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
+    uint64 encounterId, uint32 sequence, uint32 elapsedMs,
+    uint64 oldVictimGuid, uint64 newVictimGuid, char const* source) const
+{
+    if (!m_enabled || !bot || !encounterId || !sequence ||
+        oldVictimGuid == newVictimGuid)
+        return;
+
+    if (m_targetChangesThisTick >= MAX_ENCOUNTER_TARGET_CHANGES_PER_TICK)
+    {
+        if (!m_targetChangeLimitLogged)
+        {
+            m_targetChangeLimitLogged = true;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trace_limit group=%u map=%u instance=%u bot=%u elapsed_ms=%u category=target_change per_tick_cap=%u dropped_at_least=1",
+                     static_cast<unsigned long long>(encounterId), sequence,
+                     groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
+                     MAX_ENCOUNTER_TARGET_CHANGES_PER_TICK);
+        }
+        return;
+    }
+
+    ++m_targetChangesThisTick;
+    std::string const safeSource = SafeTraceToken(source);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=target_change source=%s group=%u map=%u instance=%u bot=%u elapsed_ms=%u old_victim=%llu new_victim=%llu",
+             static_cast<unsigned long long>(encounterId), sequence,
+             safeSource.c_str(), groupId, mapId, instanceId,
+             bot->GetGUIDLow(), elapsedMs,
+             static_cast<unsigned long long>(oldVictimGuid),
+             static_cast<unsigned long long>(newVictimGuid));
 }
 
 namespace

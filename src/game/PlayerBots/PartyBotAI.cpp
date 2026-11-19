@@ -517,6 +517,28 @@ void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint32 actionId,
         actionId, spellId, targetGuid, success, interrupted);
 }
 
+void PartyBotAI::OnAliveStateChanged(bool wasAlive, bool isAlive)
+{
+    if (!me || wasAlive == isAlive || !m_decisionTrace.IsEnabled() ||
+        !m_partyCoordinator || !m_partyCoordinator->HasActiveEncounter())
+        return;
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    if (m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId ||
+        m_partyCoordinator->GetEncounterMapId() != mapId ||
+        m_partyCoordinator->GetEncounterInstanceId() != instanceId)
+        return;
+
+    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+    m_decisionTrace.RecordEncounterAliveState(
+        me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+        m_partyCoordinator->GetEncounterId(), sequence,
+        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
+        wasAlive, isAlive);
+}
+
 bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const
 {
     if (IsInDuel())

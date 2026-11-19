@@ -4625,8 +4625,13 @@ bool RunPeriodicDamageThreatFixture(Map& map)
         return false;
     }
 
-    caster.creature->SetLevel(60);
+    // Give the spell a deterministic hit advantage and remove template-provided
+    // Shadow resistance. The simulator still exercises the real Core spell-hit
+    // and Aura application path; it must not fail intermittently because the
+    // generic creature template happened to resist a periodic tick's initial cast.
+    caster.creature->SetLevel(63);
     hostile.creature->SetLevel(60);
+    hostile.creature->SetResistance(SPELL_SCHOOL_SHADOW, 0);
 
     // Shadow Word: Pain (rank 8) is an ordinary one-effect periodic-damage aura
     // in the pinned 5875 data. Reject data drift instead of silently exercising
@@ -4652,10 +4657,18 @@ bool RunPeriodicDamageThreatFixture(Map& map)
     // Keep the victim in combat so passive Creature regeneration cannot hide
     // the effective tick damage. The simulator AI intentionally does not attack.
     hostile.creature->SetInCombatWith(caster.creature);
-    SpellCastResult const castResult = caster.creature->CastSpell(
-        hostile.creature, spell, true);
-    Aura* aura = castResult == SPELL_CAST_OK
-        ? hostile.creature->GetAura(spellId, EFFECT_INDEX_0) : nullptr;
+    SpellCastResult castResult = SPELL_FAILED_DONT_REPORT;
+    Aura* aura = nullptr;
+    uint32 castAttempts = 0;
+    // A triggered cast can be accepted while its unit target independently
+    // resists the spell. Retry only that real Core cast path, and require the
+    // resulting Aura object before proceeding to the periodic-tick assertion.
+    for (; castAttempts < 4 && !aura; ++castAttempts)
+    {
+        castResult = caster.creature->CastSpell(hostile.creature, spell, true);
+        if (castResult == SPELL_CAST_OK)
+            aura = hostile.creature->GetAura(spellId, EFFECT_INDEX_0);
+    }
     bool const auraIsOrdinary = aura && aura->IsPeriodic() &&
         aura->GetAuraScript() == nullptr && aura->GetAuraPeriodicTimer() > 0;
     if (!auraIsOrdinary)
@@ -4663,10 +4676,13 @@ bool RunPeriodicDamageThreatFixture(Map& map)
         bool cleaned = DestroySimulatorActor(map, hostile);
         cleaned = DestroySimulatorActor(map, caster) && cleaned;
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Periodic damage aura did not apply as a simple Core aura (cast=%u aura=%u script=%u timer=%d cleanup=%u).",
-                 static_cast<uint32>(castResult), aura ? 1u : 0u,
+                 "[PartyBotSimulator] Periodic damage aura did not apply as a simple Core aura (attempts=%u cast=%u aura=%u script=%u timer=%d shadowResistance=%d casterLevel=%u targetLevel=%u cleanup=%u).",
+                 castAttempts, static_cast<uint32>(castResult), aura ? 1u : 0u,
                  aura && aura->GetAuraScript() ? 1u : 0u,
-                 aura ? aura->GetAuraPeriodicTimer() : -1, cleaned ? 1u : 0u);
+                 aura ? aura->GetAuraPeriodicTimer() : -1,
+                 hostile.creature->GetResistance(SPELL_SCHOOL_SHADOW),
+                 caster.creature->GetLevel(), hostile.creature->GetLevel(),
+                 cleaned ? 1u : 0u);
         return false;
     }
 

@@ -61,6 +61,15 @@ public:
                                   float priority, char const* status,
                                   char const* reason) const;
 
+    // The Legacy executor's actual Core CastSpell request result; SPELL_CAST_OK
+    // means accepted, not that a non-triggered cast has completed.
+    void RecordEncounterCastResult(Player const* bot, uint32 groupId, uint32 mapId,
+                                   uint32 instanceId, uint64 encounterId,
+                                   uint32 sequence, uint32 elapsedMs,
+                                   uint64 targetGuid, uint32 spellId,
+                                   uint32 resultCode, bool accepted,
+                                   char const* reason) const;
+
     // Record a bounded status when Shadow cannot produce an evaluation.
     void RecordShadowStatus(Player const* bot, char const* status,
                             uint32 groupId, uint32 mapId, uint32 instanceId) const;
@@ -78,6 +87,8 @@ public:
 
 private:
     mutable uint32 m_recordsThisTick;
+    mutable uint32 m_castResultsThisTick;
+    mutable bool m_castResultLimitLogged;
     mutable bool m_enabled;
 };
 

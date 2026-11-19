@@ -365,11 +365,21 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
 
     m_decisionTrace.Record(me, event, pTarget, pSpellEntry, reason, detail);
 
-    // DoCastSpell calls this hook only after the real Core Player::CastSpell
-    // returns. Correlate that result with the active encounter; never infer
-    // acceptance from a Shadow candidate being selected.
-    if (!event || std::strcmp(event, "spell_cast_result") != 0 ||
-        !m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
+    bool const castAttempt = event && std::strcmp(event, "spell_cast_attempt") == 0;
+    bool const castResult = event && std::strcmp(event, "spell_cast_result") == 0;
+    if (!castAttempt && !castResult)
+        return;
+
+    if (castAttempt)
+    {
+        // DoCastSpell calls this immediately before the real Core Player::CastSpell.
+        // Use the attempt sequence as the action ID so its synchronous result can
+        // be paired with it even though the result gets its own later sequence.
+        m_pendingCastTraceActionId = 0;
+        m_pendingCastTraceEncounterId = 0;
+    }
+
+    if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
         !m_partyCoordinator->HasActiveEncounter())
         return;
 
@@ -381,15 +391,44 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         m_partyCoordinator->GetEncounterInstanceId() != instanceId)
         return;
 
+    uint64 const encounterId = m_partyCoordinator->GetEncounterId();
+    uint32 const elapsedMs =
+        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime());
+    uint64 const targetGuid =
+        pTarget ? pTarget->GetObjectGuid().GetRawValue() : 0;
+    uint32 const spellId = pSpellEntry ? pSpellEntry->Id : 0;
+
+    if (castAttempt)
+    {
+        uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+        if (m_decisionTrace.RecordEncounterCastAttempt(
+                me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+                encounterId, sequence, elapsedMs, sequence, targetGuid, spellId))
+        {
+            m_pendingCastTraceActionId = sequence;
+            m_pendingCastTraceEncounterId = encounterId;
+        }
+        return;
+    }
+
+    // The result callback is synchronous with DoCastSpell. Pair it only with
+    // the attempt just emitted for this same active encounter.
+    if (!m_pendingCastTraceActionId ||
+        m_pendingCastTraceEncounterId != encounterId)
+    {
+        m_pendingCastTraceActionId = 0;
+        m_pendingCastTraceEncounterId = 0;
+        return;
+    }
+
     uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
     m_decisionTrace.RecordEncounterCastResult(
         me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
-        m_partyCoordinator->GetEncounterId(), sequence,
-        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
-        pTarget ? pTarget->GetObjectGuid().GetRawValue() : 0,
-        pSpellEntry ? pSpellEntry->Id : 0, detail,
-        detail == SPELL_CAST_OK,
+        encounterId, sequence, elapsedMs, m_pendingCastTraceActionId,
+        targetGuid, spellId, detail, detail == SPELL_CAST_OK,
         reason ? reason : "unspecified");
+    m_pendingCastTraceActionId = 0;
+    m_pendingCastTraceEncounterId = 0;
 }
 
 bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const

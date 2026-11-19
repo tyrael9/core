@@ -1260,11 +1260,9 @@ bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
         return false;
     }
 
-    PartyBotAI engineActionAI(
-        healer, map.GetId(), map.GetInstanceId(),
-        healer->GetPositionX(), healer->GetPositionY(),
-        healer->GetPositionZ(), healer->GetOrientation());
-    engineActionAI.SetPlayer(healer);
+    SimulatorSpellLifecycleProbeAI* lifecycleProbe =
+        new SimulatorSpellLifecycleProbeAI(healer);
+    healer->SetAI(lifecycleProbe);
 
     patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
     uint32 const healthBefore = patient.creature->GetHealth();
@@ -1408,8 +1406,6 @@ bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
     bool const movementCompleted = finalDx * finalDx + finalDy * finalDy +
                                    finalDz * finalDz <= 1.0f;
 
-    healer->SetAI(nullptr);
-    engineActionAI.Remove();
     healerSession.LogoutPlayer(false);
     bool const playerCleaned = healerSession.GetPlayer() == nullptr;
     healer = nullptr;
@@ -4424,9 +4420,11 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         return false;
     }
 
-    SimulatorSpellLifecycleProbeAI* lifecycleProbe =
-        new SimulatorSpellLifecycleProbeAI(healer);
-    healer->SetAI(lifecycleProbe);
+    PartyBotAI engineActionAI(
+        healer, map.GetId(), map.GetInstanceId(),
+        healer->GetPositionX(), healer->GetPositionY(),
+        healer->GetPositionZ(), healer->GetOrientation());
+    engineActionAI.SetPlayer(healer);
 
     patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
     uint32 const healthBefore = patient.creature->GetHealth();
@@ -4518,6 +4516,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         engineActionAI.m_activeEngineActionId == 0 &&
         engineActionAI.m_pendingCastTraceActionId == 0;
 
+    healer->SetAI(nullptr);
+    engineActionAI.Remove();
     healerSession.LogoutPlayer(false);
     bool const playerCleaned = healerSession.GetPlayer() == nullptr;
     healer = nullptr; // LogoutPlayer(true/false) removes and deletes the in-world Player.

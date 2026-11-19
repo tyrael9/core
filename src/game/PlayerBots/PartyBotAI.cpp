@@ -379,6 +379,7 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         m_pendingCastTraceEncounterId = 0;
         m_pendingCastTraceTargetGuid = 0;
         m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
     }
 
     if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
@@ -390,6 +391,7 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
             m_pendingCastTraceEncounterId = 0;
             m_pendingCastTraceTargetGuid = 0;
             m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
         }
         return;
     }
@@ -407,6 +409,7 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
             m_pendingCastTraceEncounterId = 0;
             m_pendingCastTraceTargetGuid = 0;
             m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
         }
         return;
     }
@@ -429,6 +432,7 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
             m_pendingCastTraceEncounterId = encounterId;
             m_pendingCastTraceTargetGuid = targetGuid;
             m_pendingCastTraceSpellId = spellId;
+            m_pendingCastTraceSpellBound = false;
         }
         return;
     }
@@ -442,6 +446,7 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         m_pendingCastTraceEncounterId = 0;
         m_pendingCastTraceTargetGuid = 0;
         m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
         return;
     }
 
@@ -463,7 +468,7 @@ uint32 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
     encounterId = 0;
     if (!me || !m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
         !m_partyCoordinator->HasActiveEncounter() ||
-        !m_pendingCastTraceActionId ||
+        !m_pendingCastTraceActionId || m_pendingCastTraceSpellBound ||
         m_pendingCastTraceSpellId != spellId ||
         m_pendingCastTraceTargetGuid != targetGuid)
         return 0;
@@ -477,6 +482,7 @@ uint32 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
         m_partyCoordinator->GetEncounterId() != m_pendingCastTraceEncounterId)
         return 0;
 
+    m_pendingCastTraceSpellBound = true;
     encounterId = m_pendingCastTraceEncounterId;
     return m_pendingCastTraceActionId;
 }

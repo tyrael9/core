@@ -48,6 +48,15 @@ struct ReservationTraceEvent {
 
 // Optional observer. The Strategy/Shadow path leaves this null; the executor
 // reports only coordinator outcomes that actually happened.
+class EngineActionObserver {
+public:
+    virtual ~EngineActionObserver() {}
+    // Host callback runs synchronously around Action::Execute. It may bind the
+    // stable action ID to a Core spell lifecycle but must not perform gameplay.
+    virtual void OnEngineActionEvent(DecisionContext const& context,
+                                     EngineActionTraceEvent const& event) = 0;
+};
+
 class ReservationTraceSink {
 public:
     virtual ~ReservationTraceSink() {}
@@ -63,15 +72,18 @@ struct DecisionContext {
     DecisionContext(PartySnapshot const& partySnapshot, PartyMemberSnapshot const& botSnapshot,
                     PartyCoordinator& partyCoordinator, std::uint32_t timeMs,
                     ReservationTraceSink* traceSink = nullptr,
-                    ValueCache* decisionValueCache = nullptr)
+                    ValueCache* decisionValueCache = nullptr,
+                    EngineActionObserver* actionObserver = nullptr)
         : snapshot(partySnapshot), bot(botSnapshot), coordinator(partyCoordinator),
-          nowMs(timeMs), reservationTrace(traceSink), valueCache(decisionValueCache) {}
+          nowMs(timeMs), reservationTrace(traceSink), valueCache(decisionValueCache),
+          engineActionObserver(actionObserver) {}
     PartySnapshot const& snapshot;
     PartyMemberSnapshot const& bot;
     PartyCoordinator& coordinator;
     std::uint32_t nowMs;
     ReservationTraceSink* reservationTrace;
     ValueCache* valueCache;
+    EngineActionObserver* engineActionObserver;
 };
 }
 #endif

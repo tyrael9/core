@@ -128,3 +128,8 @@ The Core-backed simulator now attaches a temporary PlayerAI observer to the Main
 
 
 Core callback semantics: Player::SetDeathState invokes OnAliveStateChanged after each state assignment, including JUST_DIED followed by CORPSE. The hook is a state sample; PartyBotAI suppresses duplicate semantic events by returning when wasAlive == isAlive. The simulator regression explicitly distinguishes raw callback count from actual alive/dead transitions.
+
+
+### Resurrection lifecycle coverage
+
+The five-Player Core death/recovery fixture now resurrects the Main Tank only after all death-state roster and threat snapshots have been captured. A fresh PlayerAI observer must receive exactly one dead -> alive transition from Core Player::ResurrectPlayer, and the runtime CI script requires the corresponding PASS marker. This tests the Core callback boundary; PartyBotAI's encounter trace formatting remains a separate integration test.

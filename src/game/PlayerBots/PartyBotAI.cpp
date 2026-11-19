@@ -391,7 +391,7 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
             m_pendingCastTraceEncounterId = 0;
             m_pendingCastTraceTargetGuid = 0;
             m_pendingCastTraceSpellId = 0;
-        m_pendingCastTraceSpellBound = false;
+            m_pendingCastTraceSpellBound = false;
         }
         return;
     }
@@ -460,6 +460,7 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
     m_pendingCastTraceEncounterId = 0;
     m_pendingCastTraceTargetGuid = 0;
     m_pendingCastTraceSpellId = 0;
+    m_pendingCastTraceSpellBound = false;
 }
 
 uint32 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,

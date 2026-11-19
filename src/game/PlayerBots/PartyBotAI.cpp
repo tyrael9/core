@@ -543,8 +543,31 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
     if (me->IsMounted())
         me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
 
+    uint64 const oldVictimGuid = me->GetVictim()
+        ? me->GetVictim()->GetObjectGuid().GetRawValue() : 0;
     if (me->Attack(pVictim, true))
     {
+        uint64 const newVictimGuid = me->GetVictim()
+            ? me->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+        if (oldVictimGuid != newVictimGuid && m_decisionTrace.IsEnabled() &&
+            m_partyCoordinator && m_partyCoordinator->HasActiveEncounter())
+        {
+            uint32 const mapId = me->GetMapId();
+            uint32 const instanceId = me->GetInstanceId();
+            if (m_partyCoordinatorMapId == mapId &&
+                m_partyCoordinatorInstanceId == instanceId &&
+                m_partyCoordinator->GetEncounterMapId() == mapId &&
+                m_partyCoordinator->GetEncounterInstanceId() == instanceId)
+            {
+                uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+                m_decisionTrace.RecordEncounterTargetChange(
+                    me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+                    m_partyCoordinator->GetEncounterId(), sequence,
+                    m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
+                    oldVictimGuid, newVictimGuid, "legacy_attack_start");
+            }
+        }
+
         BeginChasing(pVictim);
         return true;
     }

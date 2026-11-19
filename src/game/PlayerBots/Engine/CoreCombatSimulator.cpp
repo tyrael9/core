@@ -4508,8 +4508,13 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 
     uint32 const healthAfter = patient.creature->GetHealth();
     uint32 const manaAfter = healer->GetPower(POWER_MANA);
+    uint32 const manaAfterAccept = healAction->GetManaAfterAccept();
+    // Observe the immediate Core cast cost, not the later post-cast pool:
+    // natural regeneration may restore Mana while a cast is completing.
+    bool const manaSpentOnAccept =
+        healAction->GetManaBefore() > manaAfterAccept;
     bool const completed = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
-                           healthAfter > healthBefore && manaAfter < manaBefore;
+                           healthAfter > healthBefore && manaSpentOnAccept;
     bool const engineActionTracePassed = engineActionTraceSetup && accepted &&
         report.candidates[report.selectedIndices[0]].actionId == engineActionId &&
         report.candidates[report.selectedIndices[0]].candidate.actionId == engineActionId &&
@@ -4548,12 +4553,13 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     bool const cleaned = playerCleaned && patientCleaned;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u mana=%u>%u health=%u>%u completed=%u engineActionTrace=%u decisionSummaryTrace=%u actionId=%llu cleanup=%u.",
+             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u manaAtAccept=%u>%u manaAtFinish=%u>%u health=%u>%u completed=%u engineActionTrace=%u decisionSummaryTrace=%u actionId=%llu cleanup=%u.",
              1u, selected ? 1u : 0u, accepted ? 1u : 0u,
              healAction->WasCastPendingAfterAccept() ? 1u : 0u,
              healAction->HadGcdAfterAccept() ? 1u : 0u,
              static_cast<uint32>(healAction->GetLastCastResult()),
-             manaBefore, manaAfter, healthBefore, healthAfter,
+             healAction->GetManaBefore(), manaAfterAccept, manaBefore, manaAfter,
+             healthBefore, healthAfter,
              completed ? 1u : 0u,
              engineActionTracePassed ? 1u : 0u,
              decisionSummaryTracePassed ? 1u : 0u,

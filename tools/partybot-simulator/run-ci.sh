@@ -252,7 +252,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F21 copied real Core shapeshift form, p
     echo "[PartyBotSimulator] The F21 Core snapshot/heartbeat PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
-f21_heartbeat_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=party_snapshot .*facts=.*form=1,cast=2050:[0-9]+:[0-9]+:[0-9]+,pos=-?[0-9]+/-?[0-9]+/-?[0-9]+.*entry=[0-9]+,rank=[0-9]+,boss=[01]' "$LOG_FILE" || true)"
+f21_heartbeat_count="$(grep -E '\[PartyBotEngineTrace\].*event=party_snapshot .*facts=.*form=1,' "$LOG_FILE" | grep -Ec 'cast=2050:[0-9]+:[0-9]+:[0-9]+,pos=-?[0-9]+/-?[0-9]+/-?[0-9]+.*entry=[0-9]+,rank=[0-9]+,boss=[01]' || true)"
 if [[ "$f21_heartbeat_count" != "1" ]]; then
     echo "[PartyBotSimulator] Expected exactly one F21 heartbeat containing the real form/cast/position and hostile identity fields, found $f21_heartbeat_count." | tee -a "$LOG_FILE"
     exit 1

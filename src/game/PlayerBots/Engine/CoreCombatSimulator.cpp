@@ -4425,6 +4425,11 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         healer->GetPositionX(), healer->GetPositionY(),
         healer->GetPositionZ(), healer->GetOrientation());
     engineActionAI.SetPlayer(healer);
+    // This fixture exercises PartyBotAI's PlayerAI observer hooks, not its
+    // Legacy startup path. The first normal AI tick would initialize the bot
+    // and refill Mana to 100%, masking the Core Spell::finish power deduction.
+    engineActionAI.m_initialized = true;
+    engineActionAI.m_updateTimer.Reset(600000);
 
     patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
     uint32 const healthBefore = patient.creature->GetHealth();

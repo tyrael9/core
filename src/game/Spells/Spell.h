@@ -291,7 +291,7 @@ class Spell
         Item* m_CastItem = nullptr;
         SpellCastTargets m_targets;
         // Optional PartyBot trace correlation copied from the owning PlayerAI.
-        uint32 m_partyBotTraceActionId = 0;
+        uint64 m_partyBotTraceActionId = 0;
         uint64 m_partyBotTraceEncounterId = 0;
         uint64 m_partyBotTraceTargetGuid = 0;
         bool m_partyBotTraceInterrupted = false;

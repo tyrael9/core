@@ -74,6 +74,9 @@ public:
                                     EncounterHeartbeat& heartbeat);
     std::uint32_t NextEncounterSequence();
     std::uint64_t GetEncounterId() const { return m_encounterId; }
+    std::uint32_t GetEncounterGroupId() const { return m_encounterGroupId; }
+    std::uint32_t GetEncounterMapId() const { return m_encounterMapId; }
+    std::uint32_t GetEncounterInstanceId() const { return m_encounterInstanceId; }
     std::uint32_t GetEncounterElapsedMs(std::uint32_t nowMs) const {
         return m_encounterActive ? nowMs - m_encounterStartedAtMs : 0;
     }

@@ -6,7 +6,9 @@
 #include <vector>
 namespace PartyBotEngine {
 using Guid = std::uint64_t;
-using ThreatActionId = std::uint64_t;
+using ActionId = std::uint64_t;
+// Kept as an alias for existing threat-reservation adapter APIs.
+using ThreatActionId = ActionId;
 
 enum class ThreatImpactCompleteness : std::uint8_t {
     Unknown,
@@ -77,8 +79,10 @@ struct ActionCandidate {
     std::string actionName;
     Guid targetGuid = 0;
     std::uint32_t spellId = 0;
-    // Filled by ExecuteSelected before dispatch so asynchronous action
-    // completion hooks can release every reservation belonging to the action.
+    // Assigned by ExecuteSelected before adapter dispatch; remains available
+    // to asynchronous action/result listeners even when the action reserves no threat.
+    ActionId actionId = 0;
+    // Nonzero only when this action owns one or more in-flight threat rows.
     ThreatActionId threatActionId = 0;
     float basePriority = 0.0f;
     float finalPriority = 0.0f;
@@ -91,6 +95,7 @@ struct CandidateEvaluation {
     CandidateStatus status = CandidateStatus::NotSelected;
     ActionResult actionResult = ActionResult::NotAttempted;
     ThreatImpactEstimate threatImpact;
+    ActionId actionId = 0;
     ThreatActionId threatActionId = 0;
     std::string reason;
 };

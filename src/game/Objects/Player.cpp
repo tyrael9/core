@@ -24,6 +24,7 @@
 #include <sstream>
 
 #include "Player.h"
+#include "PlayerAI.h"
 #include "Bag.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"

@@ -1858,29 +1858,15 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
             }
         }
 
-        std::vector<std::size_t> decisionOrder;
-        decisionOrder.reserve(report.candidates.size());
-        for (std::size_t i = 0; i < report.candidates.size(); ++i)
-            decisionOrder.push_back(i);
-        std::stable_sort(decisionOrder.begin(), decisionOrder.end(),
-            [&report](std::size_t left, std::size_t right)
-            {
-                PartyBotEngine::CandidateEvaluation const& a = report.candidates[left];
-                PartyBotEngine::CandidateEvaluation const& b = report.candidates[right];
-                bool const aSelected = a.status == PartyBotEngine::CandidateStatus::Selected;
-                bool const bSelected = b.status == PartyBotEngine::CandidateStatus::Selected;
-                if (aSelected != bSelected)
-                    return aSelected;
-                return a.candidate.finalPriority > b.candidate.finalPriority;
-            });
+        std::vector<std::size_t> const decisionOrder =
+            PartyBotEngine::SelectPriorityCandidateEvaluationIndices(
+                report, PartyBotEngine::DecisionReport::MaxCandidateTraceRows);
 
-        // Log selected candidates first, followed by strongest alternatives.
+        // Log arbitration-selected candidates first, even if an earlier
+        // executor has already changed their status to Executed/ExecutionFailed.
         // Evaluation remains read-only; this path never executes actions.
-        std::size_t loggedDecisions = 0;
         for (std::size_t index : decisionOrder)
         {
-            if (loggedDecisions >= 3)
-                break;
             PartyBotEngine::CandidateEvaluation const& evaluation = report.candidates[index];
             PartyBotEngine::ActionCandidate const& candidate = evaluation.candidate;
             m_decisionTrace.RecordShadowDecision(
@@ -1909,7 +1895,6 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
                     ShadowCandidateStatusName(evaluation.status),
                     evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
             }
-            ++loggedDecisions;
         }
         m_engineShadowTraceMs = 10000;
     }

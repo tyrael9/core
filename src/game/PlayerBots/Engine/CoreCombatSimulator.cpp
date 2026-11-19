@@ -4548,6 +4548,33 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
 
 
 
+class SimulatorCandidateTraceOverflowTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive &&
+            context.bot.roleId == static_cast<std::uint8_t>(PartyRole::Healer);
+    }
+    void CollectCandidates(DecisionContext const& context,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        for (uint32 i = 0; i < 4; ++i)
+        {
+            ActionCandidate candidate;
+            candidate.actionName = "missing_candidate_trace_probe";
+            candidate.targetGuid = context.snapshot.members.size() > 1
+                ? context.snapshot.members[1].guid : context.bot.guid;
+            candidate.basePriority = 200.0f - static_cast<float>(i) * 10.0f;
+            candidate.channel = ActionChannel::Utility;
+            candidates.push_back(candidate);
+        }
+    }
+private:
+    std::string m_name = "simulator_candidate_trace_overflow";
+};
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -4642,6 +4669,11 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     std::shared_ptr<Strategy> strategy(new Strategy("simulator_healer_triage"));
     strategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
     engine.AddStrategy(strategy);
+    std::shared_ptr<Strategy> traceOverflowStrategy(
+        new Strategy("simulator_candidate_trace_overflow"));
+    traceOverflowStrategy->AddTrigger(
+        std::make_shared<SimulatorCandidateTraceOverflowTrigger>());
+    engine.AddStrategy(traceOverflowStrategy);
 
     DecisionReport report = engine.Evaluate(context);
     bool const selected = report.selectedIndices.size() == 1 &&
@@ -4686,11 +4718,55 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         engineActionAI.m_pendingCastTraceActionId == 0;
 
     DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
+    std::vector<std::size_t> const candidateDetailIndices =
+        SelectPriorityCandidateEvaluationIndices(
+            report, DecisionReport::MaxCandidateTraceRows);
+    bool candidateDetailTracePassed = engineActionTracePassed &&
+        candidateDetailIndices.size() == DecisionReport::MaxCandidateTraceRows &&
+        candidateDetailIndices[0] == report.selectedIndices[0] &&
+        report.candidates.size() == 5 &&
+        report.candidates[candidateDetailIndices[0]].status == CandidateStatus::Executed &&
+        decisionSummary.candidateDetailOmitted == 2;
+    uint32 candidateDetailRowsEmitted = 0;
+    if (candidateDetailTracePassed && coordinator->HasActiveEncounter())
+    {
+        for (std::size_t index : candidateDetailIndices)
+        {
+            if (coordinator->TryAdmitEncounterTraceEvent(
+                    coordinator->GetEncounterId(), EncounterTraceEventClass::Detail) !=
+                EncounterTraceAdmission::Accepted)
+            {
+                candidateDetailTracePassed = false;
+                break;
+            }
+            uint32 const sequence = coordinator->NextEncounterSequence();
+            CandidateEvaluation const& evaluation = report.candidates[index];
+            ActionCandidate const& candidate = evaluation.candidate;
+            char const* status = evaluation.status == CandidateStatus::Executed
+                ? "executed" : (evaluation.status == CandidateStatus::RejectedMissingAction
+                    ? "rejected_missing_action" : "candidate");
+            engineActionAI.m_decisionTrace.RecordEncounterCandidate(
+                healer, snapshot.groupId, snapshot.mapId, snapshot.instanceId,
+                snapshot.epoch, coordinator->GetEncounterId(), sequence,
+                coordinator->GetEncounterElapsedMs(3000), "healer",
+                candidate.strategyName.c_str(), candidate.triggerName.c_str(),
+                candidate.actionName.c_str(), candidate.targetGuid, candidate.spellId,
+                static_cast<uint32>(candidate.channel), candidate.finalPriority,
+                status, evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
+            if (sequence)
+                ++candidateDetailRowsEmitted;
+        }
+    }
+
     bool decisionSummaryTracePassed = engineActionTracePassed &&
-        decisionSummary.candidateCount == 1 &&
+        decisionSummary.candidateCount == 5 &&
         decisionSummary.selectedCount == 1 &&
+        decisionSummary.missingActionCount == 4 &&
         decisionSummary.executedCount == 1 &&
-        decisionSummary.executionFailedCount == 0;
+        decisionSummary.executionFailedCount == 0 &&
+        decisionSummary.candidateDetailLimit == 3 &&
+        decisionSummary.candidateDetailOmitted == 2 &&
+        candidateDetailTracePassed && candidateDetailRowsEmitted == 3;
     if (decisionSummaryTracePassed && coordinator->HasActiveEncounter())
     {
         EncounterTraceAdmission const admission = coordinator->TryAdmitEncounterTraceEvent(
@@ -4717,7 +4793,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     bool const cleaned = playerCleaned && patientCleaned;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u manaAtAccept=%u>%u manaAtFinish=%u>%u lastManaUse=%u health=%u>%u completed=%u engineActionTrace=%u decisionSummaryTrace=%u actionId=%llu cleanup=%u.",
+             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u manaAtAccept=%u>%u manaAtFinish=%u>%u lastManaUse=%u health=%u>%u completed=%u engineActionTrace=%u decisionSummaryTrace=%u candidateDetailTrace=%u candidateRows=%u actionId=%llu cleanup=%u.",
              1u, selected ? 1u : 0u, accepted ? 1u : 0u,
              healAction->WasCastPendingAfterAccept() ? 1u : 0u,
              healAction->HadGcdAfterAccept() ? 1u : 0u,
@@ -4728,6 +4804,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              completed ? 1u : 0u,
              engineActionTracePassed ? 1u : 0u,
              decisionSummaryTracePassed ? 1u : 0u,
+             candidateDetailTracePassed ? 1u : 0u,
+             candidateDetailRowsEmitted,
              static_cast<unsigned long long>(engineActionId), cleaned ? 1u : 0u);
 
     if (!registered || !selected || !accepted || !completed ||
@@ -4742,6 +4820,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              "[PartyBotSimulator] PASS: Engine action ID flowed through PartyBotAI into Core Spell::prepare/finish; one action_id correlated the adapter attempt/result and the later successful Core cast terminal, with real healing and mana effects.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F20 DecisionSummary aggregated the complete executed Core Player heal report and emitted the bounded encounter summary.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F24 candidate detail cap reported five complete candidates, retained the selected Core heal first after execution, emitted three rows and counted two omitted alternatives.");
     return true;
 }
 

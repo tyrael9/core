@@ -621,6 +621,40 @@ void TestEngineActionAttemptAndResultTrace()
     assert(report.candidates[report.selectedIndices[0]].threatActionId == 0);
 }
 
+void TestCandidateTraceSelectionPreservesArbitrationSelectionAfterExecution()
+{
+    DecisionReport report;
+    auto add = [&report](float priority, CandidateStatus status) {
+        CandidateEvaluation evaluation;
+        evaluation.candidate.finalPriority = priority;
+        evaluation.status = status;
+        report.candidates.push_back(evaluation);
+    };
+
+    add(70.0f, CandidateStatus::NotSelected);    // index 0
+    add(10.0f, CandidateStatus::Executed);       // index 1, selected originally
+    add(99.0f, CandidateStatus::RejectedMissingAction); // index 2
+    add(90.0f, CandidateStatus::ExecutionFailed); // index 3, selected originally
+    add(80.0f, CandidateStatus::RejectedImpossible); // index 4
+    add(std::numeric_limits<float>::quiet_NaN(), CandidateStatus::RejectedInvalidPriority); // index 5
+    report.selectedIndices = {1, 3};
+
+    std::vector<std::size_t> const selected =
+        SelectPriorityCandidateEvaluationIndices(report, 3);
+    assert(selected.size() == 3);
+    assert(selected[0] == 3); // A selected action remains first after execution failure.
+    assert(selected[1] == 1); // Then the other selected action, despite lower priority.
+    assert(selected[2] == 2); // Highest-priority unselected alternative.
+    assert(SelectPriorityCandidateEvaluationIndices(report, 0).empty());
+    assert(SelectPriorityCandidateEvaluationIndices(report, 20).size() == 6);
+
+    DecisionSummary const summary = SummarizeDecisionReport(report);
+    assert(summary.candidateCount == 6);
+    assert(summary.selectedCount == 2);
+    assert(summary.candidateDetailLimit == DecisionReport::MaxCandidateTraceRows);
+    assert(summary.candidateDetailOmitted == 3);
+}
+
 void TestDecisionSummaryCountsAllArbitrationOutcomes()
 {
     DecisionReport report;
@@ -2166,6 +2200,7 @@ int main() {
     TestTriggerTraceSelectionPrioritizesActionableRows();
     TestEngineTriggerObservationCapacityIsBounded();
     TestEngineActionAttemptAndResultTrace();
+    TestCandidateTraceSelectionPreservesArbitrationSelectionAfterExecution();
     TestDecisionSummaryCountsAllArbitrationOutcomes();
     TestActionQueueIsBoundedPriorityOrderedAndStable();
     TestPendingActionQueueDeduplicatesAndPreservesOriginalExpiry();

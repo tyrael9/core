@@ -2,6 +2,7 @@
 #define MANGOS_PARTYBOT_DECISION_TYPES_H
 #include <cstdint>
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -103,6 +104,7 @@ struct CandidateEvaluation {
 };
 struct DecisionReport {
     static std::size_t const MaxTriggerEvaluations = 64;
+    static std::size_t const MaxCandidateTraceRows = 3;
     std::uint32_t snapshotEpoch = 0;
     std::vector<TriggerEvaluation> triggerEvaluations;
     std::uint32_t omittedTriggerEvaluations = 0;
@@ -150,6 +152,8 @@ inline std::vector<std::size_t> SelectPriorityTriggerEvaluationIndices(
 
 struct DecisionSummary {
     std::uint32_t candidateCount = 0;
+    std::uint32_t candidateDetailLimit = 0;
+    std::uint32_t candidateDetailOmitted = 0;
     // Count arbitration winners from selectedIndices, even after execution
     // changes their CandidateStatus to Executed or ExecutionFailed.
     std::uint32_t selectedCount = 0;
@@ -179,6 +183,13 @@ inline void IncrementDecisionSummaryCount(std::uint32_t& count) {
 inline DecisionSummary SummarizeDecisionReport(DecisionReport const& report) {
     DecisionSummary summary;
     summary.candidateCount = BoundedDecisionCount(report.candidates.size());
+    std::vector<std::size_t> const candidateDetailIndices =
+        SelectPriorityCandidateEvaluationIndices(
+            report, DecisionReport::MaxCandidateTraceRows);
+    summary.candidateDetailLimit = BoundedDecisionCount(
+        DecisionReport::MaxCandidateTraceRows);
+    summary.candidateDetailOmitted = BoundedDecisionCount(
+        report.candidates.size() - candidateDetailIndices.size());
     summary.selectedCount = BoundedDecisionCount(report.selectedIndices.size());
     for (CandidateEvaluation const& evaluation : report.candidates) {
         switch (evaluation.status) {

@@ -496,6 +496,38 @@ void TestEngineTriggerCadenceAndExplicitInvalidation()
     assert(inactive.triggerEvaluations[0].candidateCount == 0);
 }
 
+void TestTriggerTraceSelectionPrioritizesActionableRows()
+{
+    DecisionReport report;
+    auto add = [&report](TriggerEvaluationStatus status, uint32 candidateCount,
+                         char const* name) {
+        TriggerEvaluation evaluation;
+        evaluation.status = status;
+        evaluation.candidateCount = candidateCount;
+        evaluation.triggerName = name;
+        report.triggerEvaluations.push_back(evaluation);
+    };
+
+    // Registration order intentionally puts inactive rows before an active row.
+    add(TriggerEvaluationStatus::Inactive, 0, "inactive_first");
+    add(TriggerEvaluationStatus::Active, 1, "active_one");
+    add(TriggerEvaluationStatus::CadenceSkipped, 0, "cadence_first");
+    add(TriggerEvaluationStatus::Active, 0, "active_empty");
+    add(TriggerEvaluationStatus::Active, 4, "active_four");
+    add(TriggerEvaluationStatus::Inactive, 0, "inactive_second");
+    add(TriggerEvaluationStatus::CadenceSkipped, 0, "cadence_second");
+
+    std::vector<std::size_t> const selected =
+        SelectPriorityTriggerEvaluationIndices(report, 4);
+    assert(selected.size() == 4);
+    assert(selected[0] == 4); // Most candidate-producing active trigger.
+    assert(selected[1] == 1); // Next candidate-producing active trigger.
+    assert(selected[2] == 3); // Active but did not produce candidates.
+    assert(selected[3] == 0); // Inactive precedes cadence-skipped.
+    assert(SelectPriorityTriggerEvaluationIndices(report, 0).empty());
+    assert(SelectPriorityTriggerEvaluationIndices(report, 20).size() == 7);
+}
+
 void TestEngineTriggerObservationCapacityIsBounded()
 {
     Fixture f;
@@ -2131,6 +2163,7 @@ int main() {
     TestTriggerSchedulerCadenceInvalidationAndClockWrap();
     TestTriggerSchedulerCapacityFailsOpen();
     TestEngineTriggerCadenceAndExplicitInvalidation();
+    TestTriggerTraceSelectionPrioritizesActionableRows();
     TestEngineTriggerObservationCapacityIsBounded();
     TestEngineActionAttemptAndResultTrace();
     TestDecisionSummaryCountsAllArbitrationOutcomes();

@@ -80,7 +80,8 @@ public:
                                        uint32 sequence, uint32 elapsedMs,
                                        uint32 total, uint32 evaluated,
                                        uint32 active, uint32 inactive,
-                                       uint32 cadenceSkipped, uint32 omitted) const;
+                                       uint32 cadenceSkipped, uint32 omitted,
+                                       uint32 detailLimit, uint32 detailOmitted) const;
     void RecordEncounterTrigger(Player const* bot, uint32 groupId, uint32 mapId,
                                 uint32 instanceId, uint64 encounterId,
                                 uint32 sequence, uint32 elapsedMs,

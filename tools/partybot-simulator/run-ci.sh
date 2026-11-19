@@ -381,16 +381,23 @@ if ! grep -Fq "[PartyBotSimulator] PASS: source Map::Remove retained an encounte
     echo "[PartyBotSimulator] Missing source-map last-bot departure PASS marker." | tee -a "$LOG_FILE"
     exit 1
 fi
-if ! grep -Fq "[PartyBotSimulator] PASS: Core-backed PartyBotEngine reported one active healer trigger, two inactive role triggers, and a healing candidate correlated to its originating trigger; formatted trigger and candidate records were emitted." "$LOG_FILE"; then
-    echo "[PartyBotSimulator] Missing Core-backed trigger telemetry PASS marker." | tee -a "$LOG_FILE"
+if ! grep -Fq "[PartyBotSimulator] PASS: Core-backed PartyBotEngine prioritised trigger telemetry by actionable active state, then active-empty, then inactive; cadence-skipped rows were deprioritised by the four-row cap, while healer-candidate attribution remained intact." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] Missing Core-backed prioritised trigger telemetry PASS marker." | tee -a "$LOG_FILE"
     exit 1
 fi
-if ! grep -Eq '\[PartyBotEngineTrace\].*event=trigger_summary .*total=3 evaluated=3 active=1 inactive=2 cadence_skipped=0 omitted=0' "$LOG_FILE"; then
-    echo "[PartyBotSimulator] Missing formatted trigger summary with expected active/inactive counts." | tee -a "$LOG_FILE"
+if ! grep -Eq '\[PartyBotEngineTrace\].*event=trigger_summary .*total=7 evaluated=4 active=2 inactive=2 cadence_skipped=3 omitted=0 detail_limit=4 detail_omitted=3' "$LOG_FILE"; then
+    echo "[PartyBotSimulator] Missing formatted trigger summary with expected priority-sample omission counts." | tee -a "$LOG_FILE"
     exit 1
 fi
 if ! grep -Eq '\[PartyBotEngineTrace\].*event=trigger .*strategy=healing_triage trigger_name=healing_triage interval_ms=0 status=active candidates=1' "$LOG_FILE"; then
     echo "[PartyBotSimulator] Missing formatted active healer trigger row." | tee -a "$LOG_FILE"
+    exit 1
+fi
+active_empty_line="$(grep -nE '\[PartyBotEngineTrace\].*event=trigger .*strategy=simulator_trace_active_empty trigger_name=simulator_trace_active_empty .*status=active candidates=0' "$LOG_FILE" | head -n1 | cut -d: -f1)"
+tank_line="$(grep -nE '\[PartyBotEngineTrace\].*event=trigger .*strategy=tank_target trigger_name=tank_target .*status=inactive' "$LOG_FILE" | head -n1 | cut -d: -f1)"
+dps_line="$(grep -nE '\[PartyBotEngineTrace\].*event=trigger .*strategy=dps_target trigger_name=dps_target .*status=inactive' "$LOG_FILE" | head -n1 | cut -d: -f1)"
+if [[ -z "$active_empty_line" || -z "$tank_line" || -z "$dps_line" ]] || (( active_empty_line >= tank_line || tank_line >= dps_line )); then
+    echo "[PartyBotSimulator] Trigger detail rows were not emitted in the expected actionable-first order." | tee -a "$LOG_FILE"
     exit 1
 fi
 if ! grep -Eq '\[PartyBotEngineTrace\].*event=candidate .*strategy=healing_triage trigger_name=healing_triage action=shadow_heal_triage' "$LOG_FILE"; then

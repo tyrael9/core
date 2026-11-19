@@ -1810,6 +1810,11 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
                 }
             }
 
+            std::vector<std::size_t> const triggerTraceIndices =
+                PartyBotEngine::SelectPriorityTriggerEvaluationIndices(report, 4);
+            uint32 const triggerDetailOmitted = static_cast<uint32>(
+                report.triggerEvaluations.size() - triggerTraceIndices.size());
+
             if (AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
                     m_partyCoordinator->GetEncounterId(), snapshot->groupId,
                     snapshot->mapId, snapshot->instanceId,
@@ -1824,15 +1829,16 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
                     static_cast<uint32>(report.triggerEvaluations.size() +
                         report.omittedTriggerEvaluations),
                     triggerEvaluated, triggerActive, triggerInactive,
-                    triggerCadenceSkipped, report.omittedTriggerEvaluations);
+                    triggerCadenceSkipped, report.omittedTriggerEvaluations,
+                    4, triggerDetailOmitted);
             }
 
-            // Keep per-bot detail bounded in the existing ten-second sample window.
-            std::size_t loggedTriggers = 0;
-            for (PartyBotEngine::TriggerEvaluation const& trigger : report.triggerEvaluations)
+            // Prefer actionable triggers while preserving registration order
+            // within equal-priority rows. The summary reports rows omitted by this cap.
+            for (std::size_t triggerIndex : triggerTraceIndices)
             {
-                if (loggedTriggers >= 4)
-                    break;
+                PartyBotEngine::TriggerEvaluation const& trigger =
+                    report.triggerEvaluations[triggerIndex];
                 if (AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
                         m_partyCoordinator->GetEncounterId(), snapshot->groupId,
                         snapshot->mapId, snapshot->instanceId,
@@ -1849,7 +1855,6 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
                         trigger.intervalMs, ShadowTriggerStatusName(trigger.status),
                         trigger.candidateCount);
                 }
-                ++loggedTriggers;
             }
         }
 

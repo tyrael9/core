@@ -618,6 +618,24 @@ private:
     std::string m_actionName;
 };
 
+class SimulatorTraceProbeTrigger final : public Trigger
+{
+public:
+    SimulatorTraceProbeTrigger(std::string name, uint32 intervalMs)
+        : m_name(std::move(name)), m_intervalMs(intervalMs) {}
+    std::string const& GetName() const override { return m_name; }
+    uint32 GetCheckIntervalMs() const override { return m_intervalMs; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>&) const override {}
+private:
+    std::string m_name;
+    uint32 m_intervalMs = 0;
+};
+
 bool RunEngineCoreSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -4284,6 +4302,20 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         triggerTraceCoordinator->ObserveEncounter(triggerTraceSnapshot, triggerTraceNow, 30000);
     RegisterDefaultShadowStrategies(partyTraceAI.m_partyBotEngine);
     partyTraceAI.m_engineShadowStrategiesRegistered = true;
+
+    std::shared_ptr<Strategy> activeEmptyStrategy(new Strategy("simulator_trace_active_empty"));
+    activeEmptyStrategy->AddTrigger(std::make_shared<SimulatorTraceProbeTrigger>(
+        "simulator_trace_active_empty", 0));
+    partyTraceAI.m_partyBotEngine.AddStrategy(activeEmptyStrategy);
+    for (uint32 i = 0; i < 3; ++i)
+    {
+        std::string const strategyName = "simulator_trace_cadence_strategy_" + std::to_string(i);
+        std::string const triggerName = "simulator_trace_cadence_" + std::to_string(i);
+        std::shared_ptr<Strategy> cadenceStrategy(new Strategy(strategyName));
+        cadenceStrategy->AddTrigger(std::make_shared<SimulatorTraceProbeTrigger>(
+            triggerName, 1000));
+        partyTraceAI.m_partyBotEngine.AddStrategy(cadenceStrategy);
+    }
     partyTraceAI.m_decisionTrace.BeginTick();
 
     PartyMemberSnapshot const* triggerBotSnapshot =
@@ -4292,10 +4324,16 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     if (triggerTraceStarted.kind == EncounterTransitionKind::Started &&
         triggerBotSnapshot)
     {
-        DecisionContext triggerContext(
+        DecisionContext initialTriggerContext(
             triggerTraceSnapshot, *triggerBotSnapshot,
             *triggerTraceCoordinator, triggerTraceNow);
-        triggerReport = partyTraceAI.m_partyBotEngine.Evaluate(triggerContext);
+        DecisionReport const initialTriggerReport =
+            partyTraceAI.m_partyBotEngine.Evaluate(initialTriggerContext);
+        DecisionContext cadenceTriggerContext(
+            triggerTraceSnapshot, *triggerBotSnapshot,
+            *triggerTraceCoordinator, triggerTraceNow + 1);
+        triggerReport = partyTraceAI.m_partyBotEngine.Evaluate(cadenceTriggerContext);
+        (void)initialTriggerReport;
     }
 
     uint32 triggerActiveCount = 0;
@@ -4314,12 +4352,29 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         triggerReport.candidates[0].candidate.strategyName == "healing_triage" &&
         triggerReport.candidates[0].candidate.triggerName == "healing_triage" &&
         triggerReport.candidates[0].candidate.actionName == "shadow_heal_triage";
+    std::vector<std::size_t> const prioritizedTriggerIndices =
+        SelectPriorityTriggerEvaluationIndices(triggerReport, 4);
+    auto triggerAt = [&triggerReport](std::size_t index) -> TriggerEvaluation const& {
+        return triggerReport.triggerEvaluations.at(index);
+    };
+    bool const triggerPriorityOrderPassed = prioritizedTriggerIndices.size() == 4 &&
+        triggerAt(prioritizedTriggerIndices[0]).triggerName == "healing_triage" &&
+        triggerAt(prioritizedTriggerIndices[0]).status == TriggerEvaluationStatus::Active &&
+        triggerAt(prioritizedTriggerIndices[0]).candidateCount == 1 &&
+        triggerAt(prioritizedTriggerIndices[1]).triggerName == "simulator_trace_active_empty" &&
+        triggerAt(prioritizedTriggerIndices[1]).status == TriggerEvaluationStatus::Active &&
+        triggerAt(prioritizedTriggerIndices[1]).candidateCount == 0 &&
+        triggerAt(prioritizedTriggerIndices[2]).triggerName == "tank_target" &&
+        triggerAt(prioritizedTriggerIndices[2]).status == TriggerEvaluationStatus::Inactive &&
+        triggerAt(prioritizedTriggerIndices[3]).triggerName == "dps_target" &&
+        triggerAt(prioritizedTriggerIndices[3]).status == TriggerEvaluationStatus::Inactive;
     bool const triggerReportValid =
         triggerTraceStarted.kind == EncounterTransitionKind::Started &&
-        triggerBotSnapshot && triggerReport.triggerEvaluations.size() == 3 &&
+        triggerBotSnapshot && triggerReport.triggerEvaluations.size() == 7 &&
         triggerReport.omittedTriggerEvaluations == 0 &&
-        triggerActiveCount == 1 && triggerInactiveCount == 2 &&
-        triggerSkippedCount == 0 && hasAttributedHealingCandidate;
+        triggerActiveCount == 2 && triggerInactiveCount == 2 &&
+        triggerSkippedCount == 3 && hasAttributedHealingCandidate &&
+        triggerPriorityOrderPassed;
 
     bool triggerSummaryRecorded = false;
     uint32 triggerRowsRecorded = 0;
@@ -4339,12 +4394,16 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 static_cast<uint32>(triggerReport.triggerEvaluations.size()),
                 triggerActiveCount + triggerInactiveCount,
                 triggerActiveCount, triggerInactiveCount, triggerSkippedCount,
-                triggerReport.omittedTriggerEvaluations);
+                triggerReport.omittedTriggerEvaluations, 4,
+                static_cast<uint32>(triggerReport.triggerEvaluations.size() -
+                    prioritizedTriggerIndices.size()));
             triggerSummaryRecorded = sequence != 0;
         }
 
-        for (TriggerEvaluation const& observation : triggerReport.triggerEvaluations)
+        for (std::size_t triggerIndex : prioritizedTriggerIndices)
         {
+            TriggerEvaluation const& observation =
+                triggerReport.triggerEvaluations[triggerIndex];
             if (triggerTraceCoordinator->TryAdmitEncounterTraceEvent(
                     encounterId, EncounterTraceEventClass::Detail) !=
                 EncounterTraceAdmission::Accepted)
@@ -4387,11 +4446,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
 
     bool const f17TriggerTelemetryPassed =
         triggerReportValid && partyTraceAI.m_decisionTrace.IsEnabled() &&
-        triggerSummaryRecorded && triggerRowsRecorded == 3 &&
-        triggerCandidateRecorded;
+        triggerSummaryRecorded && triggerRowsRecorded == 4 &&
+        triggerCandidateRecorded && triggerPriorityOrderPassed;
     if (f17TriggerTelemetryPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: Core-backed PartyBotEngine reported one active healer trigger, two inactive role triggers, and a healing candidate correlated to its originating trigger; formatted trigger and candidate records were emitted.");
+                 "[PartyBotSimulator] PASS: Core-backed PartyBotEngine prioritised trigger telemetry by actionable active state, then active-empty, then inactive; cadence-skipped rows were deprioritised by the four-row cap, while healer-candidate attribution remained intact.");
 
     dps->SetAI(previousDpsAIForPartyTrace);
     secondPartyTraceAI.Remove();

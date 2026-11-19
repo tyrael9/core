@@ -505,16 +505,18 @@ void DecisionTrace::RecordEncounterTriggerSummary(
     Player const* bot, uint32 groupId, uint32 mapId, uint32 instanceId,
     uint64 encounterId, uint32 sequence, uint32 elapsedMs,
     uint32 total, uint32 evaluated, uint32 active, uint32 inactive,
-    uint32 cadenceSkipped, uint32 omitted) const
+    uint32 cadenceSkipped, uint32 omitted,
+    uint32 detailLimit, uint32 detailOmitted) const
 {
     if (!m_enabled || !bot || !encounterId || !sequence)
         return;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trigger_summary group=%u map=%u instance=%u bot=%u elapsed_ms=%u total=%u evaluated=%u active=%u inactive=%u cadence_skipped=%u omitted=%u",
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trigger_summary group=%u map=%u instance=%u bot=%u elapsed_ms=%u total=%u evaluated=%u active=%u inactive=%u cadence_skipped=%u omitted=%u detail_limit=%u detail_omitted=%u",
              static_cast<unsigned long long>(encounterId), sequence,
              groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
-             total, evaluated, active, inactive, cadenceSkipped, omitted);
+             total, evaluated, active, inactive, cadenceSkipped, omitted,
+             detailLimit, detailOmitted);
 }
 
 void DecisionTrace::RecordEncounterTrigger(

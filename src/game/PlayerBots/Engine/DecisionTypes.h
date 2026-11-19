@@ -1,6 +1,7 @@
 #ifndef MANGOS_PARTYBOT_DECISION_TYPES_H
 #define MANGOS_PARTYBOT_DECISION_TYPES_H
 #include <cstdint>
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -108,6 +109,44 @@ struct DecisionReport {
     std::vector<CandidateEvaluation> candidates;
     std::vector<std::size_t> selectedIndices;
 };
+
+// Bounded diagnostic sampling is prioritised independently of registration
+// order: candidate-producing active triggers first, then other active
+// triggers, inactive triggers and finally cadence-skipped triggers.
+// Candidate count breaks ties among actionable triggers; stable_sort preserves
+// registration order for all remaining ties.
+inline std::uint32_t TriggerTracePriority(TriggerEvaluation const& evaluation) {
+    if (evaluation.status == TriggerEvaluationStatus::Active)
+        return evaluation.candidateCount ? 0u : 1u;
+    if (evaluation.status == TriggerEvaluationStatus::Inactive)
+        return 2u;
+    return 3u;
+}
+
+inline std::vector<std::size_t> SelectPriorityTriggerEvaluationIndices(
+    DecisionReport const& report, std::size_t maxRows) {
+    std::vector<std::size_t> indices;
+    if (!maxRows)
+        return indices;
+    indices.reserve(report.triggerEvaluations.size());
+    for (std::size_t i = 0; i < report.triggerEvaluations.size(); ++i)
+        indices.push_back(i);
+    std::stable_sort(indices.begin(), indices.end(),
+        [&report](std::size_t left, std::size_t right) {
+            TriggerEvaluation const& a = report.triggerEvaluations[left];
+            TriggerEvaluation const& b = report.triggerEvaluations[right];
+            std::uint32_t const aPriority = TriggerTracePriority(a);
+            std::uint32_t const bPriority = TriggerTracePriority(b);
+            if (aPriority != bPriority)
+                return aPriority < bPriority;
+            if (aPriority == 0 && a.candidateCount != b.candidateCount)
+                return a.candidateCount > b.candidateCount;
+            return false;
+        });
+    if (indices.size() > maxRows)
+        indices.resize(maxRows);
+    return indices;
+}
 
 struct DecisionSummary {
     std::uint32_t candidateCount = 0;

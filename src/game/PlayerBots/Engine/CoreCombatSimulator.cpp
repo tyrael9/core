@@ -4509,12 +4509,12 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     uint32 const healthAfter = patient.creature->GetHealth();
     uint32 const manaAfter = healer->GetPower(POWER_MANA);
     uint32 const manaAfterAccept = healAction->GetManaAfterAccept();
-    // Observe the immediate Core cast cost, not the later post-cast pool:
-    // natural regeneration may restore Mana while a cast is completing.
-    bool const manaSpentOnAccept =
-        healAction->GetManaBefore() > manaAfterAccept;
+    // Core applies mana in Spell::finish, not at CastSpell acceptance. The
+    // LastManaUse timer is authoritative even if natural regeneration restores
+    // the numeric pool before this fixture reads it.
+    bool const coreManaSpendObserved = healer->IsUnderLastManaUseEffect();
     bool const completed = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
-                           healthAfter > healthBefore && manaSpentOnAccept;
+                           healthAfter > healthBefore && coreManaSpendObserved;
     bool const engineActionTracePassed = engineActionTraceSetup && accepted &&
         report.candidates[report.selectedIndices[0]].actionId == engineActionId &&
         report.candidates[report.selectedIndices[0]].candidate.actionId == engineActionId &&
@@ -4553,12 +4553,13 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     bool const cleaned = playerCleaned && patientCleaned;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u manaAtAccept=%u>%u manaAtFinish=%u>%u health=%u>%u completed=%u engineActionTrace=%u decisionSummaryTrace=%u actionId=%llu cleanup=%u.",
+             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u manaAtAccept=%u>%u manaAtFinish=%u>%u lastManaUse=%u health=%u>%u completed=%u engineActionTrace=%u decisionSummaryTrace=%u actionId=%llu cleanup=%u.",
              1u, selected ? 1u : 0u, accepted ? 1u : 0u,
              healAction->WasCastPendingAfterAccept() ? 1u : 0u,
              healAction->HadGcdAfterAccept() ? 1u : 0u,
              static_cast<uint32>(healAction->GetLastCastResult()),
              healAction->GetManaBefore(), manaAfterAccept, manaBefore, manaAfter,
+             coreManaSpendObserved ? 1u : 0u,
              healthBefore, healthAfter,
              completed ? 1u : 0u,
              engineActionTracePassed ? 1u : 0u,

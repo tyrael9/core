@@ -53,6 +53,14 @@ public:
 private:
     std::string m_name;
 };
+class CaptureReservationTraceSink final : public ReservationTraceSink {
+public:
+    void RecordReservationEvent(DecisionContext const&,
+                                ReservationTraceEvent const& event) override {
+        events.push_back(event);
+    }
+    std::vector<ReservationTraceEvent> events;
+};
 class TestTrigger : public Trigger {
 public:
     explicit TestTrigger(std::string name) : m_name(std::move(name)) {}
@@ -784,6 +792,8 @@ void TestEngineThreatBudgetPetRecipientReservation() {
 void TestEngineThreatBudgetSelectionAndExecutionReservations() {
     Fixture f;
     PrepareEngineThreatFixture(f);
+    CaptureReservationTraceSink traceSink;
+    f.context.reservationTrace = &traceSink;
     PartyBotEngine::PartyBotEngine engine;
     std::shared_ptr<TestAction> action = std::make_shared<TestAction>("damage");
     action->useThreatImpact = true;
@@ -806,6 +816,16 @@ void TestEngineThreatBudgetSelectionAndExecutionReservations() {
     assert(action->lastThreatActionId == selected.threatActionId);
     assert(selected.candidate.threatActionId == selected.threatActionId);
     assert(std::fabs(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) - 15.0f) < 0.0001f);
+    assert(traceSink.events.size() == 2);
+    assert(traceSink.events[0].stage == ReservationTraceStage::Attempt);
+    assert(traceSink.events[0].actionId == selected.threatActionId);
+    assert(traceSink.events[0].ownerGuid == f.bot.guid);
+    assert(traceSink.events[0].threatOwnerGuid == f.bot.guid);
+    assert(traceSink.events[0].hostileGuid == 9001);
+    assert(std::fabs(traceSink.events[0].threatPoints - 15.0f) < 0.0001f);
+    assert(traceSink.events[1].stage == ReservationTraceStage::Result);
+    assert(traceSink.events[1].accepted);
+    assert(traceSink.events[1].reason == std::string("coordinator_accepted"));
 
     f.coordinator.ReleaseThreatAction(selected.threatActionId);
     assert(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) == 0.0f);
@@ -851,6 +871,8 @@ void TestEngineThreatBudgetRejectsUnknownAndOverBudgetCandidates() {
 void TestEngineReleasesThreatReservationWhenExecutionFails() {
     Fixture f;
     PrepareEngineThreatFixture(f);
+    CaptureReservationTraceSink traceSink;
+    f.context.reservationTrace = &traceSink;
     PartyBotEngine::PartyBotEngine engine;
     std::shared_ptr<TestAction> action = std::make_shared<TestAction>("failing_damage");
     action->useThreatImpact = true;
@@ -871,11 +893,21 @@ void TestEngineReleasesThreatReservationWhenExecutionFails() {
     assert(action->executeCount == 1);
     assert(f.coordinator.GetThreatReservationCount() == 0);
     assert(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) == 0.0f);
+    assert(traceSink.events.size() == 3);
+    assert(traceSink.events[0].stage == ReservationTraceStage::Attempt);
+    assert(traceSink.events[1].stage == ReservationTraceStage::Result);
+    assert(traceSink.events[1].accepted);
+    assert(traceSink.events[2].stage == ReservationTraceStage::Release);
+    assert(traceSink.events[2].actionId == traceSink.events[0].actionId);
+    assert(traceSink.events[2].reservationRows == 1);
+    assert(traceSink.events[2].reason == std::string("action_execution_failed"));
 }
 
 void TestEngineRevalidatesReservationsImmediatelyBeforeExecution() {
     Fixture f;
     PrepareEngineThreatFixture(f);
+    CaptureReservationTraceSink traceSink;
+    f.context.reservationTrace = &traceSink;
     PartyBotEngine::PartyBotEngine engine;
     std::shared_ptr<TestAction> action = std::make_shared<TestAction>("revalidated_damage");
     action->useThreatImpact = true;
@@ -911,6 +943,12 @@ void TestEngineRevalidatesReservationsImmediatelyBeforeExecution() {
     assert(f.coordinator.GetThreatReservationCount() == 1);
     assert(std::fabs(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) - 6.0f) <
            0.0001f);
+    assert(traceSink.events.size() == 1);
+    assert(traceSink.events[0].stage == ReservationTraceStage::BudgetVeto);
+    assert(traceSink.events[0].hostileGuid == 9001);
+    assert(traceSink.events[0].threatOwnerGuid == f.bot.guid);
+    assert(std::fabs(traceSink.events[0].alreadyReserved - 6.0f) < 0.0001f);
+    assert(traceSink.events[0].reason == std::string("projected_threat_exceeds_core_headroom"));
 }
 
 void TestEngineRollsBackPartialFanoutWhenReservationCapacityIsReached() {

@@ -187,3 +187,11 @@ The existing `CombatBotBaseAI::DoCastSpell` path invokes `TraceDecision("spell_c
 
 Validation in this slice consists of the C++14/API build plus the full fixture-backed Core regression. The simulator independently proves the Core Player cast acceptance, pending-cast/GCD, completion, interruption, mana and healing semantics, but it does not yet assert the PartyBotAI structured log line itself. A dedicated trace-output parser/integration assertion remains open. Direct raw `Player::CastSpell` sites outside `DoCastSpell`, terminal events after encounter closure and downstream damage/heal application are not yet traced by this hook.
 
+## Encounter heartbeat threat samples and target-change trace
+
+The existing immutable `PartySnapshot` already copies each hostile's real `ThreatManager` references on the map thread. The encounter `party_snapshot` record now emits up to two references per hostile, including unit GUID, threat value in tenths, and online/accessibility/melee-reachability bits. It includes each hostile's total reference count and omitted count; the complete payload remains capped at 1600 characters with the existing `truncated` marker. It does not sort or infer references beyond the order supplied by the Core snapshot.
+
+After a successful `PartyBotAI::AttackStart`, the trace compares the actual Core `GetVictim()` before and after `me->Attack`. A changed victim emits one `target_change` record with old/new victim GUID, `source=legacy_attack_start`, and the shared encounter sequence. Same-target calls and failed Attack attempts do not emit target-change records. Output is capped at four per bot AI tick with one explicit `trace_limit` marker for further changes.
+
+This slice does not yet emit coordinator reservation acquire/release/conflict events, health/death transitions, or target changes initiated by other Core sources. No threat values are reconstructed from health or inferred from the selected Shadow candidate.
+

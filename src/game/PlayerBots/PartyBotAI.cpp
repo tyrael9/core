@@ -33,6 +33,7 @@
 #include "Timer.h"
 
 #include <algorithm>
+#include <cstring>
 #include <random>
 
 enum PartyBotSpells
@@ -363,6 +364,32 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         return;
 
     m_decisionTrace.Record(me, event, pTarget, pSpellEntry, reason, detail);
+
+    // DoCastSpell calls this hook only after the real Core Player::CastSpell
+    // returns. Correlate that result with the active encounter; never infer
+    // acceptance from a Shadow candidate being selected.
+    if (!event || std::strcmp(event, "spell_cast_result") != 0 ||
+        !m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
+        !m_partyCoordinator->HasActiveEncounter())
+        return;
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    if (m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId ||
+        m_partyCoordinator->GetEncounterMapId() != mapId ||
+        m_partyCoordinator->GetEncounterInstanceId() != instanceId)
+        return;
+
+    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+    m_decisionTrace.RecordEncounterCastResult(
+        me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+        m_partyCoordinator->GetEncounterId(), sequence,
+        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
+        pTarget ? pTarget->GetObjectGuid().GetRawValue() : 0,
+        pSpellEntry ? pSpellEntry->Id : 0, detail,
+        reason && std::strcmp(reason, "success") == 0,
+        reason ? reason : "unspecified");
 }
 
 bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const

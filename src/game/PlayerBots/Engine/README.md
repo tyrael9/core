@@ -39,7 +39,7 @@ The repository currently contains:
 - deterministic candidate evaluation, explicit eligibility and channel arbitration;
 - a bounded per-dispatch action queue (32 entries, stable FIFO priority ties, maximum eight executions) with pure and `ExecuteSelected` integration coverage, plus a separate bounded pending-event queue primitive with deduplication and wrap-safe TTL expiry (not yet connected to Engine tick scheduling);
 - an opt-in read-only Shadow hook and coarse candidate-only healer triage, tank peel and DPS assist strategies;
-- encounter identity, versioned sequence-bearing trace records, party heartbeats, decision summaries, cast request/result/terminal correlation, target changes, reservation outcomes and PartyBotAI death/resurrection events;
+- encounter identity, versioned sequence-bearing trace records, party heartbeats, sampled trigger/candidate telemetry with originating-trigger correlation, cast request/result/terminal correlation, target changes, reservation outcomes and PartyBotAI death/resurrection events;
 - Core-backed runtime fixtures for real attack, triggered and non-triggered Player spell execution, threat, movement/follow, five-Player Group snapshots, hostile discovery, death recovery and threat-impact component parity.
 
 The current Shadow hook remains observational only: PartyBotAI still runs Legacy combat routines afterward. Shadow candidates do not own gameplay decisions or mutate world state. The repository does not yet provide the complete New Engine runtime mode; missing behavior must eventually become a traceable no-op, never a Legacy policy fallback.
@@ -63,9 +63,9 @@ The simulator runs only in isolated CI schemas and never connects to the Oracle 
 
 ## Logging is a required feature
 
-The trace foundation is partially implemented: encounter IDs and boundaries, ordered sequence numbers, party snapshots, bounded Shadow decision summaries, cast request/result/terminal correlation, target changes, threat reservations, and PartyBotAI death/resurrection events are present and have Core-backed runtime coverage.
+The trace foundation is partially implemented: encounter IDs and boundaries, ordered sequence numbers, party snapshots, bounded Shadow decision summaries, sampled trigger cadence/activation telemetry, trigger-correlated candidates, cast request/result/terminal correlation, target changes, threat reservations, and PartyBotAI death/resurrection events are present. The new trigger event formatting is awaiting fixture-backed runtime verification.
 
-The remaining trace work is still a gate before meaningful New Engine gameplay testing: a runtime-configurable trace budgets and performance validation, fuller bot-state/trigger/arbitration and health-change coverage (including human party members), shutdown flush, and integration of the repository-local report collector into the deployment diagnostics command. The fixed party-wide 1,024-detail / 256-important event budget and one-shot terminal/overflow paths are now implemented and unit-tested. The local parser already emits a Markdown report and matching raw log by encounter ID or time window. See DECISION-TRACE.md.
+The remaining trace work is still a gate before meaningful New Engine gameplay testing: a runtime-configurable trace budgets and performance validation, fuller bot-state/arbitration and health-change coverage (including human party members), shutdown flush, and integration of the repository-local report collector into the deployment diagnostics command. The fixed party-wide 1,024-detail / 256-important event budget and one-shot terminal/overflow paths are now implemented and unit-tested. The local parser already emits a Markdown report and matching raw log by encounter ID or time window. See DECISION-TRACE.md.
 
 ## Build and test
 

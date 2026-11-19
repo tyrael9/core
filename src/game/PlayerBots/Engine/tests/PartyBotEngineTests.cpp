@@ -954,6 +954,8 @@ void TestEngineRevalidatesReservationsImmediatelyBeforeExecution() {
 void TestEngineRollsBackPartialFanoutWhenReservationCapacityIsReached() {
     Fixture f;
     PrepareEngineThreatFixture(f);
+    CaptureReservationTraceSink traceSink;
+    f.context.reservationTrace = &traceSink;
 
     // Leave exactly one slot. The action fans out to the current Tank and
     // the DPS bot; ordered insertion accepts one row, then must fail closed
@@ -1003,6 +1005,17 @@ void TestEngineRollsBackPartialFanoutWhenReservationCapacityIsReached() {
     assert(f.coordinator.GetThreatReservationCount() == 127);
     assert(f.coordinator.GetReservedThreatImpact(9001, 101, 0, 1000) == 0.0f);
     assert(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) == 0.0f);
+    assert(traceSink.events.size() == 5);
+    assert(traceSink.events[0].stage == ReservationTraceStage::Attempt);
+    assert(traceSink.events[1].stage == ReservationTraceStage::Result);
+    assert(traceSink.events[1].accepted);
+    assert(traceSink.events[2].stage == ReservationTraceStage::Attempt);
+    assert(traceSink.events[3].stage == ReservationTraceStage::Result);
+    assert(!traceSink.events[3].accepted);
+    assert(traceSink.events[3].reason == std::string("coordinator_rejected"));
+    assert(traceSink.events[4].stage == ReservationTraceStage::Release);
+    assert(traceSink.events[4].reservationRows == 1);
+    assert(traceSink.events[4].reason == std::string("partial_acquire_rollback"));
 }
 
 void TestEngineThreatBudgetAccountsForHigherPriorityCandidates() {

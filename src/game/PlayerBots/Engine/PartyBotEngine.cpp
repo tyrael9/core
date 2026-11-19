@@ -1,4 +1,5 @@
 #include "PartyBotEngine.h"
+#include <cmath>
 #include "ThreatBudgetPolicy.h"
 #include <algorithm>
 #include <cmath>
@@ -144,7 +145,31 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
             context.reservationTrace->RecordReservationEvent(context, event);
     };
 
+    // Materialize selected decisions into a bounded queue. The queue contains
+    // indices only; all Core-facing validity, range, LOS, resource and threat
+    // checks remain immediately before dispatch below.
+    ActionQueue queue;
     for (std::size_t index : report.selectedIndices) {
+        if (index >= report.candidates.size())
+            continue;
+        CandidateEvaluation const& queued = report.candidates[index];
+        if (queued.status != CandidateStatus::Selected)
+            continue;
+        if (!std::isfinite(queued.candidate.finalPriority) ||
+            !queue.Push(index, queued.candidate.finalPriority)) {
+            CandidateEvaluation& rejected = report.candidates[index];
+            rejected.status = CandidateStatus::ExecutionFailed;
+            rejected.actionResult = ActionResult::Failed;
+            rejected.reason = "action_queue_capacity_or_priority_rejected";
+        }
+    }
+
+    ActionQueue::Entry queuedEntry;
+    std::size_t processed = 0;
+    std::size_t const maxActionsPerDispatch = 8;
+    while (processed < maxActionsPerDispatch && queue.PopNext(queuedEntry)) {
+        ++processed;
+        std::size_t const index = queuedEntry.reportIndex;
         if (index >= report.candidates.size()) continue;
         CandidateEvaluation& evaluation = report.candidates[index];
         if (evaluation.status != CandidateStatus::Selected) continue;

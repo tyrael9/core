@@ -40,7 +40,7 @@ These tests validate lifecycle-host behavior, not new combat AI behavior.
 - [x] Add deterministic candidate evaluation, explicit eligibility results and basic channel arbitration.
 - [x] Add standalone tests for decision ordering, invalid candidates, reservations, cache freshness and registry identity.
 - [~] Complete production-grade value caching, trigger cadence and queue lifecycle.
-- [~] Replace candidate-list-only arbitration with the required action/event queue semantics.
+- [~] Replace candidate-list-only arbitration with the required action/event queue semantics. The execution boundary now materializes selected report entries into a bounded 32-entry priority queue with stable FIFO ties, fail-closed overflow, index-only payloads and immediate pre-dispatch Core/threat revalidation. Standalone tests cover ordering, ties, capacity and clearing. This is the first queue-backed dispatch slice, not yet a persistent cross-tick event queue, cadence scheduler or continuation/result-listener system.
 
 The current role-aware Shadow slice is a proof of the data-to-candidate path only. It is not a shipped behavior and does not justify further expanding coarse candidate-only rules.
 
@@ -100,7 +100,7 @@ Trace design: DECISION-TRACE.md.
 
 - [ ] Implement typed named Values with bounded cache, expiry and explicit invalidation.
 - [ ] Implement Trigger check intervals/cadence and state-transition events.
-- [ ] Implement action queue priorities, deterministic ordering and bounded processing.
+- [~] Implement action queue priorities, deterministic ordering and bounded processing. Initial per-dispatch queue is bounded to 32 entries and processes at most eight entries per dispatch; current channel arbitration means ordinary reports remain smaller. Persistent queue lifecycle, event insertion, expiry and cross-tick scheduling remain open.
 - [ ] Implement prerequisites, alternatives, continuers and action result listeners where required by real Vanilla behavior.
 - [ ] Implement useful/possible checks and real multiplier composition with hard safety vetoes.
 - [ ] Implement one vMaNGOS action executor with audited adapters and structured results.

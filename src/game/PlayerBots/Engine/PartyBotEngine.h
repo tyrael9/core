@@ -1,6 +1,7 @@
 #ifndef MANGOS_PARTYBOT_PARTYBOT_ENGINE_H
 #define MANGOS_PARTYBOT_PARTYBOT_ENGINE_H
 #include "Action.h"
+#include "ActionQueue.h"
 #include "Multiplier.h"
 #include "Strategy.h"
 #include <map>

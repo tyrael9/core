@@ -103,6 +103,35 @@ ActionCandidate Candidate(std::string name, float priority, ActionChannel channe
     ActionCandidate c; c.actionName = std::move(name); c.targetGuid = 22;
     c.basePriority = priority; c.channel = channel; return c;
 }
+
+void TestActionQueueIsBoundedPriorityOrderedAndStable()
+{
+    ActionQueue queue;
+    ActionQueue::Entry entry;
+    assert(queue.Empty());
+    assert(!queue.PopNext(entry));
+
+    assert(queue.Push(10, 10.0f));
+    assert(queue.Push(11, 30.0f));
+    assert(queue.Push(12, 30.0f));
+    assert(queue.Push(13, 20.0f));
+    assert(queue.Size() == 4);
+
+    assert(queue.PopNext(entry) && entry.reportIndex == 11);
+    assert(queue.PopNext(entry) && entry.reportIndex == 12); // Stable FIFO for equal priority.
+    assert(queue.PopNext(entry) && entry.reportIndex == 13);
+    assert(queue.PopNext(entry) && entry.reportIndex == 10);
+    assert(queue.Empty());
+
+    for (std::size_t i = 0; i < ActionQueue::Capacity; ++i)
+        assert(queue.Push(i, static_cast<float>(i)));
+    assert(queue.Size() == ActionQueue::Capacity);
+    assert(!queue.Push(999, 1000.0f)); // Full queues fail closed; no queued item is evicted.
+    assert(queue.Size() == ActionQueue::Capacity);
+    queue.Clear();
+    assert(queue.Empty());
+}
+
 void TestPriorityAndChannelArbitration() {
     Fixture f; PartyBotEngine::PartyBotEngine engine;
     auto heal = std::make_shared<TestAction>("heal");
@@ -1371,6 +1400,7 @@ void TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe()
 
 }
 int main() {
+    TestActionQueueIsBoundedPriorityOrderedAndStable();
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();
     TestReservationOwnershipAndExpiry();
     TestThreatReservationAggregationAndActionRelease();

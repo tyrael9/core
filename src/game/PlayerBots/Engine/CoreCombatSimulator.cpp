@@ -18,6 +18,7 @@
 #include "PlayerBots/Engine/ThreatBudgetPolicy.h"
 #include "PlayerBots/Engine/Strategy.h"
 #include "PlayerBots/Engine/Trigger.h"
+#include "PlayerBots/Engine/ShadowStrategies.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Pet.h"
@@ -4150,6 +4151,154 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                      "[PartyBotSimulator] PASS: source Map::Remove retained an encounter while another PartyBotAI remained, then the last bot closed the old map shard exactly once before both Players were re-added.");
     }
 
+    // F17: exercise the Engine's sampled trigger observations and their
+    // encounter-correlated log format with the real strategy registry.
+    // A healer with one injured party member yields one active healing trigger,
+    // two inactive role triggers and one candidate attributed to healing_triage.
+    std::shared_ptr<PartyCoordinator> triggerTraceCoordinator(new PartyCoordinator());
+    triggerTraceCoordinator->ConfigureEncounterTraceBudget(32, 16);
+    PartySnapshot triggerTraceSnapshot;
+    triggerTraceSnapshot.groupId = group->GetId();
+    triggerTraceSnapshot.mapId = map.GetId();
+    triggerTraceSnapshot.instanceId = map.GetInstanceId();
+    triggerTraceSnapshot.epoch = 17;
+    PartyMemberSnapshot triggerTraceBot;
+    triggerTraceBot.guid = tankGuid.GetRawValue();
+    triggerTraceBot.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    triggerTraceBot.mapId = map.GetId();
+    triggerTraceBot.instanceId = map.GetInstanceId();
+    triggerTraceBot.health = tank->GetMaxHealth();
+    triggerTraceBot.maxHealth = tank->GetMaxHealth();
+    triggerTraceBot.online = true;
+    triggerTraceBot.alive = true;
+    triggerTraceBot.inCombat = true;
+    triggerTraceSnapshot.members.push_back(triggerTraceBot);
+    PartyMemberSnapshot triggerTracePatient;
+    triggerTracePatient.guid = dps->GetObjectGuid().GetRawValue();
+    triggerTracePatient.roleId = static_cast<std::uint8_t>(PartyRole::MeleeDamage);
+    triggerTracePatient.mapId = map.GetId();
+    triggerTracePatient.instanceId = map.GetInstanceId();
+    triggerTracePatient.health = 250;
+    triggerTracePatient.maxHealth = 1000;
+    triggerTracePatient.online = true;
+    triggerTracePatient.alive = true;
+    triggerTracePatient.inCombat = true;
+    triggerTraceSnapshot.members.push_back(triggerTracePatient);
+
+    uint32 const triggerTraceNow = WorldTimer::getMSTime();
+    EncounterTransition const triggerTraceStarted =
+        triggerTraceCoordinator->ObserveEncounter(triggerTraceSnapshot, triggerTraceNow, 30000);
+    RegisterDefaultShadowStrategies(partyTraceAI.m_partyBotEngine);
+    partyTraceAI.m_engineShadowStrategiesRegistered = true;
+    partyTraceAI.m_decisionTrace.BeginTick();
+
+    PartyMemberSnapshot const* triggerBotSnapshot =
+        triggerTraceSnapshot.FindMember(triggerTraceBot.guid);
+    DecisionReport triggerReport;
+    if (triggerTraceStarted.kind == EncounterTransitionKind::Started &&
+        triggerBotSnapshot)
+    {
+        DecisionContext triggerContext(
+            triggerTraceSnapshot, *triggerBotSnapshot,
+            *triggerTraceCoordinator, triggerTraceNow);
+        triggerReport = partyTraceAI.m_partyBotEngine.Evaluate(triggerContext);
+    }
+
+    uint32 triggerActiveCount = 0;
+    uint32 triggerInactiveCount = 0;
+    uint32 triggerSkippedCount = 0;
+    for (TriggerEvaluation const& observation : triggerReport.triggerEvaluations)
+    {
+        if (observation.status == TriggerEvaluationStatus::Active)
+            ++triggerActiveCount;
+        else if (observation.status == TriggerEvaluationStatus::Inactive)
+            ++triggerInactiveCount;
+        else
+            ++triggerSkippedCount;
+    }
+    bool const hasAttributedHealingCandidate = triggerReport.candidates.size() == 1 &&
+        triggerReport.candidates[0].candidate.strategyName == "healing_triage" &&
+        triggerReport.candidates[0].candidate.triggerName == "healing_triage" &&
+        triggerReport.candidates[0].candidate.actionName == "shadow_heal_triage";
+    bool const triggerReportValid =
+        triggerTraceStarted.kind == EncounterTransitionKind::Started &&
+        triggerBotSnapshot && triggerReport.triggerEvaluations.size() == 3 &&
+        triggerReport.omittedTriggerEvaluations == 0 &&
+        triggerActiveCount == 1 && triggerInactiveCount == 2 &&
+        triggerSkippedCount == 0 && hasAttributedHealingCandidate;
+
+    bool triggerSummaryRecorded = false;
+    uint32 triggerRowsRecorded = 0;
+    bool triggerCandidateRecorded = false;
+    if (triggerReportValid && partyTraceAI.m_decisionTrace.IsEnabled())
+    {
+        uint64 const encounterId = triggerTraceCoordinator->GetEncounterId();
+        uint32 const elapsed = triggerTraceCoordinator->GetEncounterElapsedMs(triggerTraceNow);
+        if (triggerTraceCoordinator->TryAdmitEncounterTraceEvent(
+                encounterId, EncounterTraceEventClass::Detail) ==
+            EncounterTraceAdmission::Accepted)
+        {
+            uint32 const sequence = triggerTraceCoordinator->NextEncounterSequence();
+            partyTraceAI.m_decisionTrace.RecordEncounterTriggerSummary(
+                tank, triggerTraceSnapshot.groupId, triggerTraceSnapshot.mapId,
+                triggerTraceSnapshot.instanceId, encounterId, sequence, elapsed,
+                static_cast<uint32>(triggerReport.triggerEvaluations.size()),
+                triggerActiveCount + triggerInactiveCount,
+                triggerActiveCount, triggerInactiveCount, triggerSkippedCount,
+                triggerReport.omittedTriggerEvaluations);
+            triggerSummaryRecorded = sequence != 0;
+        }
+
+        for (TriggerEvaluation const& observation : triggerReport.triggerEvaluations)
+        {
+            if (triggerTraceCoordinator->TryAdmitEncounterTraceEvent(
+                    encounterId, EncounterTraceEventClass::Detail) !=
+                EncounterTraceAdmission::Accepted)
+                continue;
+            uint32 const sequence = triggerTraceCoordinator->NextEncounterSequence();
+            char const* status = observation.status == TriggerEvaluationStatus::Active
+                ? "active" : (observation.status == TriggerEvaluationStatus::Inactive
+                    ? "inactive" : "cadence_skipped");
+            partyTraceAI.m_decisionTrace.RecordEncounterTrigger(
+                tank, triggerTraceSnapshot.groupId, triggerTraceSnapshot.mapId,
+                triggerTraceSnapshot.instanceId, encounterId, sequence, elapsed,
+                "healer", observation.strategyName.c_str(),
+                observation.triggerName.c_str(), observation.intervalMs,
+                status, observation.candidateCount);
+            if (sequence)
+                ++triggerRowsRecorded;
+        }
+
+        CandidateEvaluation const& evaluation = triggerReport.candidates[0];
+        ActionCandidate const& candidate = evaluation.candidate;
+        if (triggerTraceCoordinator->TryAdmitEncounterTraceEvent(
+                encounterId, EncounterTraceEventClass::Detail) ==
+            EncounterTraceAdmission::Accepted)
+        {
+            uint32 const sequence = triggerTraceCoordinator->NextEncounterSequence();
+            char const* status = evaluation.status == CandidateStatus::RejectedThreatUnknown
+                ? "rejected_threat_unknown" : "candidate";
+            partyTraceAI.m_decisionTrace.RecordEncounterCandidate(
+                tank, triggerTraceSnapshot.groupId, triggerTraceSnapshot.mapId,
+                triggerTraceSnapshot.instanceId, triggerTraceSnapshot.epoch,
+                encounterId, sequence, elapsed, "healer",
+                candidate.strategyName.c_str(), candidate.triggerName.c_str(),
+                candidate.actionName.c_str(), candidate.targetGuid,
+                candidate.spellId, static_cast<uint32>(candidate.channel),
+                candidate.finalPriority, status,
+                evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
+            triggerCandidateRecorded = sequence != 0;
+        }
+    }
+
+    bool const f17TriggerTelemetryPassed =
+        triggerReportValid && partyTraceAI.m_decisionTrace.IsEnabled() &&
+        triggerSummaryRecorded && triggerRowsRecorded == 3 &&
+        triggerCandidateRecorded;
+    if (f17TriggerTelemetryPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: Core-backed PartyBotEngine reported one active healer trigger, two inactive role triggers, and a healing candidate correlated to its originating trigger; formatted trigger and candidate records were emitted.");
+
     dps->SetAI(previousDpsAIForPartyTrace);
     secondPartyTraceAI.Remove();
     tank->SetAI(previousTankAIForPartyTrace);
@@ -4160,7 +4309,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         tankDied && tankDeathObserverValid && tankCorpseTransitionSuppressed &&
         tankResurrectionObserved && partyBotEncounterLifecycleTraced &&
         partyBotTraceBudgetPassed && unmanagedMemberStateTracePassed &&
-        shutdownFlushNoDuplicate &&
+        shutdownFlushNoDuplicate && f17TriggerTelemetryPassed &&
         tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&

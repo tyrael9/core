@@ -441,24 +441,62 @@ void TestEngineTriggerCadenceAndExplicitInvalidation()
 
     DecisionReport first = engine.Evaluate(f.context);
     assert(!first.candidates.empty() && trigger->activeChecks == 1);
+    assert(first.triggerEvaluations.size() == 1);
+    assert(first.triggerEvaluations[0].strategyName == "test_strategy");
+    assert(first.triggerEvaluations[0].triggerName == "periodic");
+    assert(first.triggerEvaluations[0].intervalMs == 500);
+    assert(first.triggerEvaluations[0].candidateCount == 1);
+    assert(first.triggerEvaluations[0].status == TriggerEvaluationStatus::Active);
+    assert(first.candidates[0].candidate.triggerName == "periodic");
+
     DecisionContext earlyContext(f.snapshot, f.bot, f.coordinator, 1499);
     DecisionReport early = engine.Evaluate(earlyContext);
     assert(early.candidates.empty() && trigger->activeChecks == 1);
+    assert(early.triggerEvaluations.size() == 1);
+    assert(early.triggerEvaluations[0].status == TriggerEvaluationStatus::CadenceSkipped);
 
     assert(engine.InvalidateTrigger("test_strategy", "periodic"));
     DecisionContext invalidatedContext(f.snapshot, f.bot, f.coordinator, 1500);
     DecisionReport invalidated = engine.Evaluate(invalidatedContext);
     assert(!invalidated.candidates.empty() && trigger->activeChecks == 2);
+    assert(invalidated.triggerEvaluations[0].status == TriggerEvaluationStatus::Active);
 
     engine.InvalidateDecisionState();
     DecisionContext allInvalidatedContext(f.snapshot, f.bot, f.coordinator, 1501);
     DecisionReport allInvalidated = engine.Evaluate(allInvalidatedContext);
     assert(!allInvalidated.candidates.empty() && trigger->activeChecks == 3);
+    assert(allInvalidated.triggerEvaluations[0].status == TriggerEvaluationStatus::Active);
 
     engine.ResetDecisionState();
     DecisionContext resetContext(f.snapshot, f.bot, f.coordinator, 1502);
     DecisionReport reset = engine.Evaluate(resetContext);
     assert(!reset.candidates.empty() && trigger->activeChecks == 4);
+    assert(reset.triggerEvaluations[0].status == TriggerEvaluationStatus::Active);
+
+    trigger->active = false;
+    DecisionContext inactiveContext(f.snapshot, f.bot, f.coordinator, 2002);
+    DecisionReport inactive = engine.Evaluate(inactiveContext);
+    assert(inactive.candidates.empty() && trigger->activeChecks == 5);
+    assert(inactive.triggerEvaluations.size() == 1);
+    assert(inactive.triggerEvaluations[0].status == TriggerEvaluationStatus::Inactive);
+    assert(inactive.triggerEvaluations[0].candidateCount == 0);
+}
+
+void TestEngineTriggerObservationCapacityIsBounded()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    for (std::uint32_t i = 0; i < DecisionReport::MaxTriggerEvaluations + 6; ++i)
+    {
+        auto trigger = std::make_shared<TestTrigger>("trigger_" + std::to_string(i));
+        auto strategy = std::make_shared<Strategy>("strategy_" + std::to_string(i));
+        strategy->AddTrigger(trigger);
+        engine.AddStrategy(strategy);
+    }
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.triggerEvaluations.size() == DecisionReport::MaxTriggerEvaluations);
+    assert(report.omittedTriggerEvaluations == 6);
 }
 
 void TestPriorityAndChannelArbitration() {
@@ -1954,6 +1992,7 @@ int main() {
     TestTriggerSchedulerCadenceInvalidationAndClockWrap();
     TestTriggerSchedulerCapacityFailsOpen();
     TestEngineTriggerCadenceAndExplicitInvalidation();
+    TestEngineTriggerObservationCapacityIsBounded();
     TestActionQueueIsBoundedPriorityOrderedAndStable();
     TestPendingActionQueueDeduplicatesAndPreservesOriginalExpiry();
     TestPendingActionQueuePriorityFifoExpiryAndClockWrap();

@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -325,6 +326,13 @@ void DecisionTrace::RecordReservationEvent(
     }
 
     std::string const safeReason = SafeTraceToken(event.reason);
+    auto toTenths = [](float value, bool valid) -> int32 {
+        if (!valid)
+            return 0;
+        double const scaled = static_cast<double>(value) * 10.0;
+        double const limit = static_cast<double>(std::numeric_limits<int32>::max());
+        return static_cast<int32>(std::max(-limit, std::min(limit, scaled)));
+    };
     bool const threatValid = std::isfinite(event.threatPoints);
     bool const headroomValid = std::isfinite(event.rawHeadroom);
     bool const reservedValid = std::isfinite(event.alreadyReserved);
@@ -337,11 +345,11 @@ void DecisionTrace::RecordReservationEvent(
              static_cast<unsigned long long>(event.ownerGuid),
              static_cast<unsigned long long>(event.threatOwnerGuid),
              static_cast<unsigned long long>(event.hostileGuid),
-             threatValid ? static_cast<int32>(event.threatPoints * 10.0f) : 0,
+             toTenths(event.threatPoints, threatValid),
              threatValid ? 1u : 0u,
-             headroomValid ? static_cast<int32>(event.rawHeadroom * 10.0f) : 0,
+             toTenths(event.rawHeadroom, headroomValid),
              headroomValid ? 1u : 0u,
-             reservedValid ? static_cast<int32>(event.alreadyReserved * 10.0f) : 0,
+             toTenths(event.alreadyReserved, reservedValid),
              reservedValid ? 1u : 0u,
              event.expiresAtMs, event.reservationRows,
              event.accepted ? 1u : 0u, safeReason.c_str());

@@ -138,6 +138,7 @@ public:
     uint64 m_activeEngineActionEncounterId = 0;
     uint64 m_activeEngineActionTargetGuid = 0;
     uint32 m_activeEngineActionSpellId = 0;
+    bool m_activeEngineActionSpellBound = false;
     mutable uint64 m_pendingCastTraceEncounterId = 0;
     mutable uint64 m_pendingCastTraceTargetGuid = 0;
     mutable uint32 m_pendingCastTraceSpellId = 0;

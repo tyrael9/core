@@ -47,7 +47,8 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
     DecisionContext evaluationContext(
         context.snapshot, context.bot, context.coordinator, context.nowMs,
         context.reservationTrace,
-        context.valueCache ? context.valueCache : &m_valueCache);
+        context.valueCache ? context.valueCache : &m_valueCache,
+        context.engineActionObserver);
     DecisionReport report;
     report.snapshotEpoch = evaluationContext.snapshot.epoch;
     auto retainTriggerEvaluation = [&report](TriggerEvaluation&& observation) {
@@ -205,7 +206,8 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
         CandidateEvaluation& evaluation, ActionId actionId,
         EngineActionTraceStage stage, bool attempted,
         ActionResult result, char const* reason) {
-        if (!executionContext.reservationTrace)
+        if (!executionContext.reservationTrace &&
+            !executionContext.engineActionObserver)
             return;
         EngineActionTraceEvent event;
         event.stage = stage;
@@ -218,7 +220,10 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
         event.result = result;
         event.attempted = attempted;
         event.reason = reason ? reason : "none";
-        executionContext.reservationTrace->RecordEngineActionEvent(executionContext, event);
+        if (executionContext.reservationTrace)
+            executionContext.reservationTrace->RecordEngineActionEvent(executionContext, event);
+        if (executionContext.engineActionObserver)
+            executionContext.engineActionObserver->OnEngineActionEvent(executionContext, event);
     };
 
     // Materialize selected decisions into a bounded queue. The queue contains

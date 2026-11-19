@@ -304,7 +304,7 @@ void DecisionTrace::RecordEncounterCastResult(
         {
             m_castTraceLimitLogged = true;
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                     "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trace_limit group=%u map=%u instance=%u bot=%u elapsed_ms=%u category=cast_request per_tick_cap=%u dropped_at_least=1",
+                     "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=trace_limit group=%u map=%u instance=%u bot=%u elapsed_ms=%u category=cast_lifecycle per_tick_cap=%u dropped_at_least=1",
                      static_cast<unsigned long long>(encounterId), sequence,
                      groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
                      MAX_ENCOUNTER_CAST_EVENTS_PER_TICK);

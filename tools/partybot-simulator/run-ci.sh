@@ -262,7 +262,7 @@ if [[ "$engine_cast_terminal_count" != "1" ]]; then
     exit 1
 fi
 engine_cast_terminal_line="$(grep -E "\\[PartyBotEngineTrace\\].*event=cast_terminal .*action_id=$engine_action_attempt_id .*spell=2050 .*success=1 interrupted=0 outcome=completed([^[:alnum:]_]|$)" "$LOG_FILE" | tail -n 1)"
-engine_cast_terminal_seq="$(printf '%s\\n' "$engine_cast_terminal_line" | grep -Eo 'seq=[0-9]+' | cut -d= -f2)"
+engine_cast_terminal_seq="$(printf '%s\n' "$engine_cast_terminal_line" | grep -Eo 'seq=[0-9]+' | cut -d= -f2)"
 if [[ -z "$engine_cast_terminal_seq" || "$engine_cast_terminal_seq" -le "$engine_action_result_seq" ]]; then
     echo "[PartyBotSimulator] Core cast_terminal must follow the Engine action adapter result in encounter sequence order." | tee -a "$LOG_FILE"
     exit 1

@@ -45,14 +45,16 @@ class PlayerAI
         // Optional observer hooks for player-owned spell requests and their final Core outcome.
         // Returning zero from the prepare hook opts out of lifecycle correlation.
         virtual uint32 OnSpellCastPreparing(Spell const* /*spell*/, uint32 /*spellId*/,
-                                            uint64 /*targetGuid*/, uint64& encounterId)
+                                            uint64 /*coreTargetGuid*/, uint64& encounterId,
+                                            uint64& traceTargetGuid)
         {
             encounterId = 0;
+            traceTargetGuid = 0;
             return 0;
         }
         virtual void OnSpellCastFinished(Spell const* /*spell*/, uint32 /*actionId*/,
                                          uint64 /*encounterId*/, uint32 /*spellId*/,
-                                         uint64 /*targetGuid*/, bool /*success*/,
+                                         uint64 /*traceTargetGuid*/, bool /*success*/,
                                          bool /*interrupted*/) {}
 
         // == Helpers =====================================

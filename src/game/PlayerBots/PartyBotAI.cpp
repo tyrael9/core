@@ -381,7 +381,14 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
 
     if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
         !m_partyCoordinator->HasActiveEncounter())
+    {
+        if (castResult)
+        {
+            m_pendingCastTraceActionId = 0;
+            m_pendingCastTraceEncounterId = 0;
+        }
         return;
+    }
 
     uint32 const mapId = me->GetMapId();
     uint32 const instanceId = me->GetInstanceId();
@@ -389,7 +396,14 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
         m_partyCoordinatorInstanceId != instanceId ||
         m_partyCoordinator->GetEncounterMapId() != mapId ||
         m_partyCoordinator->GetEncounterInstanceId() != instanceId)
+    {
+        if (castResult)
+        {
+            m_pendingCastTraceActionId = 0;
+            m_pendingCastTraceEncounterId = 0;
+        }
         return;
+    }
 
     uint64 const encounterId = m_partyCoordinator->GetEncounterId();
     uint32 const elapsedMs =

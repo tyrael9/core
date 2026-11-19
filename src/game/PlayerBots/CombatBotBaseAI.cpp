@@ -2933,6 +2933,7 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
         me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
 
     me->SetTargetGuid(pTarget->GetObjectGuid());
+    TraceDecision("spell_cast_attempt", pTarget, pSpellEntry, "core_castspell_call", 0);
     auto result = me->CastSpell(pTarget, pSpellEntry, false);
     TraceDecision("spell_cast_result", pTarget, pSpellEntry,
                   result == SPELL_CAST_OK ? "success" : "spell_system_rejected",

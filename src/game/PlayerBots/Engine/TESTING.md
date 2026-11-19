@@ -195,3 +195,9 @@ After a successful `PartyBotAI::AttackStart`, the trace compares the actual Core
 
 This slice does not yet emit coordinator reservation acquire/release/conflict events, health/death transitions, or target changes initiated by other Core sources. No threat values are reconstructed from health or inferred from the selected Shadow candidate.
 
+## Engine threat reservation trace coverage
+
+`DecisionContext` accepts an optional `ReservationTraceSink`; the Legacy PartyBotAI supplies its encounter `DecisionTrace`, while standalone callers and Shadow-only evaluation can leave it null. `PartyBotEngine::ExecuteSelected` emits events at the real budget/reservation coordinator boundaries: budget veto, per-row reservation attempt and accepted/rejected result, partial fan-out rollback, and release after action execution failure. Events preserve action ID, logical owner GUID, actual threat-owner GUID, hostile GUID, threat/headroom/reserved values, expiry and reservation-row count. They are observational; they do not claim that a later Core effect applied.
+
+The pure C++14 suite verifies accepted acquisition, action-failure release, a competing reservation inserted between Evaluate and Execute (budget veto with no second action), and partial multi-recipient capacity failure with rollback of the already-acquired row. It asserts event order, action identity, owner/hostile identity, quantities, rejection reason and release row count. Trace output is bounded per bot AI tick with an explicit reservation-category `trace_limit` record. The full fixture-backed ARM64 runtime remains the integration gate for this slice.
+

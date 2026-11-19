@@ -131,8 +131,15 @@ def load_trace_records(files: Iterable[Path]) -> tuple[list[TraceRecord], int, i
 def select_encounters(records: Iterable[TraceRecord],
                       encounter_id: Optional[int],
                       since: Optional[datetime],
-                      until: Optional[datetime]) -> tuple[dict[int, list[TraceRecord]], int]:
+                      until: Optional[datetime],
+                      all_encounters: bool = False) -> tuple[dict[int, list[TraceRecord]], int]:
     all_records = list(records)
+    if all_encounters:
+        selected: dict[int, list[TraceRecord]] = {}
+        for record in all_records:
+            selected.setdefault(record.encounter_id, []).append(record)
+        return selected, 0
+
     if encounter_id is not None:
         selected = [record for record in all_records
                     if record.encounter_id == encounter_id]
@@ -286,6 +293,10 @@ def write_encounter_report(output_dir: Path, encounter_id: int,
     raw_path = output_dir / f"{stem}.raw.log"
     report_path.write_text(rendered, encoding="utf-8")
     raw_path.write_text(raw, encoding="utf-8")
+    # Encounter reports contain player/party GUIDs and raw server diagnostics.
+    # Restrict both artifacts to the current account on Unix-like hosts.
+    report_path.chmod(0o600)
+    raw_path.chmod(0o600)
     return report_path, raw_path
 
 
@@ -296,6 +307,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("logs", nargs="+", type=Path,
                         help="log file(s) or directory/directories to scan")
     selector = parser.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--all", action="store_true",
+                          help="write reports for every encounter found in the input logs")
     selector.add_argument("--encounter-id",
                           help="exact decimal encounter_id from PartyBotEngineTrace")
     selector.add_argument("--since", type=parse_datetime_argument,
@@ -318,7 +331,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if encounter_id is not None and encounter_id <= 0:
             parser.error("--encounter-id must be a positive decimal integer")
         selected, missing_timestamps = select_encounters(
-            records, encounter_id, args.since, args.until
+            records, encounter_id, args.since, args.until, args.all
         )
         if not selected:
             print("No matching PartyBotEngineTrace records were found.", file=sys.stderr)

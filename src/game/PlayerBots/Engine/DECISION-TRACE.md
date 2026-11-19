@@ -172,11 +172,11 @@ This run validates the Core-backed CI runtime. It does not mean the whole encoun
 
 ## Read-only report collector (2026-11-19)
 
-The repository-local collector `tools/partybot_trace_report.py` uses only the Python standard library. It accepts one or more files/directories, filters by an exact decimal encounter ID or an inclusive ISO-8601 timestamp window, and produces:
+The repository-local collector `tools/partybot_trace_report.py` uses only the Python standard library. It accepts one or more files/directories and can report every discovered encounter (`--all`), filter by an exact decimal encounter ID (`--encounter-id`), or discover encounters in an inclusive ISO-8601 timestamp window (`--since` / `--until`). It produces:
 - `encounter-<id>.md`: event counts, ordered timeline, sequence gaps/duplicates, boundary presence, truncation/trace-limit warnings and interpretation notes.
 - `encounter-<id>.raw.log`: original structured trace lines for that encounter, ordered by the shared sequence number.
 
-A time window discovers which encounters were active in that period, then includes all available lines for those encounter IDs so the generated timeline is not clipped to the selected window. The parser does not infer that a candidate executed: it distinguishes candidate/decision summary records from cast request results and Core cast terminal outcomes. Sequence gaps are reported as possible rate limiting or incomplete log collection, not automatically as server faults. Tests cover exact encounter selection, timestamp-window discovery, malformed lines, sequence gaps, truncation warnings, raw-line preservation and timezone-style mismatches.
+A time window discovers which encounters were active in that period, then includes all available lines for those encounter IDs so the generated timeline is not clipped to the selected window. `--all` generates a report pair for each encounter ID found in the input. Both Markdown and raw-log report files are chmod 0600 because they contain player/party identifiers and diagnostic details. The parser does not infer that a candidate executed: it distinguishes candidate/decision summary records from cast request results and Core cast terminal outcomes. Sequence gaps are reported as possible rate limiting or incomplete log collection, not automatically as server faults. Tests cover exact encounter selection, timestamp-window discovery, malformed lines, sequence gaps, truncation warnings, raw-line preservation and timezone-style mismatches.
 
 This first version deliberately reads and writes local files only. It is not yet wired into `tyrael9/vmangos-deploy`'s existing diagnostic wrapper, and it does not close the remaining global encounter-budget or trace-coverage gaps.
 

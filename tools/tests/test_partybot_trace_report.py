@@ -1,4 +1,5 @@
 import sys
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +79,33 @@ class PartyBotTraceReportTests(unittest.TestCase):
             self.assertEqual([record.event for record in selected[22]],
                              ["encounter_start", "death", "encounter_end"])
             self.assertEqual(missing, 0)
+
+
+    def test_all_encounters_cli_writes_private_reports(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "mangosd.log"
+            output = root / "reports"
+            source.write_text(
+                "2026-11-19T05:00:00Z [PartyBotEngineTrace] encounter_id=41 seq=1 event=encounter_start\\n"
+                "2026-11-19T05:00:01Z [PartyBotEngineTrace] encounter_id=41 seq=2 event=encounter_end\\n"
+                "2026-11-19T05:00:02Z [PartyBotEngineTrace] encounter_id=42 seq=1 event=encounter_start\\n",
+                encoding="utf-8",
+            )
+
+            exit_code = report.main([
+                str(source), "--all", "--output-dir", str(output)
+            ])
+
+            self.assertEqual(exit_code, 0)
+            for encounter_id in (41, 42):
+                markdown = output / f"encounter-{encounter_id}.md"
+                raw = output / f"encounter-{encounter_id}.raw.log"
+                self.assertTrue(markdown.is_file())
+                self.assertTrue(raw.is_file())
+                self.assertEqual(stat.S_IMODE(markdown.stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(raw.stat().st_mode), 0o600)
+
 
     def test_naive_and_aware_time_comparison_is_rejected(self):
         record = report.parse_trace_line(

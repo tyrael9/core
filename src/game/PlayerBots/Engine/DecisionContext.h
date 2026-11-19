@@ -13,6 +13,24 @@ enum class ReservationTraceStage : std::uint8_t {
     Release
 };
 
+enum class EngineActionTraceStage : std::uint8_t {
+    Attempt,
+    Result
+};
+
+struct EngineActionTraceEvent {
+    EngineActionTraceStage stage = EngineActionTraceStage::Attempt;
+    ActionId actionId = 0;
+    char const* actionName = "none";
+    Guid targetGuid = 0;
+    std::uint32_t spellId = 0;
+    ActionChannel channel = ActionChannel::GlobalCooldown;
+    float priority = 0.0f;
+    ActionResult result = ActionResult::NotAttempted;
+    bool attempted = false;
+    char const* reason = "none";
+};
+
 struct ReservationTraceEvent {
     ReservationTraceStage stage = ReservationTraceStage::Attempt;
     ThreatActionId actionId = 0;
@@ -35,6 +53,10 @@ public:
     virtual ~ReservationTraceSink() {}
     virtual void RecordReservationEvent(DecisionContext const& context,
                                         ReservationTraceEvent const& event) = 0;
+    // Reports the Engine adapter call boundary and its synchronous Action::Execute
+    // result. The observer must not interpret this as proof of a final Core effect.
+    virtual void RecordEngineActionEvent(DecisionContext const&,
+                                         EngineActionTraceEvent const&) {}
 };
 
 struct DecisionContext {

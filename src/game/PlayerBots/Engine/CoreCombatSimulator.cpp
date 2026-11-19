@@ -4522,14 +4522,12 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         decisionSummary.selectedCount == 1 &&
         decisionSummary.executedCount == 1 &&
         decisionSummary.executionFailedCount == 0;
-    if (decisionSummaryTracePassed && coordinator->HasActiveEncounter() &&
-        AdmitPartyEncounterTrace(
-            engineActionAI.m_decisionTrace, healer, *coordinator,
-            coordinator->GetEncounterId(), snapshot.groupId, snapshot.mapId,
-            snapshot.instanceId, coordinator->GetEncounterElapsedMs(3000),
-            EncounterTraceEventClass::Detail))
+    if (decisionSummaryTracePassed && coordinator->HasActiveEncounter())
     {
-        uint32 const sequence = coordinator->NextEncounterSequence();
+        EncounterTraceAdmission const admission = coordinator->TryAdmitEncounterTraceEvent(
+            coordinator->GetEncounterId(), EncounterTraceEventClass::Detail);
+        uint32 const sequence = admission == EncounterTraceAdmission::Accepted
+            ? coordinator->NextEncounterSequence() : 0;
         if (sequence)
             engineActionAI.m_decisionTrace.RecordEncounterDecisionSummary(
                 healer, snapshot.groupId, snapshot.mapId, snapshot.instanceId,

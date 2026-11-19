@@ -319,10 +319,10 @@ Implementation slice complete: the component-scoped negative flat-threat estimat
 ## Player alive-state trace lifecycle regression (2026-11-19)
 
 - [x] Add a simulator-only PlayerAI observer to the existing real five-Player Core Group death/recovery scenario. The observer is attached to the Main Tank immediately before Core DealDamage kills it, then restored before fixture cleanup.
-- [x] Verify the real Player::SetDeathState hook reports exactly one alive -> dead transition after Core commits the death state.
-- [x] Explicitly advance JUST_DIED -> CORPSE and verify that the observer does not report a duplicate death transition.
+- [x] Verify the real Player::SetDeathState hook reports after both JUST_DIED and CORPSE state assignments.
+- [x] Explicitly advance JUST_DIED -> CORPSE and verify PartyBotAI's same-state filter semantics: two raw callbacks, one unchanged-state callback, and exactly one alive -> dead semantic transition.
 - [x] Make the enclosing F10 death/recovery scenario fail if either observer assertion fails, and make run-ci.sh require the dedicated PASS marker.
-- [ ] Verify the new regression on both ARM64 Core compilation and fixture-backed runtime CI. This checks the Core callback boundary and duplicate suppression; PartyBotAI encounter-record emission and the resurrection callback still need direct runtime coverage.
+- [ ] Verify the corrected regression on ARM64 Core compilation and fixture-backed runtime CI. PartyBotAI formatted encounter-record emission and resurrection callback still need direct runtime coverage.
 
 
 ### Death-state callback semantics correction

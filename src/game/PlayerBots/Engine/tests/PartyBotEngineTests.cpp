@@ -873,7 +873,7 @@ void TestActionResultListenersAreBoundedAndSnapshotDuringDispatch()
 
     class RegisterDuringCallback final : public ActionResultListener {
     public:
-        RegisterDuringCallback(PartyBotEngine& engine,
+        RegisterDuringCallback(::PartyBotEngine::PartyBotEngine& engine,
                                std::shared_ptr<ActionResultListener> next)
             : engine(engine), next(std::move(next)) {}
         void OnActionResult(DecisionContext const&,
@@ -883,7 +883,7 @@ void TestActionResultListenersAreBoundedAndSnapshotDuringDispatch()
                 registered = true;
             }
         }
-        PartyBotEngine& engine;
+        ::PartyBotEngine::PartyBotEngine& engine;
         std::shared_ptr<ActionResultListener> next;
         bool registered = false;
     };

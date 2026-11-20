@@ -5154,6 +5154,16 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
     if (!prototypeValid)
         return false;
 
+    class SimulatorItemUseCapture final : public PartyBotEngine::ItemUseTerminalListener
+    {
+    public:
+        void OnItemUseTerminal(PartyBotEngine::ItemUseTerminalEvent const& event) override
+        {
+            events.push_back(event);
+        }
+        std::vector<PartyBotEngine::ItemUseTerminalEvent> events;
+    };
+
     // First Player proves the successful ON_USE path using the same implicit
     // self-target semantics as HandleUseItemOpcode (no explicit unit target).
     WorldSession successSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
@@ -5166,6 +5176,16 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
             delete successPlayer;
         return false;
     }
+
+    PartyBotAI successAI(successPlayer, map.GetId(), map.GetInstanceId(),
+                         successPlayer->GetPositionX(), successPlayer->GetPositionY(),
+                         successPlayer->GetPositionZ(), successPlayer->GetOrientation());
+    successAI.SetPlayer(successPlayer);
+    successPlayer->SetAI(&successAI);
+    std::shared_ptr<SimulatorItemUseCapture> successItemUseCapture(
+        new SimulatorItemUseCapture());
+    bool const successListenerAdded =
+        successAI.m_partyBotEngine.AddItemUseTerminalListener(successItemUseCapture);
 
     Item* potion = successPlayer->StoreNewItemInInventorySlot(MinorHealingPotionItemId, 1);
     ObjectGuid const potionGuid = potion ? potion->GetObjectGuid() : ObjectGuid();
@@ -5191,6 +5211,21 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
     bool const successfulUse = potionGuid && initialCharges < 0 &&
         potionHealthAfter > potionHealthBefore && potionConsumed &&
         successPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+
+    std::uint32_t successMutationCount = 0;
+    PartyBotEngine::ItemUseMutationEvent successMutation;
+    while (successAI.m_partyBotEngine.PopItemUseMutationEvent(successMutation))
+        ++successMutationCount;
+    bool const successfulAggregate = successListenerAdded &&
+        successItemUseCapture->events.size() == 1 &&
+        successItemUseCapture->events[0].status ==
+            PartyBotEngine::ItemUseAggregateStatus::AllSucceeded &&
+        successItemUseCapture->events[0].childCount == 1 &&
+        successItemUseCapture->events[0].completedChildCount == 1 &&
+        successItemUseCapture->events[0].observedMutationCount == successMutationCount &&
+        successMutationCount >= 1 &&
+        successAI.m_partyBotEngine.GetPendingItemUseCount() == 0;
+    successPlayer->SetAI(nullptr);
     successSession.LogoutPlayer(false);
     bool const successPlayerCleaned = successSession.GetPlayer() == nullptr;
 
@@ -5214,6 +5249,16 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
         ? noChargePotion->GetObjectGuid() : ObjectGuid();
     if (noChargePotion)
         noChargePotion->SetSpellCharges(spellSlot, 0);
+    PartyBotAI rejectedAI(rejectedPlayer, map.GetId(), map.GetInstanceId(),
+                          rejectedPlayer->GetPositionX(), rejectedPlayer->GetPositionY(),
+                          rejectedPlayer->GetPositionZ(), rejectedPlayer->GetOrientation());
+    rejectedAI.SetPlayer(rejectedPlayer);
+    rejectedPlayer->SetAI(&rejectedAI);
+    std::shared_ptr<SimulatorItemUseCapture> rejectedItemUseCapture(
+        new SimulatorItemUseCapture());
+    bool const rejectedListenerAdded =
+        rejectedAI.m_partyBotEngine.AddItemUseTerminalListener(rejectedItemUseCapture);
+
     uint32 const rejectedHealthBefore = rejectedPlayer->GetMaxHealth() / 2;
     rejectedPlayer->SetHealth(rejectedHealthBefore);
 
@@ -5236,22 +5281,38 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
         rejectedStillOwned->GetSpellCharges(spellSlot) == 0 &&
         rejectedPlayer->GetHealth() == rejectedHealthBefore &&
         rejectedPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+    bool const rejectedAggregate = rejectedListenerAdded &&
+        rejectedItemUseCapture->events.size() == 1 &&
+        rejectedItemUseCapture->events[0].status ==
+            PartyBotEngine::ItemUseAggregateStatus::AllFailed &&
+        rejectedItemUseCapture->events[0].childCount == 1 &&
+        rejectedItemUseCapture->events[0].completedChildCount == 1 &&
+        rejectedItemUseCapture->events[0].observedMutationCount == 0 &&
+        rejectedAI.m_partyBotEngine.GetPendingItemUseCount() == 0;
+    rejectedPlayer->SetAI(nullptr);
     rejectedSession.LogoutPlayer(false);
     bool const rejectedPlayerCleaned = rejectedSession.GetPlayer() == nullptr;
 
     bool const passed = successfulUse && rejectedWithoutConsumption &&
+        successfulAggregate && rejectedAggregate &&
         successPlayerCleaned && rejectedPlayerCleaned;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-             "[PartyBotSimulator] F40 Core item use: prototype=%u spellSlot=%u spellId=%u initialCharges=%d healed=%u>%u consumed=%u zeroChargeRejected=%u itemRetained=%u successCleanup=%u rejectCleanup=%u.",
+             "[PartyBotSimulator] F42 Core item-use aggregate: prototype=%u spellSlot=%u spellId=%u healed=%u>%u consumed=%u successRoot=%u successChildren=%u successMutations=%u rejectedRoot=%u rejectedChildren=%u rejectedMutations=%u zeroChargeRejected=%u itemRetained=%u cleanup=%u/%u.",
              prototypeValid ? 1u : 0u, spellSlot,
-             potionPrototype->Spells[spellSlot].SpellId, initialCharges,
+             potionPrototype->Spells[spellSlot].SpellId,
              potionHealthBefore, potionHealthAfter, potionConsumed ? 1u : 0u,
+             successfulAggregate ? 1u : 0u,
+             successfulAggregate ? successItemUseCapture->events[0].childCount : 0u,
+             successMutationCount,
+             rejectedAggregate ? 1u : 0u,
+             rejectedAggregate ? rejectedItemUseCapture->events[0].childCount : 0u,
+             rejectedAggregate ? rejectedItemUseCapture->events[0].observedMutationCount : 0u,
              rejectedWithoutConsumption ? 1u : 0u,
              rejectedStillOwned ? 1u : 0u,
              successPlayerCleaned ? 1u : 0u, rejectedPlayerCleaned ? 1u : 0u);
     if (passed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: F40 real Core item use applied a potion effect and consumed the expendable item, while zero charges rejected use without consuming the item.");
+                 "[PartyBotSimulator] PASS: F42 real Core item-use root aggregated one successful ON_USE child and its independent item mutations; a zero-charge child settled as failed with no mutation, and both Player fixtures cleaned up.");
     return passed;
 }
 

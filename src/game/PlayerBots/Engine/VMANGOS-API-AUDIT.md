@@ -221,3 +221,15 @@ Stage F2 requires a priming Player update before casting because \`Map::UpdatePl
 
 
 The Core source condition for movement cancellation requires a Player cast with a nonzero timer, a position delta greater than 0.5 yards, and one of the spell's movement interrupt flags. The runtime fixture must prove that its selected spell actually has the relevant DBC flag before treating a no-heal outcome as expected. Lesser Heal (2050) currently completed after movement, so its data flags and effective cast time are being logged rather than assumed.
+
+
+## 10. Item-use lifecycle audit — F40
+
+Pinned source path:
+
+- `WorldSession::HandleUseItemOpcode` in `src/game/Handlers/SpellHandler.cpp` validates the self-mover condition, item position/prototype, selected spell slot and `ITEM_SPELLTRIGGER_ON_USE`, equipment state, `CanUseItem`, trade state, combat restrictions, target validity and shapeshift restrictions. Binding-on-use can mutate the item before `Player::CastItemUseSpell` begins.
+- `Player::CastItemUseSpell` in `src/game/Objects/Player.cpp` iterates all item prototype spell slots. Each valid ON_USE slot creates a separate `Spell` and calls `prepare`. Subsequent slots use the triggered flag; missing SpellEntry records are logged and skipped. One item request is therefore a fan-out, not a single Spell lifecycle.
+- `Spell::IsCastByItem()` exposes only whether a cast item exists. The `m_CastItem` pointer is private in `Spell.h`; current PlayerAI spell observer callbacks receive Spell/action/spell/target data but no cast-item GUID or item-use root identity.
+- `Spell::TakeCastItem` changes charges and may destroy expendable items. For delayed spells it is called before delayed impact; for immediate spells it is called after effects. `TakeReagents` can clear the cast item when the same item is also a reagent. Thus `Spell::finish(true)`, actual effect application, charge mutation and item destruction are distinct facts.
+
+**Design consequence:** a typed item-use result must not equate one child Spell terminal with one item-use success or consumption. The future contract needs a root request/action ID, item GUID/entry/slot, per-spell child identities/results, explicit pre-cast rejection/prepare-failure handling and separately observed charge/count/destruction changes. Define aggregation for multi-slot fan-out, skipped slots, triggered children, delayed impacts and cancellation before adding the source or production adapter. Existing CoreSpellTerminal remains valid per-Spell evidence only.

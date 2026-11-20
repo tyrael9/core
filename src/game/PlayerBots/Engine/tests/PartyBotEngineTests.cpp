@@ -738,6 +738,67 @@ ActionDependencyRequest MakeDependencyRequest(
     return request;
 }
 
+void TestCoreTerminalCannotSatisfyActionResultPrerequisite()
+{
+    ActionContinuationQueue queue;
+    PendingActionQueue::Context scope;
+    scope.groupId = 5;
+    scope.mapId = 33;
+    scope.instanceId = 101;
+    scope.botGuid = 11;
+    scope.encounterId = 77;
+    scope.encounterActive = true;
+    scope.scoped = true;
+
+    ActionDependencyRequest request;
+    request.lifetimeMs = 1000;
+    ActionDependencyPrerequisite prerequisite;
+    prerequisite.source = ActionDependencyEventSource::ActionResult;
+    prerequisite.actionId = 2001;
+    prerequisite.encounterId = 77;
+    prerequisite.targetGuid = 22;
+    prerequisite.spellId = 2050;
+    prerequisite.expectedActionName = "action_result_parent";
+    prerequisite.requiredActionResult = ActionResult::Success;
+    prerequisite.requiredAttempted = true;
+    request.prerequisites.push_back(prerequisite);
+
+    ActionCandidate candidate = Candidate(
+        "action_result_child", 20.0f, ActionChannel::Utility);
+    candidate.finalPriority = 20.0f;
+    assert(queue.Enqueue(request, candidate, 1000, scope, 1000) ==
+           ActionContinuationEnqueueResult::Queued);
+
+    CoreSpellTerminalEvent terminal;
+    terminal.actionId = 2001;
+    terminal.encounterId = 77;
+    terminal.targetGuid = 22;
+    terminal.spellId = 2050;
+    terminal.occurredAtMs = 1100;
+    terminal.status = CoreSpellTerminalStatus::Succeeded;
+    queue.ObserveTerminal(terminal);
+
+    std::vector<ActionContinuationQueue::Entry> ready;
+    queue.CollectReady(ready);
+    assert(ready.empty());
+    assert(queue.Size() == 1);
+
+    ActionResultEvent result;
+    result.actionId = 2001;
+    result.encounterId = 77;
+    result.candidate = Candidate(
+        "action_result_parent", 20.0f, ActionChannel::GlobalCooldown);
+    result.candidate.spellId = 2050;
+    result.candidate.actionId = 2001;
+    result.result = ActionResult::Success;
+    result.attempted = true;
+    result.occurredAtMs = 1200;
+    queue.ObserveActionResult(result);
+    queue.CollectReady(ready);
+    assert(ready.size() == 1);
+    assert(queue.Empty());
+}
+
 void TestActionResultAndCoreSpellPrerequisitesAreDistinctAndAnded()
 {
     Fixture f;
@@ -3759,6 +3820,7 @@ int main() {
     TestActionResultListenersAreBoundedAndSnapshotDuringDispatch();
     TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded();
     TestCoreSpellSuccessReleasesAndExecutesBoundedContinuation();
+    TestCoreTerminalCannotSatisfyActionResultPrerequisite();
     TestActionResultAndCoreSpellPrerequisitesAreDistinctAndAnded();
     TestLateActionResultDependencyRegistrationUsesRecentEventHistory();
     TestFailedActionResultRejectsMixedDependency();

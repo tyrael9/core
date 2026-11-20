@@ -259,3 +259,10 @@ F30 additionally verifies pending-dispatch threat aggregation. Two different-cha
 
 
 F30 CI acceptance: trusted push run [#44664709181](https://github.com/tyrael9/core/actions/runs/44664709181) passed the pure suite, report collector, ARM64 build and fixture-backed Vanilla 5875 simulator through final `Runtime PASS`. The F20 shell fixture assertion was updated to require the new `pending_queued=0` field in the complete decision-summary schema; the expected F20 PASS marker appeared on this run. PR run [#44664715713](https://github.com/tyrael9/core/actions/runs/44664715713) passed the pure/build path and correctly skipped the push-only runtime fixture.
+
+
+## F31 synchronous action result listeners
+
+The Engine exposes a per-instance registry of at most 32 `ActionResultListener` objects. Null, duplicate and over-capacity registration is rejected. Each final dispatcher result emits a value-only `ActionResultEvent` with the copied candidate, nonzero action ID when allocated, result, whether `Action::Execute` was actually attempted, snapshot epoch, dispatch timestamp and reason. The event is delivered even when neither trace nor observer sink is installed. Listener pointers are snapshotted before callback dispatch; registering another listener during a callback only affects later results.
+
+The event represents an Engine dispatch result or synchronous `Action::Execute` return. It does not prove a later Core Spell finished successfully; async Core-terminal events require a separate action-ID correlation and explicit completion stage.

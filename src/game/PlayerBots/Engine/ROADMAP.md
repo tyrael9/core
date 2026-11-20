@@ -104,7 +104,8 @@ Trace design: DECISION-TRACE.md.
 - [~] Implement typed named Values with bounded cache, expiry and explicit invalidation. The `CachedValue<T>` adapter uses the per-Engine cache; snapshot epoch changes and TTL invalidate automatically, with explicit value/all invalidation APIs.
 - [~] Implement Trigger check intervals/cadence and state-transition events. Engine Evaluate consults a per-bot scheduler; existing triggers default to every update until they opt into a nonzero interval. DecisionReport now captures bounded cadence-skipped, inactive and active observations with candidate counts, and preserves trigger identity on each generated candidate. PartyBotAI samples these into the encounter trace every ten seconds under the shared detail budget. Named/global invalidation APIs are wired to Core-backed PartyBotAI death/resurrection, spell start/finish, target changes, encounter boundaries, owner reconnect/removal and party/map/instance reset. Additional state-machine events will be wired as their owning transitions are implemented.
 - [~] Implement action queue priorities, deterministic ordering and bounded processing. The 32-entry per-dispatch queue has stable FIFO ties, fail-closed overflow, index-only entries and an eight-action execution ceiling; pure tests and `ExecuteSelected` integration tests verify ordering and the ceiling. The separate 32-entry `PendingActionQueue` is Engine-owned, accepts opt-in actions with action-specific bounded TTLs, scopes entries to group/map/instance/bot/encounter, recomputes current eligibility/priority/threat impact at dequeue, aggregates selected threat estimates, and defers same-channel or temporarily over-budget work without extending expiry. `ExecuteDecisionCycle` now routes selected TTL-enabled actions through the pending queue, reserves channels used by immediate actions, and enforces one shared eight-action budget across immediate and pending work. Reset and encounter/lifecycle teardown clear the queue. Richer prerequisite/alternative/continuation/result-listener semantics and fairness/starvation policy remain open.
-- [ ] Implement prerequisites, alternatives, continuers and action result listeners where required by real Vanilla behavior.
+- [~] Implement bounded synchronous action result listeners. F31 adds a 32-listener per-Engine registry and value-only result events emitted for every final dispatcher result, including pre-adapter rejection and adapter return. Delivery is independent of tracing sinks and iterates a listener snapshot so registration during callback affects only subsequent results. The event explicitly means the Engine dispatcher / Action::Execute result, not a later Core Spell terminal.
+- [ ] Implement prerequisites, alternatives and continuers with explicit dependency/result semantics; connect Core terminal results only after spell/action correlation lifecycle is designed.
 - [ ] Implement useful/possible checks and real multiplier composition with hard safety vetoes.
 - [ ] Implement one vMaNGOS action executor with audited adapters and structured results.
 - [ ] Revalidate GUID, target state, map/instance, range, LOS, spell, resource and cooldown immediately before execution.
@@ -463,3 +464,16 @@ NewEngine authority mode is an opt-in development safety gate, not a gameplay-re
 - [ ] Add a mixed immediate/pending eight-action ceiling regression if future channel expansion allows more than the current four mutually-exclusive channels; expand queue fairness/result-listener semantics in later Phase 4 work.
 
 The dispatch boundary remains NewEngine-only. Legacy and Shadow execution behavior is unchanged.
+
+
+## F31 — bounded synchronous action result listeners (CI pending)
+
+- [x] Add a per-Engine, bounded 32-entry ActionResultListener registry with null/duplicate/full rejection.
+- [x] Define a value-only ActionResultEvent containing the candidate copy, action ID, ActionResult, attempted flag, snapshot epoch, dispatch time and reason. It stores no Core pointer.
+- [x] Notify listeners on every final ExecuteSelected dispatcher result, including failures before Action::Execute and direct adapter returns.
+- [x] Keep callback delivery independent of diagnostic trace sinks and copy the listener list before callbacks so registration during callback cannot invalidate iteration or receive the event currently being dispatched.
+- [x] Document the event boundary: adapter return is not proof of Core Spell completion; future Core-terminal result events need a separate explicit stage/correlation path.
+- [x] Add pure tests for successful/failed adapter result delivery without trace sinks, stable action IDs/context metadata, duplicate/null registration and callback-time listener registration.
+- [ ] Run pure Engine tests, ARM64 build and trusted fixture-backed simulator CI.
+
+This is a synchronous dispatch-result foundation only. It does not add async Core completion, prerequisites, alternatives, continuations, gameplay adapters or Legacy fallback.

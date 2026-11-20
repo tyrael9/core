@@ -93,6 +93,14 @@ public:
     std::vector<ReservationTraceEvent> events;
     std::vector<EngineActionTraceEvent> actionEvents;
 };
+class CaptureActionResultListener final : public ActionResultListener {
+public:
+    void OnActionResult(DecisionContext const&, ActionResultEvent const& event) override {
+        events.push_back(event);
+    }
+    std::vector<ActionResultEvent> events;
+};
+
 class TestTrigger : public Trigger {
 public:
     explicit TestTrigger(std::string name) : m_name(std::move(name)) {}
@@ -806,6 +814,107 @@ void TestEngineActionAttemptAndResultTrace()
     assert(report.candidates[report.selectedIndices[0]].actionId !=
            report.candidates[report.selectedIndices[1]].actionId);
     assert(report.candidates[report.selectedIndices[0]].threatActionId == 0);
+}
+
+void TestActionResultListenersReceiveDispatchOutcomesWithoutTraceSinks()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    auto success = std::make_shared<TestAction>("listener_success");
+    auto failure = std::make_shared<TestAction>("listener_failure");
+    failure->result = ActionResult::Failed;
+    assert(engine.RegisterAction(success) && engine.RegisterAction(failure));
+
+    auto listener = std::make_shared<CaptureActionResultListener>();
+    assert(engine.AddActionResultListener(listener));
+    assert(engine.GetActionResultListenerCount() == 1);
+    assert(!engine.AddActionResultListener(listener));
+    assert(!engine.AddActionResultListener(std::shared_ptr<ActionResultListener>()));
+
+    auto trigger = std::make_shared<TestTrigger>("listener_outcomes");
+    trigger->generated.push_back(Candidate(
+        "listener_success", 20.0f, ActionChannel::Utility));
+    trigger->generated.push_back(Candidate(
+        "listener_failure", 10.0f, ActionChannel::Movement));
+    auto strategy = std::make_shared<Strategy>("listener_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    // No ReservationTraceSink or EngineActionObserver is installed. Listener
+    // delivery must not depend on diagnostics being enabled.
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 2);
+    engine.ExecuteSelected(f.context, report);
+
+    assert(listener->events.size() == 2);
+    ActionResultEvent const& first = listener->events[0];
+    ActionResultEvent const& second = listener->events[1];
+    assert(first.attempted && first.result == ActionResult::Success);
+    assert(first.reason == "adapter_returned_success");
+    assert(first.candidate.actionName == "listener_success");
+    assert(first.actionId != 0 && first.actionId == first.candidate.actionId);
+    assert(first.snapshotEpoch == f.snapshot.epoch && first.occurredAtMs == f.context.nowMs);
+    assert(second.attempted && second.result == ActionResult::Failed);
+    assert(second.reason == "action_execution_not_successful");
+    assert(second.candidate.actionName == "listener_failure");
+    assert(second.actionId != 0 && second.actionId == second.candidate.actionId);
+}
+
+void TestActionResultListenersAreBoundedAndSnapshotDuringDispatch()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    auto action = std::make_shared<TestAction>("listener_mutation");
+    auto nextAction = std::make_shared<TestAction>("listener_mutation_next");
+    assert(engine.RegisterAction(action) && engine.RegisterAction(nextAction));
+    auto first = std::make_shared<CaptureActionResultListener>();
+    auto second = std::make_shared<CaptureActionResultListener>();
+    assert(engine.AddActionResultListener(first));
+
+    class RegisterDuringCallback final : public ActionResultListener {
+    public:
+        RegisterDuringCallback(PartyBotEngine& engine,
+                               std::shared_ptr<ActionResultListener> next)
+            : engine(engine), next(std::move(next)) {}
+        void OnActionResult(DecisionContext const&,
+                            ActionResultEvent const&) override {
+            if (!registered) {
+                assert(engine.AddActionResultListener(next));
+                registered = true;
+            }
+        }
+        PartyBotEngine& engine;
+        std::shared_ptr<ActionResultListener> next;
+        bool registered = false;
+    };
+    auto registering = std::make_shared<RegisterDuringCallback>(engine, second);
+    assert(engine.AddActionResultListener(registering));
+
+    auto trigger = std::make_shared<TestTrigger>("listener_mutation_trigger");
+    trigger->generated.push_back(Candidate(
+        "listener_mutation", 20.0f, ActionChannel::Utility));
+    trigger->generated.push_back(Candidate(
+        "listener_mutation_next", 10.0f, ActionChannel::Movement));
+    auto strategy = std::make_shared<Strategy>("listener_mutation_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    engine.ExecuteSelected(f.context, report);
+    assert(first->events.size() == 2);
+    assert(second->events.size() == 1);
+    assert(second->events[0].candidate.actionName == "listener_mutation_next");
+    assert(engine.GetActionResultListenerCount() == 3);
+
+    std::vector<std::shared_ptr<ActionResultListener>> extras;
+    while (engine.GetActionResultListenerCount() < 32) {
+        auto extra = std::make_shared<CaptureActionResultListener>();
+        assert(engine.AddActionResultListener(extra));
+        extras.push_back(extra);
+    }
+    assert(engine.GetActionResultListenerCount() == 32);
+    assert(!engine.AddActionResultListener(
+        std::make_shared<CaptureActionResultListener>()));
 }
 
 void TestCandidateTraceSelectionPreservesArbitrationSelectionAfterExecution()
@@ -1865,6 +1974,8 @@ void TestEngineRollsBackPartialFanoutWhenReservationCapacityIsReached() {
     assert(f.coordinator.GetThreatReservationCount() == 127);
 
     PartyBotEngine::PartyBotEngine engine;
+    auto resultListener = std::make_shared<CaptureActionResultListener>();
+    assert(engine.AddActionResultListener(resultListener));
     std::shared_ptr<TestAction> action = std::make_shared<TestAction>("fanout_damage");
     action->useThreatImpact = true;
     action->threatImpact = MakeThreatEstimate(f.snapshot.epoch, f.bot.guid, 9001, 1.0f);
@@ -1892,6 +2003,11 @@ void TestEngineRollsBackPartialFanoutWhenReservationCapacityIsReached() {
     assert(result.reason == "threat_reservation_failed");
     assert(result.threatActionId == 0);
     assert(action->executeCount == 0);
+    assert(resultListener->events.size() == 1);
+    assert(!resultListener->events[0].attempted);
+    assert(resultListener->events[0].result == ActionResult::Failed);
+    assert(resultListener->events[0].reason == "threat_reservation_failed");
+    assert(resultListener->events[0].actionId == result.actionId);
     assert(f.coordinator.GetThreatReservationCount() == 127);
     assert(f.coordinator.GetReservedThreatImpact(9001, 101, 0, 1000) == 0.0f);
     assert(f.coordinator.GetReservedThreatImpact(9001, f.bot.guid, 0, 1000) == 0.0f);
@@ -2504,6 +2620,8 @@ int main() {
     TestTriggerTraceSelectionPrioritizesActionableRows();
     TestEngineTriggerObservationCapacityIsBounded();
     TestEngineActionAttemptAndResultTrace();
+    TestActionResultListenersReceiveDispatchOutcomesWithoutTraceSinks();
+    TestActionResultListenersAreBoundedAndSnapshotDuringDispatch();
     TestCandidateTraceSelectionPreservesArbitrationSelectionAfterExecution();
     TestDecisionSummaryCountsAllArbitrationOutcomes();
     TestActionQueueIsBoundedPriorityOrderedAndStable();

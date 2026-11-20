@@ -1,6 +1,7 @@
 #ifndef MANGOS_PARTYBOT_PARTYBOT_ENGINE_H
 #define MANGOS_PARTYBOT_PARTYBOT_ENGINE_H
 #include "Action.h"
+#include "ActionResultListener.h"
 #include "ActionQueue.h"
 #include "Multiplier.h"
 #include "Strategy.h"
@@ -29,6 +30,10 @@ class PartyBotEngine {
 public:
     void AddStrategy(std::shared_ptr<Strategy> strategy);
     bool RegisterAction(std::shared_ptr<Action> action);
+    bool AddActionResultListener(std::shared_ptr<ActionResultListener> listener);
+    std::size_t GetActionResultListenerCount() const {
+        return m_actionResultListeners.size();
+    }
     void AddMultiplier(std::shared_ptr<Multiplier> multiplier);
     bool InvalidateValue(std::string const& name) const;
     void InvalidateAllValues() const;
@@ -54,10 +59,15 @@ public:
 private:
     CandidateEvaluation EvaluateCandidate(
         DecisionContext const& context, ActionCandidate candidate) const;
+    void NotifyActionResult(DecisionContext const& context,
+                            CandidateEvaluation const& evaluation,
+                            ActionId actionId, bool attempted,
+                            ActionResult result, char const* reason) const;
     std::shared_ptr<Action> FindAction(std::string const& name) const;
     std::vector<std::shared_ptr<Strategy>> m_strategies;
     std::map<std::string, std::shared_ptr<Action>> m_actions;
     std::vector<std::shared_ptr<Multiplier>> m_multipliers;
+    std::vector<std::shared_ptr<ActionResultListener>> m_actionResultListeners;
     mutable ValueCache m_valueCache;
     mutable TriggerScheduler m_triggerScheduler;
     mutable PendingActionQueue m_pendingActionQueue;

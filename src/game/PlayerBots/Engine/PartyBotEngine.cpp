@@ -14,6 +14,43 @@ bool PartyBotEngine::RegisterAction(std::shared_ptr<Action> action) {
     std::string const name = action->GetName();
     return m_actions.insert(std::make_pair(name, std::move(action))).second;
 }
+bool PartyBotEngine::AddActionResultListener(
+    std::shared_ptr<ActionResultListener> listener) {
+    if (!listener || m_actionResultListeners.size() >= 32)
+        return false;
+    for (auto const& registered : m_actionResultListeners)
+        if (registered == listener)
+            return false;
+    m_actionResultListeners.push_back(std::move(listener));
+    return true;
+}
+
+void PartyBotEngine::NotifyActionResult(
+    DecisionContext const& context, CandidateEvaluation const& evaluation,
+    ActionId actionId, bool attempted, ActionResult result,
+    char const* reason) const {
+    if (m_actionResultListeners.empty())
+        return;
+
+    ActionResultEvent event;
+    event.candidate = evaluation.candidate;
+    event.candidate.actionId = actionId;
+    event.actionId = actionId;
+    event.result = result;
+    event.attempted = attempted;
+    event.snapshotEpoch = context.snapshot.epoch;
+    event.occurredAtMs = context.nowMs;
+    event.reason = reason ? reason : "none";
+
+    // Snapshot listeners before invoking callbacks. A listener may register
+    // another listener without invalidating this dispatch's iteration.
+    std::vector<std::shared_ptr<ActionResultListener>> const listeners =
+        m_actionResultListeners;
+    for (auto const& listener : listeners)
+        if (listener)
+            listener->OnActionResult(context, event);
+}
+
 void PartyBotEngine::AddMultiplier(std::shared_ptr<Multiplier> multiplier) {
     if (multiplier) m_multipliers.push_back(std::move(multiplier));
 }
@@ -471,28 +508,34 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
         if (executionContext.reservationTrace)
             executionContext.reservationTrace->RecordReservationEvent(executionContext, event);
     };
-    auto recordAction = [&executionContext](
+    auto recordAction = [this, &executionContext](
         CandidateEvaluation& evaluation, ActionId actionId,
         EngineActionTraceStage stage, bool attempted,
         ActionResult result, char const* reason) {
-        if (!executionContext.reservationTrace &&
-            !executionContext.engineActionObserver)
-            return;
-        EngineActionTraceEvent event;
-        event.stage = stage;
-        event.actionId = actionId;
-        event.actionName = evaluation.candidate.actionName.c_str();
-        event.targetGuid = evaluation.candidate.targetGuid;
-        event.spellId = evaluation.candidate.spellId;
-        event.channel = evaluation.candidate.channel;
-        event.priority = evaluation.candidate.finalPriority;
-        event.result = result;
-        event.attempted = attempted;
-        event.reason = reason ? reason : "none";
-        if (executionContext.reservationTrace)
-            executionContext.reservationTrace->RecordEngineActionEvent(executionContext, event);
-        if (executionContext.engineActionObserver)
-            executionContext.engineActionObserver->OnEngineActionEvent(executionContext, event);
+        if (executionContext.reservationTrace ||
+            executionContext.engineActionObserver) {
+            EngineActionTraceEvent event;
+            event.stage = stage;
+            event.actionId = actionId;
+            event.actionName = evaluation.candidate.actionName.c_str();
+            event.targetGuid = evaluation.candidate.targetGuid;
+            event.spellId = evaluation.candidate.spellId;
+            event.channel = evaluation.candidate.channel;
+            event.priority = evaluation.candidate.finalPriority;
+            event.result = result;
+            event.attempted = attempted;
+            event.reason = reason ? reason : "none";
+            if (executionContext.reservationTrace)
+                executionContext.reservationTrace->RecordEngineActionEvent(executionContext, event);
+            if (executionContext.engineActionObserver)
+                executionContext.engineActionObserver->OnEngineActionEvent(executionContext, event);
+        }
+
+        // Result listeners are policy hooks, not trace consumers: they receive
+        // the same immutable event even when all diagnostic sinks are disabled.
+        if (stage == EngineActionTraceStage::Result)
+            NotifyActionResult(executionContext, evaluation, actionId,
+                               attempted, result, reason);
     };
 
     // Materialize selected decisions into a bounded queue. The queue contains

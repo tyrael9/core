@@ -297,6 +297,9 @@ PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
         PendingWork item;
         item.entry = entry;
         item.evaluation = std::move(evaluation);
+        // Fairness compares against the currently revalidated priority, not
+        // the potentially stale value captured when the action was enqueued.
+        item.entry.priority = item.evaluation.candidate.finalPriority;
         work.push_back(std::move(item));
     }
 

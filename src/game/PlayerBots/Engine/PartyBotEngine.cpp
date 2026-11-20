@@ -39,18 +39,27 @@ void PartyBotEngine::NotifyActionResult(
     DecisionContext const& context, CandidateEvaluation const& evaluation,
     ActionId actionId, bool attempted, ActionResult result,
     char const* reason) const {
-    if (m_actionResultListeners.empty())
-        return;
-
     ActionResultEvent event;
     event.candidate = evaluation.candidate;
     event.candidate.actionId = actionId;
     event.actionId = actionId;
+    event.encounterId = context.coordinator.GetEncounterId();
     event.result = result;
     event.attempted = attempted;
     event.snapshotEpoch = context.snapshot.epoch;
     event.occurredAtMs = context.nowMs;
     event.reason = reason ? reason : "none";
+
+    // Continuations consume the immutable dispatcher result independently of
+    // optional diagnostic listeners. It records only Action::Execute's return;
+    // Core Spell::finish remains a separate prerequisite source.
+    RememberActionResult(event);
+    m_actionContinuationQueue.PruneExpired(event.occurredAtMs);
+    m_actionContinuationQueue.ObserveActionResult(event);
+    ReleaseReadyActionDependencies(event.occurredAtMs);
+
+    if (m_actionResultListeners.empty())
+        return;
 
     // Snapshot listeners before invoking callbacks. A listener may register
     // another listener without invalidating this dispatch's iteration.
@@ -73,6 +82,19 @@ void PartyBotEngine::RememberCoreSpellTerminal(
     if (m_recentCoreSpellTerminals.size() >= Capacity)
         m_recentCoreSpellTerminals.erase(m_recentCoreSpellTerminals.begin());
     m_recentCoreSpellTerminals.push_back(event);
+}
+
+void PartyBotEngine::RememberActionResult(ActionResultEvent const& event) const {
+    if (!event.actionId || !event.encounterId)
+        return;
+    for (ActionResultEvent const& existing : m_recentActionResults)
+        if (existing.actionId == event.actionId &&
+            existing.encounterId == event.encounterId)
+            return;
+    static std::size_t const Capacity = 128;
+    if (m_recentActionResults.size() >= Capacity)
+        m_recentActionResults.erase(m_recentActionResults.begin());
+    m_recentActionResults.push_back(event);
 }
 
 bool PartyBotEngine::ReleaseContinuation(
@@ -166,51 +188,81 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
             boundedRequest, continuationCandidate, pendingContext))
         return ActionContinuationEnqueueResult::Invalid;
 
-    // If every prerequisite already has a terminal, late registration
-    // inherits its deadline from the latest prerequisite terminal, not from
-    // the adapter call that happened after completion. Otherwise the normal
-    // TTL starts now and is never extended by later prerequisites.
-    bool allPrerequisitesAlreadyTerminal = true;
-    bool hasLatestTerminal = false;
-    std::uint32_t latestTerminalMs = context.nowMs;
-    for (ActionTerminalPrerequisite const& prerequisite : boundedRequest.prerequisites) {
-        CoreSpellTerminalEvent const* matchedTerminal = nullptr;
-        for (CoreSpellTerminalEvent const& terminal : m_recentCoreSpellTerminals)
-            if (terminal.actionId == prerequisite.actionId &&
-                terminal.encounterId == prerequisite.encounterId) {
-                matchedTerminal = &terminal;
-                break;
+    // If every prerequisite already has its typed event, late registration
+    // inherits its deadline from the latest event. Otherwise the normal TTL
+    // starts now and is never extended by later prerequisites.
+    bool allPrerequisitesAlreadyObserved = true;
+    bool hasLatestEvent = false;
+    std::uint32_t latestEventMs = context.nowMs;
+    for (ActionDependencyPrerequisite const& prerequisite : boundedRequest.prerequisites) {
+        std::uint32_t occurredAtMs = 0;
+        bool foundEvent = false;
+        bool matchesPrerequisite = false;
+
+        if (prerequisite.source == ActionDependencyEventSource::CoreSpellTerminal) {
+            CoreSpellTerminalEvent const* matchedTerminal = nullptr;
+            for (CoreSpellTerminalEvent const& terminal : m_recentCoreSpellTerminals)
+                if (terminal.actionId == prerequisite.actionId &&
+                    terminal.encounterId == prerequisite.encounterId) {
+                    matchedTerminal = &terminal;
+                    break;
+                }
+            if (matchedTerminal) {
+                foundEvent = true;
+                occurredAtMs = matchedTerminal->occurredAtMs;
+                matchesPrerequisite =
+                    matchedTerminal->targetGuid == prerequisite.targetGuid &&
+                    matchedTerminal->spellId == prerequisite.spellId &&
+                    matchedTerminal->status == prerequisite.requiredStatus;
             }
-        if (!matchedTerminal) {
-            allPrerequisitesAlreadyTerminal = false;
+        } else {
+            ActionResultEvent const* matchedResult = nullptr;
+            for (ActionResultEvent const& event : m_recentActionResults)
+                if (event.actionId == prerequisite.actionId &&
+                    event.encounterId == prerequisite.encounterId) {
+                    matchedResult = &event;
+                    break;
+                }
+            if (matchedResult) {
+                foundEvent = true;
+                occurredAtMs = matchedResult->occurredAtMs;
+                bool const targetMatches = !prerequisite.targetGuid ||
+                    prerequisite.targetGuid == matchedResult->candidate.targetGuid;
+                bool const spellMatches = !prerequisite.spellId ||
+                    prerequisite.spellId == matchedResult->candidate.spellId;
+                matchesPrerequisite =
+                    prerequisite.expectedActionName == matchedResult->candidate.actionName &&
+                    targetMatches && spellMatches &&
+                    prerequisite.requiredActionResult == matchedResult->result &&
+                    prerequisite.requiredAttempted == matchedResult->attempted;
+            }
+        }
+
+        if (!foundEvent) {
+            allPrerequisitesAlreadyObserved = false;
             continue;
         }
         // The caller may have captured a context timestamp just before this
-        // terminal was observed. Do not use a future event to anchor its TTL.
-        if (static_cast<std::int32_t>(context.nowMs - matchedTerminal->occurredAtMs) < 0) {
-            allPrerequisitesAlreadyTerminal = false;
+        // event was observed. Do not use a future event to anchor its TTL.
+        if (static_cast<std::int32_t>(context.nowMs - occurredAtMs) < 0) {
+            allPrerequisitesAlreadyObserved = false;
             continue;
         }
 
-        bool const matchesPrerequisite =
-            matchedTerminal->targetGuid == prerequisite.targetGuid &&
-            matchedTerminal->spellId == prerequisite.spellId &&
-            matchedTerminal->status == prerequisite.requiredStatus;
-        // A failed parent invalidates an ordinary AND dependency immediately.
-        // For alternatives, a rejected branch must remain registered so the
-        // whole one-of-N group can settle and choose another eligible branch.
+        // A rejected parent invalidates an ordinary AND dependency. A
+        // rejected alternative stays registered so another branch can win.
         if (!matchesPrerequisite && !boundedRequest.alternativeGroupId)
             return ActionContinuationEnqueueResult::ParentTerminalRejected;
 
-        if (!hasLatestTerminal ||
-            static_cast<std::int32_t>(matchedTerminal->occurredAtMs - latestTerminalMs) > 0) {
-            latestTerminalMs = matchedTerminal->occurredAtMs;
-            hasLatestTerminal = true;
+        if (!hasLatestEvent ||
+            static_cast<std::int32_t>(occurredAtMs - latestEventMs) > 0) {
+            latestEventMs = occurredAtMs;
+            hasLatestEvent = true;
         }
     }
     std::uint32_t const ttlStartMs =
-        allPrerequisitesAlreadyTerminal && hasLatestTerminal
-            ? latestTerminalMs : context.nowMs;
+        allPrerequisitesAlreadyObserved && hasLatestEvent
+            ? latestEventMs : context.nowMs;
     if (ActionContinuationQueue::IsExpired(
             context.nowMs, ttlStartMs + boundedRequest.lifetimeMs))
         return ActionContinuationEnqueueResult::Expired;
@@ -220,10 +272,12 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
     if (result != ActionContinuationEnqueueResult::Queued)
         return result;
 
-    // Instant casts can finish before an adapter registers a dependency. Seed
-    // every prerequisite from the bounded terminal ledger before deciding.
+    // Either event source may precede dependency registration (e.g. an
+    // instant adapter result or instant Core cast). Replay both bounded ledgers.
     for (CoreSpellTerminalEvent const& event : m_recentCoreSpellTerminals)
         m_actionContinuationQueue.ObserveTerminal(event);
+    for (ActionResultEvent const& event : m_recentActionResults)
+        m_actionContinuationQueue.ObserveActionResult(event);
     return ReleaseReadyActionDependencies(context.nowMs, &continuationCandidate)
         ? ActionContinuationEnqueueResult::ReleasedImmediately
         : ActionContinuationEnqueueResult::Queued;
@@ -275,6 +329,7 @@ void PartyBotEngine::ResetDecisionState() const {
     m_pendingActionQueue.Clear();
     m_actionContinuationQueue.Clear();
     m_recentCoreSpellTerminals.clear();
+    m_recentActionResults.clear();
 }
 bool PartyBotEngine::InvalidateTrigger(std::string const& strategyName,
                                        std::string const& triggerName) const {

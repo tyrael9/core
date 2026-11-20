@@ -669,7 +669,7 @@ PartyBotEngine::CoreActionResolution PartyBotAI::ResolveUnitContext(
     if (!me)
         return result;
 
-    if (context.bot.guid != me->GetObjectGuid().GetRawValue())
+    if (context.bot.guid != me->GetObjectGuid().GetRawValue() || !context.bot.online)
     {
         result.status = CoreActionResolveStatus::ActorSnapshotMismatch;
         result.reason = "core_action_actor_snapshot_guid_mismatch";
@@ -729,7 +729,14 @@ PartyBotEngine::CoreActionResolution PartyBotAI::ResolveUnitContext(
             return result;
         }
 
-        if (!target->IsInWorld() || target->GetMap() != currentMap ||
+        if (!target->IsInWorld())
+        {
+            result.status = CoreActionResolveStatus::TargetOutOfWorld;
+            result.reason = "core_action_target_not_in_world";
+            return result;
+        }
+
+        if (target->GetMap() != currentMap ||
             target->GetMapId() != context.snapshot.mapId)
         {
             result.status = CoreActionResolveStatus::TargetMapMismatch;

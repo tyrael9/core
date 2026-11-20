@@ -5783,6 +5783,10 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     DecisionReport movementReport;
     movementReport.candidates.push_back(movementEvaluation);
     movementReport.selectedIndices.push_back(0);
+    // Earlier simulator scenarios can leave a legacy point generator active;
+    // clear that fixture state so this test measures the new Engine action.
+    healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
+
     bool const movementSetupPassed = f41CoreActionPreflightPassed &&
         movementFollowupRegistered && movementTerminalListenerRegistered &&
         playerPointMoveActionRegistered;

@@ -22,7 +22,8 @@ public:
 
         CoreActionResolution const resolved =
             context.coreActionRuntime->ResolveUnitContext(context, candidate.targetGuid);
-        if (!resolved.IsResolved())
+        if (!resolved.IsResolved() || !resolved.actor || !resolved.map ||
+            (candidate.targetGuid && !resolved.target))
             return ActionResult::Impossible;
 
         return ExecuteCore(context, candidate, resolved);

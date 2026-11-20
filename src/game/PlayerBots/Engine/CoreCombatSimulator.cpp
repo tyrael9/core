@@ -5105,19 +5105,6 @@ private:
 
 bool RunEngineCoreItemUseSmokeTest(Map& map)
 {
-    WorldSession session(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
-    Player* player = nullptr;
-    if (!CreateSimulatorPlayer(map, 1, session, player, 0.0f, 9.0f, 4.0f))
-    {
-        if (session.GetPlayer())
-            session.LogoutPlayer(false);
-        else if (player)
-            delete player;
-        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] F40 item-use Player fixture creation failed.");
-        return false;
-    }
-
     static uint32 const MinorHealingPotionItemId = 118;
     ItemPrototype const* potionPrototype =
         sObjectMgr.GetItemPrototype(MinorHealingPotionItemId);
@@ -5137,72 +5124,104 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
         spellSlot < MAX_ITEM_PROTO_SPELLS &&
         potionPrototype->Spells[spellSlot].SpellCharges < 0 &&
         sSpellMgr.GetSpellEntry(potionPrototype->Spells[spellSlot].SpellId);
+    if (!prototypeValid)
+        return false;
 
-    Item* potion = prototypeValid
-        ? player->StoreNewItemInInventorySlot(MinorHealingPotionItemId, 1) : nullptr;
+    // First Player proves the successful ON_USE path using the same implicit
+    // self-target semantics as HandleUseItemOpcode (no explicit unit target).
+    WorldSession successSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* successPlayer = nullptr;
+    if (!CreateSimulatorPlayer(map, 1, successSession, successPlayer, 0.0f, 9.0f, 4.0f))
+    {
+        if (successSession.GetPlayer())
+            successSession.LogoutPlayer(false);
+        else if (successPlayer)
+            delete successPlayer;
+        return false;
+    }
+
+    Item* potion = successPlayer->StoreNewItemInInventorySlot(MinorHealingPotionItemId, 1);
     ObjectGuid const potionGuid = potion ? potion->GetObjectGuid() : ObjectGuid();
     int32 const initialCharges = potion ? potion->GetSpellCharges(spellSlot) : 0;
-    uint32 const potionHealthBefore = player->GetMaxHealth() / 2;
-    player->SetHealth(potionHealthBefore);
+    uint32 const potionHealthBefore = successPlayer->GetMaxHealth() / 2;
+    successPlayer->SetHealth(potionHealthBefore);
 
     SpellCastTargets validTargets;
-    validTargets.setUnitTarget(player);
-    validTargets.PrepareForSpellSystem(player);
+    validTargets.PrepareForSpellSystem(successPlayer);
     if (potion)
-        player->CastItemUseSpell(potion, validTargets);
+        successPlayer->CastItemUseSpell(potion, validTargets);
 
     for (uint32 tick = 0; tick < 8 &&
-         player->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+         successPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
         map.Update(250);
     }
 
-    uint32 const potionHealthAfter = player->GetHealth();
-    bool const potionConsumed = potionGuid && player->GetItemByGuid(potionGuid) == nullptr;
-    bool const successfulUse = prototypeValid && potion && initialCharges < 0 &&
+    uint32 const potionHealthAfter = successPlayer->GetHealth();
+    bool const potionConsumed = potionGuid &&
+        successPlayer->GetItemByGuid(potionGuid) == nullptr;
+    bool const successfulUse = potionGuid && initialCharges < 0 &&
         potionHealthAfter > potionHealthBefore && potionConsumed &&
-        player->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+        successPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+    successSession.LogoutPlayer(false);
+    bool const successPlayerCleaned = successSession.GetPlayer() == nullptr;
 
-    Item* noChargePotion = prototypeValid
-        ? player->StoreNewItemInInventorySlot(MinorHealingPotionItemId, 1) : nullptr;
+    // A separate fresh Player avoids the previous potion's item cooldown/GCD;
+    // the only deliberate rejection cause is the zero-charge item state.
+    WorldSession rejectedSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* rejectedPlayer = nullptr;
+    if (!CreateSimulatorPlayer(map, 1, rejectedSession, rejectedPlayer,
+                               0.0f, 9.0f, 4.0f))
+    {
+        if (rejectedSession.GetPlayer())
+            rejectedSession.LogoutPlayer(false);
+        else if (rejectedPlayer)
+            delete rejectedPlayer;
+        return false;
+    }
+
+    Item* noChargePotion =
+        rejectedPlayer->StoreNewItemInInventorySlot(MinorHealingPotionItemId, 1);
     ObjectGuid const noChargeGuid = noChargePotion
         ? noChargePotion->GetObjectGuid() : ObjectGuid();
     if (noChargePotion)
         noChargePotion->SetSpellCharges(spellSlot, 0);
-    uint32 const rejectedHealthBefore = player->GetHealth();
+    uint32 const rejectedHealthBefore = rejectedPlayer->GetMaxHealth() / 2;
+    rejectedPlayer->SetHealth(rejectedHealthBefore);
 
     SpellCastTargets rejectedTargets;
-    rejectedTargets.setUnitTarget(player);
-    rejectedTargets.PrepareForSpellSystem(player);
+    rejectedTargets.PrepareForSpellSystem(rejectedPlayer);
     if (noChargePotion)
-        player->CastItemUseSpell(noChargePotion, rejectedTargets);
+        rejectedPlayer->CastItemUseSpell(noChargePotion, rejectedTargets);
 
     for (uint32 tick = 0; tick < 4 &&
-         player->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+         rejectedPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
         map.Update(250);
     }
 
     Item* rejectedStillOwned = noChargeGuid
-        ? player->GetItemByGuid(noChargeGuid) : nullptr;
-    bool const rejectedWithoutConsumption = noChargePotion && rejectedStillOwned &&
+        ? rejectedPlayer->GetItemByGuid(noChargeGuid) : nullptr;
+    bool const rejectedWithoutConsumption = noChargeGuid && rejectedStillOwned &&
         rejectedStillOwned->GetCount() == 1 &&
         rejectedStillOwned->GetSpellCharges(spellSlot) == 0 &&
-        player->GetHealth() == rejectedHealthBefore &&
-        player->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+        rejectedPlayer->GetHealth() == rejectedHealthBefore &&
+        rejectedPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+    rejectedSession.LogoutPlayer(false);
+    bool const rejectedPlayerCleaned = rejectedSession.GetPlayer() == nullptr;
 
-    session.LogoutPlayer(false);
-    bool const cleaned = session.GetPlayer() == nullptr;
-    bool const passed = successfulUse && rejectedWithoutConsumption && cleaned;
+    bool const passed = successfulUse && rejectedWithoutConsumption &&
+        successPlayerCleaned && rejectedPlayerCleaned;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-             "[PartyBotSimulator] F40 Core item use: prototype=%u spellSlot=%u spellId=%u initialCharges=%d healed=%u>%u consumed=%u zeroChargeRejected=%u itemRetained=%u cleanup=%u.",
+             "[PartyBotSimulator] F40 Core item use: prototype=%u spellSlot=%u spellId=%u initialCharges=%d healed=%u>%u consumed=%u zeroChargeRejected=%u itemRetained=%u successCleanup=%u rejectCleanup=%u.",
              prototypeValid ? 1u : 0u, spellSlot,
-             prototypeValid ? potionPrototype->Spells[spellSlot].SpellId : 0u,
-             initialCharges, potionHealthBefore, potionHealthAfter,
-             potionConsumed ? 1u : 0u, rejectedWithoutConsumption ? 1u : 0u,
-             rejectedStillOwned ? 1u : 0u, cleaned ? 1u : 0u);
+             potionPrototype->Spells[spellSlot].SpellId, initialCharges,
+             potionHealthBefore, potionHealthAfter, potionConsumed ? 1u : 0u,
+             rejectedWithoutConsumption ? 1u : 0u,
+             rejectedStillOwned ? 1u : 0u,
+             successPlayerCleaned ? 1u : 0u, rejectedPlayerCleaned ? 1u : 0u);
     if (passed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: F40 real Core item use applied a potion effect and consumed the expendable item, while zero charges rejected use without consuming the item.");

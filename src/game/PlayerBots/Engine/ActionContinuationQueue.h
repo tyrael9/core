@@ -36,7 +36,8 @@ public:
         ActionDependencyRequest const& request,
         ActionCandidate const& candidate,
         std::uint32_t nowMs,
-        PendingActionQueue::Context const& context)
+        PendingActionQueue::Context const& context,
+        std::uint32_t ttlStartMs)
     {
         if (!IsWellFormedRequest(request, candidate, context))
             return ActionContinuationEnqueueResult::Invalid;
@@ -77,8 +78,8 @@ public:
         entry.candidate.actionId = 0;
         entry.candidate.threatActionId = 0;
         entry.context = context;
-        entry.enqueuedAtMs = nowMs;
-        entry.expiresAtMs = nowMs + request.lifetimeMs;
+        entry.enqueuedAtMs = ttlStartMs;
+        entry.expiresAtMs = ttlStartMs + request.lifetimeMs;
         entry.ordinal = m_nextOrdinal++;
         entry.states.assign(request.prerequisites.size(), PrerequisiteState::Waiting);
         m_entries.push_back(std::move(entry));

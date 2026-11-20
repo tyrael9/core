@@ -160,8 +160,41 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
     pendingContext.encounterActive = context.coordinator.HasActiveEncounter();
     pendingContext.scoped = true;
 
+    // If every prerequisite already has a terminal, late registration
+    // inherits its deadline from the latest prerequisite terminal, not from
+    // the adapter call that happened after completion. Otherwise the normal
+    // TTL starts now and is never extended by later prerequisites.
+    bool allPrerequisitesAlreadyTerminal = true;
+    bool hasLatestTerminal = false;
+    std::uint32_t latestTerminalMs = context.nowMs;
+    for (ActionTerminalPrerequisite const& prerequisite : boundedRequest.prerequisites) {
+        CoreSpellTerminalEvent const* matchedTerminal = nullptr;
+        for (CoreSpellTerminalEvent const& terminal : m_recentCoreSpellTerminals)
+            if (terminal.actionId == prerequisite.actionId &&
+                terminal.encounterId == prerequisite.encounterId) {
+                matchedTerminal = &terminal;
+                break;
+            }
+        if (!matchedTerminal ||
+            static_cast<std::int32_t>(context.nowMs - matchedTerminal->occurredAtMs) < 0) {
+            allPrerequisitesAlreadyTerminal = false;
+            break;
+        }
+        if (!hasLatestTerminal ||
+            static_cast<std::int32_t>(matchedTerminal->occurredAtMs - latestTerminalMs) > 0) {
+            latestTerminalMs = matchedTerminal->occurredAtMs;
+            hasLatestTerminal = true;
+        }
+    }
+    std::uint32_t const ttlStartMs =
+        allPrerequisitesAlreadyTerminal && hasLatestTerminal
+            ? latestTerminalMs : context.nowMs;
+    if (ActionContinuationQueue::IsExpired(
+            context.nowMs, ttlStartMs + boundedRequest.lifetimeMs))
+        return ActionContinuationEnqueueResult::Expired;
+
     ActionContinuationEnqueueResult const result = m_actionContinuationQueue.Enqueue(
-        boundedRequest, continuationCandidate, context.nowMs, pendingContext);
+        boundedRequest, continuationCandidate, context.nowMs, pendingContext, ttlStartMs);
     if (result != ActionContinuationEnqueueResult::Queued)
         return result;
 

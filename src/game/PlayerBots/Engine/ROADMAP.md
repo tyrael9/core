@@ -399,7 +399,7 @@ The runtime emitted exactly one `event=damage_taken` for the lethal Player hit: 
 - [x] `PartyCoordinator::ObserveEncounter` now fails closed when an active encounter receives a snapshot from a different group, map or instance. A foreign shard cannot refresh the old encounter's quiet-settle clock or close its trace from the wrong Map update context.
 - [x] Pure C++ regression covers foreign group, map and instance snapshots in both combat and idle states, verifies the active encounter ID is retained, and proves only a valid source-shard idle snapshot can close at the exact settle boundary.
 - [x] CI [#44635173205](https://github.com/tyrael9/core/actions/runs/44635173205), commit `53f7d059573c19f5c3c7afd093015168c9087ef9`, passed PartyBotEngine tests, collector tests, the full Linux ARM64 server/realm build and simulator harness syntax validation.
-- [~] The Core-backed source/destination instance-transfer fixture is now added as F27 and exercises real five-Player `Map::Remove` / `Map::Add`, source terminal closure, production `PartyBotAI::UpdatePartyBotEngineShadow` coordinator reacquisition, a distinct destination encounter, and return cleanup. Trusted fixture-backed runtime validation is pending; F25 is not considered closed until that gate passes.
+- [~] The Core-backed source/destination dungeon-map transfer fixture is now added as F27. It uses a different map ID because Core forbids the same Group from entering a second instance of a dungeon map ID while its GroupBind remains on the original instance. The fixture exercises real five-Player `Map::Remove` / `Map::Add`, source terminal closure, production Shadow coordinator reacquisition, a distinct destination encounter, and explicit cleanup of the temporary destination GroupBind. Trusted runtime validation is pending.
 
 
 ## F26 — incremental documentation-only PR validation (verified)
@@ -408,12 +408,12 @@ The runtime emitted exactly one `event=damage_taken` for the lethal Player hit: 
 - [x] New/reopened PRs, manual dispatches, unknown events and missing/unavailable boundaries retain fail-safe full validation against the complete PR base/head range.
 - [x] Documentation-only follow-up commit `4348a4969615dffea29716983086db0b1c6fd235` passed PR CI run [#44636201799](https://github.com/tyrael9/core/actions/runs/44636201799): the classifier used `before=37b01b299b68bb34c89869c62fadf6f269c4990b` to diff exactly one Markdown file, the lightweight documentation job succeeded, and Linux ARM64 / Vanilla 5875 was skipped. The earlier docs-only commit `fcc8410` exposed the old full-PR-diff behavior and triggered a redundant build.
 
-## F27 — Core-backed source-to-destination instance transfer (runtime validation pending)
+## F27 — Core-backed source-to-destination dungeon-map transfer (runtime validation pending)
 
-- [x] Add a second real dungeon `Map` instance with the same map ID and a distinct instance ID while retaining the original source Map.
+- [x] Add a real Stockades (`MapId 34`) destination dungeon with a different map ID while retaining the original source dungeon (`MapId 33`). The same Group cannot enter another instance with the same dungeon map ID because Core enforces one active GroupBind per map ID.
 - [x] Move all five real Core Group Players using the production `Map::Remove(Player*, false)` and `Map::Add(Player*)` paths. The test requires the source shard to stay active while one PartyBotAI remains on the source Map, then close once and clear both bots' retained coordinator references when the final bot leaves.
 - [x] Enable Shadow only in the disposable simulator config and call the existing `PartyBotAI::UpdatePartyBotEngineShadow` entry point after destination insertion. Require both bots to reacquire the same distinct `(group,map,instance)` coordinator through `PartyCoordinatorRegistry`, build a real five-member destination snapshot, and start a new encounter ID.
-- [x] Move all five Players back to the source Map and require the destination encounter to close once, both PartyBotAI coordinator references to clear, the original five-member fixture to be restored, and the temporary destination Map to be deleted.
+- [x] Move all five Players back to the source Map and require the destination encounter to close once, both PartyBotAI coordinator references to clear, the temporary destination GroupBind to be removed, the original five-member fixture to be restored, and the temporary destination Map to be deleted.
 - [ ] Run trusted ARM64 / Vanilla 5875 fixture-backed CI and inspect the F27 marker, exactly three `last_partybot_left_map` terminal records (existing F16 plus F27 source and destination), and final simulator Runtime PASS.
 
-The fixture deliberately tests a same-map-ID/different-instance transition. A separate different-map-ID transfer case remains useful follow-up coverage; this test does not claim to exhaust every teleport/instance-script path.
+The fixture tests a different-map-ID dungeon transfer (`33 → 34`) because vMaNGOS rejects a Group entering another instance for a dungeon map ID while the old GroupBind is still active. It does not claim to exhaust every teleport/instance-script path.

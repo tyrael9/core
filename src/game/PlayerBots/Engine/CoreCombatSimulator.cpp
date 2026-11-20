@@ -4265,15 +4265,23 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     }
 
     // F27: move the full real Group through Map::Remove/Map::Add into a
-    // second instance of the same dungeon Map. The source shard must close on
-    // its Map thread; the ordinary PartyBotAI Shadow update must then acquire
-    // a different registry entry and start a new encounter from the destination
-    // Map's real five-Player snapshot. Moving back also verifies destination
-    // teardown and leaves the original simulator fixture intact.
-    Map* destinationMap = sMapMgr.CreateTestMap(
-        map.GetId(), true, tank->GetPositionX(), tank->GetPositionY());
+    // different Vanilla dungeon Map. A Group can bind only one instance per
+    // dungeon map ID, so a second instance of the same Map is invalid Core
+    // behavior for this fixture. The source shard must close on its Map thread;
+    // the ordinary PartyBotAI Shadow update must then acquire a different
+    // registry entry and start an encounter from the destination's real roster.
+    // The temporary destination GroupBind is explicitly removed on return.
+    static uint32 constexpr F27_DESTINATION_MAP_ID = 34; // Stockades, a separate Vanilla dungeon.
+    MapEntry const* destinationEntry =
+        sMapStorage.LookupEntry<MapEntry>(F27_DESTINATION_MAP_ID);
+    bool const destinationMapAvailable = destinationEntry && destinationEntry->IsDungeon() &&
+        group->GetBoundInstance(F27_DESTINATION_MAP_ID) == nullptr;
+    Map* destinationMap = destinationMapAvailable
+        ? sMapMgr.CreateTestMap(F27_DESTINATION_MAP_ID, true, 0.0f, 0.0f)
+        : nullptr;
     bool instanceTransferTracePassed = false;
-    if (destinationMap && destinationMap->GetId() == map.GetId() &&
+    if (destinationMap && destinationMap->GetId() != map.GetId() &&
+        destinationMap->GetId() == F27_DESTINATION_MAP_ID &&
         destinationMap->GetInstanceId() &&
         destinationMap->GetInstanceId() != map.GetInstanceId())
     {
@@ -4354,9 +4362,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                     destinationCoordinator == PartyCoordinatorRegistry::GetOrCreate(
                         group->GetId(), destinationMap->GetId(),
                         destinationMap->GetInstanceId()) &&
+                    destinationMap->GetId() != sourceCoordinator->GetEncounterMapId() &&
                     destinationCoordinator->GetEncounterMapId() == destinationMap->GetId() &&
                     destinationCoordinator->GetEncounterInstanceId() ==
-                        destinationMap->GetInstanceId();
+                        destinationMap->GetInstanceId() &&
+                    group->GetBoundInstance(destinationMap->GetId()) != nullptr;
 
                 PartySnapshot const* destinationSnapshot = destinationCoordinator
                     ? PartySnapshotBuilder::GetOrBuild(
@@ -4426,6 +4436,15 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 destinationCoordinator->TryAdmitEncounterTraceEvent(
                     destinationEncounterId, EncounterTraceEventClass::Terminal) ==
                     EncounterTraceAdmission::Suppressed;
+
+            // DungeonMap::Add binds the Group to the destination map ID. This
+            // fixture is intentionally not a persistent dungeon run, so remove
+            // only the new test binding after all Players have left that Map.
+            if (allPlayersRemovedFromDestination &&
+                group->GetBoundInstance(destinationMap->GetId()))
+                group->UnbindInstance(destinationMap->GetId());
+            bool const destinationGroupBindReleased =
+                group->GetBoundInstance(destinationMap->GetId()) == nullptr;
             bool const destinationAisReleasedShard =
                 !partyTraceAI.m_partyCoordinator &&
                 !secondPartyTraceAI.m_partyCoordinator;
@@ -4443,7 +4462,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 allPlayersOnDestination && destinationShardDistinct &&
                 destinationRosterValid && destinationEncounterStarted &&
                 allPlayersRemovedFromDestination && destinationShardClosed &&
-                destinationAisReleasedShard && allPlayersBackOnSource;
+                destinationGroupBindReleased && destinationAisReleasedShard &&
+                allPlayersBackOnSource;
         }
     }
 
@@ -4469,19 +4489,25 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             {
                 return member && member->IsInWorld() && member->GetMap() == &map;
             });
-        if (destinationMapEmpty)
+        if (destinationMapEmpty &&
+            group->GetBoundInstance(destinationMap->GetId()))
+            group->UnbindInstance(destinationMap->GetId());
+        bool const destinationBindCleaned =
+            group->GetBoundInstance(destinationMap->GetId()) == nullptr;
+        if (destinationMapEmpty && destinationBindCleaned)
             sMapMgr.DeleteTestMap(destinationMap);
         else
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                     "[PartyBotSimulator] Refusing to delete destination instance %u while a Player is still attached.",
-                     destinationMap->GetInstanceId());
+                     "[PartyBotSimulator] Refusing to delete destination map %u instance %u (playersDetached=%u groupBindReleased=%u).",
+                     destinationMap->GetId(), destinationMap->GetInstanceId(),
+                     destinationMapEmpty ? 1u : 0u, destinationBindCleaned ? 1u : 0u);
         instanceTransferTracePassed = instanceTransferTracePassed &&
-            destinationMapEmpty && sourceFixtureRestored;
+            destinationMapEmpty && destinationBindCleaned && sourceFixtureRestored;
     }
 
     if (instanceTransferTracePassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: a real five-Player Group left the source Map, closed its last-PartyBot encounter exactly once, reacquired a distinct destination-instance coordinator through PartyBotAI::UpdatePartyBotEngineShadow, started a new encounter from the destination roster, then closed it and restored every Player to the source instance.");
+                 "[PartyBotSimulator] PASS: a real five-Player Group left the source Map, closed its last-PartyBot encounter exactly once, reacquired a distinct destination-map coordinator through PartyBotAI::UpdatePartyBotEngineShadow, started a new encounter from the destination roster, then closed it, removed its temporary GroupBind and restored every Player to the source instance.");
 
     // F17: exercise the Engine's sampled trigger observations and their
     // encounter-correlated log format with the real strategy registry.

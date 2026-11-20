@@ -108,9 +108,9 @@ Trace design: DECISION-TRACE.md.
 - [ ] Implement useful/possible checks and real multiplier composition with hard safety vetoes.
 - [ ] Implement one vMaNGOS action executor with audited adapters and structured results.
 - [ ] Revalidate GUID, target state, map/instance, range, LOS, spell, resource and cooldown immediately before execution.
-- [ ] Add explicit Legacy versus New Engine runtime authority selection.
-- [ ] Prove New Engine mode does not call old class rotations, healing, tank assist/taunt, CC, dispel or target-selection policy.
-- [ ] Make missing/unimplemented behavior a traceable no-op; no per-role or per-domain Legacy fallback.
+- [~] Add explicit Legacy versus New Engine runtime authority selection. `PlayerBot.EngineAuthority` now resolves to Legacy (0, default), Shadow (1, Legacy remains executor) or NewEngine (2, exclusive). Invalid values fail safe to Legacy. NewEngine suppresses Legacy UpdateAI policy and skips registration of Shadow-only candidate probes; it runs only registered Engine strategies/actions and the Engine-owned pending dispatcher.
+- [~] Prove New Engine mode does not call old class rotations, healing, tank assist/taunt, CC, dispel or target-selection policy. The authority guard returns before all Legacy follow/healing/combat policy; pure tests cover the mode resolver, but a Core-backed runtime assertion that instruments Legacy entry points remains open.
+- [x] Make missing/unimplemented behavior a traceable no-op; no per-role or per-domain Legacy fallback. In NewEngine mode, no real Core action adapters are registered yet; empty policy/pending queues remain a deliberate no-op. No hidden Legacy fallback is called.
 - [ ] Add integration tests proving each action's Core outcome is recorded accurately.
 
 **Acceptance:** a bot can run New Engine mode with no Legacy combat-policy calls. A deliberate no-op is preferable to hidden fallback.
@@ -434,3 +434,16 @@ The fixture tests a different-map-ID dungeon transfer (`33 → 34`) because vMaN
 - [ ] Keep PartyBotAI's current Shadow/Legacy runtime read-only. The new pending APIs are groundwork; they are not yet called by a New Engine authority mode.
 
 The queue integration does not add class rotations, Legacy fallback, production New Engine execution, database changes, merge, image publication or deployment.
+
+
+## F29 — explicit Legacy / Shadow / NewEngine authority modes (CI pending)
+
+- [x] Add `PlayerBot.EngineAuthority`: 0 Legacy (default), 1 Shadow (read-only Engine evaluation, Legacy remains executor), 2 NewEngine (exclusive authority). Unknown values resolve to Legacy.
+- [x] Preserve `PlayerBot.EngineShadow` as a backwards-compatible read-only opt-in while Legacy authority is selected.
+- [x] In NewEngine mode, force Engine context/evaluation, do not register the existing `shadow_*` probe strategies as execution policy, execute only registered Engine actions/pending work, and return before all Legacy follow/healing/combat/class policy.
+- [x] Make absence of registered NewEngine actions an explicit no-op. NewEngine mode never falls back to Legacy policy.
+- [x] Add pure tests for authority value resolution, Shadow opt-in semantics, exclusive Legacy suppression, and fail-safe handling of unknown settings.
+- [ ] Run pure Engine tests, ARM64 build and trusted fixture-backed runtime CI.
+- [ ] Add a Core-backed simulator assertion that NewEngine mode does not enter Legacy combat-policy functions, and add real action adapters before claiming gameplay readiness.
+
+NewEngine authority mode is an opt-in development safety gate, not a gameplay-ready configuration. The current registry contains no production class action adapters, and the default Shadow probes are intentionally excluded from NewEngine mode. The default remains Legacy.

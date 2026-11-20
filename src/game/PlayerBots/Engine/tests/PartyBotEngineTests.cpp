@@ -1,4 +1,5 @@
 #include "PartyBotEngine.h"
+#include "ExecutionAuthority.h"
 #include "Value.h"
 #include "ShadowStrategies.h"
 #include "ThreatBudget.h"
@@ -439,6 +440,24 @@ void TestEnginePendingQueuePriorityChannelDeferralPreservesOriginalExpiry()
     assert(expired.expired == 1 && expired.dequeued == 0);
     assert(engine.GetPendingActionCount() == 0);
     assert(order.size() == 1);
+}
+
+void TestExecutionAuthorityModesAreExplicitAndFailSafe()
+{
+    assert(ResolveExecutionAuthorityMode(0) == ExecutionAuthorityMode::Legacy);
+    assert(ResolveExecutionAuthorityMode(1) == ExecutionAuthorityMode::Shadow);
+    assert(ResolveExecutionAuthorityMode(2) == ExecutionAuthorityMode::NewEngine);
+    assert(ResolveExecutionAuthorityMode(-1) == ExecutionAuthorityMode::Legacy);
+    assert(ResolveExecutionAuthorityMode(3) == ExecutionAuthorityMode::Legacy);
+
+    assert(!ShouldEvaluateEngine(ExecutionAuthorityMode::Legacy, false));
+    assert(ShouldEvaluateEngine(ExecutionAuthorityMode::Legacy, true));
+    assert(ShouldEvaluateEngine(ExecutionAuthorityMode::Shadow, false));
+    assert(ShouldEvaluateEngine(ExecutionAuthorityMode::NewEngine, false));
+
+    assert(ShouldRunLegacyPolicy(ExecutionAuthorityMode::Legacy));
+    assert(ShouldRunLegacyPolicy(ExecutionAuthorityMode::Shadow));
+    assert(!ShouldRunLegacyPolicy(ExecutionAuthorityMode::NewEngine));
 }
 
 void TestValueCacheEpochExpiryInvalidationAndTypeSafety()
@@ -2366,6 +2385,7 @@ void TestEncounterTraceBudgetConfigurationIsClampedAndBounded()
 
 }
 int main() {
+    TestExecutionAuthorityModesAreExplicitAndFailSafe();
     TestValueCacheEpochExpiryInvalidationAndTypeSafety();
     TestValueCacheCapacityFailsOpenWithoutEvictingLiveEntries();
     TestCachedValueUsesContextEpochAndExplicitInvalidation();

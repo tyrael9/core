@@ -235,3 +235,14 @@ The tests exercise an action becoming useless after enqueue, a foreign group/map
 
 
 F28 verification: trusted push CI [#44652673352](https://github.com/tyrael9/core/actions/runs/44652673352) reported `PartyBotEngine tests passed`, completed the Linux ARM64 server/realm build and simulator harness checks, and reached the final Core simulator `Runtime PASS`. PR CI [#44652680243](https://github.com/tyrael9/core/actions/runs/44652680243) also passed the build/test path. The full simulator run validates that existing Core lifecycle scenarios still pass with the new reset/clear hooks; the pending queue APIs themselves are exercised by the pure C++ tests and are not yet called from a live New Engine tick loop.
+
+
+## F29 execution authority mode
+
+The runtime exposes three explicit modes through `PlayerBot.EngineAuthority`:
+
+- `0` Legacy: existing behavior and default.
+- `1` Shadow: read-only PartyBotEngine evaluation; Legacy remains the sole executor.
+- `2` NewEngine: exclusive Engine authority. `PartyBotAI::UpdateAI` returns before Legacy follow/healing/combat/class policy. Unknown settings resolve to Legacy.
+
+The old `PlayerBot.EngineShadow` boolean remains a backward-compatible way to enable read-only evaluation while the authority is Legacy. NewEngine forces Engine evaluation, does not register `shadow_*` candidate probes as executable strategy policy, and processes only actual registered Engine work and pending actions. The current repository has no production Core action adapters registered for this mode, so it deliberately does nothing rather than invoking Legacy. Pure C++ tests cover mode selection and the no-Legacy contract. A Core-backed runtime assertion instrumenting actual Legacy entry points remains open.

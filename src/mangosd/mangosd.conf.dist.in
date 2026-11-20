@@ -3195,9 +3195,18 @@ AHBot.itemcount = 50
 #        Values are clamped to 1..1024; zero/negative values become 1.
 #        Default: 256
 #
+#    PlayerBot.EngineAuthority
+#        Selects exactly one PartyBot policy authority.
+#        0 - Legacy (default): run the existing PartyBot AI.
+#        1 - Shadow: evaluate PartyBotEngine read-only, then run Legacy as before.
+#        2 - NewEngine: Engine is exclusive; Legacy policy is not called and
+#            missing/unimplemented Engine behavior remains a no-op (no fallback).
+#        Unknown values safely resolve to Legacy.
+#        Default: 0
+#
 #    PlayerBot.EngineShadow
-#        Builds a same-map party snapshot and evaluates PartyBotEngine without executing actions.
-#        Legacy PartyBot AI remains the only executor while this is enabled.
+#        Backward-compatible opt-in for read-only Engine evaluation while Legacy executes.
+#        EngineAuthority=1 also enables Shadow; EngineAuthority=2 enables exclusive Engine mode.
 #        Enable PlayerBot.DecisionTrace as well to log [PartyBotShadow] summaries.
 #        Default: 0 - off
 #                 1 - on
@@ -3258,6 +3267,7 @@ RandomBot.Refresh = 60000
 PlayerBot.AllowSaving = 0
 PlayerBot.Debug = 0
 PlayerBot.DecisionTrace = 0
+PlayerBot.EngineAuthority = 0
 PlayerBot.EngineShadow = 0
 PlayerBot.EngineEncounterMaxDetailEvents = 1024
 PlayerBot.EngineEncounterMaxImportantEvents = 256

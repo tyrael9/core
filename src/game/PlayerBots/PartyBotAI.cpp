@@ -30,6 +30,7 @@
 #include "Utilities/Random.h"
 #include "Engine/PartySnapshotBuilder.h"
 #include "Engine/ShadowStrategies.h"
+#include "Engine/ExecutionAuthority.h"
 #include "Timer.h"
 
 #include <algorithm>
@@ -53,6 +54,12 @@ enum PartyBotSpells
 
 namespace
 {
+    PartyBotEngine::ExecutionAuthorityMode GetPartyBotExecutionAuthority()
+    {
+        return PartyBotEngine::ResolveExecutionAuthorityMode(
+            sConfig.GetIntDefault("PlayerBot.EngineAuthority", 0));
+    }
+
     bool AdmitPartyEncounterTrace(
         PartyBotEngine::DecisionTrace const& trace, Player const* bot,
         PartyBotEngine::PartyCoordinator& coordinator, uint64 encounterId,
@@ -1278,8 +1285,12 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         m_partyBotEngine.InvalidateDecisionState();
     m_ownerOfflineTimer = 0;
 
-    // Opt-in read-only evaluation; Legacy remains the only action executor.
+    // Legacy remains the default. Shadow evaluates read-only; NewEngine is an
+    // explicit exclusive authority mode and never falls through to Legacy policy.
+    PartyBotEngine::ExecutionAuthorityMode const authority = GetPartyBotExecutionAuthority();
     UpdatePartyBotEngineShadow();
+    if (!PartyBotEngine::ShouldRunLegacyPolicy(authority))
+        return;
 
     // Healers must support the group even when they have not personally entered combat.
     bool const partyInCombat = IsHealerClass(me->GetClass()) && IsPartyInCombat();
@@ -1578,7 +1589,9 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     uint32 const mapId = me->GetMapId();
     uint32 const instanceId = me->GetInstanceId();
     uint32 const nowMs = WorldTimer::getMSTime();
-    bool const enabled = sConfig.GetBoolDefault("PlayerBot.EngineShadow", false);
+    PartyBotEngine::ExecutionAuthorityMode const authority = GetPartyBotExecutionAuthority();
+    bool const enabled = PartyBotEngine::ShouldEvaluateEngine(
+        authority, sConfig.GetBoolDefault("PlayerBot.EngineShadow", false));
     int32 const configuredSettleMs =
         sConfig.GetIntDefault("PlayerBot.EngineEncounterSettleMs", 30000);
     uint32 const settleMs = configuredSettleMs > 0
@@ -1655,7 +1668,11 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         return;
     }
 
-    if (!m_engineShadowStrategiesRegistered)
+    // These strategies intentionally emit candidate-only Shadow observations;
+    // they are not real Engine execution adapters and must never be registered
+    // as NewEngine policy. Exclusive mode starts empty until real adapters exist.
+    if (authority != PartyBotEngine::ExecutionAuthorityMode::NewEngine &&
+        !m_engineShadowStrategiesRegistered)
     {
         PartyBotEngine::RegisterDefaultShadowStrategies(m_partyBotEngine);
         m_engineShadowStrategiesRegistered = true;
@@ -1673,6 +1690,9 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         else
             m_engineShadowTraceMs -= PB_UPDATE_INTERVAL;
     };
+
+    if (authority == PartyBotEngine::ExecutionAuthorityMode::NewEngine)
+        traceStatus("new_engine_authoritative_no_legacy_fallback", 0);
 
     Group* group = me->GetGroup();
     if (!group || group->isBGGroup() || group->GetId() == 0)
@@ -1759,7 +1779,7 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
 
     PartyBotEngine::DecisionContext context(*snapshot, *botSnapshot, *m_partyCoordinator,
                                                nowMs, &m_decisionTrace, nullptr, this);
-    PartyBotEngine::DecisionReport const report = m_partyBotEngine.Evaluate(context);
+    PartyBotEngine::DecisionReport report = m_partyBotEngine.Evaluate(context);
 
     if (m_engineShadowTraceMs <= PB_UPDATE_INTERVAL)
     {
@@ -1902,6 +1922,13 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     else
         m_engineShadowTraceMs -= PB_UPDATE_INTERVAL;
 
+    if (authority == PartyBotEngine::ExecutionAuthorityMode::NewEngine)
+    {
+        // Only real strategies/actions registered by the Engine may run here.
+        // Shadow-only probes are deliberately not registered in this mode.
+        m_partyBotEngine.ExecuteSelected(context, report);
+        m_partyBotEngine.ExecutePendingActions(context);
+    }
 }
 
 void PartyBotAI::UpdateOutOfCombatAI()

@@ -794,9 +794,13 @@ bool CreateSimulatorPlayer(Map& map, uint32 factionId, WorldSession& session, Pl
 class CaptureCoreSpellTerminalListener final : public CoreSpellTerminalListener
 {
 public:
-    void OnCoreSpellTerminal(CoreSpellTerminalEvent const& event) override { events.push_back(event); }
+    void OnCoreSpellTerminal(CoreSpellTerminalEvent const& event) override
+    {
+        events.push_back(event);
+    }
     std::vector<CoreSpellTerminalEvent> events;
 };
+
 class SimulatorCorePlayerHealAction final : public Action
 {
 public:
@@ -1205,10 +1209,11 @@ public:
 
     uint64 OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
                                 uint64 coreTargetGuid, uint64& encounterId,
-                                uint64& traceTargetGuid) override
+                                uint64& traceTargetGuid, bool& engineAction) override
     {
         encounterId = 0;
         traceTargetGuid = 0;
+        engineAction = false;
         // Only the first Spell created by the observed Player::CastSpell call
         // receives the test action ID. Triggered child spells must not inherit it.
         if (m_bound)
@@ -1226,7 +1231,7 @@ public:
     void OnSpellCastFinished(Spell const* /*spell*/, uint64 actionId,
                              uint64 encounterId, uint32 spellId,
                              uint64 targetGuid, bool success,
-                             bool interrupted) override
+                             bool interrupted, bool /*engineAction*/) override
     {
         ++finishCalls;
         finishedActionId = actionId;
@@ -4863,7 +4868,16 @@ public:
             candidate.actionName = "missing_candidate_trace_probe";
             candidate.targetGuid = context.snapshot.members.size() > 1
                 ? context.snapshot.members[1].guid : context.bot.guid;
-            candidate.basbool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
+            candidate.basePriority = 200.0f - static_cast<float>(i) * 10.0f;
+            candidate.channel = ActionChannel::Utility;
+            candidates.push_back(candidate);
+        }
+    }
+private:
+    std::string m_name = "simulator_candidate_trace_overflow";
+};
+
+bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
     uint32 partyFaction = 0, unusedHostileFaction = 0;
@@ -5123,10 +5137,6 @@ public:
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F20 DecisionSummary aggregated the complete executed Core Player heal report and emitted the bounded encounter summary.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PASS: F24 candidate detail cap reported five complete candidates, retained the selected Core heal first after execution, emitted three rows and counted two omitted alternatives.");
-    return true;
-}
-L_MINIMAL,
              "[PartyBotSimulator] PASS: F24 candidate detail cap reported five complete candidates, retained the selected Core heal first after execution, emitted three rows and counted two omitted alternatives.");
     return true;
 }

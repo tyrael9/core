@@ -5122,6 +5122,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
             engine.GetPendingContinuationCount() == 0 && engine.GetPendingActionCount() == 0;
     }
 
+    uint32 const f34ContinuationExecutionCount = continuationExecutionCount;
+
     // F35: generate a second independent Core Spell::finish terminal from
     // the same Player/Engine, then register an AND dependency after both casts
     // have completed. This validates the real terminal-history late-registration
@@ -5240,8 +5242,6 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
             }
         }
     }
-    uint32 const f34ContinuationExecutionCount = continuationExecutionCount;
-
     DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
     std::vector<std::size_t> const candidateDetailIndices =
         SelectPriorityCandidateEvaluationIndices(

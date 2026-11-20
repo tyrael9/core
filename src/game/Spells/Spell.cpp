@@ -5108,8 +5108,9 @@ void Spell::TakeCastItem()
         std::uint64_t const itemGuid = m_CastItem->GetObjectGuid().GetRawValue();
         std::uint32_t const itemEntry = proto->ItemId;
         Item* castItem = m_CastItem;
+        uint32 countToDestroy = 1;
         ClearCastItem();
-        player->DestroyItemCount(castItem, 1, true);
+        player->DestroyItemCount(castItem, countToDestroy, true);
 
         // A surviving stack is still valid after DestroyItemCount; a depleted
         // single item is reported from saved scalar identity only.

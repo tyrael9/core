@@ -78,7 +78,7 @@ private:
                             ActionResult result, char const* reason) const;
     std::shared_ptr<Action> FindAction(std::string const& name) const;
     bool ReleaseContinuation(ActionContinuationQueue::Entry const& entry,
-                             std::uint32_t nowMs) const;
+                             std::uint32_t nowMs, bool& pendingQueueFull) const;
     bool ReleaseReadyActionDependencies(
         std::uint32_t nowMs, ActionCandidate const* registeringCandidate = nullptr) const;
     void RememberCoreSpellTerminal(CoreSpellTerminalEvent const& event) const;

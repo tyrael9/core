@@ -2,6 +2,7 @@
 #define MANGOS_PARTYBOT_DECISION_CONTEXT_H
 #include "PartyCoordinator.h"
 #include "PartySnapshot.h"
+#include "CoreActionRuntime.h"
 namespace PartyBotEngine {
 struct DecisionContext;
 class ActionContinuationSink;
@@ -75,10 +76,12 @@ struct DecisionContext {
                     ReservationTraceSink* traceSink = nullptr,
                     ValueCache* decisionValueCache = nullptr,
                     EngineActionObserver* actionObserver = nullptr,
-                    ActionContinuationSink const* continuationSink = nullptr)
+                    ActionContinuationSink const* continuationSink = nullptr,
+                    CoreActionRuntime* actionRuntime = nullptr)
         : snapshot(partySnapshot), bot(botSnapshot), coordinator(partyCoordinator),
           nowMs(timeMs), reservationTrace(traceSink), valueCache(decisionValueCache),
-          engineActionObserver(actionObserver), continuationSink(continuationSink) {}
+          engineActionObserver(actionObserver), continuationSink(continuationSink),
+          coreActionRuntime(actionRuntime) {}
     PartySnapshot const& snapshot;
     PartyMemberSnapshot const& bot;
     PartyCoordinator& coordinator;
@@ -87,6 +90,8 @@ struct DecisionContext {
     ValueCache* valueCache;
     EngineActionObserver* engineActionObserver;
     ActionContinuationSink const* continuationSink;
+    // Map-thread host resolver. Core object pointers are never stored in snapshots/queues.
+    CoreActionRuntime* coreActionRuntime;
 };
 }
 #endif

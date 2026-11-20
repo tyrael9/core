@@ -24,8 +24,10 @@
 #include "Engine/DecisionTrace.h"
 #include "Engine/PartyBotEngine.h"
 #include "Engine/PartyCoordinator.h"
+#include "Engine/CoreActionRuntime.h"
 
-class PartyBotAI : public CombatBotBaseAI, public PartyBotEngine::EngineActionObserver
+class PartyBotAI : public CombatBotBaseAI, public PartyBotEngine::EngineActionObserver,
+                   public PartyBotEngine::CoreActionRuntime
 {
 public:
 
@@ -74,6 +76,9 @@ public:
     void OnMapLeave(uint32 mapId, uint32 instanceId) final;
     void OnEngineActionEvent(PartyBotEngine::DecisionContext const& context,
                              PartyBotEngine::EngineActionTraceEvent const& event) final;
+    PartyBotEngine::CoreActionResolution ResolveUnitContext(
+        PartyBotEngine::DecisionContext const& context,
+        PartyBotEngine::Guid targetGuid) const final;
     Player* GetPartyLeader() const;
     bool IsPartyInCombat() const;
     bool AttackStart(Unit* pVictim);

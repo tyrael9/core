@@ -10,6 +10,7 @@
 #include "MapManager.h"
 #include "Movement/MotionMaster.h"
 #include "PlayerBots/Engine/Action.h"
+#include "PlayerBots/Engine/CoreAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
@@ -851,13 +852,13 @@ private:
     std::string m_name;
 };
 
-class SimulatorCorePlayerPointMoveAction final : public Action
+class SimulatorCorePlayerPointMoveAction final : public CoreAction
 {
 public:
     SimulatorCorePlayerPointMoveAction(
-        Map& map, uint32 pointId, float arrivalTolerance,
+        uint32 pointId, float arrivalTolerance,
         ActionCandidate continuationCandidate)
-        : m_map(map), m_pointId(pointId), m_arrivalTolerance(arrivalTolerance),
+        : m_pointId(pointId), m_arrivalTolerance(arrivalTolerance),
           m_continuationCandidate(std::move(continuationCandidate)) {}
 
     std::string const& GetName() const override { return m_name; }
@@ -872,10 +873,12 @@ public:
     bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
                     std::string& reason) const override
     {
-        Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
-        Player* mover = unit ? unit->ToPlayer() : nullptr;
-        if (!mover || !mover->IsInWorld() || !mover->IsAlive() ||
-            candidate.targetGuid != context.bot.guid || !candidate.hasDestination ||
+        CoreActionResolution const resolved = context.coreActionRuntime
+            ? context.coreActionRuntime->ResolveUnitContext(context, candidate.targetGuid)
+            : CoreActionResolution();
+        Player* mover = resolved.actor;
+        if (!resolved.IsResolved() || !mover || resolved.target != mover ||
+            !mover->IsAlive() || candidate.targetGuid != context.bot.guid || !candidate.hasDestination ||
             !std::isfinite(candidate.destinationX) ||
             !std::isfinite(candidate.destinationY) ||
             !std::isfinite(candidate.destinationZ) ||
@@ -892,9 +895,11 @@ public:
     bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
                   std::string& reason) const override
     {
-        Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
-        Player* mover = unit ? unit->ToPlayer() : nullptr;
-        if (!mover)
+        CoreActionResolution const resolved = context.coreActionRuntime
+            ? context.coreActionRuntime->ResolveUnitContext(context, candidate.targetGuid)
+            : CoreActionResolution();
+        Player* mover = resolved.actor;
+        if (!resolved.IsResolved() || !mover || resolved.target != mover)
         {
             reason = "simulator_player_point_move_actor_missing";
             return false;
@@ -911,10 +916,10 @@ public:
         return true;
     }
 
-    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    ActionResult ExecuteCore(DecisionContext& context, ActionCandidate const& candidate,
+                             CoreActionResolution const& resolved) override
     {
-        Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
-        Player* mover = unit ? unit->ToPlayer() : nullptr;
+        Player* mover = resolved.actor;
         uint64 const encounterId = context.coordinator.GetEncounterId();
         if (!mover || !candidate.actionId || !encounterId ||
             !context.continuationSink || !candidate.hasDestination)
@@ -947,7 +952,6 @@ public:
     bool DidStartMovement() const { return m_started; }
 
 private:
-    Map& m_map;
     uint32 m_pointId;
     float m_arrivalTolerance;
     ActionCandidate m_continuationCandidate;
@@ -5682,7 +5686,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     movementFollowupCandidate.channel = ActionChannel::Utility;
     std::shared_ptr<SimulatorCorePlayerPointMoveAction> playerPointMoveAction(
         new SimulatorCorePlayerPointMoveAction(
-            map, enginePointId, movementArrivalTolerance, movementFollowupCandidate));
+            enginePointId, movementArrivalTolerance, movementFollowupCandidate));
     bool const playerPointMoveActionRegistered = engine.RegisterAction(playerPointMoveAction);
 
     float const pointDestinationX = healer->GetPositionX() + 3.0f;
@@ -5704,7 +5708,50 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     uint32 const movementNowMs = WorldTimer::getMSTime();
     DecisionContext movementContext(
         snapshot, snapshot.members[0], *coordinator, movementNowMs,
-        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI, &engine);
+        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI, &engine,
+        &engineActionAI);
+    CoreActionResolution const resolvedCoreContext =
+        engineActionAI.ResolveUnitContext(movementContext, healerMember.guid);
+    CoreActionResolution const missingCoreTarget =
+        engineActionAI.ResolveUnitContext(movementContext, 0xFFFFFFFFFFFFFFFFull);
+
+    PartySnapshot staleMapSnapshot = snapshot;
+    ++staleMapSnapshot.mapId;
+    DecisionContext staleMapContext(
+        staleMapSnapshot, staleMapSnapshot.members[0], *coordinator, movementNowMs,
+        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI, &engine,
+        &engineActionAI);
+    CoreActionResolution const staleMapResolution =
+        engineActionAI.ResolveUnitContext(staleMapContext, healerMember.guid);
+
+    PartySnapshot staleInstanceSnapshot = snapshot;
+    ++staleInstanceSnapshot.instanceId;
+    DecisionContext staleInstanceContext(
+        staleInstanceSnapshot, staleInstanceSnapshot.members[0], *coordinator,
+        movementNowMs, &engineActionAI.m_decisionTrace, nullptr,
+        &engineActionAI, &engine, &engineActionAI);
+    CoreActionResolution const staleInstanceResolution =
+        engineActionAI.ResolveUnitContext(staleInstanceContext, healerMember.guid);
+
+    bool const f41CoreActionPreflightPassed =
+        resolvedCoreContext.IsResolved() &&
+        resolvedCoreContext.actor == healer &&
+        resolvedCoreContext.target == healer &&
+        resolvedCoreContext.map == &map &&
+        missingCoreTarget.status == CoreActionResolveStatus::TargetNotFound &&
+        staleMapResolution.status == CoreActionResolveStatus::SnapshotMapMismatch &&
+        staleInstanceResolution.status == CoreActionResolveStatus::SnapshotInstanceMismatch;
+    sLog.Out(LOG_BASIC, f41CoreActionPreflightPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] F41 Core action preflight: resolved=%u selfTarget=%u missingTargetRejected=%u staleMapRejected=%u staleInstanceRejected=%u.",
+             resolvedCoreContext.IsResolved() ? 1u : 0u,
+             resolvedCoreContext.target == healer ? 1u : 0u,
+             missingCoreTarget.status == CoreActionResolveStatus::TargetNotFound ? 1u : 0u,
+             staleMapResolution.status == CoreActionResolveStatus::SnapshotMapMismatch ? 1u : 0u,
+             staleInstanceResolution.status == CoreActionResolveStatus::SnapshotInstanceMismatch ? 1u : 0u);
+    if (f41CoreActionPreflightPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F41 CoreAction required a fresh map-thread actor/target resolution and rejected missing targets plus stale map/instance snapshots before the real movement adapter ran.");
+
     CandidateEvaluation movementEvaluation;
     movementEvaluation.candidate = playerPointMoveCandidate;
     movementEvaluation.status = CandidateStatus::Selected;
@@ -5713,8 +5760,9 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     DecisionReport movementReport;
     movementReport.candidates.push_back(movementEvaluation);
     movementReport.selectedIndices.push_back(0);
-    bool const movementSetupPassed = movementFollowupRegistered &&
-        movementTerminalListenerRegistered && playerPointMoveActionRegistered;
+    bool const movementSetupPassed = f41CoreActionPreflightPassed &&
+        movementFollowupRegistered && movementTerminalListenerRegistered &&
+        playerPointMoveActionRegistered;
     if (movementSetupPassed)
         engine.ExecuteSelected(movementContext, movementReport);
 

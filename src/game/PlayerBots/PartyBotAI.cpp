@@ -17,6 +17,7 @@
 #include "PartyBotAI.h"
 #include "Config/Config.h"
 #include "Player.h"
+#include "Map.h"
 #include "CreatureAI.h"
 #include "MotionMaster.h"
 #include "ObjectMgr.h"
@@ -657,6 +658,99 @@ void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint64 actionId,
         encounterId, sequence,
         m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
         actionId, spellId, targetGuid, success, interrupted);
+}
+
+PartyBotEngine::CoreActionResolution PartyBotAI::ResolveUnitContext(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid) const
+{
+    using namespace PartyBotEngine;
+    CoreActionResolution result;
+    if (!me)
+        return result;
+
+    if (context.bot.guid != me->GetObjectGuid().GetRawValue())
+    {
+        result.status = CoreActionResolveStatus::ActorSnapshotMismatch;
+        result.reason = "core_action_actor_snapshot_guid_mismatch";
+        return result;
+    }
+
+    if (!me->IsInWorld())
+    {
+        result.status = CoreActionResolveStatus::ActorOutOfWorld;
+        result.reason = "core_action_actor_not_in_world";
+        return result;
+    }
+
+    Map* const currentMap = me->GetMap();
+    if (!currentMap)
+    {
+        result.status = CoreActionResolveStatus::MissingMap;
+        result.reason = "core_action_actor_map_missing";
+        return result;
+    }
+
+    if (context.snapshot.mapId != me->GetMapId() ||
+        context.snapshot.mapId != currentMap->GetId() ||
+        context.bot.mapId != context.snapshot.mapId)
+    {
+        result.status = CoreActionResolveStatus::SnapshotMapMismatch;
+        result.reason = "core_action_snapshot_map_mismatch";
+        return result;
+    }
+
+    if (context.snapshot.instanceId != me->GetInstanceId() ||
+        context.snapshot.instanceId != currentMap->GetInstanceId() ||
+        context.bot.instanceId != context.snapshot.instanceId)
+    {
+        result.status = CoreActionResolveStatus::SnapshotInstanceMismatch;
+        result.reason = "core_action_snapshot_instance_mismatch";
+        return result;
+    }
+
+    if (context.coordinator.HasActiveEncounter() &&
+        (context.coordinator.GetEncounterMapId() != context.snapshot.mapId ||
+         context.coordinator.GetEncounterInstanceId() != context.snapshot.instanceId))
+    {
+        result.status = CoreActionResolveStatus::EncounterScopeMismatch;
+        result.reason = "core_action_encounter_scope_mismatch";
+        return result;
+    }
+
+    Unit* target = nullptr;
+    if (targetGuid)
+    {
+        target = currentMap->GetUnit(ObjectGuid(targetGuid));
+        if (!target)
+        {
+            result.status = CoreActionResolveStatus::TargetNotFound;
+            result.reason = "core_action_target_not_found_on_actor_map";
+            return result;
+        }
+
+        if (!target->IsInWorld() || target->GetMap() != currentMap ||
+            target->GetMapId() != context.snapshot.mapId)
+        {
+            result.status = CoreActionResolveStatus::TargetMapMismatch;
+            result.reason = "core_action_target_map_mismatch";
+            return result;
+        }
+
+        if (target->GetInstanceId() != context.snapshot.instanceId)
+        {
+            result.status = CoreActionResolveStatus::TargetInstanceMismatch;
+            result.reason = "core_action_target_instance_mismatch";
+            return result;
+        }
+    }
+
+    result.status = CoreActionResolveStatus::Resolved;
+    result.actor = me;
+    result.target = target;
+    result.map = currentMap;
+    result.reason = "core_action_context_resolved";
+    return result;
 }
 
 void PartyBotAI::OnPointMovementResult(uint64 actionId, uint64 encounterId,
@@ -1851,7 +1945,8 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     }
 
     PartyBotEngine::DecisionContext context(*snapshot, *botSnapshot, *m_partyCoordinator,
-                                               nowMs, &m_decisionTrace, nullptr, this);
+                                               nowMs, &m_decisionTrace, nullptr, this,
+                                               &m_partyBotEngine, this);
     PartyBotEngine::DecisionReport report = m_partyBotEngine.Evaluate(context);
     if (authority == PartyBotEngine::ExecutionAuthorityMode::NewEngine)
         m_partyBotEngine.ExecuteDecisionCycle(context, report);

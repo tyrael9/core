@@ -98,7 +98,9 @@ void PartyBotEngine::RememberActionResult(ActionResultEvent const& event) const 
 }
 
 bool PartyBotEngine::ReleaseContinuation(
-    ActionContinuationQueue::Entry const& entry, std::uint32_t nowMs) const {
+    ActionContinuationQueue::Entry const& entry, std::uint32_t nowMs,
+    bool& pendingQueueFull) const {
+    pendingQueueFull = false;
     if (ActionContinuationQueue::IsExpired(nowMs, entry.expiresAtMs))
         return false;
     std::uint32_t const remainingMs = entry.expiresAtMs - nowMs;
@@ -113,6 +115,7 @@ bool PartyBotEngine::ReleaseContinuation(
     std::uint32_t const boundedLifetimeMs = std::min(remainingMs, actionLifetimeMs);
     PendingActionEnqueueResult const result = m_pendingActionQueue.Enqueue(
         entry.candidate, nowMs, boundedLifetimeMs, entry.context);
+    pendingQueueFull = result == PendingActionEnqueueResult::Full;
     return result == PendingActionEnqueueResult::Queued ||
         result == PendingActionEnqueueResult::UpdatedExisting;
 }
@@ -134,7 +137,10 @@ bool PartyBotEngine::ReleaseReadyActionDependencies(
                  left.destinationZ == right.destinationZ));
     };
     for (ActionContinuationQueue::Entry const& entry : ready) {
-        bool const released = ReleaseContinuation(entry, nowMs);
+        bool pendingQueueFull = false;
+        bool const released = ReleaseContinuation(entry, nowMs, pendingQueueFull);
+        if (!released && pendingQueueFull)
+            m_actionContinuationQueue.RestoreReady(entry, nowMs);
         if (released && registeringCandidate &&
             sameIdentity(entry.candidate, *registeringCandidate))
             registeringCandidateReleased = true;
@@ -607,6 +613,10 @@ PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
             summary.completedCandidates.push_back(evaluation);
         }
     }
+
+    // Dispatching or deferring work above may have freed pending-queue slots.
+    // Retry continuations that were already terminal but previously backpressured.
+    ReleaseReadyActionDependencies(executionContext.nowMs);
     return summary;
 }
 

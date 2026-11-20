@@ -421,7 +421,7 @@ The runtime emitted exactly one `event=damage_taken` for the lethal Player hit: 
 The fixture tests a different-map-ID dungeon transfer (`33 → 34`) because vMaNGOS rejects a Group entering another instance for a dungeon map ID while the old GroupBind is still active. It does not claim to exhaust every teleport/instance-script path.
 
 
-## F28 — Engine-owned pending-action lifecycle and fresh dequeue revalidation (CI pending)
+## F28 — Engine-owned pending-action lifecycle and fresh dequeue revalidation (pure/ARM64 CI passed)
 
 - [x] Move the bounded PendingActionQueue into each PartyBotEngine. Actions remain immediate-only by default; a concrete action must override GetPendingLifetimeMs with a positive TTL no greater than (2^31)-1 ms before it can be queued.
 - [x] Add QueuePendingAction and QueueSelectedActions APIs. Enqueue validates that the action is registered and currently eligible, copies only scalar/string/GUID candidate data, and records the owning group, map, instance, bot, encounter ID and encounter-active state.
@@ -429,7 +429,8 @@ The fixture tests a different-map-ID dungeon transfer (`33 → 34`) because vMaN
 - [x] Same-channel losers and candidates whose threat budget is temporarily unknown/exceeded are requeued with their original FIFO ordinal and unchanged expiry. Invalid, ineligible or foreign-context entries are dropped; expiry remains wrap-safe and bounded.
 - [x] ResetDecisionState clears pending events. Encounter start/end, Map::Remove teardown, party/map/instance replacement, owner teardown and server shutdown reach the reset/clear paths. Ordinary InvalidateDecisionState retains pending entries for fresh revalidation on the next tick.
 - [x] Add pure regressions for eligibility changes between enqueue/dequeue, foreign group/map/instance identity, channel deferral, immutable TTL, and teardown clearing.
-- [ ] Run the pure suite, full Linux ARM64 build and trusted fixture-backed simulator CI.
+- [x] Push CI [#44652673352](https://github.com/tyrael9/core/actions/runs/44652673352) passed `PartyBotEngine tests passed`, read-only report collector tests, the full Linux ARM64 server/realm build, simulator harness syntax, fixture-backed Core simulator and final `Runtime PASS`. The fixture-backed runtime confirms existing Stage F/Core lifecycle regressions remain intact with the queue reset hooks; it does not invoke `QueuePendingAction` / `ExecutePendingActions` as live gameplay APIs.
+- [x] PR CI [#44652680243](https://github.com/tyrael9/core/actions/runs/44652680243) passed the pure suite, report collector tests, full Linux ARM64 server/realm build and simulator harness syntax. Fixture-backed runtime remains push-only.
 - [ ] Keep PartyBotAI's current Shadow/Legacy runtime read-only. The new pending APIs are groundwork; they are not yet called by a New Engine authority mode.
 
 The queue integration does not add class rotations, Legacy fallback, production New Engine execution, database changes, merge, image publication or deployment.

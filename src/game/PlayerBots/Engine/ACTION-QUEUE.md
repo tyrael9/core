@@ -72,3 +72,8 @@ Still required:
 - prerequisite/alternative/continuer/result-listener semantics;
 - fairness/starvation policy and queue-specific trace records;
 - Core-backed runtime scenarios for every newly integrated action path.
+
+
+## F28 verification boundary
+
+The Engine-owned queue API and pure regressions passed trusted push CI [#44652673352](https://github.com/tyrael9/core/actions/runs/44652673352), including the existing fixture-backed Vanilla 5875 simulator and final `Runtime PASS`. PR CI [#44652680243](https://github.com/tyrael9/core/actions/runs/44652680243) passed the full ARM64 build and pure test suite. The Core simulator validates lifecycle hook compatibility only; it does not yet exercise pending queue APIs as active gameplay because the New Engine tick/authority loop has not been wired.

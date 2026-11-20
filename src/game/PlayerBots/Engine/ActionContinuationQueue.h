@@ -44,6 +44,9 @@ public:
             return ActionContinuationEnqueueResult::Invalid;
 
         PruneExpired(nowMs);
+        if (WasRecentlySettled(request, context))
+            return ActionContinuationEnqueueResult::DuplicateParent;
+
         if (request.alternativeGroupId)
         {
             std::size_t branchCount = 0;
@@ -170,12 +173,14 @@ public:
                 }
                 if (rejected)
                 {
+                    RememberSettled(entry);
                     m_entries.erase(m_entries.begin() + i);
                     ++removed;
                     continue;
                 }
                 if (allSatisfied)
                 {
+                    RememberSettled(entry);
                     ready.push_back(entry);
                     m_entries.erase(m_entries.begin() + i);
                     ++removed;
@@ -227,6 +232,9 @@ public:
                      branch.ordinal < m_entries[winner].ordinal))
                     winner = index;
             }
+            // The group ID is single-use in this context, whether a
+            // winner exists or every branch was rejected.
+            RememberSettled(entry);
             if (winner != m_entries.size())
                 ready.push_back(m_entries[winner]);
 
@@ -255,6 +263,21 @@ public:
                           entry.request.alternativeGroupId) == expiredGroups.end())
                 expiredGroups.push_back(entry.request.alternativeGroupId);
 
+        // Remember the entire alternative group before erasing it. One
+        // branch expiring cancels every sibling and permanently settles the
+        // group ID for this context.
+        for (std::uint64_t groupId : expiredGroups)
+            for (Entry const& entry : m_entries)
+                if (entry.request.alternativeGroupId == groupId) {
+                    RememberSettled(entry);
+                    break;
+                }
+
+        // Non-alternative entries settle independently on expiry.
+        for (Entry const& entry : m_entries)
+            if (!entry.request.alternativeGroupId && IsExpired(nowMs, entry.expiresAtMs))
+                RememberSettled(entry);
+
         std::size_t const previousSize = m_entries.size();
         m_entries.erase(std::remove_if(m_entries.begin(), m_entries.end(),
             [nowMs, &expiredGroups](Entry const& entry) {
@@ -272,6 +295,7 @@ public:
     void Clear()
     {
         m_entries.clear();
+        m_recentlySettled.clear();
         m_nextOrdinal = 0;
     }
 
@@ -289,6 +313,44 @@ public:
     }
 
 private:
+    struct SettledDependency
+    {
+        ActionDependencyRequest request;
+        PendingActionQueue::Context context;
+    };
+
+    static std::size_t const RecentSettledCapacity = 128;
+
+    bool WasRecentlySettled(
+        ActionDependencyRequest const& request,
+        PendingActionQueue::Context const& context) const
+    {
+        for (SettledDependency const& settled : m_recentlySettled) {
+            if (!SameContext(settled.context, context))
+                continue;
+            if (request.alternativeGroupId) {
+                if (settled.request.alternativeGroupId == request.alternativeGroupId)
+                    return true;
+            } else if (!settled.request.alternativeGroupId &&
+                       SamePrerequisites(settled.request.prerequisites,
+                                         request.prerequisites))
+                return true;
+        }
+        return false;
+    }
+
+    void RememberSettled(Entry const& entry)
+    {
+        if (WasRecentlySettled(entry.request, entry.context))
+            return;
+        if (m_recentlySettled.size() >= RecentSettledCapacity)
+            m_recentlySettled.erase(m_recentlySettled.begin());
+        SettledDependency settled;
+        settled.request = entry.request;
+        settled.context = entry.context;
+        m_recentlySettled.push_back(std::move(settled));
+    }
+
     static bool SameContext(PendingActionQueue::Context const& left,
                             PendingActionQueue::Context const& right)
     {
@@ -385,6 +447,7 @@ private:
     }
 
     std::vector<Entry> m_entries;
+    std::vector<SettledDependency> m_recentlySettled;
     std::uint64_t m_nextOrdinal = 0;
 };
 } // namespace PartyBotEngine

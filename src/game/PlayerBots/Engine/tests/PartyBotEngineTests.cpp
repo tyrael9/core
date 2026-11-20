@@ -1506,6 +1506,105 @@ void TestPointMovementTerminalDependencyUsesCorrelationStatusAndHistory()
         assert(child->executeCount == 0);
     }
 }
+void TestItemUseTerminalDependencyUsesCorrelationStatusAndHistory()
+{
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("item_use_success_followup");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+
+        ItemUseTerminalEvent terminal;
+        terminal.actionId = 8804;
+        terminal.encounterId = f.coordinator.GetEncounterId();
+        terminal.itemUseId = 9001;
+        terminal.actorGuid = f.bot.guid;
+        terminal.status = ItemUseAggregateStatus::AllSucceeded;
+        terminal.occurredAtMs = 1100;
+        engine.NotifyItemUseTerminal(terminal);
+
+        ActionDependencyRequest request;
+        request.lifetimeMs = 1200;
+        ActionDependencyPrerequisite prerequisite;
+        prerequisite.source = ActionDependencyEventSource::ItemUseTerminal;
+        prerequisite.actionId = terminal.actionId;
+        prerequisite.encounterId = terminal.encounterId;
+        prerequisite.itemUseId = terminal.itemUseId;
+        prerequisite.requiredItemUseStatus = ItemUseAggregateStatus::AllSucceeded;
+        request.prerequisites.push_back(prerequisite);
+
+        ActionCandidate continuation = Candidate(
+            "item_use_success_followup", 25.0f, ActionChannel::Utility);
+        continuation.finalPriority = 25.0f;
+        DecisionContext lateContext(
+            f.snapshot, f.bot, f.coordinator, terminal.occurredAtMs + 1);
+        assert(engine.QueueActionDependency(lateContext, request, continuation) ==
+               ActionContinuationEnqueueResult::ReleasedImmediately);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 1);
+
+        DecisionContext nextTick(
+            f.snapshot, f.bot, f.coordinator, terminal.occurredAtMs + 2);
+        PendingActionDispatchSummary const dispatched =
+            engine.ExecutePendingActions(nextTick);
+        assert(dispatched.selected == 1 && dispatched.executed == 1);
+        assert(child->executeCount == 1);
+    }
+
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("item_use_failure_followup");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+
+        ActionDependencyRequest request;
+        request.lifetimeMs = 1200;
+        ActionDependencyPrerequisite prerequisite;
+        prerequisite.source = ActionDependencyEventSource::ItemUseTerminal;
+        prerequisite.actionId = 8805;
+        prerequisite.encounterId = f.coordinator.GetEncounterId();
+        prerequisite.itemUseId = 9002;
+        prerequisite.requiredItemUseStatus = ItemUseAggregateStatus::AllSucceeded;
+        request.prerequisites.push_back(prerequisite);
+        ActionCandidate continuation = Candidate(
+            "item_use_failure_followup", 25.0f, ActionChannel::Utility);
+        continuation.finalPriority = 25.0f;
+        assert(engine.QueueActionDependency(f.context, request, continuation) ==
+               ActionContinuationEnqueueResult::Queued);
+        assert(engine.GetPendingContinuationCount() == 1);
+
+        // Same action/encounter but another itemUseId must not satisfy this
+        // continuation. A matching root with a failed aggregate must reject it.
+        ItemUseTerminalEvent unrelated;
+        unrelated.actionId = prerequisite.actionId;
+        unrelated.encounterId = prerequisite.encounterId;
+        unrelated.itemUseId = 9003;
+        unrelated.status = ItemUseAggregateStatus::AllSucceeded;
+        unrelated.occurredAtMs = 1100;
+        engine.NotifyItemUseTerminal(unrelated);
+        assert(engine.GetPendingContinuationCount() == 1);
+        assert(engine.GetPendingActionCount() == 0);
+
+        ItemUseTerminalEvent failed;
+        failed.actionId = prerequisite.actionId;
+        failed.encounterId = prerequisite.encounterId;
+        failed.itemUseId = prerequisite.itemUseId;
+        failed.status = ItemUseAggregateStatus::AllFailed;
+        failed.occurredAtMs = 1101;
+        engine.NotifyItemUseTerminal(failed);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 0);
+
+        DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1102);
+        engine.ExecutePendingActions(nextTick);
+        assert(child->executeCount == 0);
+    }
+}
+
 void TestFailedActionResultRejectsMixedDependency()
 {
     Fixture f;
@@ -4503,6 +4602,7 @@ int main() {
     TestActionResultAndCoreSpellPrerequisitesAreDistinctAndAnded();
     TestLateActionResultDependencyRegistrationUsesRecentEventHistory();
     TestPointMovementTerminalDependencyUsesCorrelationStatusAndHistory();
+    TestItemUseTerminalDependencyUsesCorrelationStatusAndHistory();
     TestFailedActionResultRejectsMixedDependency();
     TestActionDependenciesRequireAllAndPrerequisites();
     TestLateDependencyRegistrationUsesLatestTerminalAndWrapSafeTime();

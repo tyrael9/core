@@ -12,17 +12,16 @@ Runtime authority is explicit:
 - `PlayerBot.EngineAuthority = 1`: Shadow observation; Legacy remains the only executor.
 - `PlayerBot.EngineAuthority = 2`: NewEngine exclusive authority. Legacy class/role/combat policy is bypassed; absent Engine actions are deliberate no-ops, never a Legacy fallback.
 
-Implemented foundations include value-only same-map party snapshots, per-bot value cache and trigger scheduling, coordinator reservations, immediate and pending queues, the NewEngine decision-cycle boundary, bounded synchronous ActionResult and Core Spell terminal listeners, typed AND/alternative dependencies, idempotency tombstones, continuation dispatch, queue starvation resistance and ready-backlog preservation under full-queue pressure (F28–F38).
+Implemented foundations include value-only same-map party snapshots, per-bot value cache and trigger scheduling, coordinator reservations, immediate and pending queues, the NewEngine decision-cycle boundary, bounded synchronous ActionResult and Core Spell terminal listeners, typed AND/alternative dependencies, idempotency tombstones, continuation dispatch, queue starvation resistance and ready-backlog preservation under full-queue pressure (F28–F38). F39 adds a typed, action/encounter-correlated Player point-movement terminal source with destination verification and continuation integration.
 
-F39 is currently an API-semantics audit: legacy PointMovementGenerator finalization callbacks also run on forced cleanup, so `MovementInform(POINT_MOTION_TYPE, id)` alone is not a successful-arrival signal. Typed movement terminal events still need implementation. Item-use terminal semantics are also unaudited.
+Item-use terminal semantics are still unaudited. The movement result seam does not constitute a production movement policy or class/role adapter.
 
 **Critical limit:** NewEngine currently has no production class/role Core action adapters registered. The exclusive mode and generic dispatch mechanisms are verified, but meaningful NewEngine gameplay is not available. The default remains Legacy.
 
 ## Validation snapshot
 
-- Full trusted push CI [#44716873212](https://github.com/tyrael9/core/actions/runs/44716873212) passed on source-code head `08d06610d2e042fc62963a9677d7ed481dc501ac`: pure PartyBotEngine tests, read-only report collector tests, Linux ARM64 Vanilla 5875 `mangosd` + `realmd` build, simulator harness checks, full fixture-backed Core simulator and final `Runtime PASS`. The run uploaded the simulator log artifact.
-- Current branch head `e2ed0247e586b48d545e1eb189a8529d3a5b024b` contains documentation-only changes after that code head; it does not change the tested C++ source.
-- Latest head docs-only push CI [#44718136178](https://github.com/tyrael9/core/actions/runs/44718136178) and PR CI [#44718146532](https://github.com/tyrael9/core/actions/runs/44718146532) passed the documentation path. Their ARM64 build and fixture runtime were intentionally skipped; do not interpret them as new full simulator runs.
+- Full trusted push CI [#44795113292](https://github.com/tyrael9/core/actions/runs/44795113292) passed on source-code head `7401404cbb06aaa9ea93a4e0377d6fc1ae0ab816`: pure PartyBotEngine tests, read-only report collector tests, Linux ARM64 Vanilla 5875 mangosd + realmd build, simulator harness checks and the full fixture-backed Core simulator. The runtime log includes the F39 movement terminal PASS marker and final Runtime PASS; artifact partybot-simulator-7401404cbb06aaa9ea93a4e0377d6fc1ae0ab816 was uploaded.
+- PR CI [#44795123687](https://github.com/tyrael9/core/actions/runs/44795123687) passed pure tests and Linux ARM64 build. The simulator runtime was intentionally skipped because PR jobs do not receive fixture secrets.
 - PR #1 remains Draft. No image was published and no Oracle deployment or live-realm test was performed by these CI runs.
 
 ## Phase status
@@ -31,7 +30,7 @@ F39 is currently an API-semantics audit: legacy PointMovementGenerator finalizat
 - **Phase 2:** decision-engine foundation, cache/scheduler lifecycle hooks and queue primitives are implemented.
 - **Phase 2.5:** extensive fixture-backed tests exercise real Core combat, spell, threat, Group, death/recovery, movement/follow and map-transfer behavior. This is test infrastructure, not a complete autonomous encounter simulator.
 - **Phase 3:** encounter trace and local read-only report collector are implemented; detailed AI state, some trace coverage, cross-map closure and deployment-diagnostics integration remain open.
-- **Phase 4:** F29–F38 establish exclusive NewEngine authority, decision-cycle dispatch and async dependency infrastructure. F39 is the movement-terminal audit. The production action executor and action adapters remain the major gate.
+- **Phase 4:** F29–F39 establish exclusive NewEngine authority, decision-cycle dispatch and typed async dependency sources including correlated Player point-movement terminals. The production action executor and class/role action adapters remain the major gate.
 - **Phases 5–8:** generic behavior state machine, class/role library, full party coordination and dungeon/raid encounter strategies remain future work.
 
 ## Design documents

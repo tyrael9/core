@@ -5311,6 +5311,7 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
     auto const savedFirstSpell = mutablePotionPrototype->Spells[spellSlot];
     auto const savedSecondSpell = mutablePotionPrototype->Spells[
         multiSpellSlot < MAX_ITEM_PROTO_SPELLS ? multiSpellSlot : spellSlot];
+    uint32 const savedPotionStackable = mutablePotionPrototype->Stackable;
 
     bool multiSlotFixturePassed = false;
     std::uint64_t multiRootId = 0;
@@ -5323,6 +5324,9 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
 
     if (multiSpellSlot < MAX_ITEM_PROTO_SPELLS)
     {
+        // Core persists finite spell charges on non-stackable items. Make this
+        // disposable one-count fixture exercise that real mutation path.
+        mutablePotionPrototype->Stackable = 1;
         mutablePotionPrototype->Spells[spellSlot].SpellCharges = 2;
         mutablePotionPrototype->Spells[multiSpellSlot] =
             mutablePotionPrototype->Spells[spellSlot];
@@ -5426,8 +5430,10 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
     }
 
     mutablePotionPrototype->Spells[spellSlot] = savedFirstSpell;
-    if (multiSpellSlot < MAX_ITEM_PROTO_SPELLS)
+    if (multiSpellSlot < MAX_ITEM_PROTO_SPELLS) {
         mutablePotionPrototype->Spells[multiSpellSlot] = savedSecondSpell;
+        mutablePotionPrototype->Stackable = savedPotionStackable;
+    }
 
     bool const passed = successfulUse && rejectedWithoutConsumption &&
         successfulAggregate && rejectedAggregate &&

@@ -287,12 +287,12 @@ if [[ "$f22_damage_count" != "1" ]]; then
 fi
 engine_action_attempt_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=engine_action_attempt .*action=core_player_heal([[:space:]]|$)' "$LOG_FILE" || true)"
 engine_action_result_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=engine_action_result .*action=core_player_heal .*attempted=1 result=success reason=adapter_returned_success([^[:alnum:]_]|$)' "$LOG_FILE" || true)"
-if [[ "$engine_action_attempt_count" != "1" || "$engine_action_result_count" != "1" ]]; then
-    echo "[PartyBotSimulator] Expected exactly one Core Player heal adapter attempt/result pair, found attempts=$engine_action_attempt_count results=$engine_action_result_count." | tee -a "$LOG_FILE"
+if [[ "$engine_action_attempt_count" != "2" || "$engine_action_result_count" != "2" ]]; then
+    echo "[PartyBotSimulator] Expected exactly two Core Player heal adapter attempt/result pairs (F34 + F35), found attempts=$engine_action_attempt_count results=$engine_action_result_count." | tee -a "$LOG_FILE"
     exit 1
 fi
-engine_action_attempt_line="$(grep -E '\[PartyBotEngineTrace\].*event=engine_action_attempt .*action=core_player_heal([[:space:]]|$)' "$LOG_FILE" | tail -n 1)"
-engine_action_result_line="$(grep -E '\[PartyBotEngineTrace\].*event=engine_action_result .*action=core_player_heal .*attempted=1 result=success reason=adapter_returned_success([^[:alnum:]_]|$)' "$LOG_FILE" | tail -n 1)"
+engine_action_attempt_line="$(grep -E '\[PartyBotEngineTrace\].*event=engine_action_attempt .*action=core_player_heal([[:space:]]|$)' "$LOG_FILE" | head -n 1)"
+engine_action_result_line="$(grep -E '\[PartyBotEngineTrace\].*event=engine_action_result .*action=core_player_heal .*attempted=1 result=success reason=adapter_returned_success([^[:alnum:]_]|$)' "$LOG_FILE" | head -n 1)"
 engine_action_attempt_id="$(printf '%s\n' "$engine_action_attempt_line" | grep -Eo 'action_id=[0-9]+' | cut -d= -f2)"
 engine_action_result_id="$(printf '%s\n' "$engine_action_result_line" | grep -Eo 'action_id=[0-9]+' | cut -d= -f2)"
 engine_action_attempt_encounter="$(printf '%s\n' "$engine_action_attempt_line" | grep -Eo 'encounter_id=[0-9]+' | cut -d= -f2)"

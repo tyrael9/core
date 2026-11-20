@@ -35,6 +35,14 @@ The runtime exposes three explicit values through `PlayerBot.EngineAuthority`:
 
 The trusted Core fixture for F29 invokes the real `PartyBotAI::UpdateAI` under a per-instance NewEngine override and requires one Engine decision cycle, zero Shadow probe strategies, zero Legacy policy entries/dispatches and a valid coordinator. This proves authority isolation and deliberate no-op behavior, not gameplay readiness.
 
+## F41 CoreAction resolver and context-copy regression
+
+The standalone C++14 suite uses a fake `CoreActionRuntime` and a concrete test `CoreAction`. It proves the resolver remains present in Engine-created contexts for candidate evaluation, immediate execution, pending enqueue/revalidation and pending execution. The test action succeeds only after the final CoreAction wrapper receives a resolved actor/target/map; the pending action executes only after fresh eligibility checks and final Core resolution.
+
+The real Core simulator preflight requires `resolved=1 selfTarget=1 missingTargetRejected=1 staleMapRejected=1 staleInstanceRejected=1`. Trusted push CI [#44821298517](https://github.com/tyrael9/core/actions/runs/44821298517) passed the fixture-backed simulator through final `Runtime PASS`; artifact [partybot-simulator-1fe34c9](https://github.com/tyrael9/core/actions/runs/44821298517/artifacts/14672696314). The added pure resolver-propagation regression passed PR CI [#44822853602](https://github.com/tyrael9/core/actions/runs/44822853602); the matching trusted push run is validating the same test plus full runtime.
+
+This validates the generic resolver seam and context transport only. It is not a registered production combat action and does not replace per-adapter Core acceptance/rejection tests or live-realm/in-game testing.
+
 ## Current encounter trace evidence and open gates
 
 The structured encounter stream now includes encounter boundaries/IDs/sequences, party snapshots and Core threat references, sampled Trigger and candidate details, target changes, Engine threat-reservation outcomes, action-attempt/ActionResult/Core Spell terminal correlation, Player damage records, bot alive-state records, ordinary Group-member sampled health/death/resurrection, a shared detail/important-event budget, terminal/overflow handling and shutdown flush. The local read-only report collector is implemented and unit-tested.

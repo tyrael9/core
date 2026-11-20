@@ -266,6 +266,7 @@ Implemented and fixture/pure-test supported:
 - Deterministic candidate evaluation, Possible/Useful checks, multiplier composition, channel arbitration and bounded immediate/pending dispatch.
 - NewEngine-only `ExecuteDecisionCycle` with a shared immediate/pending budget, fresh pending revalidation and no Legacy fallback.
 - Bounded ActionResult and Core Spell terminal listeners; F34 continuations; F35 typed AND/alternative dependencies; F36 ActionResult source isolation; F37 tombstones; F38 ready-backlog preservation under a full pending queue.
+- F39 typed Player point-movement terminal results; F40 item-use lifecycle audit and one real Core potion fixture; F41 final CoreAction wrapper plus fresh map-thread actor/target/map/instance resolution and pure context-copy propagation regression.
 - Core-backed simulator scenarios for attacks, Player spell execution, threat, range/LOS/resource failures, PointMovementGenerator/Follow, five-Player Group snapshots, death/recovery, map transfer and trace behavior.
 - Encounter IDs/sequences, bounded shared trace budgets, target/threat/cast/alive/health observations, shutdown flush and local read-only report collector.
 
@@ -273,7 +274,7 @@ Not yet implemented / still gated:
 
 - A production vMaNGOS action executor with audited generic, class and role adapters.
 - Uniform immediate pre-execution validation of target identity/state, map/instance, range, LOS, spell, resource and cooldown for each action.
-- Typed Player point-movement terminal results are implemented for the opt-in `MovePointForEngine` path (F39); legacy `MovePoint`/`MovementInform` semantics are unchanged. F40 audited item-use fan-out and consumption timing; a typed item-use aggregate source remains open.
+- F39's typed Player point-movement terminal is implemented only for the opt-in `MovePointForEngine` path; legacy `MovePoint`/`MovementInform` semantics are unchanged. F40 audited item-use fan-out and consumption timing and verified one real potion use; the typed multi-spell aggregate source remains open. F41 provides the CoreAction identity/lifetime gate, but production adapters and action-specific final safety checks are still not implemented.
 - Full generic bot state machine, class/role strategies, shared party policy and encounter mechanics.
 - Remaining trace coverage: richer AI state/boss selection, broader arbitration alternatives, ordinary party-member per-hit health deltas, cross-map closure and deployment diagnostics integration.
 
@@ -281,8 +282,8 @@ Current NewEngine is an exclusive, empty-policy development path. It is not a pl
 
 ## 18. Immediate next implementation sequence
 
-1. Add a typed, correlation-safe movement terminal callback that distinguishes natural spline completion from forced finalization and validates actual destination arrival.
-2. Test natural arrival, early cancellation/forced cleanup, destination mismatch and callback/queue teardown through pure regressions and a real Core simulator fixture.
-3. Audit item-use terminal semantics before adding an item result source.
-4. Implement the production Core executor boundary and common final pre-execution validation.
-5. Register a small, audited generic action set; then grow the state machine and class/role policies behind the exclusive NewEngine authority.
+1. **F42 — implement the typed item-use aggregate.** Preserve one root request identity, the actual ON_USE child-Spell fan-out and independent item charge/count/destruction mutations. The F40 source audit is consolidated in `ITEM-USE-AGGREGATE.md`; do not equate one child Spell terminal with root success or item consumption.
+2. Extend the Core fixture to cover a multi-slot item, skipped/invalid slots, synchronous child completion before dispatch closes, delayed child completion and cancellation before/after item mutation. Keep the existing single-potion/zero-charge fixture as a baseline.
+3. **F43 — complete the production executor contract.** Build on F41's final CoreAction/map-thread resolver with common live target/map/instance and action-specific range, LOS, spell ownership, resource, cooldown, movement and control-state validation immediately before Core side effects.
+4. Register a small audited generic action set with exact accepted/rejected/terminal Core tests; only then expand generic state-machine behavior and class/role policies under exclusive NewEngine authority.
+5. Keep Legacy as default until the production policy/action library and in-game validation establish functional coverage.

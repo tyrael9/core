@@ -2,7 +2,7 @@
 
 ## Scope and current status (2026-11-20)
 
-The generic dispatch infrastructure is implemented through F38 and is called from the explicit NewEngine decision-cycle boundary. This does **not** mean production gameplay actions are registered: there are currently no production class/role Core adapters, and the default runtime authority remains Legacy.
+The bounded dispatch/dependency mechanics are implemented through F38, F39 adds the typed movement terminal source, F40 completes the item-use source audit, and F41 adds the final CoreAction resolver gate. This does **not** mean production gameplay actions are registered: there are currently no production class/role Core adapters, and the default runtime authority remains Legacy.
 
 The design has two different queue lifetimes:
 
@@ -39,6 +39,14 @@ Implemented in `ActionQueue.h`, owned by each `PartyBotEngine`, and dispatched b
 - Lifecycle resets on encounter boundary, map/party/instance replacement and shutdown clear pending work. Ordinary value/trigger invalidation preserves it for fresh next-tick revalidation.
 - `ExecuteDecisionCycle` dispatches immediate actions first, reserves channels they consume, and shares one eight-action ceiling across immediate and pending work. Pending threat impact is accumulated across selected actions rather than assessed independently.
 
+## Core-facing action boundary (F41)
+
+Production actions that mutate Core state must derive from `CoreAction`. Its final `Execute` wrapper rejects a missing action ID or resolver, asks the current map-thread `CoreActionRuntime` to resolve the bot and candidate target, and refuses to enter `ExecuteCore` unless actor/map and any required target are resolved. PartyBotAI's resolver checks current actor identity, world/map ownership, snapshot map and instance, encounter scope and target presence on that same map.
+
+The resolved `Player*`, `Unit*` and `Map*` are synchronous borrowed pointers. They may be used only inside `ExecuteCore`; never copy them into a candidate, snapshot, pending entry, continuation, observer event or member retained after return. Pending actions carry GUID/scalar identity and resolve again at dequeue/execution time.
+
+F41 is only the common identity/lifetime boundary. Each action still owns its last-moment checks for target alive/hostile/friendly state, spell ownership and cast result, range, LOS, power/items, cooldown/GCD and movement/control state. Those checks must be adjacent to the Core side effect. The production action registry remains empty until each adapter has an acceptance/rejection fixture.
+
 ## Continuations and typed dependencies (F34–F38)
 
 The bounded continuation queue contains only value data and is keyed by parent action and encounter/owner identity. A child is never executed inside a Core Spell callback; a successful match releases it into the normal PendingActionQueue for a later dispatch and fresh revalidation.
@@ -48,6 +56,8 @@ Supported prerequisite/result sources:
 - `CoreSpellTerminal`: a value-only event from the root Core Spell lifecycle, correlated by action ID, encounter, target, spell and Succeeded/Failed/Interrupted status.
 - `ActionResult`: the synchronous Engine dispatcher/adapter result, independently correlated and matched by action identity, optional target/spell, result and attempted flag. A Core Spell terminal cannot satisfy this source.
 - `PointMovementTerminal`: a value-only terminal from the opt-in Engine Player point-movement path, correlated by action, encounter, mover GUID and point ID, with Reached/Interrupted/Failed status.
+
+F40 audited item-use fan-out and mutation timing, but there is not yet an `ItemUseTerminal` aggregate source. One request can produce multiple Spell children, and charge/count mutation is separate from each child's terminal. See `ITEM-USE-AGGREGATE.md` before implementing this source.
 
 Dependency semantics:
 

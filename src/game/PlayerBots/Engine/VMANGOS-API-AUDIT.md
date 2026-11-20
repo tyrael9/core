@@ -237,3 +237,14 @@ Pinned source path:
 - `Spell::TakeCastItem` changes charges and may destroy expendable items. For delayed spells it is called before delayed impact; for immediate spells it is called after effects. `TakeReagents` can clear the cast item when the same item is also a reagent. Thus `Spell::finish(true)`, actual effect application, charge mutation and item destruction are distinct facts.
 
 **Design consequence:** a typed item-use result must not equate one child Spell terminal with one item-use success or consumption. The future contract needs a root request/action ID, item GUID/entry/slot, per-spell child identities/results, explicit pre-cast rejection/prepare-failure handling and separately observed charge/count/destruction changes. Define aggregation for multi-slot fan-out, skipped slots, triggered children, delayed impacts and cancellation before adding the source or production adapter. Existing CoreSpellTerminal remains valid per-Spell evidence only.
+
+
+## F41 CoreAction map-thread resolution boundary
+
+`CoreAction` in `Engine/CoreAction.h` makes `Execute(DecisionContext&, ActionCandidate const&)` final. It requires a nonzero Engine action ID, an available `CoreActionRuntime`, a resolved current actor and map, and a resolved target whenever the candidate includes a target GUID. Only then does it call the adapter's `ExecuteCore` implementation. This prevents a derived adapter from accidentally omitting the common actor/target resolution gate.
+
+The live `PartyBotAI::ResolveUnitContext` implementation resolves the actor and target from the current `Player::GetMap()` on the owning map thread. It validates the snapshot bot GUID/online bit, actor `IsInWorld`, current Map identity, Map ID and instance ID against both bot and party snapshot, active encounter shard scope, target presence on the actor's current Map, target `IsInWorld`, target Map identity/Map ID and target instance. It returns only a short-lived `CoreActionResolution`; raw Player/Unit/Map pointers must not escape the synchronous CoreAction call.
+
+All four internal context-copy sites in `PartyBotEngine.cpp` must propagate `context.coreActionRuntime`: `Evaluate`, `ExecuteSelected`, `QueuePendingAction` and `ExecutePendingActions`. Omitting it is a fail-closed no-op at `CoreAction::Execute`, but can silently suppress real actions; F41 adds a pure fake-runtime regression covering both immediate and pending dispatch to prevent that regression. The trusted Core fixture separately proves a valid self-target resolves and missing-target/stale-map/stale-instance cases are rejected before the real movement adapter runs.
+
+F41 is not the complete production executor contract. Each concrete adapter must still validate action-specific live state (alive/hostility/friendliness), range, LOS, known spell, resource, cooldown/GCD and movement/control state immediately before the side effect. No production class/role action adapters are registered yet.

@@ -12,7 +12,7 @@ Runtime authority is explicit:
 - `PlayerBot.EngineAuthority = 1`: Shadow observation; Legacy remains the only executor.
 - `PlayerBot.EngineAuthority = 2`: NewEngine exclusive authority. Legacy class/role/combat policy is bypassed; absent Engine actions are deliberate no-ops, never a Legacy fallback.
 
-Implemented foundations include value-only same-map party snapshots, per-bot value cache and trigger scheduling, coordinator reservations, immediate and pending queues, the NewEngine decision-cycle boundary, bounded synchronous ActionResult and Core Spell terminal listeners, typed AND/alternative dependencies, idempotency tombstones, continuation dispatch, queue starvation resistance and ready-backlog preservation under full-queue pressure (F28–F38). F39 adds a typed, action/encounter-correlated Player point-movement terminal source with destination verification and continuation integration. F40 audits item-use fan-out/consumption semantics and adds a real Core potion fixture for successful consumption and zero-charge rejection. F41 adds a final CoreAction execution wrapper and map-thread actor/target/map/instance resolver; all four Engine-created DecisionContext copies preserve that resolver.
+Implemented foundations include value-only same-map party snapshots, per-bot value cache and trigger scheduling, coordinator reservations, immediate and pending queues, the NewEngine decision-cycle boundary, bounded synchronous ActionResult and Core Spell terminal listeners, typed AND/alternative dependencies, idempotency tombstones, continuation dispatch, queue starvation resistance and ready-backlog preservation under full-queue pressure (F28–F38). F39 adds a typed, action/encounter-correlated Player point-movement terminal source with destination verification and continuation integration. F40 audits item-use fan-out/consumption semantics and adds the initial real Core potion fixture. F41 adds a final CoreAction execution wrapper and map-thread actor/target/map/instance resolver; all four Engine-created DecisionContext copies preserve that resolver. F42 implements bounded item-use root/child aggregation, independent Core charge/count mutation events, ItemUseTerminal listeners/continuations and a synthetic two-ON_USE-slot Core simulator fixture.
 
 These foundations do not constitute production movement policy or class/role adapters. The CoreAction base is an audited dispatch gate, not yet a complete executor library or a substitute for action-specific final range/LOS/resource/cooldown checks.
 
@@ -20,9 +20,9 @@ These foundations do not constitute production movement policy or class/role ada
 
 ## Validation snapshot
 
-- Full trusted push CI [#44821298517](https://github.com/tyrael9/core/actions/runs/44821298517) passed on source-code head `1fe34c90a848b589a042a8f2077b0647eb0b00ad`: pure PartyBotEngine tests, report collector tests, Linux ARM64 Vanilla 5875 mangosd + realmd build, simulator harness checks and the full fixture-backed Core simulator. Runtime logs prove F39 natural arrival/continuation/forced interruption (`started=1`, `reached=1`, `followup=1`, `forcedInterrupted=1`), F40 potion effect/consumption and zero-charge rejection, and F41 live CoreAction preflight rejection of missing targets and stale map/instance snapshots; the run reached final Runtime PASS. Artifact [partybot-simulator-1fe34c9](https://github.com/tyrael9/core/actions/runs/44821298517/artifacts/14672696314) was uploaded.
-- PR CI [#44821309879](https://github.com/tyrael9/core/actions/runs/44821309879) passed the initial F41 pure/ARM64 build. The follow-up resolver-propagation regression also passed PR CI [#44822853602](https://github.com/tyrael9/core/actions/runs/44822853602). The fixture runtime is intentionally skipped on PRs because PR jobs do not receive fixture secrets.
-- PR #1 remains Draft. No image was published and no Oracle deployment or live-realm test was performed by these CI runs.
+- PR CI [#44833258687](https://github.com/tyrael9/core/actions/runs/44833258687) passed changed-path classification, pure PartyBotEngine tests, report-collector tests, CMake configure, full Linux ARM64 Vanilla 5875 `mangosd` + `realmd` build and simulator-runner syntax validation. The private fixture runtime was skipped on this PR-triggered job by design.
+- Trusted push CI [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) passed the tests/build stages and executed the full simulator. The simulator emitted the F42 two-slot aggregate PASS and continued through all later scenarios and normal shutdown; the wrapper then failed because it still grepped for the obsolete F40 marker. This is a stale acceptance-gate failure, not a compile or simulator assertion failure. A corrected trusted push run is required before claiming a green end-to-end runtime.
+- PR #1 remains Draft on the pinned Vanilla 5875 validation base. No image was published and no Oracle deployment or live-realm test was performed.
 
 ## Phase status
 
@@ -30,7 +30,7 @@ These foundations do not constitute production movement policy or class/role ada
 - **Phase 2:** decision-engine foundation, cache/scheduler lifecycle hooks and queue primitives are implemented.
 - **Phase 2.5:** extensive fixture-backed tests exercise real Core combat, spell, threat, Group, death/recovery, movement/follow and map-transfer behavior. This is test infrastructure, not a complete autonomous encounter simulator.
 - **Phase 3:** encounter trace and local read-only report collector are implemented; detailed AI state, some trace coverage, cross-map closure and deployment-diagnostics integration remain open.
-- **Phase 4:** F29–F41 establish exclusive NewEngine authority, decision-cycle dispatch, typed async dependencies, the first real Core item-use fixture and a CoreAction/map-thread resolution boundary. Item-use aggregation, the production action executor and class/role action adapters remain open.
+- **Phase 4:** F29–F42 establish exclusive NewEngine authority, decision-cycle dispatch, typed async dependencies, item-use root/child/mutation aggregation and the CoreAction/map-thread resolution boundary. F42's two-slot Core runtime result awaits a corrected trusted CI gate; safe delayed/cancel-before-and-after-mutation Core fixtures remain open. F43 production-executor hardening and audited generic adapters are next. Class/role action adapters remain future work.
 - **Phases 5–8:** generic behavior state machine, class/role library, full party coordination and dungeon/raid encounter strategies remain future work.
 
 ## Design documents
@@ -41,7 +41,7 @@ These foundations do not constitute production movement policy or class/role ada
 - `DECISION-TRACE.md`: encounter event schema, budgets and post-fight analysis contract.
 - `VMANGOS-API-AUDIT.md`: pinned Core update/threading and action-adapter API audit.
 - `CORE-COMBAT-SIMULATOR.md`: isolated fixture-backed simulator and its exact evidence boundaries.
-- `ITEM-USE-AGGREGATE.md`: F40 Core API audit and the proposed F42 multi-spell item-use request/child/mutation contract.
+- `ITEM-USE-AGGREGATE.md`: F40 Core API audit and F42's implemented multi-spell item-use root/child/mutation contract, tests and remaining fixture gaps.
 - `TESTING.md`: CI paths, simulator execution, test-realm checks and validation vocabulary.
 - `THREAT-BUDGETS.md`: Core-authoritative aggro semantics and intentionally fail-closed threat-impact estimation.
 - `RESEARCH-CMANGOS.md` / `RESEARCH-AZEROTHCORE.md`: architectural research only; no foreign runtime dependency or WotLK data is imported.

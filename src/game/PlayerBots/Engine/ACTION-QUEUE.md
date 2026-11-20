@@ -2,7 +2,7 @@
 
 ## Scope and current status (2026-11-20)
 
-The bounded dispatch/dependency mechanics are implemented through F38, F39 adds the typed movement terminal source, F40 completes the item-use source audit, and F41 adds the final CoreAction resolver gate. This does **not** mean production gameplay actions are registered: there are currently no production class/role Core adapters, and the default runtime authority remains Legacy.
+The bounded dispatch/dependency mechanics are implemented through F38, F39 adds the typed movement terminal source, F40 audits item-use source behavior, F41 adds the final CoreAction resolver gate, and F42 implements bounded item-use root/child/mutation aggregation. This does **not** mean production gameplay actions are registered: there are currently no production class/role Core adapters, and the default runtime authority remains Legacy.
 
 The design has two different queue lifetimes:
 
@@ -57,7 +57,7 @@ Supported prerequisite/result sources:
 - `ActionResult`: the synchronous Engine dispatcher/adapter result, independently correlated and matched by action identity, optional target/spell, result and attempted flag. A Core Spell terminal cannot satisfy this source.
 - `PointMovementTerminal`: a value-only terminal from the opt-in Engine Player point-movement path, correlated by action, encounter, mover GUID and point ID, with Reached/Interrupted/Failed status.
 
-F40 audited item-use fan-out and mutation timing, but there is not yet an `ItemUseTerminal` aggregate source. One request can produce multiple Spell children, and charge/count mutation is separate from each child's terminal. See `ITEM-USE-AGGREGATE.md` before implementing this source.
+F42 adds an `ItemUseTerminal` aggregate source. One root request is correlated with each valid ON_USE child Spell; dispatch must close before synchronous child terminals can settle the root. Charge/count mutation remains a separate event stream and never implies child success. The root terminal can satisfy a typed continuation prerequisite by `itemUseId` and aggregate status. See `ITEM-USE-AGGREGATE.md` for the implemented contract.
 
 Dependency semantics:
 
@@ -75,9 +75,9 @@ F33 promotes eligible pending work that has waited 3,000 ms ahead of not-yet-pro
 ## Remaining gaps
 
 - Player point-movement terminal results are implemented by F39; only the explicit `MovePointForEngine` path emits them. Legacy `MovePoint`/`MovementInform` behavior remains unchanged. `Reached` requires natural spline completion and destination tolerance; forced cleanup is `Interrupted`, and natural completion outside tolerance is `Failed`.
-- Item-use terminal completion/cancellation semantics were audited in F40 but no aggregate source is implemented. One ON_USE request may fan out into multiple Spell objects, and item mutation/consumption timing is distinct from each Spell terminal.
+- F42 implements the bounded item-use aggregate source and pure correlation/expiry/continuation tests. The two-slot Core fixture has emitted its PASS marker, but corrected trusted runtime CI is still pending because the prior wrapper grepped for the obsolete F40 marker. Real-Core delayed-use and cancellation-before/after-mutation fixtures remain open.
 - Production Core action adapters and uniform final pre-execution checks for target GUID/state, map/instance, range, LOS, spell, resource and cooldown are not registered.
-- Queue/dependency trace events and broader production lifecycle stress tests remain to be completed where they support actual actions.
+- Production NewEngine actions remain unregistered until F43's common/action-specific preflight and Core-backed accepted/rejected/terminal tests are complete.
 
 ## Verification evidence
 
@@ -87,7 +87,7 @@ F33 promotes eligible pending work that has waited 3,000 ms ahead of not-yet-pro
 - F33 starvation resistance and F34 Core-terminal-gated continuation: [#44680955006](https://github.com/tyrael9/core/actions/runs/44680955006), [#44689339405](https://github.com/tyrael9/core/actions/runs/44689339405).
 - F35 AND/alternative prerequisites, F36 mixed event sources, F37 tombstones and F38 full-queue ready backlog: [#44702889745](https://github.com/tyrael9/core/actions/runs/44702889745), [#44704096882](https://github.com/tyrael9/core/actions/runs/44704096882), [#44713147805](https://github.com/tyrael9/core/actions/runs/44713147805), [#44715114823](https://github.com/tyrael9/core/actions/runs/44715114823), [#44716873212](https://github.com/tyrael9/core/actions/runs/44716873212).
 
-Trusted Push CI [#44795113292](https://github.com/tyrael9/core/actions/runs/44795113292) passed pure tests, report collector, Linux ARM64 Vanilla 5875 build and fixture-backed simulator Runtime PASS, including F39. PR CI [#44795123687](https://github.com/tyrael9/core/actions/runs/44795123687) passed pure tests and ARM64 build; fixture runtime is intentionally secret-isolated.
+Trusted Push CI [#44795113292](https://github.com/tyrael9/core/actions/runs/44795113292) passed pure tests, report collector, Linux ARM64 Vanilla 5875 build and fixture-backed simulator Runtime PASS, including F39. For F42, PR CI [#44833258687](https://github.com/tyrael9/core/actions/runs/44833258687) passed pure tests and ARM64 build; trusted Push CI [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) executed the complete fixture and printed the two-slot F42 PASS marker but failed the outer job on the stale F40 grep. The runner gate is being fixed; a corrected trusted push must reach final Runtime PASS.
 
 ## Operational boundary
 

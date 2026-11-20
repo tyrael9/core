@@ -307,12 +307,38 @@ Pure C++ regressions cover AND prerequisites, mixed success/failure and event so
 
 The Engine-only `MotionMaster::MovePointForEngine` path preserves legacy `MovePoint` and `MovementInform` behavior. The correlated PointMovementGenerator records natural spline completion and emits `Reached` only when the final Player position is within the configured 3D tolerance; forced cleanup emits `Interrupted`, and natural completion outside tolerance emits `Failed`. The pure suite verifies late registration, successful dispatch, Interrupted rejection and Failed/destination-mismatch rejection. Trusted Push CI [#44795113292](https://github.com/tyrael9/core/actions/runs/44795113292) proves a real Player reached the destination, released and dispatched its follow-up, and emitted Interrupted when `ClearType` forced cleanup. PR CI [#44795123687](https://github.com/tyrael9/core/actions/runs/44795123687) passed pure tests and ARM64 build.
 
-## F40 item-use lifecycle audit and first Core fixture — audit/runtime fixture complete; aggregate source open
+## F40 item-use lifecycle audit — source behavior and initial Core baseline
 
-`HandleUseItemOpcode` performs several pre-cast validations and may bind an item before spell preparation. `Player::CastItemUseSpell` fans one item request out into multiple ON_USE Spell objects; later spell slots are triggered and invalid spell IDs are skipped. `Spell::finish` therefore reports one child Spell, not one aggregate item-use outcome. `Spell::IsCastByItem()` exposes only a boolean, not the cast-item identity. Item charges/consumption are mutated by `TakeCastItem` at different points for immediate and delayed spells, while `TakeReagents` may clear the cast item when it is also a reagent. A successful Spell terminal is not proof of item consumption or effect application, and cancellation may occur before or after charge mutation.
+\`HandleUseItemOpcode\` performs pre-cast validation and may bind an item before \`CastItemUseSpell\`. \`Player::CastItemUseSpell\` fans one request out across all valid ON_USE prototype slots; later children are triggered. \`Spell::finish\` / \`Spell::cancel\` are per-child outcomes, not an item-use root result. \`TakeCastItem\` and \`TakeReagents\` mutate charges/counts independently and at different points for immediate and delayed casts.
 
-The real Core fixture now uses item 118 / spell 439 through `Player::CastItemUseSpell` with implicit self-targeting. Trusted Push CI [#44811193873](https://github.com/tyrael9/core/actions/runs/44811193873) reports `healed=858>956`, `consumed=1`, `zeroChargeRejected=1`, `itemRetained=1`, both Player cleanups successful, and final Runtime PASS. The zero-charge control uses a fresh Player so item cooldown/GCD cannot mask the intended rejection. This proves a single immediate potion use and pre-consumption rejection, not multi-slot fan-out aggregation, delayed impacts or cancellation.
+The first Core fixture (item 118 / Spell 439) proved a real potion effect and item consumption, plus a fresh zero-charge rejection that retained the item. That fixture was single-slot evidence only.
 
-The future typed source must aggregate a root item-use identity, per-spell child results and separately observed item mutation; no item-use adapter/source is implemented yet.
+## F42 item-use aggregate — pure tests and multi-slot Core fixture
 
-No production class/role action adapters are registered in NewEngine. The current CI evidence validates generic foundations and selected simulator slices only; it does not establish playable NewEngine combat.
+The implemented bounded value-only tracker separates:
+- The root request (\`itemUseId\`) and ON_USE fan-out-close boundary.
+- Each registered child Spell (child ID, prototype slot, Spell ID, triggered bit and authoritative finish/cancel terminal).
+- Independent item mutation facts from \`TakeCastItem\` / \`TakeReagents\`.
+
+Each child is registered before Core \`Spell::prepare\`, so synchronous terminals are safely correlated. The root publishes only after dispatch is closed and all registered children have settled; delayed children remain pending until their terminal or bounded expiry. Invalid SpellEntry slots are marked skipped rather than miscounted as failed children. Mutation events do not imply spell success, and spell success does not imply mutation. Inventory mutation also invalidates cached Engine decisions.
+
+The Engine publishes a value-only \`ItemUseTerminal\` event and supports a typed continuation prerequisite matched by root ID/status/history. Continuations still enter the normal bounded pending queue and undergo fresh next-dispatch eligibility/context checks.
+
+Pure C++14 coverage in \`tests/PartyBotEngineTests.cpp\` includes:
+- Synchronous multi-child fan-out where the first child terminal occurs before dispatch close.
+- Delayed child settlement and mixed/all failure/interruption aggregate outcomes.
+- Separate mutation evidence, including interruption after a mutation.
+- Capacity, skipped slots, duplicate reports, bounded TTL, late-child expiry and uint32 clock wrap.
+- ItemUseTerminal correlation, recent-terminal history, queued-success handling and ordinary pending continuation dispatch.
+
+The Core simulator fixture retains the real single-slot success/zero-charge rejection cases and adds a disposable two-ON_USE-slot prototype. It checks two actual Core child Spells, first child non-triggered and second triggered, the root aggregate, both independently observed finite-charge mutations and cleanup/restoration of the modified prototype. On head \`41797d04071656479b193e4a0948abe0d3358583\`, the simulator printed the F42 PASS marker with \`multiChildren=2\`, \`multiMutations=2\` and \`cleanup=1/1/1\`.
+
+CI evidence:
+- PR CI [#44833258687](https://github.com/tyrael9/core/actions/runs/44833258687) passed pure Engine tests, report collector, Linux ARM64 Vanilla 5875 build and runtime-harness syntax. The fixture runtime was skipped on PR by design.
+- Trusted push [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) compiled successfully and executed the full fixture suite; the F42 marker was present and the simulator completed its other scenarios and shutdown. The job failed only when the outer script searched for the old F40 PASS string. The runner is being corrected to require the F42 marker; the milestone is not fully CI-closed until a corrected trusted push reaches final \`Runtime PASS\`.
+
+Still open: although the pure tracker covers delayed children and interruption before/after mutation, a deterministic real-Core delayed ON_USE fixture and cancellation-before/after-real-mutation fixture have not yet been validated.
+
+## Production action readiness — still open
+
+No production generic/class/role Core action adapters are registered in NewEngine. F41's CoreAction wrapper enforces fresh map-thread actor/target/map/instance resolution, but each concrete action still needs immediate live-state, target-relation, range, LOS, spell, resource, cooldown/GCD and movement/control validation plus Core-backed accepted/rejected/terminal outcome tests. NewEngine remains an explicit development-only no-fallback mode; Legacy is still the default.

@@ -2,9 +2,9 @@
 
 ## Status
 
-F40 completed the source audit and one real Core fixture: the test potion applies a Core healing effect and consumes the item; a fresh zero-charge control is rejected without consuming the item. The typed aggregate source and an item-use action adapter are **not implemented**.
+F40 completed the source audit and single-slot potion baseline. F42 has now implemented the bounded typed aggregate source and pure tests, and added a synthetic two-ON_USE-slot fixture using real Core Spell objects. The production item-use action adapter is **not implemented**; real-Core delayed-use and cancellation-before/after-mutation fixtures remain open.
 
-This document is the implementation contract for F42. It deliberately separates three lifetimes that the current Core API exposes independently:
+This document is the F42 implementation contract and status. It deliberately separates three lifetimes that the current Core API exposes independently:
 
 1. The root item-use request.
 2. Every Core Spell child created from the item's ON_USE spell slots.
@@ -93,6 +93,23 @@ The simulator and internal callers may invoke `Player::CastItemUseSpell` directl
 5. Exercise at least one charge-based item and one stack/count-based expendable item, including item destruction and item-as-reagent if a native Vanilla item fixture supports it.
 6. Require final Core health/effect state from Core-owned objects; never accept trace counts as proof that the spell effect applied.
 
-## Non-goals for F42
+## F42 implementation status
 
-F42 does not register NewEngine class rotations, infer item success from a single child, alter the underlying vanilla ON_USE fan-out, or implement a generic inventory optimization policy. Production action adapters remain a subsequent milestone after aggregate lifecycle semantics are proven.
+Implemented in the current branch:
+- Fixed-capacity, value-only root/child/mutation tracker with bounded recent IDs/tombstones and deadline handling.
+- Per-child registration before Core \`Spell::prepare\`, per-child \`finish/cancel\` correlation, and a dispatch-close barrier so synchronous child terminals cannot prematurely finalize a fan-out.
+- Skipped-slot accounting, delayed-child waiting, aggregate AllSucceeded / PartialSuccess / AllFailed / AllInterrupted outcomes, and Expired settlement.
+- Independent mutation events for the Core item-charge/reagent mutation hooks; no inference between mutation and Spell terminal.
+- PartyBotEngine ItemUseTerminal listeners, recent-terminal history and typed continuation prerequisite support. A continuation remains subject to normal pending-queue dispatch/revalidation.
+- Inventory mutation invalidation of cached decisions, and a returned root \`itemUseId\` from \`Player::CastItemUseSpell\` so a caller can register dependent work after synchronous or delayed use.
+
+Pure tests in \`tests/PartyBotEngineTests.cpp\` cover fan-out closure, synchronous children, delayed children, partial/all-failure/interruption outcomes, independent mutation facts, capacity, TTL/uint32 wrap, late-child expiry, listener publication and continuation correlation/history.
+
+The Core simulator's two-slot prototype fixture has already emitted:
+\`multiRoot=1 multiChildren=2 firstTriggered=0 secondTriggered=1 multiMutations=2 multiChargesConsumed=1 cleanup=1/1/1\`.
+It temporarily sets a non-stackable one-count fixture to exercise the real finite-charge mutation path and restores the modified prototype fields before returning. The run also retains the single-potion success and zero-charge rejection checks.
+
+Trusted Push CI [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) printed the exact F42 PASS marker and completed all later simulator scenarios, but the wrapper exited 1 because it still required the obsolete F40 marker. PR CI [#44833258687](https://github.com/tyrael9/core/actions/runs/44833258687) passed pure tests, report collector and ARM64 build; fixture execution is intentionally push-only. A corrected trusted push run ending in final Runtime PASS is required to close F42.
+
+The delayed-child and cancellation-before/after-mutation behavior is covered at the pure tracker level. A deterministic real-Core delayed ON_USE Spell fixture and a real-Core cancellation test on each side of actual item mutation are not yet verified.
+

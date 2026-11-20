@@ -339,6 +339,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F35 resolved a real Core terminal alter
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F36 required both the synchronous successful ActionResult and the later successful Core Spell::finish for the same action ID before dispatching its child." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F36 mixed ActionResult/Core terminal PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 
 if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine selected a formation destination and the Core PointMovementGenerator moved the actor to it." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Core PointMovementGenerator PASS marker was not found." | tee -a "$LOG_FILE"

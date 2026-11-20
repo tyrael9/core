@@ -2,6 +2,7 @@
 #define MANGOS_PARTYBOT_ACTION_CONTINUATION_H
 
 #include "CoreSpellTerminalListener.h"
+#include "PointMovementTerminalListener.h"
 #include "DecisionTypes.h"
 #include <cstdint>
 #include <vector>
@@ -28,13 +29,14 @@ enum class ActionContinuationEnqueueResult : std::uint8_t
 enum class ActionDependencyEventSource : std::uint8_t
 {
     CoreSpellTerminal,
-    ActionResult
+    ActionResult,
+    PointMovementTerminal
 };
 
 // One required result from a prior Engine action. CoreSpellTerminal expresses
 // the later Core Spell::finish outcome; ActionResult expresses only the
-// synchronous Action::Execute boundary. These sources are intentionally
-// distinct even when they share the same actionId.
+// synchronous Action::Execute boundary; PointMovementTerminal expresses the
+// later, destination-checked PointMovementGenerator result. Sources stay distinct.
 struct ActionDependencyPrerequisite
 {
     ActionDependencyEventSource source = ActionDependencyEventSource::CoreSpellTerminal;
@@ -46,6 +48,8 @@ struct ActionDependencyPrerequisite
     std::string expectedActionName;
     ActionResult requiredActionResult = ActionResult::Success;
     bool requiredAttempted = true;
+    std::uint32_t pointId = 0;
+    PointMovementTerminalStatus requiredMovementStatus = PointMovementTerminalStatus::Reached;
 };
 
 // Source compatibility for F34/F35 callers; new generic dependencies should

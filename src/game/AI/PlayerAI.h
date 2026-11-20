@@ -30,6 +30,13 @@ class Player;
 class Spell;
 class SpellEntry;
 
+enum class PlayerPointMovementResult : uint8
+{
+    Reached,
+    Interrupted,
+    Failed
+};
+
 class PlayerAI
 {
     public:
@@ -41,6 +48,11 @@ class PlayerAI
         // Called at World update tick
         virtual void UpdateAI(uint32 const /*diff*/);
         virtual void MovementInform(uint32 MovementType, uint32 Data = 0) {}
+        // Engine-only result channel; legacy MovementInform remains unchanged.
+        virtual void OnPointMovementResult(uint64 /*actionId*/, uint64 /*encounterId*/,
+                                           uint32 /*pointId*/,
+                                           PlayerPointMovementResult /*result*/,
+                                           float /*finalDistance*/) {}
 
         // Optional observer hooks for player-owned spell requests and their final Core outcome.
         // Returning zero from the prepare hook opts out of lifecycle correlation.

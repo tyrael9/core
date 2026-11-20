@@ -801,6 +801,15 @@ public:
     }
     std::vector<CoreSpellTerminalEvent> events;
 };
+class CapturePointMovementTerminalListener final : public PointMovementTerminalListener
+{
+public:
+    void OnPointMovementTerminal(PointMovementTerminalEvent const& event) override
+    {
+        events.push_back(event);
+    }
+    std::vector<PointMovementTerminalEvent> events;
+};
 
 class SimulatorCoreSpellContinuationAction final : public Action
 {
@@ -840,6 +849,111 @@ private:
     uint32& m_executeCount;
     std::string m_name;
 };
+
+class SimulatorCorePlayerPointMoveAction final : public Action
+{
+public:
+    SimulatorCorePlayerPointMoveAction(
+        Map& map, uint32 pointId, float arrivalTolerance,
+        ActionCandidate continuationCandidate)
+        : m_map(map), m_pointId(pointId), m_arrivalTolerance(arrivalTolerance),
+          m_continuationCandidate(std::move(continuationCandidate)) {}
+
+    std::string const& GetName() const override { return m_name; }
+
+    ThreatImpactEstimate EstimateThreatImpact(
+        DecisionContext const& context, ActionCandidate const&) const override
+    {
+        return MakeSimulatorNoThreatEstimate(
+            context, "simulator_player_point_movement_has_no_combat_effect");
+    }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Player* mover = unit ? unit->ToPlayer() : nullptr;
+        if (!mover || !mover->IsInWorld() || !mover->IsAlive() ||
+            candidate.targetGuid != context.bot.guid || !candidate.hasDestination ||
+            !std::isfinite(candidate.destinationX) ||
+            !std::isfinite(candidate.destinationY) ||
+            !std::isfinite(candidate.destinationZ) ||
+            !context.coordinator.HasActiveEncounter() ||
+            mover->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE |
+                                UNIT_STATE_POSSESSED))
+        {
+            reason = "simulator_player_point_move_actor_or_destination_invalid";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Player* mover = unit ? unit->ToPlayer() : nullptr;
+        if (!mover)
+        {
+            reason = "simulator_player_point_move_actor_missing";
+            return false;
+        }
+        float const dx = mover->GetPositionX() - candidate.destinationX;
+        float const dy = mover->GetPositionY() - candidate.destinationY;
+        float const dz = mover->GetPositionZ() - candidate.destinationZ;
+        if (mover->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE ||
+            dx * dx + dy * dy + dz * dz <= m_arrivalTolerance * m_arrivalTolerance)
+        {
+            reason = "simulator_player_point_move_already_moving_or_at_destination";
+            return false;
+        }
+        return true;
+    }
+
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    {
+        Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Player* mover = unit ? unit->ToPlayer() : nullptr;
+        uint64 const encounterId = context.coordinator.GetEncounterId();
+        if (!mover || !candidate.actionId || !encounterId ||
+            !context.continuationSink || !candidate.hasDestination)
+            return ActionResult::Impossible;
+
+        ActionDependencyRequest request;
+        request.lifetimeMs = 4000;
+        ActionDependencyPrerequisite movement;
+        movement.source = ActionDependencyEventSource::PointMovementTerminal;
+        movement.actionId = candidate.actionId;
+        movement.encounterId = encounterId;
+        movement.targetGuid = context.bot.guid;
+        movement.pointId = m_pointId;
+        movement.requiredMovementStatus = PointMovementTerminalStatus::Reached;
+        request.prerequisites.push_back(movement);
+
+        ActionContinuationEnqueueResult const queued =
+            context.continuationSink->QueueActionDependency(
+                context, request, m_continuationCandidate);
+        if (queued != ActionContinuationEnqueueResult::Queued)
+            return ActionResult::Failed;
+
+        m_started = mover->GetMotionMaster()->MovePointForEngine(
+            m_pointId, candidate.destinationX, candidate.destinationY,
+            candidate.destinationZ, MOVE_NONE, candidate.actionId, encounterId,
+            m_arrivalTolerance);
+        return m_started ? ActionResult::Success : ActionResult::Failed;
+    }
+
+    bool DidStartMovement() const { return m_started; }
+
+private:
+    Map& m_map;
+    uint32 m_pointId;
+    float m_arrivalTolerance;
+    ActionCandidate m_continuationCandidate;
+    std::string m_name = "core_player_point_move_engine";
+    bool m_started = false;
+};
+
 
 class SimulatorCorePlayerHealAction final : public Action
 {
@@ -5419,6 +5533,129 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
             }
         }
     }
+    // F39: exercise the Engine-only PointMovementGenerator correlation path on
+    // a real Core Player, then prove forced generator cleanup is not success.
+    uint32 movementFollowupExecutions = 0;
+    std::shared_ptr<SimulatorCoreSpellContinuationAction> movementFollowup(
+        new SimulatorCoreSpellContinuationAction(
+            movementFollowupExecutions, "core_player_move_followup"));
+    bool const movementFollowupRegistered = engine.RegisterAction(movementFollowup);
+    std::shared_ptr<CapturePointMovementTerminalListener> movementTerminalListener(
+        new CapturePointMovementTerminalListener());
+    bool const movementTerminalListenerRegistered =
+        engine.AddPointMovementTerminalListener(movementTerminalListener);
+
+    uint32 const enginePointId = 0xF390u;
+    float const movementArrivalTolerance = 0.75f;
+    ActionCandidate movementFollowupCandidate;
+    movementFollowupCandidate.actionName = "core_player_move_followup";
+    movementFollowupCandidate.targetGuid = healerMember.guid;
+    movementFollowupCandidate.basePriority = 10.0f;
+    movementFollowupCandidate.finalPriority = 10.0f;
+    movementFollowupCandidate.channel = ActionChannel::Utility;
+    std::shared_ptr<SimulatorCorePlayerPointMoveAction> playerPointMoveAction(
+        new SimulatorCorePlayerPointMoveAction(
+            map, enginePointId, movementArrivalTolerance, movementFollowupCandidate));
+    bool const playerPointMoveActionRegistered = engine.RegisterAction(playerPointMoveAction);
+
+    float const pointDestinationX = healer->GetPositionX() + 3.0f;
+    float const pointDestinationY = healer->GetPositionY();
+    float const pointDestinationZ = healer->GetPositionZ();
+    ActionCandidate playerPointMoveCandidate;
+    playerPointMoveCandidate.actionName = "core_player_point_move_engine";
+    playerPointMoveCandidate.strategyName = "simulator_player_movement";
+    playerPointMoveCandidate.triggerName = "simulator_player_point_move";
+    playerPointMoveCandidate.targetGuid = healerMember.guid;
+    playerPointMoveCandidate.basePriority = 90.0f;
+    playerPointMoveCandidate.finalPriority = 90.0f;
+    playerPointMoveCandidate.channel = ActionChannel::Movement;
+    playerPointMoveCandidate.hasDestination = true;
+    playerPointMoveCandidate.destinationX = pointDestinationX;
+    playerPointMoveCandidate.destinationY = pointDestinationY;
+    playerPointMoveCandidate.destinationZ = pointDestinationZ;
+
+    uint32 const movementNowMs = WorldTimer::getMSTime();
+    DecisionContext movementContext(
+        snapshot, snapshot.members[0], *coordinator, movementNowMs,
+        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI, &engine);
+    CandidateEvaluation movementEvaluation;
+    movementEvaluation.candidate = playerPointMoveCandidate;
+    movementEvaluation.status = CandidateStatus::Selected;
+    movementEvaluation.threatImpact = playerPointMoveAction->EstimateThreatImpact(
+        movementContext, playerPointMoveCandidate);
+    DecisionReport movementReport;
+    movementReport.candidates.push_back(movementEvaluation);
+    movementReport.selectedIndices.push_back(0);
+    bool const movementSetupPassed = movementFollowupRegistered &&
+        movementTerminalListenerRegistered && playerPointMoveActionRegistered;
+    if (movementSetupPassed)
+        engine.ExecuteSelected(movementContext, movementReport);
+
+    ActionId const engineMovementActionId =
+        movementReport.candidates.empty() ? 0 : movementReport.candidates[0].actionId;
+    bool const engineMovementStarted = movementSetupPassed &&
+        movementReport.candidates[0].status == CandidateStatus::Executed &&
+        movementReport.candidates[0].actionResult == ActionResult::Success &&
+        playerPointMoveAction->DidStartMovement() && engineMovementActionId != 0;
+
+    for (uint32 tick = 0; tick < 20 && movementTerminalListener->events.empty(); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    bool const naturalMovementReached = movementTerminalListener->events.size() == 1 &&
+        movementTerminalListener->events[0].actionId == engineMovementActionId &&
+        movementTerminalListener->events[0].encounterId == coordinator->GetEncounterId() &&
+        movementTerminalListener->events[0].moverGuid == healerMember.guid &&
+        movementTerminalListener->events[0].pointId == enginePointId &&
+        movementTerminalListener->events[0].status == PointMovementTerminalStatus::Reached &&
+        movementTerminalListener->events[0].finalDistance <= movementArrivalTolerance;
+    bool const movementContinuationReleased =
+        engine.GetPendingContinuationCount() == 0 && engine.GetPendingActionCount() == 1;
+    DecisionContext movementContinuationContext(
+        snapshot, snapshot.members[0], *coordinator, WorldTimer::getMSTime(),
+        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI, &engine);
+    PendingActionDispatchSummary const movementFollowupDispatch =
+        engine.ExecutePendingActions(movementContinuationContext);
+    bool const movementFollowupDispatched = movementContinuationReleased &&
+        movementFollowupDispatch.selected == 1 &&
+        movementFollowupDispatch.executed == 1 &&
+        movementFollowupExecutions == 1;
+
+    ActionId const forcedCleanupActionId = coordinator->NextActionId();
+    float const forcedDestinationX = healer->GetPositionX() + 12.0f;
+    bool const forcedMoveStarted = forcedCleanupActionId &&
+        healer->GetMotionMaster()->MovePointForEngine(
+            enginePointId + 1, forcedDestinationX, healer->GetPositionY(),
+            healer->GetPositionZ(), MOVE_NONE, forcedCleanupActionId,
+            coordinator->GetEncounterId(), movementArrivalTolerance);
+    if (forcedMoveStarted)
+        healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
+    bool const forcedCleanupInterrupted = movementTerminalListener->events.size() == 2 &&
+        movementTerminalListener->events[1].actionId == forcedCleanupActionId &&
+        movementTerminalListener->events[1].pointId == enginePointId + 1 &&
+        movementTerminalListener->events[1].status == PointMovementTerminalStatus::Interrupted;
+
+    bool const f39MovementTerminalPassed = engineMovementStarted &&
+        naturalMovementReached && movementContinuationReleased &&
+        movementFollowupDispatched && forcedMoveStarted && forcedCleanupInterrupted;
+    sLog.Out(LOG_BASIC, f39MovementTerminalPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] F39 Player movement terminal: setup=%u started=%u action=%llu events=%zu reached=%u continuationReleased=%u followup=%u forcedStarted=%u forcedInterrupted=%u distance=%.3f cleanup=%.3f.",
+             movementSetupPassed ? 1u : 0u, engineMovementStarted ? 1u : 0u,
+             static_cast<unsigned long long>(engineMovementActionId),
+             movementTerminalListener->events.size(), naturalMovementReached ? 1u : 0u,
+             movementContinuationReleased ? 1u : 0u,
+             movementFollowupDispatched ? 1u : 0u,
+             forcedMoveStarted ? 1u : 0u, forcedCleanupInterrupted ? 1u : 0u,
+             movementTerminalListener->events.empty() ? -1.0f
+                 : movementTerminalListener->events[0].finalDistance,
+             movementTerminalListener->events.size() < 2 ? -1.0f
+                 : movementTerminalListener->events[1].finalDistance);
+
+    if (forcedMoveStarted && !forcedCleanupInterrupted)
+        healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
+
     DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
     std::vector<std::size_t> const candidateDetailIndices =
         SelectPriorityCandidateEvaluationIndices(
@@ -5521,7 +5758,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         !engineActionTracePassed || !coreSpellTerminalPassed || !continuationEnqueued ||
         !continuationDispatched || !f35MultiDependencyDispatched ||
         !f35MultiCoreTerminalsPassed || !f35AlternativeGroupPassed ||
-        !f36MixedDependencyPassed || !decisionSummaryTracePassed || !cleaned)
+        !f36MixedDependencyPassed || !f39MovementTerminalPassed ||
+        !decisionSummaryTracePassed || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Engine-to-Player normal spell/heal smoke test failed.");
@@ -5562,6 +5800,9 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              "[PartyBotSimulator] PASS: F35 resolved a real Core terminal alternative group, rejected the higher-priority wrong-status branch, and dispatched the valid branch.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F36 required both the synchronous successful ActionResult and the later successful Core Spell::finish for the same action ID before dispatching its child.");
+    sLog.Out(LOG_BASIC, f39MovementTerminalPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] %s: F39 emitted a correlated Reached terminal only after natural PointMovementGenerator completion and destination tolerance check; the movement prerequisite released its continuation through the next pending dispatch, while ClearType produced Interrupted.",
+             f39MovementTerminalPassed ? "PASS" : "FAIL");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F20 DecisionSummary aggregated the complete executed Core Player heal report and emitted the bounded encounter summary.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,

@@ -173,6 +173,13 @@ public:
     void OnCoreSpellTerminal(CoreSpellTerminalEvent const& event) override { events.push_back(event); }
     std::vector<CoreSpellTerminalEvent> events;
 };
+class CapturePointMovementTerminalListener final : public PointMovementTerminalListener {
+public:
+    void OnPointMovementTerminal(PointMovementTerminalEvent const& event) override {
+        events.push_back(event);
+    }
+    std::vector<PointMovementTerminalEvent> events;
+};
 class RegisterCoreSpellTerminalListenerDuringCallback final : public CoreSpellTerminalListener {
 public:
     RegisterCoreSpellTerminalListenerDuringCallback(
@@ -966,6 +973,100 @@ void TestLateActionResultDependencyRegistrationUsesRecentEventHistory()
     assert(child->executeCount == 1);
 }
 
+void TestPointMovementTerminalDependencyUsesCorrelationStatusAndHistory()
+{
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("movement_followup");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+        auto listener = std::make_shared<CapturePointMovementTerminalListener>();
+        assert(engine.AddPointMovementTerminalListener(listener));
+
+        PointMovementTerminalEvent reached;
+        reached.actionId = 8801;
+        reached.encounterId = f.coordinator.GetEncounterId();
+        reached.moverGuid = f.bot.guid;
+        reached.pointId = 17;
+        reached.status = PointMovementTerminalStatus::Reached;
+        reached.occurredAtMs = 1100;
+        reached.finalDistance = 0.25f;
+        engine.NotifyPointMovementTerminal(reached);
+        assert(listener->events.size() == 1);
+        assert(listener->events[0].actionId == reached.actionId);
+        assert(listener->events[0].status == PointMovementTerminalStatus::Reached);
+
+        ActionDependencyRequest request;
+        request.lifetimeMs = 1200;
+        ActionDependencyPrerequisite prerequisite;
+        prerequisite.source = ActionDependencyEventSource::PointMovementTerminal;
+        prerequisite.actionId = reached.actionId;
+        prerequisite.encounterId = reached.encounterId;
+        prerequisite.targetGuid = reached.moverGuid;
+        prerequisite.pointId = reached.pointId;
+        prerequisite.requiredMovementStatus = PointMovementTerminalStatus::Reached;
+        request.prerequisites.push_back(prerequisite);
+        ActionCandidate continuation = Candidate(
+            "movement_followup", 25.0f, ActionChannel::Utility);
+        continuation.finalPriority = 25.0f;
+
+        DecisionContext lateContext(
+            f.snapshot, f.bot, f.coordinator, reached.occurredAtMs + 1);
+        assert(engine.QueueActionDependency(lateContext, request, continuation) ==
+               ActionContinuationEnqueueResult::ReleasedImmediately);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 1);
+
+        DecisionContext nextTick(
+            f.snapshot, f.bot, f.coordinator, reached.occurredAtMs + 2);
+        PendingActionDispatchSummary const dispatched =
+            engine.ExecutePendingActions(nextTick);
+        assert(dispatched.selected == 1 && dispatched.executed == 1);
+        assert(child->executeCount == 1);
+    }
+
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("movement_interrupted_followup");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+
+        ActionDependencyRequest request;
+        request.lifetimeMs = 1200;
+        ActionDependencyPrerequisite prerequisite;
+        prerequisite.source = ActionDependencyEventSource::PointMovementTerminal;
+        prerequisite.actionId = 8802;
+        prerequisite.encounterId = f.coordinator.GetEncounterId();
+        prerequisite.targetGuid = f.bot.guid;
+        prerequisite.pointId = 18;
+        prerequisite.requiredMovementStatus = PointMovementTerminalStatus::Reached;
+        request.prerequisites.push_back(prerequisite);
+        ActionCandidate continuation = Candidate(
+            "movement_interrupted_followup", 25.0f, ActionChannel::Utility);
+        continuation.finalPriority = 25.0f;
+        assert(engine.QueueActionDependency(f.context, request, continuation) ==
+               ActionContinuationEnqueueResult::Queued);
+
+        PointMovementTerminalEvent interrupted;
+        interrupted.actionId = prerequisite.actionId;
+        interrupted.encounterId = prerequisite.encounterId;
+        interrupted.moverGuid = prerequisite.targetGuid;
+        interrupted.pointId = prerequisite.pointId;
+        interrupted.status = PointMovementTerminalStatus::Interrupted;
+        interrupted.occurredAtMs = 1100;
+        interrupted.finalDistance = 4.0f;
+        engine.NotifyPointMovementTerminal(interrupted);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 0);
+        DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1101);
+        engine.ExecutePendingActions(nextTick);
+        assert(child->executeCount == 0);
+    }
+}
 void TestFailedActionResultRejectsMixedDependency()
 {
     Fixture f;
@@ -3962,6 +4063,7 @@ int main() {
     TestCoreTerminalCannotSatisfyActionResultPrerequisite();
     TestActionResultAndCoreSpellPrerequisitesAreDistinctAndAnded();
     TestLateActionResultDependencyRegistrationUsesRecentEventHistory();
+    TestPointMovementTerminalDependencyUsesCorrelationStatusAndHistory();
     TestFailedActionResultRejectsMixedDependency();
     TestActionDependenciesRequireAllAndPrerequisites();
     TestLateDependencyRegistrationUsesLatestTerminalAndWrapSafeTime();

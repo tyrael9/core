@@ -18,6 +18,7 @@
 #define MANGOS_PARTYBOTAI_H
 
 #include "CombatBotBaseAI.h"
+#include "AI/PlayerAI.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
 #include "Engine/DecisionTrace.h"
@@ -62,6 +63,9 @@ public:
                              uint64 encounterId, uint32 spellId,
                              uint64 targetGuid, bool success,
                              bool interrupted, bool engineAction) final;
+    void OnPointMovementResult(uint64 actionId, uint64 encounterId,
+                               uint32 pointId, PlayerPointMovementResult result,
+                               float finalDistance) final;
     void OnAliveStateChanged(bool wasAlive, bool isAlive) final;
     void OnDamageTaken(uint64 attackerGuid, uint32 damage,
                        uint32 healthBefore, uint32 healthAfter,

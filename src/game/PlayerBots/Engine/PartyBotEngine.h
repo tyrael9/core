@@ -3,6 +3,7 @@
 #include "Action.h"
 #include "ActionResultListener.h"
 #include "CoreSpellTerminalListener.h"
+#include "PointMovementTerminalListener.h"
 #include "ActionContinuationQueue.h"
 #include "ActionQueue.h"
 #include "Multiplier.h"
@@ -37,6 +38,9 @@ public:
     bool AddCoreSpellTerminalListener(std::shared_ptr<CoreSpellTerminalListener> listener);
     std::size_t GetCoreSpellTerminalListenerCount() const { return m_coreSpellTerminalListeners.size(); }
     void NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event) const;
+    bool AddPointMovementTerminalListener(std::shared_ptr<PointMovementTerminalListener> listener);
+    std::size_t GetPointMovementTerminalListenerCount() const { return m_pointMovementTerminalListeners.size(); }
+    void NotifyPointMovementTerminal(PointMovementTerminalEvent const& event) const;
     ActionContinuationEnqueueResult QueueActionDependency(
         DecisionContext const& context, ActionDependencyRequest const& request,
         ActionCandidate const& continuationCandidate) const override;
@@ -66,7 +70,7 @@ public:
     PendingActionDispatchSummary ExecuteDecisionCycle(
         DecisionContext& context, DecisionReport& report) const;
     std::size_t GetPendingActionCount() const { return m_pendingActionQueue.Size(); }
-    void ClearPendingActions() const { m_pendingActionQueue.Clear(); m_actionContinuationQueue.Clear(); m_recentCoreSpellTerminals.clear(); m_recentActionResults.clear(); }
+    void ClearPendingActions() const { m_pendingActionQueue.Clear(); m_actionContinuationQueue.Clear(); m_recentCoreSpellTerminals.clear(); m_recentActionResults.clear(); m_recentPointMovementTerminals.clear(); }
     // Only call when Strategy mode owns the relevant decision domain.
     void ExecuteSelected(DecisionContext& context, DecisionReport& report) const;
 private:
@@ -83,17 +87,20 @@ private:
         std::uint32_t nowMs, ActionCandidate const* registeringCandidate = nullptr) const;
     void RememberCoreSpellTerminal(CoreSpellTerminalEvent const& event) const;
     void RememberActionResult(ActionResultEvent const& event) const;
+    void RememberPointMovementTerminal(PointMovementTerminalEvent const& event) const;
     std::vector<std::shared_ptr<Strategy>> m_strategies;
     std::map<std::string, std::shared_ptr<Action>> m_actions;
     std::vector<std::shared_ptr<Multiplier>> m_multipliers;
     std::vector<std::shared_ptr<ActionResultListener>> m_actionResultListeners;
     std::vector<std::shared_ptr<CoreSpellTerminalListener>> m_coreSpellTerminalListeners;
+    std::vector<std::shared_ptr<PointMovementTerminalListener>> m_pointMovementTerminalListeners;
     mutable ValueCache m_valueCache;
     mutable TriggerScheduler m_triggerScheduler;
     mutable PendingActionQueue m_pendingActionQueue;
     mutable ActionContinuationQueue m_actionContinuationQueue;
     mutable std::vector<CoreSpellTerminalEvent> m_recentCoreSpellTerminals;
     mutable std::vector<ActionResultEvent> m_recentActionResults;
+    mutable std::vector<PointMovementTerminalEvent> m_recentPointMovementTerminals;
 };
 }
 #endif

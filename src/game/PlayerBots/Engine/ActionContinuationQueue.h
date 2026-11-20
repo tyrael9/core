@@ -117,6 +117,32 @@ public:
         }
     }
 
+    void ObservePointMovementTerminal(PointMovementTerminalEvent const& event)
+    {
+        if (!event.actionId || !event.encounterId)
+            return;
+        for (Entry& entry : m_entries)
+        {
+            for (std::size_t i = 0; i < entry.request.prerequisites.size(); ++i)
+            {
+                if (entry.states[i] != PrerequisiteState::Waiting)
+                    continue;
+                ActionDependencyPrerequisite const& prerequisite =
+                    entry.request.prerequisites[i];
+                if (prerequisite.source != ActionDependencyEventSource::PointMovementTerminal ||
+                    prerequisite.actionId != event.actionId ||
+                    prerequisite.encounterId != event.encounterId)
+                    continue;
+
+                entry.states[i] =
+                    prerequisite.targetGuid == event.moverGuid &&
+                    prerequisite.pointId == event.pointId &&
+                    prerequisite.requiredMovementStatus == event.status
+                    ? PrerequisiteState::Satisfied : PrerequisiteState::Rejected;
+            }
+        }
+    }
+
     void ObserveActionResult(ActionResultEvent const& event)
     {
         if (!event.actionId || !event.encounterId)
@@ -404,7 +430,9 @@ private:
                 a.requiredStatus == b.requiredStatus &&
                 a.expectedActionName == b.expectedActionName &&
                 a.requiredActionResult == b.requiredActionResult &&
-                a.requiredAttempted == b.requiredAttempted;
+                a.requiredAttempted == b.requiredAttempted &&
+                a.pointId == b.pointId &&
+                a.requiredMovementStatus == b.requiredMovementStatus;
         };
         for (ActionTerminalPrerequisite const& prerequisite : left) {
             bool found = false;
@@ -466,6 +494,14 @@ private:
                 if (prerequisite.expectedActionName.empty() ||
                     static_cast<std::uint8_t>(prerequisite.requiredActionResult) >
                         static_cast<std::uint8_t>(ActionResult::Skipped))
+                    return false;
+            }
+            else if (prerequisite.source == ActionDependencyEventSource::PointMovementTerminal)
+            {
+                if (!prerequisite.targetGuid || prerequisite.spellId ||
+                    !prerequisite.expectedActionName.empty() ||
+                    static_cast<std::uint8_t>(prerequisite.requiredMovementStatus) >
+                        static_cast<std::uint8_t>(PointMovementTerminalStatus::Failed))
                     return false;
             }
             else

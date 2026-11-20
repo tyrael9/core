@@ -84,6 +84,20 @@ void PartyBotEngine::RememberCoreSpellTerminal(
     m_recentCoreSpellTerminals.push_back(event);
 }
 
+void PartyBotEngine::RememberPointMovementTerminal(
+    PointMovementTerminalEvent const& event) const {
+    if (!event.actionId || !event.encounterId)
+        return;
+    for (PointMovementTerminalEvent const& existing : m_recentPointMovementTerminals)
+        if (existing.actionId == event.actionId &&
+            existing.encounterId == event.encounterId)
+            return;
+    static std::size_t const Capacity = 128;
+    if (m_recentPointMovementTerminals.size() >= Capacity)
+        m_recentPointMovementTerminals.erase(m_recentPointMovementTerminals.begin());
+    m_recentPointMovementTerminals.push_back(event);
+}
+
 void PartyBotEngine::RememberActionResult(ActionResultEvent const& event) const {
     if (!event.actionId || !event.encounterId)
         return;
@@ -221,7 +235,7 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
                     matchedTerminal->spellId == prerequisite.spellId &&
                     matchedTerminal->status == prerequisite.requiredStatus;
             }
-        } else {
+        } else if (prerequisite.source == ActionDependencyEventSource::ActionResult) {
             ActionResultEvent const* matchedResult = nullptr;
             for (ActionResultEvent const& event : m_recentActionResults)
                 if (event.actionId == prerequisite.actionId &&
@@ -241,6 +255,22 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
                     targetMatches && spellMatches &&
                     prerequisite.requiredActionResult == matchedResult->result &&
                     prerequisite.requiredAttempted == matchedResult->attempted;
+            }
+        } else if (prerequisite.source == ActionDependencyEventSource::PointMovementTerminal) {
+            PointMovementTerminalEvent const* matchedMovement = nullptr;
+            for (PointMovementTerminalEvent const& event : m_recentPointMovementTerminals)
+                if (event.actionId == prerequisite.actionId &&
+                    event.encounterId == prerequisite.encounterId) {
+                    matchedMovement = &event;
+                    break;
+                }
+            if (matchedMovement) {
+                foundEvent = true;
+                occurredAtMs = matchedMovement->occurredAtMs;
+                matchesPrerequisite =
+                    matchedMovement->moverGuid == prerequisite.targetGuid &&
+                    matchedMovement->pointId == prerequisite.pointId &&
+                    matchedMovement->status == prerequisite.requiredMovementStatus;
             }
         }
 
@@ -278,12 +308,13 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
     if (result != ActionContinuationEnqueueResult::Queued)
         return result;
 
-    // Either event source may precede dependency registration (e.g. an
-    // instant adapter result or instant Core cast). Replay both bounded ledgers.
+    // A typed result may precede dependency registration; replay all bounded ledgers.
     for (CoreSpellTerminalEvent const& event : m_recentCoreSpellTerminals)
         m_actionContinuationQueue.ObserveTerminal(event);
     for (ActionResultEvent const& event : m_recentActionResults)
         m_actionContinuationQueue.ObserveActionResult(event);
+    for (PointMovementTerminalEvent const& event : m_recentPointMovementTerminals)
+        m_actionContinuationQueue.ObservePointMovementTerminal(event);
     return ReleaseReadyActionDependencies(context.nowMs, &continuationCandidate)
         ? ActionContinuationEnqueueResult::ReleasedImmediately
         : ActionContinuationEnqueueResult::Queued;
@@ -316,6 +347,28 @@ void PartyBotEngine::NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event
         if (listener)
             listener->OnCoreSpellTerminal(event);
 }
+bool PartyBotEngine::AddPointMovementTerminalListener(
+    std::shared_ptr<PointMovementTerminalListener> listener) {
+    if (!listener || m_pointMovementTerminalListeners.size() >= 32)
+        return false;
+    m_pointMovementTerminalListeners.push_back(std::move(listener));
+    return true;
+}
+
+void PartyBotEngine::NotifyPointMovementTerminal(
+    PointMovementTerminalEvent const& event) const {
+    RememberPointMovementTerminal(event);
+    m_actionContinuationQueue.PruneExpired(event.occurredAtMs);
+    m_actionContinuationQueue.ObservePointMovementTerminal(event);
+    ReleaseReadyActionDependencies(event.occurredAtMs);
+
+    std::vector<std::shared_ptr<PointMovementTerminalListener>> const listeners =
+        m_pointMovementTerminalListeners;
+    for (auto const& listener : listeners)
+        if (listener)
+            listener->OnPointMovementTerminal(event);
+}
+
 void PartyBotEngine::AddMultiplier(std::shared_ptr<Multiplier> multiplier) {
     if (multiplier) m_multipliers.push_back(std::move(multiplier));
 }
@@ -336,6 +389,7 @@ void PartyBotEngine::ResetDecisionState() const {
     m_actionContinuationQueue.Clear();
     m_recentCoreSpellTerminals.clear();
     m_recentActionResults.clear();
+    m_recentPointMovementTerminals.clear();
 }
 bool PartyBotEngine::InvalidateTrigger(std::string const& strategyName,
                                        std::string const& triggerName) const {

@@ -659,6 +659,30 @@ void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint64 actionId,
         actionId, spellId, targetGuid, success, interrupted);
 }
 
+void PartyBotAI::OnPointMovementResult(uint64 actionId, uint64 encounterId,
+                                       uint32 pointId,
+                                       PlayerPointMovementResult result,
+                                       float finalDistance)
+{
+    if (!actionId || !encounterId)
+        return;
+
+    m_partyBotEngine.InvalidateDecisionState();
+    PartyBotEngine::PointMovementTerminalEvent event;
+    event.actionId = actionId;
+    event.encounterId = encounterId;
+    event.moverGuid = me ? me->GetObjectGuid().GetRawValue() : 0;
+    event.pointId = pointId;
+    event.status = result == PlayerPointMovementResult::Reached
+        ? PartyBotEngine::PointMovementTerminalStatus::Reached
+        : (result == PlayerPointMovementResult::Interrupted
+            ? PartyBotEngine::PointMovementTerminalStatus::Interrupted
+            : PartyBotEngine::PointMovementTerminalStatus::Failed);
+    event.occurredAtMs = WorldTimer::getMSTime();
+    event.finalDistance = finalDistance;
+    m_partyBotEngine.NotifyPointMovementTerminal(event);
+}
+
 void PartyBotAI::OnEngineActionEvent(
     PartyBotEngine::DecisionContext const& context,
     PartyBotEngine::EngineActionTraceEvent const& event)

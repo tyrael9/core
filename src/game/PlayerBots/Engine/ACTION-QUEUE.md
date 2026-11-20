@@ -47,6 +47,7 @@ Supported prerequisite/result sources:
 
 - `CoreSpellTerminal`: a value-only event from the root Core Spell lifecycle, correlated by action ID, encounter, target, spell and Succeeded/Failed/Interrupted status.
 - `ActionResult`: the synchronous Engine dispatcher/adapter result, independently correlated and matched by action identity, optional target/spell, result and attempted flag. A Core Spell terminal cannot satisfy this source.
+- `PointMovementTerminal`: a value-only terminal from the opt-in Engine Player point-movement path, correlated by action, encounter, mover GUID and point ID, with Reached/Interrupted/Failed status.
 
 Dependency semantics:
 
@@ -63,8 +64,8 @@ F33 promotes eligible pending work that has waited 3,000 ms ahead of not-yet-pro
 
 ## Remaining gaps
 
-- Typed movement terminal results are not implemented. The legacy Core `PointMovementGenerator<Player>::Finalize` also calls `MovementInform` during forced cleanup, so that callback alone cannot prove arrival. See the F39 audit in ROADMAP.md and VMANGOS-API-AUDIT.md.
-- Item-use terminal completion/cancellation semantics are unaudited.
+- Player point-movement terminal results are implemented by F39; only the explicit `MovePointForEngine` path emits them. Legacy `MovePoint`/`MovementInform` behavior remains unchanged. `Reached` requires natural spline completion and destination tolerance; forced cleanup is `Interrupted`, and natural completion outside tolerance is `Failed`.
+- Item-use terminal completion/cancellation semantics were audited in F40 but no aggregate source is implemented. One ON_USE request may fan out into multiple Spell objects, and item mutation/consumption timing is distinct from each Spell terminal.
 - Production Core action adapters and uniform final pre-execution checks for target GUID/state, map/instance, range, LOS, spell, resource and cooldown are not registered.
 - Queue/dependency trace events and broader production lifecycle stress tests remain to be completed where they support actual actions.
 
@@ -76,7 +77,7 @@ F33 promotes eligible pending work that has waited 3,000 ms ahead of not-yet-pro
 - F33 starvation resistance and F34 Core-terminal-gated continuation: [#44680955006](https://github.com/tyrael9/core/actions/runs/44680955006), [#44689339405](https://github.com/tyrael9/core/actions/runs/44689339405).
 - F35 AND/alternative prerequisites, F36 mixed event sources, F37 tombstones and F38 full-queue ready backlog: [#44702889745](https://github.com/tyrael9/core/actions/runs/44702889745), [#44704096882](https://github.com/tyrael9/core/actions/runs/44704096882), [#44713147805](https://github.com/tyrael9/core/actions/runs/44713147805), [#44715114823](https://github.com/tyrael9/core/actions/runs/44715114823), [#44716873212](https://github.com/tyrael9/core/actions/runs/44716873212).
 
-The latest full source-code CI #44716873212 passed the pure suite, report collector, Linux ARM64 Vanilla 5875 build and fixture-backed simulator Runtime PASS. PR runtime fixtures are intentionally secret-isolated; PR validation runs the pure/build path. Current docs-only head validations are not new full simulator runs.
+Trusted Push CI [#44795113292](https://github.com/tyrael9/core/actions/runs/44795113292) passed pure tests, report collector, Linux ARM64 Vanilla 5875 build and fixture-backed simulator Runtime PASS, including F39. PR CI [#44795123687](https://github.com/tyrael9/core/actions/runs/44795123687) passed pure tests and ARM64 build; fixture runtime is intentionally secret-isolated.
 
 ## Operational boundary
 

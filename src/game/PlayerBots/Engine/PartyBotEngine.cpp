@@ -478,7 +478,7 @@ PendingActionEnqueueResult PartyBotEngine::QueuePendingAction(
         context.snapshot, context.bot, context.coordinator, context.nowMs,
         context.reservationTrace,
         context.valueCache ? context.valueCache : &m_valueCache,
-        context.engineActionObserver, this);
+        context.engineActionObserver, this, context.coreActionRuntime);
     CandidateEvaluation evaluation = EvaluateCandidate(evaluationContext, candidate);
     if (evaluation.status != CandidateStatus::NotSelected)
         return PendingActionEnqueueResult::NotEligible;
@@ -558,7 +558,7 @@ PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
         context.snapshot, context.bot, context.coordinator, context.nowMs,
         context.reservationTrace,
         context.valueCache ? context.valueCache : &m_valueCache,
-        context.engineActionObserver, this);
+        context.engineActionObserver, this, context.coreActionRuntime);
     PendingActionQueue::Context currentContext;
     currentContext.groupId = executionContext.snapshot.groupId;
     currentContext.mapId = executionContext.snapshot.mapId;
@@ -748,7 +748,7 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
         context.snapshot, context.bot, context.coordinator, context.nowMs,
         context.reservationTrace,
         context.valueCache ? context.valueCache : &m_valueCache,
-        context.engineActionObserver, this);
+        context.engineActionObserver, this, context.coreActionRuntime);
     DecisionReport report;
     report.snapshotEpoch = evaluationContext.snapshot.epoch;
     auto retainTriggerEvaluation = [&report](TriggerEvaluation&& observation) {
@@ -834,7 +834,7 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
         context.snapshot, context.bot, context.coordinator, context.nowMs,
         context.reservationTrace,
         context.valueCache ? context.valueCache : &m_valueCache,
-        context.engineActionObserver, this);
+        context.engineActionObserver, this, context.coreActionRuntime);
     auto recordReservation = [&executionContext](ReservationTraceEvent const& event) {
         if (executionContext.reservationTrace)
             executionContext.reservationTrace->RecordReservationEvent(executionContext, event);

@@ -7365,40 +7365,65 @@ void Player::CastItemCombatSpell(Unit* Target, WeaponAttackType attType)
     }
 }
 
-void Player::CastItemUseSpell(Item* item, SpellCastTargets const& targets)
+void Player::CastItemUseSpell(Item* item, SpellCastTargets const& targets,
+                                  uint8 bagIndex, uint8 itemSlot, uint8 requestedSpellSlot)
 {
     ItemPrototype const* proto = item->GetProto();
+    PlayerAI* itemUseAI = AI();
+    uint64 itemUseId = 0;
+    if (itemUseAI)
+        itemUseId = itemUseAI->OnItemUsePreparing(
+            item->GetObjectGuid().GetRawValue(), proto->ItemId, item->GetCount(),
+            bagIndex, itemSlot, requestedSpellSlot);
 
-    // use triggered flag only for items with many spell casts and for not first cast
+    // Preserve Vanilla's all-ON_USE-slots fan-out and first-child trigger semantics.
     int count = 0;
-
-    // item spells casted at use
-    for (const auto& spellData : proto->Spells)
+    for (uint8 slotIndex = 0; slotIndex < MAX_ITEM_PROTO_SPELLS; ++slotIndex)
     {
-        // no spell
+        ItemSpell const& spellData = proto->Spells[slotIndex];
         if (!spellData.SpellId)
+        {
+            if (itemUseId && itemUseAI)
+                itemUseAI->OnItemUseSlotSkipped(itemUseId, slotIndex);
             continue;
+        }
 
-        // wrong triggering type
         if (spellData.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+        {
+            if (itemUseId && itemUseAI)
+                itemUseAI->OnItemUseSlotSkipped(itemUseId, slotIndex);
             continue;
+        }
 
         SpellEntry const* spellInfo = sSpellMgr.GetSpellEntry(spellData.SpellId);
         if (!spellInfo)
         {
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "Player::CastItemUseSpell: Item (Entry: %u) in have wrong spell id %u, ignoring", proto->ItemId, spellData.SpellId);
+            if (itemUseId && itemUseAI)
+                itemUseAI->OnItemUseSlotSkipped(itemUseId, slotIndex);
             continue;
         }
 
         RemoveAurasWithInterruptFlags(AURA_INTERRUPT_ITEM_USE_CANCELS, 0, false, spellInfo->HasAttribute(SPELL_ATTR_EX_ALLOW_WHILE_STEALTHED));
 
-        Spell* spell = new Spell(this, spellInfo, (count > 0));
+        bool const triggered = count > 0;
+        uint64 childId = 0;
+        if (itemUseId && itemUseAI)
+            childId = itemUseAI->OnItemUseChildPreparing(
+                itemUseId, slotIndex, spellInfo->Id, triggered);
+
+        Spell* spell = new Spell(this, spellInfo, triggered);
         spell->SetClientStarted(!IsBot());
         spell->SetCastItem(item);
+        if (itemUseId && childId)
+            spell->SetPartyBotItemUseCorrelation(itemUseId, childId);
         spell->prepare(targets);
 
         ++count;
     }
+
+    if (itemUseId && itemUseAI)
+        itemUseAI->OnItemUseDispatchComplete(itemUseId);
 }
 
 ItemSetEffect* Player::GetItemSetEffect(uint32 setId)

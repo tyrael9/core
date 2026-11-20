@@ -3363,7 +3363,8 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
     // The owning PlayerAI may associate this Core Spell object with a
     // previously traced DoCastSpell attempt. The action ID then survives
     // synchronous instant casts and asynchronous cast/channel completion.
-    if (!m_partyBotTraceActionId && m_casterUnit && m_casterUnit->IsPlayer())
+    if (!m_partyBotTraceActionId && !m_partyBotItemUseId &&
+        m_casterUnit && m_casterUnit->IsPlayer())
     {
         if (Player* player = m_casterUnit->ToPlayer())
         {
@@ -4349,6 +4350,16 @@ void Spell::finish(bool ok)
 
     m_spellState = SPELL_STATE_FINISHED;
 
+    if (m_partyBotItemUseId && m_partyBotItemUseChildId &&
+        m_casterUnit && m_casterUnit->IsPlayer())
+    {
+        if (Player* player = m_casterUnit->ToPlayer())
+            if (PlayerAI* ai = player->AI())
+                ai->OnItemUseChildFinished(
+                    m_partyBotItemUseId, m_partyBotItemUseChildId,
+                    m_spellInfo->Id, ok, m_partyBotTraceInterrupted);
+    }
+
     if (m_partyBotTraceActionId && m_casterUnit && m_casterUnit->IsPlayer())
     {
         if (Player* player = m_casterUnit->ToPlayer())
@@ -5039,6 +5050,21 @@ void Spell::TakeCastItem()
         return;
     }
 
+    Player* player = (Player*)m_caster;
+    PlayerAI* itemUseAI = m_partyBotItemUseId ? player->AI() : nullptr;
+    std::uint8_t const mutationPhase = m_delayed ? 0 : 2; // BeforeEffects / AfterEffects
+    auto recordMutation = [&](std::uint8_t kind, std::uint8_t slotIndex,
+        std::uint32_t beforeCount, std::uint32_t afterCount,
+        std::int32_t beforeCharges, std::int32_t afterCharges,
+        bool itemExistsAfter, std::uint64_t itemGuid, std::uint32_t itemEntry)
+    {
+        if (itemUseAI)
+            itemUseAI->OnItemUseMutation(
+                m_partyBotItemUseId, m_partyBotItemUseChildId, itemGuid, itemEntry,
+                kind, mutationPhase, slotIndex, beforeCount, afterCount,
+                beforeCharges, afterCharges, itemExistsAfter);
+    };
+
     bool expendable = false;
     bool withoutCharges = false;
 
@@ -5046,24 +5072,31 @@ void Spell::TakeCastItem()
     {
         if (proto->Spells[i].SpellId)
         {
-            // item has limited charges
             if (proto->Spells[i].SpellCharges)
             {
                 if (proto->Spells[i].SpellCharges < 0)
                     expendable = true;
 
-                int32 charges = m_CastItem->GetSpellCharges(i);
+                int32 const beforeCharges = m_CastItem->GetSpellCharges(i);
+                int32 charges = beforeCharges;
 
-                // item has charges left
                 if (charges)
                 {
-                    (charges > 0) ? --charges : ++charges;  // abs(charges) less at 1 after use
+                    (charges > 0) ? --charges : ++charges;
                     if (proto->Stackable < 2)
+                    {
                         m_CastItem->SetSpellCharges(i, charges);
-                    m_CastItem->SetState(ITEM_CHANGED, (Player*)m_caster);
+                        m_CastItem->SetState(ITEM_CHANGED, player);
+                        if (beforeCharges != charges)
+                            recordMutation(0, static_cast<std::uint8_t>(i),
+                                m_CastItem->GetCount(), m_CastItem->GetCount(),
+                                beforeCharges, charges, true,
+                                m_CastItem->GetObjectGuid().GetRawValue(), proto->ItemId);
+                    }
+                    else
+                        m_CastItem->SetState(ITEM_CHANGED, player);
                 }
 
-                // all charges used
                 withoutCharges = (charges == 0);
             }
         }
@@ -5071,12 +5104,19 @@ void Spell::TakeCastItem()
 
     if (expendable && withoutCharges)
     {
-        uint32 count = 1;
+        uint32 const countBefore = m_CastItem->GetCount();
+        std::uint64_t const itemGuid = m_CastItem->GetObjectGuid().GetRawValue();
+        std::uint32_t const itemEntry = proto->ItemId;
         Item* castItem = m_CastItem;
-        // prevent crash at access to deleted m_targets.getItemTarget
         ClearCastItem();
-        // Destroying the item involved in a spell interrupts the spell. So delete the item once we cleared the spell cast item.
-        ((Player*)m_caster)->DestroyItemCount(castItem, count, true);
+        player->DestroyItemCount(castItem, 1, true);
+
+        // A surviving stack is still valid after DestroyItemCount; a depleted
+        // single item is reported from saved scalar identity only.
+        bool const itemExistsAfter = countBefore > 1;
+        std::uint32_t const countAfter = itemExistsAfter ? castItem->GetCount() : 0;
+        recordMutation(itemExistsAfter ? 1 : 2, 0xff,
+            countBefore, countAfter, 0, 0, itemExistsAfter, itemGuid, itemEntry);
     }
 }
 
@@ -5154,7 +5194,17 @@ void Spell::TakeReagents()
         if (m_targets.getItemTargetEntry() == itemid)
             m_targets.setItemTarget(nullptr);
 
+        uint32 const countBefore = p_caster->GetItemCount(itemid);
         p_caster->DestroyItemCount(itemid, itemcount, true);
+        uint32 const countAfter = p_caster->GetItemCount(itemid);
+        if (m_partyBotItemUseId && countAfter < countBefore)
+        {
+            if (PlayerAI* itemUseAI = p_caster->AI())
+                itemUseAI->OnItemUseMutation(
+                    m_partyBotItemUseId, m_partyBotItemUseChildId, 0, itemid,
+                    3, 0, 0xff, countBefore, countAfter, 0, 0,
+                    countAfter != 0);
+        }
     }
 }
 

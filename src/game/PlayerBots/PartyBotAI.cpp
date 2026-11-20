@@ -760,6 +760,91 @@ PartyBotEngine::CoreActionResolution PartyBotAI::ResolveUnitContext(
     return result;
 }
 
+uint64 PartyBotAI::OnItemUsePreparing(
+    uint64 itemGuid, uint32 itemEntry, uint32 itemCount,
+    uint8 bagIndex, uint8 itemSlot, uint8 requestedSpellSlot)
+{
+    if (!me || !itemGuid || !itemEntry)
+        return 0;
+
+    PartyBotEngine::ItemUseRequestDescriptor request;
+    request.actionId = m_activeEngineActionId;
+    request.encounterId = m_activeEngineActionEncounterId;
+    request.actorGuid = me->GetObjectGuid().GetRawValue();
+    request.itemGuid = itemGuid;
+    request.itemEntry = itemEntry;
+    request.bagIndex = bagIndex;
+    request.itemSlot = itemSlot;
+    request.requestedSpellSlot = requestedSpellSlot;
+    request.itemCountBefore = itemCount;
+    request.startedAtMs = WorldTimer::getMSTime();
+    request.lifetimeMs = 15000;
+
+    PartyBotEngine::ItemUseId itemUseId = 0;
+    if (m_partyBotEngine.BeginItemUse(request, itemUseId) !=
+        PartyBotEngine::ItemUseTrackerResult::Accepted)
+        return 0;
+    m_partyBotEngine.InvalidateDecisionState();
+    return itemUseId;
+}
+
+uint64 PartyBotAI::OnItemUseChildPreparing(
+    uint64 itemUseId, uint8 slotIndex, uint32 spellId, bool triggered)
+{
+    PartyBotEngine::ItemUseChildId childId = 0;
+    if (m_partyBotEngine.RegisterItemUseChild(
+            itemUseId, slotIndex, spellId, triggered, childId) !=
+        PartyBotEngine::ItemUseTrackerResult::Accepted)
+        return 0;
+    return childId;
+}
+
+void PartyBotAI::OnItemUseSlotSkipped(uint64 itemUseId, uint8 slotIndex)
+{
+    m_partyBotEngine.MarkItemUseSlotSkipped(itemUseId, slotIndex);
+}
+
+void PartyBotAI::OnItemUseDispatchComplete(uint64 itemUseId)
+{
+    m_partyBotEngine.CloseItemUseDispatch(itemUseId, WorldTimer::getMSTime());
+}
+
+void PartyBotAI::OnItemUseChildFinished(
+    uint64 itemUseId, uint64 childId, uint32 /*spellId*/,
+    bool success, bool interrupted)
+{
+    PartyBotEngine::ItemUseChildStatus status =
+        interrupted ? PartyBotEngine::ItemUseChildStatus::Interrupted :
+        success ? PartyBotEngine::ItemUseChildStatus::Succeeded :
+                  PartyBotEngine::ItemUseChildStatus::Failed;
+    m_partyBotEngine.RecordItemUseChildTerminal(
+        itemUseId, childId, status, WorldTimer::getMSTime());
+    m_partyBotEngine.InvalidateDecisionState();
+}
+
+void PartyBotAI::OnItemUseMutation(
+    uint64 itemUseId, uint64 childId, uint64 itemGuid, uint32 itemEntry,
+    uint8 kind, uint8 phase, uint8 slotIndex, uint32 beforeCount,
+    uint32 afterCount, int32 beforeCharges, int32 afterCharges,
+    bool itemExistsAfter)
+{
+    PartyBotEngine::ItemUseMutationEvent event;
+    event.itemUseId = itemUseId;
+    event.childId = childId;
+    event.itemGuid = itemGuid;
+    event.itemEntry = itemEntry;
+    event.kind = static_cast<PartyBotEngine::ItemUseMutationKind>(kind);
+    event.phase = static_cast<PartyBotEngine::ItemUseMutationPhase>(phase);
+    event.slotIndex = slotIndex;
+    event.beforeCount = beforeCount;
+    event.afterCount = afterCount;
+    event.beforeCharges = beforeCharges;
+    event.afterCharges = afterCharges;
+    event.itemExistsAfter = itemExistsAfter;
+    event.occurredAtMs = WorldTimer::getMSTime();
+    m_partyBotEngine.RecordItemUseMutation(event);
+}
+
 void PartyBotAI::OnPointMovementResult(uint64 actionId, uint64 encounterId,
                                        uint32 pointId,
                                        PlayerPointMovementResult result,
@@ -1241,6 +1326,7 @@ void PartyBotAI::OnMapLeave(uint32 mapId, uint32 instanceId)
         }
     }
 
+    m_partyBotEngine.ExpireAllItemUses(WorldTimer::getMSTime());
     m_partyBotEngine.ResetDecisionState();
     m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
     if (!anotherPartyBotRemains && m_partyCoordinator->HasActiveEncounter())
@@ -1268,6 +1354,7 @@ void PartyBotAI::OnMapLeave(uint32 mapId, uint32 instanceId)
 
 void PartyBotAI::OnServerShutdown()
 {
+    m_partyBotEngine.ExpireAllItemUses(WorldTimer::getMSTime());
     m_partyBotEngine.ResetDecisionState();
     if (!me || !m_partyCoordinator || !m_partyCoordinator->HasActiveEncounter())
         return;
@@ -1313,6 +1400,8 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     }
     else
         return;
+
+    m_partyBotEngine.PruneExpiredItemUses(WorldTimer::getMSTime());
 
     if (!me->IsInWorld() || me->IsBeingTeleported())
         return;

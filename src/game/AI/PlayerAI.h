@@ -69,6 +69,21 @@ class PlayerAI
                                          uint64 /*encounterId*/, uint32 /*spellId*/,
                                          uint64 /*traceTargetGuid*/, bool /*success*/,
                                          bool /*interrupted*/, bool /*engineAction*/) {}
+        // Item-use roots aggregate the complete ON_USE fan-out; each child Spell is
+        // registered before prepare() so synchronous finishes cannot race registration.
+        virtual uint64 OnItemUsePreparing(uint64 /*itemGuid*/, uint32 /*itemEntry*/,
+            uint32 /*itemCount*/, uint8 /*bagIndex*/, uint8 /*itemSlot*/,
+            uint8 /*requestedSpellSlot*/) { return 0; }
+        virtual uint64 OnItemUseChildPreparing(uint64 /*itemUseId*/, uint8 /*slotIndex*/,
+            uint32 /*spellId*/, bool /*triggered*/) { return 0; }
+        virtual void OnItemUseSlotSkipped(uint64 /*itemUseId*/, uint8 /*slotIndex*/) {}
+        virtual void OnItemUseDispatchComplete(uint64 /*itemUseId*/) {}
+        virtual void OnItemUseChildFinished(uint64 /*itemUseId*/, uint64 /*childId*/,
+            uint32 /*spellId*/, bool /*success*/, bool /*interrupted*/) {}
+        virtual void OnItemUseMutation(uint64 /*itemUseId*/, uint64 /*childId*/,
+            uint64 /*itemGuid*/, uint32 /*itemEntry*/, uint8 /*kind*/, uint8 /*phase*/,
+            uint8 /*slotIndex*/, uint32 /*beforeCount*/, uint32 /*afterCount*/,
+            int32 /*beforeCharges*/, int32 /*afterCharges*/, bool /*itemExistsAfter*/) {}
         // Notify observers only when the Core changes a Player between alive and dead.
         virtual void OnAliveStateChanged(bool /*wasAlive*/, bool /*isAlive*/) {}
         // Called after Core applies one hit to a Player; values are actual health before/after.

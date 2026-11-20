@@ -296,6 +296,14 @@ class Spell
         uint64 m_partyBotTraceTargetGuid = 0;
         bool m_partyBotTraceInterrupted = false;
         bool m_partyBotTraceEngineAction = false;
+        uint64 m_partyBotItemUseId = 0;
+        uint64 m_partyBotItemUseChildId = 0;
+
+        void SetPartyBotItemUseCorrelation(uint64 itemUseId, uint64 childId)
+        {
+            m_partyBotItemUseId = itemUseId;
+            m_partyBotItemUseChildId = childId;
+        }
 
         void SetCastTime(int32 castTime) { m_casttime = castTime; }
         int32 GetCastTime() const { return m_casttime; }

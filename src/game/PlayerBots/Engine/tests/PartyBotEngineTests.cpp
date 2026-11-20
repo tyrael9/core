@@ -572,14 +572,37 @@ public:
     mutable std::uint32_t usefulChecks = 0;
     std::uint32_t executeCoreCalls = 0;
     bool executeCoreSawResolvedContext = false;
+    bool rejectPreflight = false;
+    std::uint32_t preflightChecks = 0;
 protected:
-    ActionResult ExecuteCore(DecisionContext&, ActionCandidate const&,
-                             CoreActionResolution const& resolved) override {
+    ActionExecutionResult ValidateCoreAction(
+        DecisionContext const&, ActionCandidate const&,
+        CoreActionResolution const& resolved) const override {
+        ++preflightChecks;
+        ActionExecutionResult result;
+        if (!resolved.IsResolved() || !resolved.actor || !resolved.target || !resolved.map) {
+            result.result = ActionResult::Impossible;
+            result.reason = "test_core_action_context_incomplete";
+        } else if (rejectPreflight) {
+            result.result = ActionResult::Impossible;
+            result.reason = "test_core_action_preflight_veto";
+        } else {
+            result.result = ActionResult::Success;
+            result.reason = "test_core_action_preflight_passed";
+        }
+        return result;
+    }
+    ActionExecutionResult ExecuteCore(DecisionContext&, ActionCandidate const&,
+                                      CoreActionResolution const& resolved) override {
         ++executeCoreCalls;
         executeCoreSawResolvedContext = resolved.IsResolved() &&
             resolved.actor && resolved.target && resolved.map;
-        return executeCoreSawResolvedContext
+        ActionExecutionResult result;
+        result.result = executeCoreSawResolvedContext
             ? ActionResult::Success : ActionResult::Impossible;
+        result.reason = executeCoreSawResolvedContext
+            ? "test_core_action_executed" : "test_core_action_execute_missing_context";
+        return result;
     }
 private:
     std::string m_name;
@@ -662,8 +685,10 @@ void TestCoreActionRuntimeIsPreservedAcrossDecisionAndPendingContexts()
     assert(report.candidates[0].status == CandidateStatus::Selected);
     immediateEngine.ExecuteSelected(f.context, report);
     assert(report.candidates[0].status == CandidateStatus::Executed);
+    assert(immediateAction->preflightChecks == 1);
     assert(immediateAction->executeCoreCalls == 1);
     assert(immediateAction->executeCoreSawResolvedContext);
+    assert(report.candidates[0].reason == "test_core_action_executed");
     assert(runtime.resolveCalls == 1);
 
     // QueuePendingAction() and ExecutePendingActions() also create internal
@@ -686,9 +711,40 @@ void TestCoreActionRuntimeIsPreservedAcrossDecisionAndPendingContexts()
     assert(pending.rejected == 0);
     assert(pendingAction->possibleChecks == 2);
     assert(pendingAction->usefulChecks == 2);
+    assert(pendingAction->preflightChecks == 1);
     assert(pendingAction->executeCoreCalls == 1);
     assert(pendingAction->executeCoreSawResolvedContext);
+    assert(pending.completedCandidates.size() == 1);
+    assert(pending.completedCandidates[0].reason == "test_core_action_executed");
     assert(runtime.resolveCalls == 2);
+}
+
+void TestCoreActionPreflightVetoPreventsSideEffectAndPreservesReason()
+{
+    Fixture f;
+    TestCoreActionRuntime runtime;
+    f.context.coreActionRuntime = &runtime;
+
+    PartyBotEngine::PartyBotEngine engine;
+    auto action = std::make_shared<TestCoreAction>("core_preflight_veto");
+    action->rejectPreflight = true;
+    assert(engine.RegisterAction(action));
+    auto trigger = std::make_shared<TestTrigger>("core_preflight_veto_trigger");
+    trigger->generated.push_back(
+        Candidate("core_preflight_veto", 20.0f, ActionChannel::Utility));
+    auto strategy = std::make_shared<Strategy>("core_preflight_veto_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    engine.ExecuteSelected(f.context, report);
+    assert(report.candidates[0].status == CandidateStatus::ExecutionFailed);
+    assert(report.candidates[0].actionResult == ActionResult::Impossible);
+    assert(report.candidates[0].reason == "test_core_action_preflight_veto");
+    assert(action->preflightChecks == 1);
+    assert(action->executeCoreCalls == 0);
+    assert(runtime.resolveCalls == 1);
 }
 
 void TestActionQueueIsBoundedPriorityOrderedAndStable()
@@ -4734,6 +4790,7 @@ int main() {
     TestItemUseAggregateExpiryAndClockWrap();
     TestItemUseAggregateLateChildCannotBeatDeadline();
     TestCoreActionRuntimeIsPreservedAcrossDecisionAndPendingContexts();
+    TestCoreActionPreflightVetoPreventsSideEffectAndPreservesReason();
     TestExecuteSelectedDispatchesByPriorityWithStableTies();    TestExecuteSelectedHonorsPerDispatchLimit();
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();
     TestReservationOwnershipAndExpiry();

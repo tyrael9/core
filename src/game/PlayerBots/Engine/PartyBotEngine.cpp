@@ -1163,13 +1163,19 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
         // effect necessarily completed; Core terminal events remain separate.
         recordAction(evaluation, actionId, EngineActionTraceStage::Attempt,
                      true, ActionResult::NotAttempted, "adapter_dispatch");
-        evaluation.actionResult = action->Execute(executionContext, evaluation.candidate);
+        ActionExecutionResult const execution =
+            action->ExecuteDetailed(executionContext, evaluation.candidate);
+        evaluation.actionResult = execution.result;
         if (evaluation.actionResult == ActionResult::Success) {
             evaluation.status = CandidateStatus::Executed;
-            evaluation.reason.clear();
+            evaluation.reason = execution.reason;
+            char const* reason = evaluation.reason.empty()
+                ? "adapter_returned_success" : evaluation.reason.c_str();
             recordAction(evaluation, actionId, EngineActionTraceStage::Result,
-                         true, evaluation.actionResult, "adapter_returned_success");
+                         true, evaluation.actionResult, reason);
         } else {
+            evaluation.reason = execution.reason.empty()
+                ? "action_execution_not_successful" : execution.reason;
             if (hasThreatReservation) {
                 executionContext.coordinator.ReleaseThreatAction(actionId);
                 ReservationTraceEvent release;

@@ -4,6 +4,12 @@
 #include "ActionContinuation.h"
 #include "ThreatImpact.h"
 namespace PartyBotEngine {
+struct ActionExecutionResult
+{
+    ActionResult result = ActionResult::Failed;
+    std::string reason;
+};
+
 class Action {
 public:
     virtual ~Action() {}
@@ -11,6 +17,15 @@ public:
     virtual bool IsPossible(DecisionContext const&, ActionCandidate const&, std::string& reason) const = 0;
     virtual bool IsUseful(DecisionContext const&, ActionCandidate const&, std::string& reason) const = 0;
     virtual ActionResult Execute(DecisionContext&, ActionCandidate const&) = 0;
+    // Existing non-Core actions may keep returning ActionResult. CoreAction
+    // overrides this to preserve the exact preflight/dispatch reason.
+    virtual ActionExecutionResult ExecuteDetailed(
+        DecisionContext& context, ActionCandidate const& candidate)
+    {
+        ActionExecutionResult result;
+        result.result = Execute(context, candidate);
+        return result;
+    }
     // Cross-tick queueing is opt-in. Zero means immediate-only.
     virtual std::uint32_t GetPendingLifetimeMs() const { return 0; }
     // Safe default: until an action can enumerate its full threat impact, it is

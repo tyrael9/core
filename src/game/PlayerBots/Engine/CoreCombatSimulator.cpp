@@ -926,27 +926,48 @@ public:
         return true;
     }
 
-    ActionResult ExecuteCore(DecisionContext& context, ActionCandidate const& candidate,
-                             CoreActionResolution const& resolved) override
+    ActionExecutionResult ValidateCoreAction(
+        DecisionContext const& context, ActionCandidate const& candidate,
+        CoreActionResolution const& resolved) const override
     {
+        ActionExecutionResult result;
         Player* mover = resolved.actor;
         uint64 const encounterId = context.coordinator.GetEncounterId();
         if (!mover || resolved.target != mover || !candidate.actionId || !encounterId ||
             !context.continuationSink || !candidate.hasDestination ||
+            !m_arrivalTolerance || !std::isfinite(m_arrivalTolerance) ||
             !mover->IsAlive() ||
             mover->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE |
                                 UNIT_STATE_POSSESSED) ||
             mover->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE ||
             !std::isfinite(candidate.destinationX) ||
             !std::isfinite(candidate.destinationY) ||
-            !std::isfinite(candidate.destinationZ))
-            return ActionResult::Impossible;
+            !std::isfinite(candidate.destinationZ)) {
+            result.result = ActionResult::Impossible;
+            result.reason = "simulator_player_point_move_live_preflight_rejected";
+            return result;
+        }
 
         float const dx = mover->GetPositionX() - candidate.destinationX;
         float const dy = mover->GetPositionY() - candidate.destinationY;
         float const dz = mover->GetPositionZ() - candidate.destinationZ;
-        if (dx * dx + dy * dy + dz * dz <= m_arrivalTolerance * m_arrivalTolerance)
-            return ActionResult::Useless;
+        if (dx * dx + dy * dy + dz * dz <= m_arrivalTolerance * m_arrivalTolerance) {
+            result.result = ActionResult::Useless;
+            result.reason = "simulator_player_point_move_destination_already_reached";
+            return result;
+        }
+
+        result.result = ActionResult::Success;
+        result.reason = "simulator_player_point_move_live_preflight_passed";
+        return result;
+    }
+
+    ActionExecutionResult ExecuteCore(DecisionContext& context, ActionCandidate const& candidate,
+                                      CoreActionResolution const& resolved) override
+    {
+        Player* mover = resolved.actor;
+        uint64 const encounterId = context.coordinator.GetEncounterId();
+        ActionExecutionResult result;
 
         ActionDependencyRequest request;
         request.lifetimeMs = 4000;
@@ -962,14 +983,20 @@ public:
         ActionContinuationEnqueueResult const queued =
             context.continuationSink->QueueActionDependency(
                 context, request, m_continuationCandidate);
-        if (queued != ActionContinuationEnqueueResult::Queued)
-            return ActionResult::Failed;
+        if (queued != ActionContinuationEnqueueResult::Queued) {
+            result.result = ActionResult::Failed;
+            result.reason = "simulator_player_point_move_continuation_rejected";
+            return result;
+        }
 
         m_started = mover->GetMotionMaster()->MovePointForEngine(
             m_pointId, candidate.destinationX, candidate.destinationY,
             candidate.destinationZ, MOVE_NONE, candidate.actionId, encounterId,
             m_arrivalTolerance);
-        return m_started ? ActionResult::Success : ActionResult::Failed;
+        result.result = m_started ? ActionResult::Success : ActionResult::Failed;
+        result.reason = m_started ? "simulator_player_point_move_started"
+                                  : "simulator_player_point_move_start_rejected";
+        return result;
     }
 
     bool DidStartMovement() const { return m_started; }

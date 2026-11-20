@@ -446,7 +446,7 @@ The queue integration adds no class rotations or Legacy fallback. NewEngine can 
 - [x] Add pure tests for authority value resolution, Shadow opt-in semantics, exclusive Legacy suppression, and fail-safe handling of unknown settings.
 - [x] Run pure Engine tests, ARM64 build and trusted fixture-backed runtime CI. Push CI [#44673953340](https://github.com/tyrael9/core/actions/runs/44673953340) on head `18b17cc7bd6a2aecebe51409b832e0f31104546e` passed all tests, ARM64 server/realm build, simulator harness syntax, the real Vanilla 5875 fixture and final `Runtime PASS`; PR CI [#44673960390](https://github.com/tyrael9/core/actions/runs/44673960390) also passed.
 - [x] Add a Core-backed simulator assertion that the actual `PartyBotAI::UpdateAI` enters one empty NewEngine decision cycle without Legacy policy entry/dispatch or Shadow probe registration. Runtime emitted `newEngineTicks=1 legacyEntries=0 legacyDispatches=0 decisionCycles=1 candidates=0 shadowPoliciesRegistered=0 coordinator=1` and the dedicated F29 PASS marker.
-- [ ] Add real class/role action adapters and Core terminal-result delivery before claiming gameplay readiness.
+- [ ] Add production class/role Core action adapters before claiming gameplay readiness. F32 separately completed Core Spell terminal-result transport; adapter coverage remains open.
 
 NewEngine authority mode is an opt-in development safety gate, not a gameplay-ready configuration. The current registry contains no production class action adapters, and the default Shadow probes are intentionally excluded from NewEngine mode. The default remains Legacy.
 
@@ -462,7 +462,7 @@ NewEngine authority mode is an opt-in development safety gate, not a gameplay-re
 - [x] Trusted push CI [#44664709181](https://github.com/tyrael9/core/actions/runs/44664709181), head `04f18173c9621c1f18ecab1f7031c5f9a338803e`, passed `PartyBotEngine tests passed`, read-only report collector tests, Linux ARM64 server/realm build, simulator harness syntax, fixture-backed Core simulator and final `Runtime PASS`. F20's complete `decision_summary` fixture now explicitly includes `pending_queued=0`; the simulator log emitted the expected F20 PASS marker. This fixture continues to run existing Legacy/Shadow-owned Core scenarios; it does not claim live NewEngine gameplay adapters or execute the new pending dispatcher as a production rotation.
 - [x] PR CI [#44664715713](https://github.com/tyrael9/core/actions/runs/44664715713) passed changed-path classification, pure Engine tests, report collector tests and the full Linux ARM64 server/realm build. Fixture-backed runtime is intentionally push-only.
 - [x] Add a pending-dispatch aggregate threat-budget regression: two individually safe 12-point candidates targeting the same Core threat recipient cannot both dispatch when their combined projection exceeds headroom.
-- [ ] Add a mixed immediate/pending eight-action ceiling regression if future channel expansion allows more than the current four mutually-exclusive channels. Core-terminal completion, richer prerequisites/alternatives/continuations and queue fairness/starvation remain later Phase 4 work; the synchronous listener base is tracked in F31.
+- [ ] Add a mixed immediate/pending eight-action ceiling regression if future channel expansion allows more than the current four mutually-exclusive channels. Richer prerequisites/alternatives/continuations remain later Phase 4 work; queue fairness/starvation is being addressed in F33. Core-terminal completion is implemented in F32.
 
 The dispatch boundary remains NewEngine-only. Legacy and Shadow execution behavior is unchanged.
 
@@ -478,3 +478,20 @@ The dispatch boundary remains NewEngine-only. Legacy and Shadow execution behavi
 - [x] Run pure Engine tests, ARM64 build and trusted fixture-backed simulator CI. Push CI [#44672162650](https://github.com/tyrael9/core/actions/runs/44672162650) and the current combined F29/F31 Push CI [#44673953340](https://github.com/tyrael9/core/actions/runs/44673953340) passed the pure listener regressions, ARM64 build and complete Vanilla 5875 runtime; PR CI [#44672169551](https://github.com/tyrael9/core/actions/runs/44672169551) and [#44673960390](https://github.com/tyrael9/core/actions/runs/44673960390) passed the build/test path.
 
 This is a synchronous dispatch-result foundation only. It does not add async Core completion, prerequisites, alternatives, continuations, gameplay adapters or Legacy fallback.
+
+
+## F32 — Core Spell terminal-result delivery to Engine listeners (pure/ARM64/full-fixture CI passed)
+
+- [x] Add a per-Engine bounded 32-entry CoreSpellTerminalListener registry with null/duplicate/full rejection and snapshot-before-callback semantics.
+- [x] Add a value-only terminal event carrying the original Engine action ID, encounter ID, target GUID, spell ID, completion timestamp and Succeeded/Failed/Interrupted status. It contains no Core object or DecisionContext pointer.
+- [x] Carry the Engine-action source bit and action correlation on the root Core Spell object from prepare until the actual Spell::finish callback. Delivery is independent of DecisionTrace enablement; synchronous Action::Execute success remains distinct from later Core completion.
+- [x] Extend the real Core Player heal fixture to register the listener on the same PartyBotAI-owned Engine and require exactly one successful terminal with matching action/encounter/target/spell identity.
+- [x] Add pure listener regressions for copied value fields, success/interrupted status preservation, null/duplicate/full rejection and listener registration during callbacks.
+- [x] Trusted Push CI #44677767691, head 4673cd1307c34fd623a330471e21a206f5677228, passed pure Engine tests, report collector tests, Linux ARM64 server/realm build, simulator harness syntax and the fixture-backed Vanilla 5875 runtime. The runtime emitted the exact F32 PASS marker and final Runtime PASS; the heal changed 50000 to 83388 and Core charged Mana 2896 to 2866.
+- [x] PR CI #44677772862 passed pure tests and ARM64 build. Its Core runtime fixture was intentionally skipped; fixture-backed acceptance is the trusted push run above.
+
+F32 completes the transport and Core lifecycle correlation only. It does not add production class/role action adapters, action prerequisites/alternatives/continuations, or gameplay readiness.
+
+## F33 — PendingActionQueue starvation resistance (implementation/CI pending)
+
+Add deterministic age-based fairness to cross-tick pending dispatch. An eligible, unexpired entry waiting at least 3,000 ms is promoted ahead of entries that have not reached the fairness threshold; among promoted entries, the longest-waiting entry wins, with FIFO ordinal as the tie-break. Unpromoted entries retain priority-first/FIFO ordering. The same comparator must be used by both queue extraction and the executor's post-revalidation sort so later sorting cannot erase the fairness decision. Original enqueue time, ordinal and TTL must survive duplicate refresh and channel/threat-budget deferral. Legacy and Shadow execution remain unchanged.

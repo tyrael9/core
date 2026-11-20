@@ -269,3 +269,14 @@ The event represents an Engine dispatch result or synchronous `Action::Execute` 
 
 
 F31 verification: pure regressions cover listener delivery without trace sinks, dispatcher metadata/action ID, null/duplicate/full-capacity rejection and callback-time registration semantics. Current trusted Push CI [#44673953340](https://github.com/tyrael9/core/actions/runs/44673953340) passed those tests, the ARM64 build and full Vanilla 5875 simulator; PR CI [#44673960390](https://github.com/tyrael9/core/actions/runs/44673960390) passed the build/test path. This validates the synchronous dispatcher-result listener boundary only; it does not turn the later `Spell::finish` terminal into the same event.
+
+
+## F32 Core Spell terminal-result listeners
+
+The Engine owns a bounded CoreSpellTerminalListener registry. Core Spell::prepare binds the current Engine action ID and source bit to the root Spell; Spell::finish later sends a value-only event back through the same PartyBotAI-owned Engine. This terminal stage is distinct from the synchronous ActionResultEvent emitted when Action::Execute returns. The event contains action ID, encounter ID, target GUID, spell ID, completion time and Succeeded/Failed/Interrupted status, with no Core pointer or retained DecisionContext. Listener delivery is independent of DecisionTrace; callbacks use a stable listener snapshot.
+
+Pure tests cover value retention, Succeeded/Interrupted status, null/duplicate/full registration and callback-time registration. Trusted Push CI #44677767691 passed the pure suite, ARM64 build and complete Vanilla 5875 simulator. The real Player heal fixture registered the listener on the same PartyBotAI Engine and received one successful terminal correlated to the original action/encounter/target/spell. PR CI #44677772862 passed the pure/build path and intentionally skipped the push-only fixture. This completes terminal-result transport, not production action adapters or gameplay readiness.
+
+## F33 PendingActionQueue fairness (implementation/CI pending)
+
+The pending queue currently revalidates actions and sorts by current priority/FIFO, but a continuous stream of higher-priority arrivals can starve an older eligible action until its TTL expires. F33 introduces a bounded 3,000 ms age-promotion threshold. Once promoted, an entry outranks all unpromoted entries; promoted entries order by longest wait then original FIFO ordinal. Duplicate refresh and deferral must preserve the original enqueue time and expiry. The fairness comparator is shared by queue extraction and the executor's revalidated-work sort.

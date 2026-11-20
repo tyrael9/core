@@ -319,6 +319,11 @@ if [[ -z "$engine_cast_terminal_seq" || "$engine_cast_terminal_seq" -le "$engine
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F32 Core Spell::finish delivered a value-only terminal event to the registered Engine listener with the same action/encounter/spell/target correlation as the adapter attempt; Core success was distinct from SPELL_CAST_OK acceptance." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F32 Core Spell terminal-listener PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 
 if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine selected a formation destination and the Core PointMovementGenerator moved the actor to it." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Core PointMovementGenerator PASS marker was not found." | tee -a "$LOG_FILE"

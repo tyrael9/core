@@ -30,7 +30,7 @@ If a behavior is not implemented, the new engine may wait, defend through an imp
 
 The current Shadow hook is a temporary development instrument. It may remain available to evaluate snapshots and policies without execution, or to compare a proposed decision against a live encounter. It is not a third mixed-execution mode and is not the end-state. Observe-only evaluation must never be mistaken for New Engine execution.
 
-A future mode selector may expose Legacy and New Engine explicitly. Do not add per-role or per-domain automatic fallback. If New Engine is selected, its authority covers every supported decision domain for that bot.
+Runtime authority is implemented through `PlayerBot.EngineAuthority`: Legacy (0, default), Shadow (1, read-only Engine evaluation with Legacy execution), and NewEngine (2, exclusive Engine authority). NewEngine returns before Legacy follow/heal/combat/class policy. Unknown values fail safe to Legacy. Missing Engine behavior is a deliberate no-op, never a Legacy fallback.
 
 ## 3. Responsibility boundaries
 
@@ -132,8 +132,9 @@ Do not implement the full CMaNGOS surface mechanically. Add a semantic only when
 
 Current implementation slices:
 - `ActionQueue` is a per-dispatch, report-index queue. It is bounded to 32 entries, orders by priority with stable FIFO ties and is drained by `ExecuteSelected` with an eight-action ceiling. It does not retain work across updates.
-- `PendingActionQueue` is a separate bounded event-storage primitive. It copies only `ActionCandidate` scalar/string fields, deduplicates by action/target/spell/channel/destination identity, refreshes the latest payload/priority without extending the original deadline, and prunes expiry with uint32 wrap-safe comparisons. It is not yet owned or consumed by the Engine update loop.
-- Before connecting pending events to execution, the Engine must define map/party/encounter teardown clearing, current-snapshot Possible/Useful/threat revalidation, channel arbitration across old and new events, and traceable expired/deferred/skipped outcomes. A queued candidate is never permission to retain or dereference a Core object.
+- `PendingActionQueue` is bounded (32 entries), Engine-owned and called from `ExecuteDecisionCycle` under NewEngine authority. It copies value-only candidate/owner data, uses action-specific bounded TTLs and stable FIFO identity, revalidates Possible/Useful/threat/multipliers/channels/context on every dequeue, and is cleared by encounter/party/map/instance/lifecycle reset.
+- F30–F38 add immediate-plus-pending dispatch with one shared eight-action ceiling, channel and cumulative threat arbitration, 3-second fairness promotion, bounded Core Spell/ActionResult listeners, typed AND/alternative dependencies, continuation gating, wrap-safe expiry, idempotency tombstones and a separate ready backlog when the pending queue is full. Children always return through ordinary pending dispatch; Core callbacks never execute them directly.
+- Typed movement/item terminal sources and production Core action adapters remain open. A queued candidate is never permission to retain or dereference a Core object.
 
 
 ## 8. Values and trigger scheduling
@@ -216,7 +217,7 @@ Post-fight logs are a required development capability. Each encounter gets an ID
 
 The trace must distinguish proposed, selected, attempted and accepted actions. It must be bounded and rate-limited without silently dropping action results, deaths or encounter-end summaries. Use structured single-line key/value events so the deployment diagnostics collector can produce an attachable post-fight report.
 
-See DECISION-TRACE.md for the event contract, sampling levels and collection expectations. The current Shadow summary/candidate trace does not yet meet this requirement.
+See DECISION-TRACE.md for the implemented encounter event schema and bounded sampling rules. The existing trace is useful for diagnosis but is not lossless: richer AI/boss state, broader arbitration detail, ordinary-member per-hit health deltas, complete cross-map closure and deployment-diagnostics integration remain open.
 
 ## 14. Threading, lifetime and performance
 
@@ -256,32 +257,32 @@ A New Engine milestone is complete when:
 
 Experimental combat quality may be poor while features are being built. Runtime safety, thread safety, bounded work and lifecycle/data integrity remain hard requirements. A CI pass is not an in-game test or deployment authorization.
 
-## 17. Current implementation status
+## 17. Current implementation status (2026-11-20)
 
-Implemented today:
-- C++14 Strategy, Trigger, Action, Value and Multiplier interfaces;
-- value-only snapshot data types and live same-map snapshot builder;
-- PartyCoordinator reservation storage and weakly indexed (group,map,instance) registry;
-- deterministic candidate evaluation and basic channel arbitration;
-- opt-in Shadow hook connected to PartyBotAI;
-- candidate-only healer triage, tank peel and DPS assist;
-- bounded legacy/Shadow decision diagnostics and standalone tests.
+Implemented and fixture/pure-test supported:
 
-Not implemented yet:
-- full Value cache and Trigger scheduler;
-- ActionNode prerequisites/alternatives/continuers and robust queue lifecycle;
-- full strategy composition/state machine;
-- complete vMaNGOS action executor;
-- New Engine exclusive runtime mode and no-fallback enforcement;
-- full combat and non-combat strategy coverage;
-- encounter correlation and post-fight trace contract.
+- C++14 Strategy, Trigger, Action, Value and Multiplier interfaces; per-Engine typed ValueCache and TriggerScheduler with Core lifecycle invalidation hooks.
+- GUID/scalar-only PartySnapshot data, same-map Group/hostile/threat snapshot builder and map/instance-scoped PartyCoordinator/reservations.
+- Deterministic candidate evaluation, Possible/Useful checks, multiplier composition, channel arbitration and bounded immediate/pending dispatch.
+- NewEngine-only `ExecuteDecisionCycle` with a shared immediate/pending budget, fresh pending revalidation and no Legacy fallback.
+- Bounded ActionResult and Core Spell terminal listeners; F34 continuations; F35 typed AND/alternative dependencies; F36 ActionResult source isolation; F37 tombstones; F38 ready-backlog preservation under a full pending queue.
+- Core-backed simulator scenarios for attacks, Player spell execution, threat, range/LOS/resource failures, PointMovementGenerator/Follow, five-Player Group snapshots, death/recovery, map transfer and trace behavior.
+- Encounter IDs/sequences, bounded shared trace budgets, target/threat/cast/alive/health observations, shutdown flush and local read-only report collector.
 
-Current Shadow evaluation is read-only. PartyBotAI continues into Legacy combat routines afterward. It proves only that a first snapshot-to-candidate path is wired; it does not constitute a usable new AI.
+Not yet implemented / still gated:
+
+- A production vMaNGOS action executor with audited generic, class and role adapters.
+- Uniform immediate pre-execution validation of target identity/state, map/instance, range, LOS, spell, resource and cooldown for each action.
+- Typed PointMovementGenerator movement terminal results and audited item-use terminal outcomes. The F39 movement audit found that legacy `MovementInform` is called on forced cleanup as well as natural completion.
+- Full generic bot state machine, class/role strategies, shared party policy and encounter mechanics.
+- Remaining trace coverage: richer AI state/boss selection, broader arbitration alternatives, ordinary party-member per-hit health deltas, cross-map closure and deployment diagnostics integration.
+
+Current NewEngine is an exclusive, empty-policy development path. It is not a playable AI; Legacy remains default. Fixture-backed simulator success validates only the scenarios it actually exercises.
 
 ## 18. Immediate next implementation sequence
 
-1. Implement structured encounter trace and a post-fight collector path before enabling real New Engine actions.
-2. Complete the decision loop primitives: cached Values, scheduled Triggers, ActionNode relationships, bounded queue and explicit results.
-3. Implement audited vMaNGOS action adapters and runtime authority switch. In New Engine mode, all old policy paths are bypassed; missing behavior is a traceable no-op, never a Legacy fallback.
-4. Add generic safety and full state-machine behaviors, then compose class/role/party strategies into the same engine.
-5. Add encounter strategies only after the generic party foundation can execute, observe and explain its decisions.
+1. Add a typed, correlation-safe movement terminal callback that distinguishes natural spline completion from forced finalization and validates actual destination arrival.
+2. Test natural arrival, early cancellation/forced cleanup, destination mismatch and callback/queue teardown through pure regressions and a real Core simulator fixture.
+3. Audit item-use terminal semantics before adding an item result source.
+4. Implement the production Core executor boundary and common final pre-execution validation.
+5. Register a small, audited generic action set; then grow the state machine and class/role policies behind the exclusive NewEngine authority.

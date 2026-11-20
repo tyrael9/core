@@ -297,6 +297,18 @@ void TestItemUseAggregateWaitsForFanoutClosure()
     assert(terminal.completedChildCount == 2);
     assert(terminal.succeededChildCount == 2);
     assert(terminal.skippedSlotCount == 1);
+    assert(terminal.children[0].childId == first);
+    assert(terminal.children[0].slotIndex == 0);
+    assert(terminal.children[0].spellId == 439);
+    assert(!terminal.children[0].triggered);
+    assert(terminal.children[0].status == ItemUseChildStatus::Succeeded);
+    assert(terminal.children[0].terminalAtMs == 1010);
+    assert(terminal.children[1].childId == second);
+    assert(terminal.children[1].slotIndex == 2);
+    assert(terminal.children[1].spellId == 440);
+    assert(terminal.children[1].triggered);
+    assert(terminal.children[1].status == ItemUseChildStatus::Succeeded);
+    assert(terminal.children[1].terminalAtMs == 1011);
     assert(tracker.GetPendingRootCount() == 0);
     assert(tracker.RecordChildTerminal(root, first,
         ItemUseChildStatus::Succeeded, 1013, terminal) ==
@@ -1645,6 +1657,49 @@ void TestItemUseTerminalDependencyUsesCorrelationStatusAndHistory()
         DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1102);
         engine.ExecutePendingActions(nextTick);
         assert(child->executeCount == 0);
+    }
+
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("item_use_queued_success_followup");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+
+        ActionDependencyRequest request;
+        request.lifetimeMs = 1200;
+        ActionDependencyPrerequisite prerequisite;
+        prerequisite.source = ActionDependencyEventSource::ItemUseTerminal;
+        prerequisite.actionId = 8806;
+        prerequisite.encounterId = f.coordinator.GetEncounterId();
+        prerequisite.itemUseId = 9004;
+        prerequisite.requiredItemUseStatus = ItemUseAggregateStatus::AllSucceeded;
+        request.prerequisites.push_back(prerequisite);
+        ActionCandidate continuation = Candidate(
+            "item_use_queued_success_followup", 25.0f, ActionChannel::Utility);
+        continuation.finalPriority = 25.0f;
+
+        assert(engine.QueueActionDependency(f.context, request, continuation) ==
+               ActionContinuationEnqueueResult::Queued);
+        assert(engine.GetPendingContinuationCount() == 1);
+        assert(engine.GetPendingActionCount() == 0);
+
+        ItemUseTerminalEvent terminal;
+        terminal.actionId = prerequisite.actionId;
+        terminal.encounterId = prerequisite.encounterId;
+        terminal.itemUseId = prerequisite.itemUseId;
+        terminal.status = ItemUseAggregateStatus::AllSucceeded;
+        terminal.occurredAtMs = 1100;
+        engine.NotifyItemUseTerminal(terminal);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 1);
+
+        DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1101);
+        PendingActionDispatchSummary const dispatched =
+            engine.ExecutePendingActions(nextTick);
+        assert(dispatched.selected == 1 && dispatched.executed == 1);
+        assert(child->executeCount == 1);
     }
 }
 

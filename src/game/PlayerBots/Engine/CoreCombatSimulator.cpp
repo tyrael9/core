@@ -5297,11 +5297,144 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
     rejectedSession.LogoutPlayer(false);
     bool const rejectedPlayerCleaned = rejectedSession.GetPlayer() == nullptr;
 
+    // Temporarily duplicate the potion's ON_USE spell into one empty prototype
+    // slot. This override exists only in the disposable simulator process and is
+    // restored before returning; the Core still creates/prepares both real Spells.
+    uint8 multiSpellSlot = MAX_ITEM_PROTO_SPELLS;
+    for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+        if (i != spellSlot && !potionPrototype->Spells[i].SpellId) {
+            multiSpellSlot = i;
+            break;
+        }
+    ItemPrototype* mutablePotionPrototype =
+        const_cast<ItemPrototype*>(potionPrototype);
+    auto const savedFirstSpell = mutablePotionPrototype->Spells[spellSlot];
+    auto const savedSecondSpell = mutablePotionPrototype->Spells[
+        multiSpellSlot < MAX_ITEM_PROTO_SPELLS ? multiSpellSlot : spellSlot];
+
+    bool multiSlotFixturePassed = false;
+    std::uint64_t multiRootId = 0;
+    std::uint8_t multiChildCount = 0;
+    std::uint8_t multiMutationCount = 0;
+    bool multiFirstTriggered = true;
+    bool multiSecondTriggered = false;
+    bool multiChargesConsumed = false;
+    bool multiPlayerCleaned = false;
+
+    if (multiSpellSlot < MAX_ITEM_PROTO_SPELLS)
+    {
+        mutablePotionPrototype->Spells[spellSlot].SpellCharges = 2;
+        mutablePotionPrototype->Spells[multiSpellSlot] =
+            mutablePotionPrototype->Spells[spellSlot];
+        mutablePotionPrototype->Spells[multiSpellSlot].SpellCharges = 2;
+
+        WorldSession multiSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+        Player* multiPlayer = nullptr;
+        if (CreateSimulatorPlayer(map, 1, multiSession, multiPlayer,
+                                  0.0f, 9.0f, 4.0f))
+        {
+            PartyBotAI multiAI(multiPlayer, map.GetId(), map.GetInstanceId(),
+                               multiPlayer->GetPositionX(), multiPlayer->GetPositionY(),
+                               multiPlayer->GetPositionZ(), multiPlayer->GetOrientation());
+            multiAI.SetPlayer(multiPlayer);
+            multiPlayer->SetAI(&multiAI);
+            std::shared_ptr<SimulatorItemUseCapture> multiCapture(
+                new SimulatorItemUseCapture());
+            bool const listenerAdded =
+                multiAI.m_partyBotEngine.AddItemUseTerminalListener(multiCapture);
+
+            Item* multiPotion =
+                multiPlayer->StoreNewItemInInventorySlot(MinorHealingPotionItemId, 1);
+            ObjectGuid const multiPotionGuid = multiPotion
+                ? multiPotion->GetObjectGuid() : ObjectGuid();
+            if (multiPotion)
+            {
+                multiPotion->SetSpellCharges(spellSlot, 2);
+                multiPotion->SetSpellCharges(multiSpellSlot, 2);
+            }
+
+            uint32 const multiHealthBefore = multiPlayer->GetMaxHealth() / 2;
+            multiPlayer->SetHealth(multiHealthBefore);
+            SpellCastTargets multiTargets;
+            multiTargets.PrepareForSpellSystem(multiPlayer);
+            multiRootId = multiPotion
+                ? multiPlayer->CastItemUseSpell(multiPotion, multiTargets) : 0;
+
+            for (uint32 tick = 0; tick < 8 &&
+                 (multiAI.m_partyBotEngine.GetPendingItemUseCount() != 0 ||
+                  multiPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL)); ++tick)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                map.Update(250);
+            }
+
+            Item* multiStillOwned = multiPotionGuid
+                ? multiPlayer->GetItemByGuid(multiPotionGuid) : nullptr;
+            multiChargesConsumed = multiStillOwned &&
+                multiStillOwned->GetCount() == 1 &&
+                multiStillOwned->GetSpellCharges(spellSlot) == 1 &&
+                multiStillOwned->GetSpellCharges(multiSpellSlot) == 1;
+
+            multiChildCount = multiCapture->events.size() == 1
+                ? multiCapture->events[0].childCount : 0;
+            if (multiCapture->events.size() == 1 && multiChildCount == 2)
+            {
+                ItemUseTerminalEvent const& event = multiCapture->events[0];
+                multiFirstTriggered = event.children[0].triggered;
+                multiSecondTriggered = event.children[1].triggered;
+                multiSlotFixturePassed = listenerAdded && multiRootId &&
+                    event.itemUseId == multiRootId &&
+                    event.status == ItemUseAggregateStatus::AllSucceeded &&
+                    event.completedChildCount == 2 &&
+                    event.children[0].slotIndex == spellSlot &&
+                    event.children[0].spellId == savedFirstSpell.SpellId &&
+                    event.children[0].status == ItemUseChildStatus::Succeeded &&
+                    !event.children[0].triggered &&
+                    event.children[1].slotIndex == multiSpellSlot &&
+                    event.children[1].spellId == savedFirstSpell.SpellId &&
+                    event.children[1].status == ItemUseChildStatus::Succeeded &&
+                    event.children[1].triggered &&
+                    event.observedMutationCount == 2 &&
+                    multiChargesConsumed &&
+                    multiPlayer->GetHealth() > multiHealthBefore &&
+                    multiAI.m_partyBotEngine.GetPendingItemUseCount() == 0;
+
+                ItemUseMutationEvent mutation;
+                std::uint8_t mutationCount = 0;
+                bool sawFirstCharge = false, sawSecondCharge = false;
+                while (multiAI.m_partyBotEngine.PopItemUseMutationEvent(mutation))
+                {
+                    ++mutationCount;
+                    if (mutation.kind != ItemUseMutationKind::ChargeChanged ||
+                        mutation.childId != event.children[0].childId ||
+                        mutation.itemGuid != multiPotionGuid.GetRawValue() ||
+                        mutation.beforeCharges != 2 || mutation.afterCharges != 1)
+                        multiSlotFixturePassed = false;
+                    if (mutation.slotIndex == spellSlot)
+                        sawFirstCharge = true;
+                    if (mutation.slotIndex == multiSpellSlot)
+                        sawSecondCharge = true;
+                }
+                multiMutationCount = mutationCount;
+                multiSlotFixturePassed = multiSlotFixturePassed &&
+                    mutationCount == 2 && sawFirstCharge && sawSecondCharge;
+            }
+            multiPlayer->SetAI(nullptr);
+            multiSession.LogoutPlayer(false);
+            multiPlayerCleaned = multiSession.GetPlayer() == nullptr;
+        }
+    }
+
+    mutablePotionPrototype->Spells[spellSlot] = savedFirstSpell;
+    if (multiSpellSlot < MAX_ITEM_PROTO_SPELLS)
+        mutablePotionPrototype->Spells[multiSpellSlot] = savedSecondSpell;
+
     bool const passed = successfulUse && rejectedWithoutConsumption &&
         successfulAggregate && rejectedAggregate &&
+        multiSlotFixturePassed && multiPlayerCleaned &&
         successPlayerCleaned && rejectedPlayerCleaned;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-             "[PartyBotSimulator] F42 Core item-use aggregate: prototype=%u spellSlot=%u spellId=%u healed=%u>%u consumed=%u successRoot=%u successChildren=%u successMutations=%u rejectedRoot=%u rejectedChildren=%u rejectedMutations=%u zeroChargeRejected=%u itemRetained=%u cleanup=%u/%u.",
+             "[PartyBotSimulator] F42 Core item-use aggregate: prototype=%u spellSlot=%u spellId=%u healed=%u>%u consumed=%u successRoot=%u successChildren=%u successMutations=%u rejectedRoot=%u rejectedChildren=%u rejectedMutations=%u multiSlot=%u multiRoot=%u multiChildren=%u firstTriggered=%u secondTriggered=%u multiMutations=%u multiChargesConsumed=%u cleanup=%u/%u/%u.",
              prototypeValid ? 1u : 0u, spellSlot,
              potionPrototype->Spells[spellSlot].SpellId,
              potionHealthBefore, potionHealthAfter, potionConsumed ? 1u : 0u,
@@ -5311,12 +5444,15 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
              rejectedAggregate ? 1u : 0u,
              rejectedAggregate ? rejectedItemUseCapture->events[0].childCount : 0u,
              rejectedAggregate ? rejectedItemUseCapture->events[0].observedMutationCount : 0u,
-             rejectedWithoutConsumption ? 1u : 0u,
-             rejectedStillOwned ? 1u : 0u,
-             successPlayerCleaned ? 1u : 0u, rejectedPlayerCleaned ? 1u : 0u);
+             multiSlotFixturePassed ? 1u : 0u, multiRootId ? 1u : 0u,
+             multiChildCount, multiFirstTriggered ? 1u : 0u,
+             multiSecondTriggered ? 1u : 0u, multiMutationCount,
+             multiChargesConsumed ? 1u : 0u,
+             successPlayerCleaned ? 1u : 0u, rejectedPlayerCleaned ? 1u : 0u,
+             multiPlayerCleaned ? 1u : 0u);
     if (passed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: F42 real Core item-use root aggregated one successful ON_USE child and its independent item mutations; a zero-charge child settled as failed with no mutation, and both Player fixtures cleaned up.");
+                 "[PartyBotSimulator] PASS: F42 real Core aggregated single-slot use/rejection and a synthetic two-ON_USE-slot prototype. Child snapshots prove first/non-triggered and second/triggered Core Spells; the first child independently consumed both finite charges.");
     return passed;
 }
 

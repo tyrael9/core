@@ -12,6 +12,8 @@ namespace PartyBotEngine
 using ItemUseId = std::uint64_t;
 using ItemUseChildId = std::uint64_t;
 
+enum : std::size_t { ItemUseMaxSpellSlots = 5 };
+
 enum class ItemUseChildStatus : std::uint8_t
 {
     Pending,
@@ -105,6 +107,7 @@ struct ItemUseTerminalEvent
     std::uint8_t skippedSlotCount = 0;
     std::uint8_t observedMutationCount = 0;
     std::uint8_t droppedMutationCount = 0;
+    std::array<ItemUseChildRecord, ItemUseMaxSpellSlots> children;
 };
 
 // Mutation facts are independent of Spell terminal status. They intentionally
@@ -132,7 +135,7 @@ public:
     enum : std::size_t
     {
         Capacity = 32,
-        MaxSpellSlots = 5,
+        MaxSpellSlots = ItemUseMaxSpellSlots,
         MutationQueueCapacity = 256,
         RecentSettledCapacity = 64
     };
@@ -476,6 +479,7 @@ private:
         event.observedMutationCount = root.observedMutationCount;
         event.droppedMutationCount = root.droppedMutationCount;
         for (std::size_t i = 0; i < root.childCount; ++i) {
+            event.children[i] = root.children[i];
             switch (root.children[i].status) {
                 case ItemUseChildStatus::Succeeded:
                     Increment(event.succeededChildCount);

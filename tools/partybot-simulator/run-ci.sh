@@ -412,10 +412,15 @@ if ! grep -Eq '\[PartyBotEngineTrace\].*event=trigger .*strategy=healing_triage 
     echo "[PartyBotSimulator] Missing formatted active healer trigger row." | tee -a "$LOG_FILE"
     exit 1
 fi
-active_empty_line="$(grep -nE '\[PartyBotEngineTrace\].*event=trigger .*strategy=simulator_trace_active_empty trigger_name=simulator_trace_active_empty .*status=active candidates=0' "$LOG_FILE" | head -n1 | cut -d: -f1)"
-tank_line="$(grep -nE '\[PartyBotEngineTrace\].*event=trigger .*strategy=tank_target trigger_name=tank_target .*status=inactive' "$LOG_FILE" | head -n1 | cut -d: -f1)"
-dps_line="$(grep -nE '\[PartyBotEngineTrace\].*event=trigger .*strategy=dps_target trigger_name=dps_target .*status=inactive' "$LOG_FILE" | head -n1 | cut -d: -f1)"
-if [[ -z "$active_empty_line" || -z "$tank_line" || -z "$dps_line" ]] || (( active_empty_line >= tank_line || tank_line >= dps_line )); then
+trigger_summary_line="$(grep -nE '\[PartyBotEngineTrace\].*event=trigger_summary .*total=7 evaluated=4 active=2 inactive=2 cadence_skipped=3 omitted=0 detail_limit=4 detail_omitted=3' "$LOG_FILE" | tail -n1 | cut -d: -f1 || true)"
+trigger_encounter_id=""
+if [[ -n "$trigger_summary_line" ]]; then
+    trigger_encounter_id="$(sed -n "${trigger_summary_line}p" "$LOG_FILE" | sed -E 's/.*encounter_id=([0-9]+).*/\1/')"
+fi
+active_empty_line="$(grep -nE "\\[PartyBotEngineTrace\\].*encounter_id=${trigger_encounter_id} .*event=trigger .*strategy=simulator_trace_active_empty trigger_name=simulator_trace_active_empty .*status=active candidates=0" "$LOG_FILE" | head -n1 | cut -d: -f1 || true)"
+tank_line="$(grep -nE "\\[PartyBotEngineTrace\\].*encounter_id=${trigger_encounter_id} .*event=trigger .*strategy=tank_target trigger_name=tank_target .*status=inactive" "$LOG_FILE" | head -n1 | cut -d: -f1 || true)"
+dps_line="$(grep -nE "\\[PartyBotEngineTrace\\].*encounter_id=${trigger_encounter_id} .*event=trigger .*strategy=dps_target trigger_name=dps_target .*status=inactive" "$LOG_FILE" | head -n1 | cut -d: -f1 || true)"
+if [[ -z "$trigger_encounter_id" || -z "$active_empty_line" || -z "$tank_line" || -z "$dps_line" ]] || (( active_empty_line >= tank_line || tank_line >= dps_line )); then
     echo "[PartyBotSimulator] Trigger detail rows were not emitted in the expected actionable-first order." | tee -a "$LOG_FILE"
     exit 1
 fi

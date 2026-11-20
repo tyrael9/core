@@ -4711,7 +4711,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         tankDied && tankDeathObserverValid && tankCorpseTransitionSuppressed &&
         tankResurrectionObserved && partyBotEncounterLifecycleTraced &&
         partyBotTraceBudgetPassed && unmanagedMemberStateTracePassed &&
-        shutdownFlushNoDuplicate && f17TriggerTelemetryPassed &&
+        shutdownFlushNoDuplicate && instanceTransferTracePassed &&
+        f17TriggerTelemetryPassed &&
         tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&

@@ -1020,6 +1020,13 @@ void TestActionDependenciesRequireAllAndPrerequisites()
     PendingActionDispatchSummary const dispatch = engine.ExecutePendingActions(nextTick);
     assert(dispatch.selected == 1 && dispatch.executed == 1);
     assert(child->executeCount == 1);
+
+    // The same completed parent set must not release a second child when a
+    // caller retries after the original continuation has already dispatched.
+    DecisionContext retryContext(f.snapshot, f.bot, f.coordinator, 1300);
+    assert(engine.QueueActionDependency(retryContext, request, candidate) ==
+           ActionContinuationEnqueueResult::DuplicateParent);
+    assert(engine.GetPendingActionCount() == 0);
 }
 
 void TestLateDependencyRegistrationUsesLatestTerminalAndWrapSafeTime()
@@ -1338,6 +1345,14 @@ void TestActionAlternativeGroupsWaitForAllBranchesAndChoosePriority()
     assert(dispatch.selected == 1 && dispatch.executed == 1);
     assert(order.size() == 1 && order[0] == "alternative_higher");
     assert(lower->executeCount == 0 && higher->executeCount == 1);
+
+    // A resolved alternative group ID is single-use within its owner context.
+    DecisionContext duplicateContext(f.snapshot, f.bot, f.coordinator, 1201);
+    assert(engine.QueueActionDependency(
+        duplicateContext, higherRequest, higherCandidate) ==
+        ActionContinuationEnqueueResult::DuplicateParent);
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 0);
 }
 
 void TestActionAlternativeGroupsUseFifoForPriorityTiesAndCancelOnExpiry()
@@ -1420,6 +1435,12 @@ void TestActionAlternativeGroupsUseFifoForPriorityTiesAndCancelOnExpiry()
         assert(pruned.expiredContinuations == 2);
         assert(engine.GetPendingContinuationCount() == 0);
         assert(engine.GetPendingActionCount() == 0);
+
+        // Expiry settles and tombstones the group as a whole; a delayed retry
+        // cannot register only one new branch under the old group ID.
+        assert(engine.QueueActionDependency(
+            expiryTick, secondRequest, secondCandidate) ==
+            ActionContinuationEnqueueResult::DuplicateParent);
     }
 }
 

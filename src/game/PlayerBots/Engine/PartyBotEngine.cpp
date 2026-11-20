@@ -30,6 +30,7 @@ void PartyBotEngine::InvalidateDecisionState() const {
 void PartyBotEngine::ResetDecisionState() const {
     m_valueCache.InvalidateAll();
     m_triggerScheduler.Clear();
+    m_pendingActionQueue.Clear();
 }
 bool PartyBotEngine::InvalidateTrigger(std::string const& strategyName,
                                        std::string const& triggerName) const {
@@ -43,6 +44,227 @@ std::shared_ptr<Action> PartyBotEngine::FindAction(std::string const& name) cons
     auto itr = m_actions.find(name);
     return itr == m_actions.end() ? std::shared_ptr<Action>() : itr->second;
 }
+CandidateEvaluation PartyBotEngine::EvaluateCandidate(
+    DecisionContext const& context, ActionCandidate candidate) const {
+    CandidateEvaluation evaluation;
+    evaluation.candidate = std::move(candidate);
+    ActionCandidate const& evaluatedCandidate = evaluation.candidate;
+    std::shared_ptr<Action> action = FindAction(evaluatedCandidate.actionName);
+    if (!action) {
+        evaluation.status = CandidateStatus::RejectedMissingAction;
+        evaluation.reason = "action_not_registered";
+        return evaluation;
+    }
+    if (!std::isfinite(evaluatedCandidate.basePriority)) {
+        evaluation.status = CandidateStatus::RejectedInvalidPriority;
+        evaluation.reason = "non_finite_base_priority";
+        return evaluation;
+    }
+    if (!action->IsPossible(context, evaluatedCandidate, evaluation.reason)) {
+        evaluation.status = CandidateStatus::RejectedImpossible;
+        if (evaluation.reason.empty()) evaluation.reason = "action_not_possible";
+        return evaluation;
+    }
+    evaluation.reason.clear();
+    if (!action->IsUseful(context, evaluatedCandidate, evaluation.reason)) {
+        evaluation.status = CandidateStatus::RejectedUseless;
+        if (evaluation.reason.empty()) evaluation.reason = "action_not_useful";
+        return evaluation;
+    }
+    evaluation.threatImpact = action->EstimateThreatImpact(context, evaluatedCandidate);
+    if (!IsWellFormedThreatImpactEstimate(evaluation.threatImpact) ||
+        evaluation.threatImpact.snapshotEpoch != context.snapshot.epoch) {
+        evaluation.status = CandidateStatus::RejectedThreatUnknown;
+        evaluation.reason = "threat_impact_estimate_invalid_or_stale";
+        return evaluation;
+    }
+
+    float priority = evaluatedCandidate.basePriority;
+    for (auto const& multiplier : m_multipliers) {
+        if (!multiplier) continue;
+        float const factor = multiplier->GetValue(context, evaluatedCandidate);
+        if (!std::isfinite(factor) || factor <= 0.0f) {
+            evaluation.status = CandidateStatus::RejectedMultiplier;
+            evaluation.reason = multiplier->GetName();
+            if (evaluation.reason.empty()) evaluation.reason = "multiplier_veto";
+            return evaluation;
+        }
+        priority *= factor;
+    }
+    if (!std::isfinite(priority)) {
+        evaluation.status = CandidateStatus::RejectedInvalidPriority;
+        evaluation.reason = "non_finite_final_priority";
+        return evaluation;
+    }
+    evaluation.candidate.finalPriority = priority;
+    evaluation.status = CandidateStatus::NotSelected;
+    evaluation.reason.clear();
+    return evaluation;
+}
+
+PendingActionEnqueueResult PartyBotEngine::QueuePendingAction(
+    DecisionContext const& context, ActionCandidate const& candidate) const {
+    std::shared_ptr<Action> action = FindAction(candidate.actionName);
+    if (!action)
+        return PendingActionEnqueueResult::ActionNotRegistered;
+    std::uint32_t const lifetimeMs = action->GetPendingLifetimeMs();
+    if (!lifetimeMs || lifetimeMs > PendingActionQueue::MaxLifetimeMs)
+        return PendingActionEnqueueResult::LifetimeDisabled;
+    if (!context.snapshot.groupId || !context.bot.guid ||
+        context.snapshot.mapId != context.bot.mapId ||
+        context.snapshot.instanceId != context.bot.instanceId)
+        return PendingActionEnqueueResult::Invalid;
+
+    DecisionContext evaluationContext(
+        context.snapshot, context.bot, context.coordinator, context.nowMs,
+        context.reservationTrace,
+        context.valueCache ? context.valueCache : &m_valueCache,
+        context.engineActionObserver);
+    CandidateEvaluation evaluation = EvaluateCandidate(evaluationContext, candidate);
+    if (evaluation.status != CandidateStatus::NotSelected)
+        return PendingActionEnqueueResult::NotEligible;
+
+    PendingActionQueue::Context pendingContext;
+    pendingContext.groupId = context.snapshot.groupId;
+    pendingContext.mapId = context.snapshot.mapId;
+    pendingContext.instanceId = context.snapshot.instanceId;
+    pendingContext.botGuid = context.bot.guid;
+    pendingContext.encounterId = context.coordinator.GetEncounterId();
+    pendingContext.encounterActive = context.coordinator.HasActiveEncounter();
+    pendingContext.scoped = true;
+    return m_pendingActionQueue.Enqueue(
+        evaluation.candidate, context.nowMs, lifetimeMs, pendingContext);
+}
+
+std::size_t PartyBotEngine::QueueSelectedActions(
+    DecisionContext const& context, DecisionReport const& report) const {
+    std::size_t queued = 0;
+    for (std::size_t index : report.selectedIndices) {
+        if (index >= report.candidates.size())
+            continue;
+        CandidateEvaluation const& evaluation = report.candidates[index];
+        if (evaluation.status != CandidateStatus::Selected)
+            continue;
+        PendingActionEnqueueResult const result =
+            QueuePendingAction(context, evaluation.candidate);
+        if (result == PendingActionEnqueueResult::Queued ||
+            result == PendingActionEnqueueResult::UpdatedExisting)
+            ++queued;
+    }
+    return queued;
+}
+
+PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
+    DecisionContext& context, std::size_t maxActionsPerDispatch) const {
+    PendingActionDispatchSummary summary;
+    if (!maxActionsPerDispatch)
+        return summary;
+    maxActionsPerDispatch = std::min<std::size_t>(maxActionsPerDispatch, 8);
+    DecisionContext executionContext(
+        context.snapshot, context.bot, context.coordinator, context.nowMs,
+        context.reservationTrace,
+        context.valueCache ? context.valueCache : &m_valueCache,
+        context.engineActionObserver);
+    PendingActionQueue::Context currentContext;
+    currentContext.groupId = executionContext.snapshot.groupId;
+    currentContext.mapId = executionContext.snapshot.mapId;
+    currentContext.instanceId = executionContext.snapshot.instanceId;
+    currentContext.botGuid = executionContext.bot.guid;
+    currentContext.encounterId = executionContext.coordinator.GetEncounterId();
+    currentContext.encounterActive = executionContext.coordinator.HasActiveEncounter();
+    currentContext.scoped = true;
+
+    struct PendingWork {
+        PendingActionQueue::Entry entry;
+        CandidateEvaluation evaluation;
+    };
+    std::vector<PendingWork> work;
+    work.reserve(PendingActionQueue::Capacity);
+    summary.expired = m_pendingActionQueue.PruneExpired(executionContext.nowMs);
+    PendingActionQueue::Entry entry;
+    while (m_pendingActionQueue.PopNext(executionContext.nowMs, entry)) {
+        ++summary.dequeued;
+        PendingActionQueue::Context const& oldContext = entry.context;
+        if (!oldContext.scoped ||
+            oldContext.groupId != currentContext.groupId ||
+            oldContext.mapId != currentContext.mapId ||
+            oldContext.instanceId != currentContext.instanceId ||
+            oldContext.botGuid != currentContext.botGuid ||
+            oldContext.encounterId != currentContext.encounterId ||
+            oldContext.encounterActive != currentContext.encounterActive) {
+            ++summary.staleContext;
+            continue;
+        }
+        CandidateEvaluation evaluation =
+            EvaluateCandidate(executionContext, entry.candidate);
+        if (evaluation.status != CandidateStatus::NotSelected) {
+            ++summary.rejected;
+            continue;
+        }
+        PendingWork item;
+        item.entry = entry;
+        item.evaluation = std::move(evaluation);
+        work.push_back(std::move(item));
+    }
+
+    std::stable_sort(work.begin(), work.end(),
+        [](PendingWork const& left, PendingWork const& right) {
+            if (left.evaluation.candidate.finalPriority !=
+                right.evaluation.candidate.finalPriority)
+                return left.evaluation.candidate.finalPriority >
+                    right.evaluation.candidate.finalPriority;
+            return left.entry.ordinal < right.entry.ordinal;
+        });
+
+    DecisionReport report;
+    report.snapshotEpoch = executionContext.snapshot.epoch;
+    std::set<ActionChannel> occupiedChannels;
+    ThreatImpactTotals selectedThreatInReport;
+    auto defer = [&](PendingWork& item) {
+        item.entry.candidate = item.evaluation.candidate;
+        item.entry.priority = item.evaluation.candidate.finalPriority;
+        if (m_pendingActionQueue.Requeue(item.entry, executionContext.nowMs))
+            ++summary.requeued;
+        else
+            ++summary.queueFull;
+    };
+
+    for (PendingWork& item : work) {
+        if (report.selectedIndices.size() >= maxActionsPerDispatch ||
+            occupiedChannels.find(item.evaluation.candidate.channel) !=
+                occupiedChannels.end()) {
+            defer(item);
+            continue;
+        }
+        ThreatImpactBudgetResult const threatBudget = AssessThreatImpactBudget(
+            executionContext.snapshot, item.evaluation.threatImpact,
+            executionContext.coordinator, executionContext.nowMs, 250,
+            &selectedThreatInReport);
+        if (threatBudget.status != ThreatImpactBudgetStatus::Safe) {
+            // Temporary headroom/reservation changes may make this safe later;
+            // requeue only until the original TTL and never bypass the budget.
+            defer(item);
+            continue;
+        }
+        item.evaluation.status = CandidateStatus::Selected;
+        std::size_t const index = report.candidates.size();
+        report.candidates.push_back(std::move(item.evaluation));
+        report.selectedIndices.push_back(index);
+        occupiedChannels.insert(report.candidates.back().candidate.channel);
+    }
+
+    summary.selected = report.selectedIndices.size();
+    if (!report.selectedIndices.empty())
+        ExecuteSelected(context, report);
+    for (CandidateEvaluation const& evaluation : report.candidates) {
+        if (evaluation.status == CandidateStatus::Executed)
+            ++summary.executed;
+        else if (evaluation.status == CandidateStatus::ExecutionFailed)
+            ++summary.failed;
+    }
+    return summary;
+}
+
 DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
     DecisionContext evaluationContext(
         context.snapshot, context.bot, context.coordinator, context.nowMs,
@@ -85,76 +307,12 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
                     std::numeric_limits<std::uint32_t>::max()));
             retainTriggerEvaluation(std::move(observation));
             for (auto const& candidate : candidates) {
-                CandidateEvaluation evaluation;
-                evaluation.candidate = candidate;
-                if (evaluation.candidate.strategyName.empty())
-                    evaluation.candidate.strategyName = strategy->GetName();
-                evaluation.candidate.triggerName = trigger->GetName();
-                ActionCandidate const& evaluatedCandidate = evaluation.candidate;
-                std::shared_ptr<Action> action = FindAction(evaluatedCandidate.actionName);
-                if (!action) {
-                    evaluation.status = CandidateStatus::RejectedMissingAction;
-                    evaluation.reason = "action_not_registered";
-                    report.candidates.push_back(std::move(evaluation));
-                    continue;
-                }
-                if (!std::isfinite(candidate.basePriority)) {
-                    evaluation.status = CandidateStatus::RejectedInvalidPriority;
-                    evaluation.reason = "non_finite_base_priority";
-                    report.candidates.push_back(std::move(evaluation));
-                    continue;
-                }
-                if (!action->IsPossible(evaluationContext, evaluatedCandidate, evaluation.reason)) {
-                    evaluation.status = CandidateStatus::RejectedImpossible;
-                    if (evaluation.reason.empty()) evaluation.reason = "action_not_possible";
-                    report.candidates.push_back(std::move(evaluation));
-                    continue;
-                }
-                evaluation.reason.clear();
-                if (!action->IsUseful(evaluationContext, evaluatedCandidate, evaluation.reason)) {
-                    evaluation.status = CandidateStatus::RejectedUseless;
-                    if (evaluation.reason.empty()) evaluation.reason = "action_not_useful";
-                    report.candidates.push_back(std::move(evaluation));
-                    continue;
-                }
-
-                evaluation.threatImpact = action->EstimateThreatImpact(evaluationContext, evaluatedCandidate);
-                if (!IsWellFormedThreatImpactEstimate(evaluation.threatImpact) ||
-                    evaluation.threatImpact.snapshotEpoch != evaluationContext.snapshot.epoch) {
-                    evaluation.status = CandidateStatus::RejectedThreatUnknown;
-                    evaluation.reason = "threat_impact_estimate_invalid_or_stale";
-                    report.candidates.push_back(std::move(evaluation));
-                    continue;
-                }
-
-                float priority = candidate.basePriority;
-                bool vetoed = false;
-                for (auto const& multiplier : m_multipliers) {
-                    if (!multiplier) continue;
-                    float const factor = multiplier->GetValue(evaluationContext, evaluatedCandidate);
-                    if (!std::isfinite(factor) || factor <= 0.0f) {
-                        evaluation.status = CandidateStatus::RejectedMultiplier;
-                        evaluation.reason = multiplier->GetName();
-                        if (evaluation.reason.empty()) evaluation.reason = "multiplier_veto";
-                        vetoed = true;
-                        break;
-                    }
-                    priority *= factor;
-                }
-                if (vetoed) {
-                    report.candidates.push_back(std::move(evaluation));
-                    continue;
-                }
-                if (!std::isfinite(priority)) {
-                    evaluation.status = CandidateStatus::RejectedInvalidPriority;
-                    evaluation.reason = "non_finite_final_priority";
-                    report.candidates.push_back(std::move(evaluation));
-                    continue;
-                }
-                evaluation.candidate.finalPriority = priority;
-                evaluation.status = CandidateStatus::NotSelected;
-                evaluation.reason.clear();
-                report.candidates.push_back(std::move(evaluation));
+                ActionCandidate evaluatedCandidate = candidate;
+                if (evaluatedCandidate.strategyName.empty())
+                    evaluatedCandidate.strategyName = strategy->GetName();
+                evaluatedCandidate.triggerName = trigger->GetName();
+                report.candidates.push_back(
+                    EvaluateCandidate(evaluationContext, std::move(evaluatedCandidate)));
             }
         }
     }

@@ -1102,6 +1102,7 @@ void PartyBotAI::OnMapLeave(uint32 mapId, uint32 instanceId)
 
 void PartyBotAI::OnServerShutdown()
 {
+    m_partyBotEngine.ResetDecisionState();
     if (!me || !m_partyCoordinator || !m_partyCoordinator->HasActiveEncounter())
         return;
 
@@ -1115,7 +1116,6 @@ void PartyBotAI::OnServerShutdown()
     uint32 const nowMs = WorldTimer::getMSTime();
     PartyBotEngine::EncounterTransition const transition =
         m_partyCoordinator->CloseEncounter(nowMs, "server_shutdown");
-    m_partyBotEngine.InvalidateDecisionState();
     if (transition.kind != PartyBotEngine::EncounterTransitionKind::Ended ||
         !m_decisionTrace.IsEnabled())
         return;
@@ -1608,8 +1608,9 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         if (transition.kind == PartyBotEngine::EncounterTransitionKind::None)
             return;
 
-        // State invalidation is required even when structured tracing is off:
-        // cache/cadence correctness must not depend on diagnostic configuration.
+        // A queued action belongs to exactly one encounter. A start/end
+        // boundary invalidates deferred intents even when trace output is off.
+        m_partyBotEngine.ClearPendingActions();
         m_partyBotEngine.InvalidateDecisionState();
         if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator)
             return;

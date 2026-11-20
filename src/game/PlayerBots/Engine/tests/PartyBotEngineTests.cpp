@@ -18,13 +18,16 @@ public:
     explicit TestAction(std::string name) : m_name(std::move(name)) {}
     std::string const& GetName() const override { return m_name; }
     bool IsPossible(DecisionContext const&, ActionCandidate const&, std::string& reason) const override {
+        ++possibleChecks;
         if (!possible) reason = "test_impossible";
         return possible;
     }
     bool IsUseful(DecisionContext const&, ActionCandidate const&, std::string& reason) const override {
+        ++usefulChecks;
         if (!useful) reason = "test_useless";
         return useful;
     }
+    std::uint32_t GetPendingLifetimeMs() const override { return pendingLifetimeMs; }
     ActionResult Execute(DecisionContext&, ActionCandidate const& candidate) override {
         ++executeCount;
         lastThreatActionId = candidate.threatActionId;
@@ -49,6 +52,9 @@ public:
     }
     bool possible = true, useful = true, useThreatImpact = false;
     bool returnDefaultUnknown = false;
+    std::uint32_t pendingLifetimeMs = 0;
+    mutable std::uint32_t possibleChecks = 0;
+    mutable std::uint32_t usefulChecks = 0;
     ActionResult result = ActionResult::Success;
     ThreatImpactEstimate threatImpact;
     ThreatActionId lastThreatActionId = 0;
@@ -117,7 +123,9 @@ struct Fixture {
     PartyCoordinator coordinator;
     DecisionContext context;
     Fixture() : context(snapshot, bot, coordinator, 1000) {
-        snapshot.epoch = 7; bot.guid = 11; bot.online = true; bot.alive = true;
+        snapshot.epoch = 7; snapshot.groupId = 5; snapshot.mapId = 33;
+        snapshot.instanceId = 101; bot.guid = 11; bot.mapId = 33;
+        bot.instanceId = 101; bot.online = true; bot.alive = true;
     }
 };
 ActionCandidate Candidate(std::string name, float priority, ActionChannel channel) {
@@ -335,6 +343,102 @@ void TestPendingActionQueueRejectsInvalidAndFullEntries()
 
     queue.Clear();
     assert(queue.Empty());
+}
+
+void TestEnginePendingQueueRevalidatesCurrentEligibilityAndResetClearsIt()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    auto action = std::make_shared<TestAction>("pending_heal");
+    action->pendingLifetimeMs = 1000;
+    assert(engine.RegisterAction(action));
+    ActionCandidate candidate = Candidate(
+        "pending_heal", 20.0f, ActionChannel::GlobalCooldown);
+    assert(engine.QueuePendingAction(f.context, candidate) ==
+        PendingActionEnqueueResult::Queued);
+    assert(engine.GetPendingActionCount() == 1);
+    assert(action->possibleChecks == 1 && action->usefulChecks == 1);
+
+    action->useful = false;
+    DecisionContext laterContext(f.snapshot, f.bot, f.coordinator, 1100);
+    PendingActionDispatchSummary const rejected =
+        engine.ExecutePendingActions(laterContext);
+    assert(rejected.dequeued == 1 && rejected.rejected == 1);
+    assert(rejected.executed == 0 && action->executeCount == 0);
+    assert(action->possibleChecks == 2 && action->usefulChecks == 2);
+    assert(engine.GetPendingActionCount() == 0);
+
+    action->useful = true;
+    assert(engine.QueuePendingAction(laterContext, candidate) ==
+        PendingActionEnqueueResult::Queued);
+    engine.InvalidateDecisionState();
+    assert(engine.GetPendingActionCount() == 1);
+    engine.ResetDecisionState();
+    assert(engine.GetPendingActionCount() == 0);
+}
+
+void TestEnginePendingQueueDropsForeignGroupMapAndInstanceContext()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    auto action = std::make_shared<TestAction>("pending_move");
+    action->pendingLifetimeMs = 1000;
+    assert(engine.RegisterAction(action));
+    ActionCandidate candidate = Candidate(
+        "pending_move", 15.0f, ActionChannel::Movement);
+    assert(engine.QueuePendingAction(f.context, candidate) ==
+        PendingActionEnqueueResult::Queued);
+
+    PartySnapshot foreignSnapshot = f.snapshot;
+    PartyMemberSnapshot foreignBot = f.bot;
+    foreignSnapshot.groupId = 6;
+    foreignSnapshot.mapId = 34;
+    foreignSnapshot.instanceId = 202;
+    foreignBot.mapId = 34;
+    foreignBot.instanceId = 202;
+    DecisionContext foreignContext(foreignSnapshot, foreignBot, f.coordinator, 1100);
+    PendingActionDispatchSummary const stale =
+        engine.ExecutePendingActions(foreignContext);
+    assert(stale.dequeued == 1 && stale.staleContext == 1);
+    assert(stale.executed == 0 && action->executeCount == 0);
+    assert(engine.GetPendingActionCount() == 0);
+}
+
+void TestEnginePendingQueuePriorityChannelDeferralPreservesOriginalExpiry()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    std::vector<std::string> order;
+    auto low = std::make_shared<TestAction>("pending_low");
+    auto high = std::make_shared<TestAction>("pending_high");
+    low->pendingLifetimeMs = 500;
+    high->pendingLifetimeMs = 500;
+    low->executionOrder = &order;
+    high->executionOrder = &order;
+    assert(engine.RegisterAction(low) && engine.RegisterAction(high));
+
+    ActionCandidate lowCandidate = Candidate(
+        "pending_low", 10.0f, ActionChannel::GlobalCooldown);
+    ActionCandidate highCandidate = Candidate(
+        "pending_high", 30.0f, ActionChannel::GlobalCooldown);
+    assert(engine.QueuePendingAction(f.context, lowCandidate) ==
+        PendingActionEnqueueResult::Queued);
+    assert(engine.QueuePendingAction(f.context, highCandidate) ==
+        PendingActionEnqueueResult::Queued);
+
+    DecisionContext firstTick(f.snapshot, f.bot, f.coordinator, 1100);
+    PendingActionDispatchSummary const first =
+        engine.ExecutePendingActions(firstTick);
+    assert(first.dequeued == 2 && first.selected == 1 && first.executed == 1);
+    assert(first.requeued == 1 && engine.GetPendingActionCount() == 1);
+    assert(order.size() == 1 && order[0] == "pending_high");
+
+    DecisionContext expiredTick(f.snapshot, f.bot, f.coordinator, 1500);
+    PendingActionDispatchSummary const expired =
+        engine.ExecutePendingActions(expiredTick);
+    assert(expired.expired == 1 && expired.dequeued == 0);
+    assert(engine.GetPendingActionCount() == 0);
+    assert(order.size() == 1);
 }
 
 void TestValueCacheEpochExpiryInvalidationAndTypeSafety()
@@ -2277,6 +2381,9 @@ int main() {
     TestPendingActionQueueDeduplicatesAndPreservesOriginalExpiry();
     TestPendingActionQueuePriorityFifoExpiryAndClockWrap();
     TestPendingActionQueueRejectsInvalidAndFullEntries();
+    TestEnginePendingQueueRevalidatesCurrentEligibilityAndResetClearsIt();
+    TestEnginePendingQueueDropsForeignGroupMapAndInstanceContext();
+    TestEnginePendingQueuePriorityChannelDeferralPreservesOriginalExpiry();
     TestExecuteSelectedDispatchesByPriorityWithStableTies();
     TestExecuteSelectedHonorsPerDispatchLimit();
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();

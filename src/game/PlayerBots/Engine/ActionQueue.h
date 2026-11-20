@@ -71,7 +71,10 @@ enum class PendingActionEnqueueResult : std::uint8_t
     Queued,
     UpdatedExisting,
     Full,
-    Invalid
+    Invalid,
+    ActionNotRegistered,
+    LifetimeDisabled,
+    NotEligible
 };
 
 // Cross-update action-event storage. Entries own only ActionCandidate's
@@ -79,9 +82,21 @@ enum class PendingActionEnqueueResult : std::uint8_t
 class PendingActionQueue
 {
 public:
+    struct Context
+    {
+        std::uint32_t groupId = 0;
+        std::uint32_t mapId = 0;
+        std::uint32_t instanceId = 0;
+        Guid botGuid = 0;
+        std::uint64_t encounterId = 0;
+        bool encounterActive = false;
+        bool scoped = false;
+    };
+
     struct Entry
     {
         ActionCandidate candidate;
+        Context context;
         float priority = 0.0f;
         std::uint32_t enqueuedAtMs = 0;
         std::uint32_t expiresAtMs = 0;
@@ -95,6 +110,14 @@ public:
                                        std::uint32_t nowMs,
                                        std::uint32_t lifetimeMs)
     {
+        return Enqueue(candidate, nowMs, lifetimeMs, Context());
+    }
+
+    PendingActionEnqueueResult Enqueue(ActionCandidate const& candidate,
+                                       std::uint32_t nowMs,
+                                       std::uint32_t lifetimeMs,
+                                       Context const& context)
+    {
         if (candidate.actionName.empty() || !std::isfinite(candidate.finalPriority) ||
             !lifetimeMs || lifetimeMs > MaxLifetimeMs ||
             (candidate.hasDestination &&
@@ -106,13 +129,14 @@ public:
         PruneExpired(nowMs);
         for (Entry& existing : m_entries)
         {
-            if (!HasSameIdentity(existing.candidate, candidate))
+            if (!HasSameIdentity(existing.candidate, candidate) ||
+                !SameContext(existing.context, context))
                 continue;
 
-            // A repeated trigger refreshes the latest payload/priority but
-            // keeps the original FIFO position and deadline. It cannot keep
-            // an event alive forever by re-enqueueing it every update.
             existing.candidate = candidate;
+            existing.candidate.actionId = 0;
+            existing.candidate.threatActionId = 0;
+            existing.context = context;
             existing.priority = candidate.finalPriority;
             return PendingActionEnqueueResult::UpdatedExisting;
         }
@@ -122,6 +146,9 @@ public:
 
         Entry entry;
         entry.candidate = candidate;
+        entry.candidate.actionId = 0;
+        entry.candidate.threatActionId = 0;
+        entry.context = context;
         entry.priority = candidate.finalPriority;
         entry.enqueuedAtMs = nowMs;
         entry.expiresAtMs = nowMs + lifetimeMs;
@@ -160,6 +187,19 @@ public:
         return previousSize - m_entries.size();
     }
 
+    bool Requeue(Entry const& entry, std::uint32_t nowMs)
+    {
+        if (IsExpired(nowMs, entry.expiresAtMs) ||
+            entry.candidate.actionName.empty() ||
+            !std::isfinite(entry.priority) ||
+            m_entries.size() >= Capacity)
+            return false;
+        m_entries.push_back(entry);
+        if (m_nextOrdinal <= entry.ordinal)
+            m_nextOrdinal = entry.ordinal + 1;
+        return true;
+    }
+
     std::size_t Size() const { return m_entries.size(); }
     bool Empty() const { return m_entries.empty(); }
 
@@ -170,6 +210,18 @@ public:
     }
 
 private:
+    static bool SameContext(Context const& left, Context const& right)
+    {
+        return left.scoped == right.scoped &&
+            (!left.scoped ||
+                (left.groupId == right.groupId &&
+                 left.mapId == right.mapId &&
+                 left.instanceId == right.instanceId &&
+                 left.botGuid == right.botGuid &&
+                 left.encounterId == right.encounterId &&
+                 left.encounterActive == right.encounterActive));
+    }
+
     static bool IsExpired(std::uint32_t nowMs, std::uint32_t expiresAtMs)
     {
         // Valid because Enqueue rejects lifetimes >= 2^31 milliseconds.

@@ -10,6 +10,8 @@ public:
     virtual bool IsPossible(DecisionContext const&, ActionCandidate const&, std::string& reason) const = 0;
     virtual bool IsUseful(DecisionContext const&, ActionCandidate const&, std::string& reason) const = 0;
     virtual ActionResult Execute(DecisionContext&, ActionCandidate const&) = 0;
+    // Cross-tick queueing is opt-in. Zero means immediate-only.
+    virtual std::uint32_t GetPendingLifetimeMs() const { return 0; }
     // Safe default: until an action can enumerate its full threat impact, it is
     // unknown, never implicitly zero-cost. Estimates contain GUID/scalar data only.
     virtual ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,

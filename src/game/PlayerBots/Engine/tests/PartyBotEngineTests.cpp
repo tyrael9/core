@@ -280,8 +280,8 @@ public:
         return estimate;
     }
     std::uint32_t GetPendingLifetimeMs() const override { return 1500; }
-    std::uint32_t possibleChecks = 0;
-    std::uint32_t usefulChecks = 0;
+    mutable std::uint32_t possibleChecks = 0;
+    mutable std::uint32_t usefulChecks = 0;
     std::uint32_t executeCoreCalls = 0;
     bool executeCoreSawResolvedContext = false;
 protected:

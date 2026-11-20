@@ -5195,8 +5195,8 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
 
     SpellCastTargets validTargets;
     validTargets.PrepareForSpellSystem(successPlayer);
-    if (potion)
-        successPlayer->CastItemUseSpell(potion, validTargets);
+    uint64 const successItemUseId = potion
+        ? successPlayer->CastItemUseSpell(potion, validTargets) : 0;
 
     for (uint32 tick = 0; tick < 8 &&
          successPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
@@ -5217,7 +5217,9 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
     while (successAI.m_partyBotEngine.PopItemUseMutationEvent(successMutation))
         ++successMutationCount;
     bool const successfulAggregate = successListenerAdded &&
+        successItemUseId != 0 &&
         successItemUseCapture->events.size() == 1 &&
+        successItemUseCapture->events[0].itemUseId == successItemUseId &&
         successItemUseCapture->events[0].status ==
             ItemUseAggregateStatus::AllSucceeded &&
         successItemUseCapture->events[0].childCount == 1 &&
@@ -5264,8 +5266,8 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
 
     SpellCastTargets rejectedTargets;
     rejectedTargets.PrepareForSpellSystem(rejectedPlayer);
-    if (noChargePotion)
-        rejectedPlayer->CastItemUseSpell(noChargePotion, rejectedTargets);
+    uint64 const rejectedItemUseId = noChargePotion
+        ? rejectedPlayer->CastItemUseSpell(noChargePotion, rejectedTargets) : 0;
 
     for (uint32 tick = 0; tick < 4 &&
          rejectedPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
@@ -5282,7 +5284,9 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
         rejectedPlayer->GetHealth() == rejectedHealthBefore &&
         rejectedPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
     bool const rejectedAggregate = rejectedListenerAdded &&
+        rejectedItemUseId != 0 &&
         rejectedItemUseCapture->events.size() == 1 &&
+        rejectedItemUseCapture->events[0].itemUseId == rejectedItemUseId &&
         rejectedItemUseCapture->events[0].status ==
             ItemUseAggregateStatus::AllFailed &&
         rejectedItemUseCapture->events[0].childCount == 1 &&

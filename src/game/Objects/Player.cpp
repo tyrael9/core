@@ -7365,7 +7365,7 @@ void Player::CastItemCombatSpell(Unit* Target, WeaponAttackType attType)
     }
 }
 
-void Player::CastItemUseSpell(Item* item, SpellCastTargets const& targets,
+uint64 Player::CastItemUseSpell(Item* item, SpellCastTargets const& targets,
                                   uint8 bagIndex, uint8 itemSlot, uint8 requestedSpellSlot)
 {
     ItemPrototype const* proto = item->GetProto();
@@ -7424,6 +7424,7 @@ void Player::CastItemUseSpell(Item* item, SpellCastTargets const& targets,
 
     if (itemUseId && itemUseAI)
         itemUseAI->OnItemUseDispatchComplete(itemUseId);
+    return itemUseId;
 }
 
 ItemSetEffect* Player::GetItemSetEffect(uint32 setId)

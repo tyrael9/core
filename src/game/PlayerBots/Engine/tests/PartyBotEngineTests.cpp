@@ -870,7 +870,7 @@ void TestDecisionSummaryCountsAllArbitrationOutcomes()
     add(CandidateStatus::Queued, "pending_action_queued");
 
     DecisionSummary const summary = SummarizeDecisionReport(report);
-    assert(summary.candidateCount == 12);
+    assert(summary.candidateCount == 13);
     assert(summary.selectedCount == 3);
     assert(summary.channelLoserCount == 1);
     assert(summary.missingActionCount == 1);

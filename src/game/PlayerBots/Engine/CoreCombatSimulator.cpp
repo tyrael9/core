@@ -847,6 +847,7 @@ public:
     void SetContinuationCandidate(ActionCandidate const& candidate)
     {
         m_continuationCandidate = candidate;
+        m_registerContinuation = true;
     }
     ActionContinuationEnqueueResult GetContinuationResult() const
     {
@@ -902,13 +903,16 @@ public:
 
     ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
     {
-        if (!context.continuationSink)
-            return ActionResult::Failed;
-        m_continuationResult = context.continuationSink->QueueActionContinuation(
-            context, candidate, m_continuationCandidate, 4000);
-        if (m_continuationResult != ActionContinuationEnqueueResult::Queued &&
-            m_continuationResult != ActionContinuationEnqueueResult::ReleasedImmediately)
-            return ActionResult::Failed;
+        if (m_registerContinuation)
+        {
+            if (!context.continuationSink)
+                return ActionResult::Failed;
+            m_continuationResult = context.continuationSink->QueueActionContinuation(
+                context, candidate, m_continuationCandidate, 4000);
+            if (m_continuationResult != ActionContinuationEnqueueResult::Queued &&
+                m_continuationResult != ActionContinuationEnqueueResult::ReleasedImmediately)
+                return ActionResult::Failed;
+        }
 
         Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
         Player* caster = unit ? unit->ToPlayer() : nullptr;
@@ -945,6 +949,7 @@ private:
     bool m_castPendingAfterAccept = false;
     bool m_gcdAfterAccept = false;
     ActionCandidate m_continuationCandidate;
+    bool m_registerContinuation = false;
     ActionContinuationEnqueueResult m_continuationResult = ActionContinuationEnqueueResult::Invalid;
 };
 
@@ -5099,6 +5104,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     bool const continuationEnqueued = healAction->GetContinuationResult() ==
         ActionContinuationEnqueueResult::Queued;
     PendingActionDispatchSummary continuationDispatch;
+    std::size_t const pendingBeforeContinuationDispatch = engine.GetPendingActionCount();
+    std::size_t const continuationWaitersBeforeDispatch = engine.GetPendingContinuationCount();
     bool continuationDispatched = false;
     if (coreSpellTerminalPassed && continuationEnqueued && continuationActionRegistered)
     {
@@ -5188,7 +5195,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     bool const cleaned = playerCleaned && patientCleaned;
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u manaAtAccept=%u>%u manaAtFinish=%u>%u lastManaUse=%u health=%u>%u completed=%u engineActionTrace=%u decisionSummaryTrace=%u candidateDetailTrace=%u candidateRows=%u actionId=%llu cleanup=%u.",
+             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u manaAtAccept=%u>%u manaAtFinish=%u>%u lastManaUse=%u health=%u>%u completed=%u engineActionTrace=%u decisionSummaryTrace=%u candidateDetailTrace=%u candidateRows=%u actionId=%llu continuationResult=%u coreTerminal=%u continuationWaiters=%zu pendingBeforeDispatch=%zu dispatchSelected=%zu dispatchExecuted=%zu dispatchRejected=%zu dispatchStale=%zu continuationExecuted=%u continuationEnqueued=%u continuationDispatched=%u cleanup=%u.",
              1u, selected ? 1u : 0u, accepted ? 1u : 0u,
              healAction->WasCastPendingAfterAccept() ? 1u : 0u,
              healAction->HadGcdAfterAccept() ? 1u : 0u,
@@ -5201,7 +5208,14 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              decisionSummaryTracePassed ? 1u : 0u,
              candidateDetailTracePassed ? 1u : 0u,
              candidateDetailRowsEmitted,
-             static_cast<unsigned long long>(engineActionId), cleaned ? 1u : 0u);
+             static_cast<unsigned long long>(engineActionId),
+             static_cast<uint32>(healAction->GetContinuationResult()),
+             coreSpellTerminalPassed ? 1u : 0u,
+             continuationWaitersBeforeDispatch, pendingBeforeContinuationDispatch,
+             continuationDispatch.selected, continuationDispatch.executed,
+             continuationDispatch.rejected, continuationDispatch.staleContext,
+             continuationExecutionCount, continuationEnqueued ? 1u : 0u,
+             continuationDispatched ? 1u : 0u, cleaned ? 1u : 0u);
 
     if (!registered || !continuationActionRegistered || !selected || !accepted || !completed ||
         !engineActionTracePassed || !coreSpellTerminalPassed || !continuationEnqueued ||

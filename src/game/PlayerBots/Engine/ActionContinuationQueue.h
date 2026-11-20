@@ -97,9 +97,10 @@ public:
             {
                 if (entry.states[i] != PrerequisiteState::Waiting)
                     continue;
-                ActionTerminalPrerequisite const& prerequisite =
+                ActionDependencyPrerequisite const& prerequisite =
                     entry.request.prerequisites[i];
-                if (prerequisite.actionId != event.actionId ||
+                if (prerequisite.source != ActionDependencyEventSource::CoreSpellTerminal ||
+                    prerequisite.actionId != event.actionId ||
                     prerequisite.encounterId != event.encounterId)
                     continue;
 

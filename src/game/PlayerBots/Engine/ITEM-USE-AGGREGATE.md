@@ -97,19 +97,24 @@ The simulator and internal callers may invoke `Player::CastItemUseSpell` directl
 
 Implemented in the current branch:
 - Fixed-capacity, value-only root/child/mutation tracker with bounded recent IDs/tombstones and deadline handling.
-- Per-child registration before Core \`Spell::prepare\`, per-child \`finish/cancel\` correlation, and a dispatch-close barrier so synchronous child terminals cannot prematurely finalize a fan-out.
+- Per-child registration before Core `Spell::prepare`, per-child `finish/cancel` correlation, and a dispatch-close barrier so synchronous child terminals cannot prematurely finalize a fan-out.
 - Skipped-slot accounting, delayed-child waiting, aggregate AllSucceeded / PartialSuccess / AllFailed / AllInterrupted outcomes, and Expired settlement.
 - Independent mutation events for the Core item-charge/reagent mutation hooks; no inference between mutation and Spell terminal.
 - PartyBotEngine ItemUseTerminal listeners, recent-terminal history and typed continuation prerequisite support. A continuation remains subject to normal pending-queue dispatch/revalidation.
-- Inventory mutation invalidation of cached decisions, and a returned root \`itemUseId\` from \`Player::CastItemUseSpell\` so a caller can register dependent work after synchronous or delayed use.
+- Inventory mutation invalidation of cached decisions, and a returned root `itemUseId` from `Player::CastItemUseSpell` so a caller can register dependent work after synchronous or delayed use.
 
-Pure tests in \`tests/PartyBotEngineTests.cpp\` cover fan-out closure, synchronous children, delayed children, partial/all-failure/interruption outcomes, independent mutation facts, capacity, TTL/uint32 wrap, late-child expiry, listener publication and continuation correlation/history.
+Pure tests in `tests/PartyBotEngineTests.cpp` cover fan-out closure, synchronous children, delayed children, partial/all-failure/interruption outcomes, independent mutation facts, capacity, TTL/uint32 wrap, late-child expiry, listener publication and continuation correlation/history.
 
 The Core simulator's two-slot prototype fixture has already emitted:
-\`multiRoot=1 multiChildren=2 firstTriggered=0 secondTriggered=1 multiMutations=2 multiChargesConsumed=1 cleanup=1/1/1\`.
+`multiRoot=1 multiChildren=2 firstTriggered=0 secondTriggered=1 multiMutations=2 multiChargesConsumed=1 cleanup=1/1/1`.
 It temporarily sets a non-stackable one-count fixture to exercise the real finite-charge mutation path and restores the modified prototype fields before returning. The run also retains the single-potion success and zero-charge rejection checks.
 
-Trusted Push CI [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) printed the exact F42 PASS marker and completed all later simulator scenarios, but the wrapper exited 1 because it still required the obsolete F40 marker. PR CI [#44833258687](https://github.com/tyrael9/core/actions/runs/44833258687) passed pure tests, report collector and ARM64 build; fixture execution is intentionally push-only. A corrected trusted push run ending in final Runtime PASS is required to close F42.
+Trusted Push CI [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) printed the exact F42 PASS marker and completed all later simulator scenarios, but the wrapper exited 1 because it still required the obsolete F40 marker. PR CI [#44833258687](https://github.com/tyrael9/core/actions/runs/44833258687) passed pure tests, report collector and ARM64 build; fixture execution is intentionally push-only. Corrected trusted Push CI [#44838633233](https://github.com/tyrael9/core/actions/runs/44838633233) is validating the gate; final Runtime PASS is required to close F42.
 
 The delayed-child and cancellation-before/after-mutation behavior is covered at the pure tracker level. A deterministic real-Core delayed ON_USE Spell fixture and a real-Core cancellation test on each side of actual item mutation are not yet verified.
 
+
+
+## Non-goals for F42
+
+F42 does not register NewEngine class rotations, infer item success from a single child, alter the underlying Vanilla ON_USE fan-out, or implement generic inventory optimization. The production item-use action adapter remains future work after the common executor contract and its Core-backed tests are proven.

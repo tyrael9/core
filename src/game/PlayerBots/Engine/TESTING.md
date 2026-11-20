@@ -309,33 +309,33 @@ The Engine-only `MotionMaster::MovePointForEngine` path preserves legacy `MovePo
 
 ## F40 item-use lifecycle audit — source behavior and initial Core baseline
 
-\`HandleUseItemOpcode\` performs pre-cast validation and may bind an item before \`CastItemUseSpell\`. \`Player::CastItemUseSpell\` fans one request out across all valid ON_USE prototype slots; later children are triggered. \`Spell::finish\` / \`Spell::cancel\` are per-child outcomes, not an item-use root result. \`TakeCastItem\` and \`TakeReagents\` mutate charges/counts independently and at different points for immediate and delayed casts.
+`HandleUseItemOpcode` performs pre-cast validation and may bind an item before `CastItemUseSpell`. `Player::CastItemUseSpell` fans one request out across all valid ON_USE prototype slots; later children are triggered. `Spell::finish` / `Spell::cancel` are per-child outcomes, not an item-use root result. `TakeCastItem` and `TakeReagents` mutate charges/counts independently and at different points for immediate and delayed casts.
 
 The first Core fixture (item 118 / Spell 439) proved a real potion effect and item consumption, plus a fresh zero-charge rejection that retained the item. That fixture was single-slot evidence only.
 
 ## F42 item-use aggregate — pure tests and multi-slot Core fixture
 
 The implemented bounded value-only tracker separates:
-- The root request (\`itemUseId\`) and ON_USE fan-out-close boundary.
+- The root request (`itemUseId`) and ON_USE fan-out-close boundary.
 - Each registered child Spell (child ID, prototype slot, Spell ID, triggered bit and authoritative finish/cancel terminal).
-- Independent item mutation facts from \`TakeCastItem\` / \`TakeReagents\`.
+- Independent item mutation facts from `TakeCastItem` / `TakeReagents`.
 
-Each child is registered before Core \`Spell::prepare\`, so synchronous terminals are safely correlated. The root publishes only after dispatch is closed and all registered children have settled; delayed children remain pending until their terminal or bounded expiry. Invalid SpellEntry slots are marked skipped rather than miscounted as failed children. Mutation events do not imply spell success, and spell success does not imply mutation. Inventory mutation also invalidates cached Engine decisions.
+Each child is registered before Core `Spell::prepare`, so synchronous terminals are safely correlated. The root publishes only after dispatch is closed and all registered children have settled; delayed children remain pending until their terminal or bounded expiry. Invalid SpellEntry slots are marked skipped rather than miscounted as failed children. Mutation events do not imply spell success, and spell success does not imply mutation. Inventory mutation also invalidates cached Engine decisions.
 
-The Engine publishes a value-only \`ItemUseTerminal\` event and supports a typed continuation prerequisite matched by root ID/status/history. Continuations still enter the normal bounded pending queue and undergo fresh next-dispatch eligibility/context checks.
+The Engine publishes a value-only `ItemUseTerminal` event and supports a typed continuation prerequisite matched by root ID/status/history. Continuations still enter the normal bounded pending queue and undergo fresh next-dispatch eligibility/context checks.
 
-Pure C++14 coverage in \`tests/PartyBotEngineTests.cpp\` includes:
+Pure C++14 coverage in `tests/PartyBotEngineTests.cpp` includes:
 - Synchronous multi-child fan-out where the first child terminal occurs before dispatch close.
 - Delayed child settlement and mixed/all failure/interruption aggregate outcomes.
 - Separate mutation evidence, including interruption after a mutation.
 - Capacity, skipped slots, duplicate reports, bounded TTL, late-child expiry and uint32 clock wrap.
 - ItemUseTerminal correlation, recent-terminal history, queued-success handling and ordinary pending continuation dispatch.
 
-The Core simulator fixture retains the real single-slot success/zero-charge rejection cases and adds a disposable two-ON_USE-slot prototype. It checks two actual Core child Spells, first child non-triggered and second triggered, the root aggregate, both independently observed finite-charge mutations and cleanup/restoration of the modified prototype. On head \`41797d04071656479b193e4a0948abe0d3358583\`, the simulator printed the F42 PASS marker with \`multiChildren=2\`, \`multiMutations=2\` and \`cleanup=1/1/1\`.
+The Core simulator fixture retains the real single-slot success/zero-charge rejection cases and adds a disposable two-ON_USE-slot prototype. It checks two actual Core child Spells, first child non-triggered and second triggered, the root aggregate, both independently observed finite-charge mutations and cleanup/restoration of the modified prototype. On head `41797d04071656479b193e4a0948abe0d3358583`, the simulator printed the F42 PASS marker with `multiChildren=2`, `multiMutations=2` and `cleanup=1/1/1`.
 
 CI evidence:
 - PR CI [#44833258687](https://github.com/tyrael9/core/actions/runs/44833258687) passed pure Engine tests, report collector, Linux ARM64 Vanilla 5875 build and runtime-harness syntax. The fixture runtime was skipped on PR by design.
-- Trusted push [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) compiled successfully and executed the full fixture suite; the F42 marker was present and the simulator completed its other scenarios and shutdown. The job failed only when the outer script searched for the old F40 PASS string. The runner is being corrected to require the F42 marker; the milestone is not fully CI-closed until a corrected trusted push reaches final \`Runtime PASS\`.
+- Trusted push [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) compiled successfully and executed the full fixture suite; the F42 marker was present and the simulator completed its other scenarios and shutdown. The job failed only when the outer script searched for the old F40 PASS string. The runner gate now requires the exact F42 aggregate marker. Trusted Push CI [#44838633233](https://github.com/tyrael9/core/actions/runs/44838633233) was launched on the corrected code head; the milestone is not fully CI-closed until it reaches final `Runtime PASS`.
 
 Still open: although the pure tracker covers delayed children and interruption before/after mutation, a deterministic real-Core delayed ON_USE fixture and cancellation-before/after-real-mutation fixture have not yet been validated.
 

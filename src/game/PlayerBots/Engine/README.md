@@ -21,7 +21,7 @@ These foundations do not constitute production movement policy or class/role ada
 ## Validation snapshot
 
 - PR CI [#44833258687](https://github.com/tyrael9/core/actions/runs/44833258687) passed changed-path classification, pure PartyBotEngine tests, report-collector tests, CMake configure, full Linux ARM64 Vanilla 5875 `mangosd` + `realmd` build and simulator-runner syntax validation. The private fixture runtime was skipped on this PR-triggered job by design.
-- Trusted push CI [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) passed the tests/build stages and executed the full simulator. The simulator emitted the F42 two-slot aggregate PASS and continued through all later scenarios and normal shutdown; the wrapper then failed because it still grepped for the obsolete F40 marker. This is a stale acceptance-gate failure, not a compile or simulator assertion failure. A corrected trusted push run is required before claiming a green end-to-end runtime.
+- PR CI [#44838640743](https://github.com/tyrael9/core/actions/runs/44838640743) and trusted push CI [#44838633233](https://github.com/tyrael9/core/actions/runs/44838633233) were launched for head `2010ae74620de27b790bdda436031bdee16af4fc`. The trusted run passed pure Engine tests, report collector and configure and was building the ARM64 Core before the fixture-backed runtime; that runtime uses the corrected F42 marker gate. PR runtime is fixture-secret-isolated by design.
 - PR #1 remains Draft on the pinned Vanilla 5875 validation base. No image was published and no Oracle deployment or live-realm test was performed.
 
 ## Phase status
@@ -30,7 +30,7 @@ These foundations do not constitute production movement policy or class/role ada
 - **Phase 2:** decision-engine foundation, cache/scheduler lifecycle hooks and queue primitives are implemented.
 - **Phase 2.5:** extensive fixture-backed tests exercise real Core combat, spell, threat, Group, death/recovery, movement/follow and map-transfer behavior. This is test infrastructure, not a complete autonomous encounter simulator.
 - **Phase 3:** encounter trace and local read-only report collector are implemented; detailed AI state, some trace coverage, cross-map closure and deployment-diagnostics integration remain open.
-- **Phase 4:** F29–F42 establish exclusive NewEngine authority, decision-cycle dispatch, typed async dependencies, item-use root/child/mutation aggregation and the CoreAction/map-thread resolution boundary. F42's two-slot Core runtime result awaits a corrected trusted CI gate; safe delayed/cancel-before-and-after-mutation Core fixtures remain open. F43 production-executor hardening and audited generic adapters are next. Class/role action adapters remain future work.
+- **Phase 4:** F29–F42 establish exclusive NewEngine authority, decision-cycle dispatch, typed async dependencies, item-use root/child/mutation aggregation and the CoreAction/map-thread resolution boundary. F42's two-slot Core runtime result awaits completion of trusted Push CI [#44838633233](https://github.com/tyrael9/core/actions/runs/44838633233); safe delayed/cancel-before-and-after-mutation Core fixtures remain open. F43 production-executor hardening and audited generic adapters are next. Class/role action adapters remain future work.
 - **Phases 5–8:** generic behavior state machine, class/role library, full party coordination and dungeon/raid encounter strategies remain future work.
 
 ## Design documents

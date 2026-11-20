@@ -2,7 +2,7 @@
 
 ## Current F42 validation status (2026-11-20)
 
-The simulator now includes a bounded Core item-use aggregate fixture. It runs the item-118 single-slot success and fresh zero-charge rejection paths, then temporarily configures two ON_USE prototype slots and verifies two real child Spells (first non-triggered, second triggered), root aggregation, two independent finite-charge mutation observations and fixture cleanup. The run on head \`41797d04071656479b193e4a0948abe0d3358583\` printed the dedicated F42 PASS marker. Trusted Push CI [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) later failed only because \`run-ci.sh\` still required the obsolete F40 marker; pure tests, report collector, ARM64 build and all simulator scenarios completed. The runner gate is being fixed. Do not call the trusted end-to-end runtime green until a corrected push run ends with final \`Runtime PASS\`.
+The simulator now includes a bounded Core item-use aggregate fixture. It runs the item-118 single-slot success and fresh zero-charge rejection paths, then temporarily configures two ON_USE prototype slots and verifies two real child Spells (first non-triggered, second triggered), root aggregation, two independent finite-charge mutation observations and fixture cleanup. The run on head `41797d04071656479b193e4a0948abe0d3358583` printed the dedicated F42 PASS marker. Trusted Push CI [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) later failed only because `run-ci.sh` still required the obsolete F40 marker; pure tests, report collector, ARM64 build and all simulator scenarios completed. The runner gate was corrected in commit `2010ae74620de27b790bdda436031bdee16af4fc`; trusted Push CI [#44838633233](https://github.com/tyrael9/core/actions/runs/44838633233) is validating that gate. Do not call the trusted end-to-end runtime green until it ends with final `Runtime PASS`.
 
 Pure C++14 tests additionally cover delayed child settlement, mixed/all-failure/interruption outcomes, separate mutation facts, expiry/clock wrap and ItemUseTerminal continuation correlation. The real Core delayed ON_USE and cancellation-before/after-mutation fixture variants remain open. No production item-use adapter is registered.
 
@@ -92,7 +92,7 @@ The exact mechanism for forcing victim reselection (normal CreatureAI update, th
 ### Stage C — Engine-to-Core attack executor (runtime CI passing)
 
 - Build a five-role value-only PartySnapshot from same-map simulator actors.
-- Let PartyBotEngine select a tank-assist candidate and execute a real Core \`Unit::Attack\`.
+- Let PartyBotEngine select a tank-assist candidate and execute a real Core `Unit::Attack`.
 - Verify the actual Core victim, action result and actor cleanup.
 
 ### Stage D — triggered spell-effect proof (runtime CI passing)
@@ -103,9 +103,9 @@ The exact mechanism for forcing victim reselection (normal CreatureAI update, th
 
 ### Stage E — normal Player spell lifecycle (runtime CI passing)
 
-- Construct a real Core \`Player\` with a local \`WorldSession\` in the isolated simulator process.
+- Construct a real Core `Player` with a local `WorldSession` in the isolated simulator process.
 - Require spellbook ownership and let the Engine select the heal.
-- Call ordinary non-triggered \`Player::CastSpell(..., false)\`; verify acceptance, pending cast, GCD, mana cost, normal completion and actual healing.
+- Call ordinary non-triggered `Player::CastSpell(..., false)`; verify acceptance, pending cast, GCD, mana cost, normal completion and actual healing.
 - Logout and delete the Player through the Core session/map cleanup path.
 
 This remains a simulator fixture, not a production-authenticated PlayerBot or five-member Core Group. Detailed assertions and limitations are recorded below.
@@ -253,13 +253,13 @@ Upload the archive to a storage service that can supply a stable HTTPS download.
 
 ## Stage C — PartyBotEngine-to-Core executor vertical slice
 
-The next integration step keeps the simulator on the same isolated test map and reuses the real template-backed Core Creature lifecycle. It creates five party-role actors (tank, healer, melee DPS, ranged DPS and support) plus one mutually hostile target. The roster and hostile are projected into GUID/scalar-only \`PartySnapshot\` values; no live Core pointers are stored in the decision model.
+The next integration step keeps the simulator on the same isolated test map and reuses the real template-backed Core Creature lifecycle. It creates five party-role actors (tank, healer, melee DPS, ranged DPS and support) plus one mutually hostile target. The roster and hostile are projected into GUID/scalar-only `PartySnapshot` values; no live Core pointers are stored in the decision model.
 
-A simulator Trigger emits a tank-assist candidate. \`PartyBotEngine::Evaluate\` performs the normal action lookup, eligibility checks and channel arbitration. The selected action adapter resolves the bot and target GUIDs back through the current \`Map\`, revalidates life/hostility, then calls the pinned Core \`Unit::Attack\`. The test requires the report to say \`Executed\`, the action result to be \`Success\`, and the tank's actual Core victim pointer to equal the hostile Creature. All six actors are detached and destroyed before map deletion.
+A simulator Trigger emits a tank-assist candidate. `PartyBotEngine::Evaluate` performs the normal action lookup, eligibility checks and channel arbitration. The selected action adapter resolves the bot and target GUIDs back through the current `Map`, revalidates life/hostility, then calls the pinned Core `Unit::Attack`. The test requires the report to say `Executed`, the action result to be `Success`, and the tank's actual Core victim pointer to equal the hostile Creature. All six actors are detached and destroyed before map deletion.
 
 This is deliberately a narrow proof:
 - It validates the real Engine evaluation/execution boundary and one real Core action adapter.
-- The five roster entries are simulator Creature actors, not authenticated \`Player\` objects or a Core \`Group\`.
+- The five roster entries are simulator Creature actors, not authenticated `Player` objects or a Core `Group`.
 - Stage C proves the Engine-to-Core attack boundary only; Stage D and Stage E separately prove triggered Creature healing and normal non-triggered Player healing.
 - These slices still do not prove production PlayerBot authentication, real Group membership, movement generators, class rotations or a full dungeon AI. Stage F should add movement/formation and defensive actions with Core precondition revalidation.
 
@@ -267,27 +267,27 @@ This is deliberately a narrow proof:
 
 ## Stage D — PartyBotEngine healer triage and triggered Core spell effect
 
-This completed vertical slice adds a healer-role trigger and a \`core_heal\` Action adapter. The trigger reads only the value snapshot and emits a healing candidate for an injured living party member. The action resolves caster/target GUIDs on the current test map, checks that the spell is a heal effect and that the two units are alive, friendly and the target is still injured.
+This completed vertical slice adds a healer-role trigger and a `core_heal` Action adapter. The trigger reads only the value snapshot and emits a healing candidate for an injured living party member. The action resolves caster/target GUIDs on the current test map, checks that the spell is a heal effect and that the two units are alive, friendly and the target is still injured.
 
 The simulator uses Vanilla spell 2050 (Lesser Heal, Rank 1). It requires all of the following:
 - PartyBotEngine registers the action, evaluates the healer trigger and selects the injured tank.
-- The adapter calls the pinned Core \`SpellCaster::CastSpell\` API and receives \`SPELL_CAST_OK\`.
+- The adapter calls the pinned Core `SpellCaster::CastSpell` API and receives `SPELL_CAST_OK`.
 - The Core Spell / SpellEffects path increases the target's actual health; the measured delta is logged and checked.
 - Both Creature actors are detached and destroyed before the test map is deleted.
 
 **Important scope limitation:** this first fixture deliberately uses a triggered cast from a template-backed Creature. This still exercises the real Core spell implementation and healing effect, but bypasses player spellbook ownership, mana cost, GCD and cast-time progression. It is not proof that an authenticated PlayerBot can cast a known spell normally. A separate non-triggered Player-backed slice must cover those mechanics before this adapter is used by production PlayerBots.
 
-The optional CI runner now requires both Stage D and Stage E PASS markers in addition to the Stage A/B and Stage C markers. It remains push-only, uses the complete extracted-data fixture and four disposable \`partybot_sim_*\` schemas, and has no image-publish or deployment side effects.
+The optional CI runner now requires both Stage D and Stage E PASS markers in addition to the Stage A/B and Stage C markers. It remains push-only, uses the complete extracted-data fixture and four disposable `partybot_sim_*` schemas, and has no image-publish or deployment side effects.
 
 
 ## Stage E — normal Player spell execution
 
-Stage E adds an actual Core \`Player\` as the Engine healer. The simulator constructs it through the pinned Player creation path (\`Player::Create\`, real Player stats/default spell initialization, a local \`WorldSession\`, map insertion and ObjectAccessor registration), rather than disguising a Creature as a Player. The fixture is not authenticated against a production account and is never persisted; it uses the disposable simulator DB and logs out through \`WorldSession::LogoutPlayer(false)\` before map teardown.
+Stage E adds an actual Core `Player` as the Engine healer. The simulator constructs it through the pinned Player creation path (`Player::Create`, real Player stats/default spell initialization, a local `WorldSession`, map insertion and ObjectAccessor registration), rather than disguising a Creature as a Player. The fixture is not authenticated against a production account and is never persisted; it uses the disposable simulator DB and logs out through `WorldSession::LogoutPlayer(false)` before map teardown.
 
-The Engine candidate still comes from the same healer-triage trigger. The Player action adapter re-resolves the healer and patient GUIDs, requires the healer to actually know spell 2050, checks spell readiness/GCD/current-cast state and friendly living target state, then calls the ordinary non-triggered \`Player::CastSpell(..., false)\` path.
+The Engine candidate still comes from the same healer-triage trigger. The Player action adapter re-resolves the healer and patient GUIDs, requires the healer to actually know spell 2050, checks spell readiness/GCD/current-cast state and friendly living target state, then calls the ordinary non-triggered `Player::CastSpell(..., false)` path.
 
 The runtime assertion distinguishes acceptance from completion:
-- The Engine reports the action as executed and the Core returns \`SPELL_CAST_OK\`.
+- The Engine reports the action as executed and the Core returns `SPELL_CAST_OK`.
 - A generic spell remains pending immediately after acceptance and the Player GCD is active.
 - The Core map ticks advance the normal cast to completion.
 - The patient Creature's actual health increases and the Player's mana decreases.
@@ -298,16 +298,16 @@ This is the first Player-backed spell slice, not yet a production PlayerBot inte
 
 ### Stage E timing detail
 
-The first Player-backed run confirmed that \`Map::Update(t_diff)\` does not advance Player spell events merely because a synthetic diff is passed. \`Map::UpdatePlayers()\` and session movement/spell processing are throttled against the Core's monotonic \`WorldTimer\`. The fixture therefore waits between bounded map updates, allowing the normal Player update cadence and spell event processor to advance in real time. This is intentional: the simulator must not fake completion by directly advancing a cast timer or applying the heal itself.
+The first Player-backed run confirmed that `Map::Update(t_diff)` does not advance Player spell events merely because a synthetic diff is passed. `Map::UpdatePlayers()` and session movement/spell processing are throttled against the Core's monotonic `WorldTimer`. The fixture therefore waits between bounded map updates, allowing the normal Player update cadence and spell event processor to advance in real time. This is intentional: the simulator must not fake completion by directly advancing a cast timer or applying the heal itself.
 
 
 ## Stage F — Engine-selected Core movement and defensive-action foundations
 
 ### Stage F1 — Core point movement
 
-The first movement slice adds a destination payload to \`ActionCandidate\` and a formation trigger that derives a 2.5-yard trailing position from the Main Tank's snapshot coordinates. The adapter re-resolves mover and leader GUIDs on the current map, checks life/faction/map/instance/control state and finite destination coordinates, then invokes \`MotionMaster::MovePoint(..., MOVE_NONE)\`.
+The first movement slice adds a destination payload to `ActionCandidate` and a formation trigger that derives a 2.5-yard trailing position from the Main Tank's snapshot coordinates. The adapter re-resolves mover and leader GUIDs on the current map, checks life/faction/map/instance/control state and finite destination coordinates, then invokes `MotionMaster::MovePoint(..., MOVE_NONE)`.
 
-The fixture uses two active Core Creature actors on the isolated map. Runtime CI requires the Engine to select the leader as the target, the action report to be Executed/Success, the real movement generator to become \`POINT_MOTION_TYPE\`, the mover's actual distance to decrease and its final position to reach the derived destination before both actors are detached and destroyed.
+The fixture uses two active Core Creature actors on the isolated map. Runtime CI requires the Engine to select the leader as the target, the action report to be Executed/Success, the real movement generator to become `POINT_MOTION_TYPE`, the mover's actual distance to decrease and its final position to reach the derived destination before both actors are detached and destroyed.
 
 This proves one Core point-movement primitive and the Engine-to-Core movement boundary. Continuous follow and native Player cast interruption are covered by the later Stage F2/F3 fixtures; formation slot arbitration and defensive movement remain out of scope.
 
@@ -351,11 +351,11 @@ This is a Player-backed Core simulator fixture, but the test Player still uses a
 
 ### Stage F5 — Follow target handoff and recovery
 
-The simulator's \`core_follow\` action remembers the last successfully selected target GUID. A repeated candidate for the same active FollowMovementGenerator is a no-op; a candidate for a different Main Tank remains useful and is executed through the Core \`MotionMaster::MoveFollow\` API, which replaces the current movement generator with a new native \`FollowMovementGenerator\`.
+The simulator's `core_follow` action remembers the last successfully selected target GUID. A repeated candidate for the same active FollowMovementGenerator is a no-op; a candidate for a different Main Tank remains useful and is executed through the Core `MotionMaster::MoveFollow` API, which replaces the current movement generator with a new native `FollowMovementGenerator`.
 
-The runtime fixture creates one follower and two friendly leader Creatures. It first follows Main Tank A, then changes the snapshot assignment to Main Tank B while the original FollowMovementGenerator is still active. It requires the Engine to select B and successfully execute the retarget action. Both leaders then move through Core \`PointMovementGenerator\`s in opposite directions; the follower must arrive within 5 yards of B and remain at least 15 yards from A, proving the Core generator tracks the new leader rather than the stale target.
+The runtime fixture creates one follower and two friendly leader Creatures. It first follows Main Tank A, then changes the snapshot assignment to Main Tank B while the original FollowMovementGenerator is still active. It requires the Engine to select B and successfully execute the retarget action. Both leaders then move through Core `PointMovementGenerator`s in opposite directions; the follower must arrive within 5 yards of B and remain at least 15 yards from A, proving the Core generator tracks the new leader rather than the stale target.
 
-Next, the fixture removes B while it is the active follow target, advances normal Core map updates, promotes the still-present A back to Main Tank, and requires the same Engine action to recover by installing a new Core FollowMovementGenerator for A. A moves again through Core \`MovePoint\`; the follower must track A, retain FOLLOW state and clean up all actors.
+Next, the fixture removes B while it is the active follow target, advances normal Core map updates, promotes the still-present A back to Main Tank, and requires the same Engine action to recover by installing a new Core FollowMovementGenerator for A. A moves again through Core `MovePoint`; the follower must track A, retain FOLLOW state and clean up all actors.
 
 The simulator does not move the follower, rewrite positions, or synthesize target tracking. It only updates the scalar PartySnapshot, evaluates the Engine, and invokes Core movement APIs. Runtime acceptance also requires both leader movement generators, handoff and recovery decisions, followed-target removal, final formation range, and complete actor cleanup.
 

@@ -75,7 +75,7 @@ struct DecisionContext {
                     ReservationTraceSink* traceSink = nullptr,
                     ValueCache* decisionValueCache = nullptr,
                     EngineActionObserver* actionObserver = nullptr,
-                    ActionContinuationSink* continuationSink = nullptr)
+                    ActionContinuationSink const* continuationSink = nullptr)
         : snapshot(partySnapshot), bot(botSnapshot), coordinator(partyCoordinator),
           nowMs(timeMs), reservationTrace(traceSink), valueCache(decisionValueCache),
           engineActionObserver(actionObserver), continuationSink(continuationSink) {}
@@ -86,7 +86,7 @@ struct DecisionContext {
     ReservationTraceSink* reservationTrace;
     ValueCache* valueCache;
     EngineActionObserver* engineActionObserver;
-    ActionContinuationSink* continuationSink;
+    ActionContinuationSink const* continuationSink;
 };
 }
 #endif

@@ -336,6 +336,50 @@ void TestPendingActionQueuePriorityFifoExpiryAndClockWrap()
     assert(wrapped.Empty());
 }
 
+void TestPendingActionQueueAgePromotionPreventsPriorityStarvation()
+{
+    PendingActionQueue queue;
+    PendingActionQueue::Entry entry;
+    ActionCandidate oldest = Candidate("oldest", 1.0f, ActionChannel::Utility);
+    ActionCandidate freshHigh = Candidate("fresh_high", 1000.0f, ActionChannel::Utility);
+    ActionCandidate nextHigh = Candidate("next_high", 2000.0f, ActionChannel::Utility);
+    oldest.finalPriority = 1.0f;
+    freshHigh.finalPriority = 1000.0f;
+    nextHigh.finalPriority = 2000.0f;
+
+    assert(queue.Enqueue(oldest, 1000, 10000) == PendingActionEnqueueResult::Queued);
+    assert(queue.Enqueue(freshHigh, 3999, 10000) == PendingActionEnqueueResult::Queued);
+    // At 2,999 ms the oldest action has not reached the fairness boundary.
+    assert(queue.PopNext(3999, entry) && entry.candidate.actionName == "fresh_high");
+
+    assert(queue.Enqueue(nextHigh, 4000, 10000) == PendingActionEnqueueResult::Queued);
+    // At exactly 3,000 ms, age promotion outranks a newly arrived higher priority action.
+    assert(queue.PopNext(4000, entry) && entry.candidate.actionName == "oldest");
+    assert(queue.PopNext(4000, entry) && entry.candidate.actionName == "next_high");
+
+    PendingActionQueue promoted;
+    ActionCandidate older = Candidate("older", 1.0f, ActionChannel::Utility);
+    ActionCandidate newer = Candidate("newer", 5000.0f, ActionChannel::Utility);
+    older.finalPriority = 1.0f;
+    newer.finalPriority = 5000.0f;
+    assert(promoted.Enqueue(older, 100, 10000) == PendingActionEnqueueResult::Queued);
+    assert(promoted.Enqueue(newer, 1000, 10000) == PendingActionEnqueueResult::Queued);
+    // When both are promoted, longest wait wins even if its priority is lower.
+    assert(promoted.PopNext(3100, entry) && entry.candidate.actionName == "older");
+
+    PendingActionQueue wrapped;
+    std::uint32_t const start = 0xfffffff0u;
+    assert(wrapped.Enqueue(oldest, start, 10000) == PendingActionEnqueueResult::Queued);
+    assert(wrapped.Enqueue(freshHigh, start + 2999u, 10000) ==
+           PendingActionEnqueueResult::Queued);
+    assert(wrapped.PopNext(start + 2999u, entry) &&
+           entry.candidate.actionName == "fresh_high");
+    assert(wrapped.Enqueue(nextHigh, start + 3000u, 10000) ==
+           PendingActionEnqueueResult::Queued);
+    assert(wrapped.PopNext(start + 3000u, entry) &&
+           entry.candidate.actionName == "oldest");
+}
+
 void TestPendingActionQueueRejectsInvalidAndFullEntries()
 {
     PendingActionQueue queue;
@@ -469,6 +513,50 @@ void TestEnginePendingQueuePriorityChannelDeferralPreservesOriginalExpiry()
     assert(expired.expired == 1 && expired.dequeued == 0);
     assert(engine.GetPendingActionCount() == 0);
     assert(order.size() == 1);
+}
+
+void TestEnginePendingQueueFairnessSurvivesRevalidatedWorkSort()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    std::vector<std::string> order;
+    auto oldest = std::make_shared<TestAction>("pending_oldest");
+    auto freshHigh = std::make_shared<TestAction>("pending_fresh_high");
+    oldest->pendingLifetimeMs = 10000;
+    freshHigh->pendingLifetimeMs = 10000;
+    oldest->executionOrder = &order;
+    freshHigh->executionOrder = &order;
+    assert(engine.RegisterAction(oldest) && engine.RegisterAction(freshHigh));
+
+    ActionCandidate oldestCandidate = Candidate(
+        "pending_oldest", 1.0f, ActionChannel::GlobalCooldown);
+    oldestCandidate.finalPriority = 1.0f;
+    ActionCandidate freshHighCandidate = Candidate(
+        "pending_fresh_high", 1000.0f, ActionChannel::GlobalCooldown);
+    freshHighCandidate.finalPriority = 1000.0f;
+
+    DecisionContext oldestEnqueue(f.snapshot, f.bot, f.coordinator, 1000);
+    DecisionContext highEnqueue(f.snapshot, f.bot, f.coordinator, 3999);
+    assert(engine.QueuePendingAction(oldestEnqueue, oldestCandidate) ==
+           PendingActionEnqueueResult::Queued);
+    assert(engine.QueuePendingAction(highEnqueue, freshHighCandidate) ==
+           PendingActionEnqueueResult::Queued);
+
+    DecisionContext fairnessTick(f.snapshot, f.bot, f.coordinator, 4000);
+    PendingActionDispatchSummary const first =
+        engine.ExecutePendingActions(fairnessTick);
+    // The executor revalidates and sorts its local work vector after PopNext.
+    // It must use the same comparator or the queue's age promotion is lost.
+    assert(first.selected == 1 && first.executed == 1 && first.requeued == 1);
+    assert(order.size() == 1 && order[0] == "pending_oldest");
+    assert(engine.GetPendingActionCount() == 1);
+
+    DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 4100);
+    PendingActionDispatchSummary const second =
+        engine.ExecutePendingActions(nextTick);
+    assert(second.selected == 1 && second.executed == 1);
+    assert(order.size() == 2 && order[1] == "pending_fresh_high");
+    assert(engine.GetPendingActionCount() == 0);
 }
 
 void TestDecisionCycleQueuesOptInActionsAndDispatchesPendingWork()
@@ -2693,10 +2781,12 @@ int main() {
     TestActionQueueIsBoundedPriorityOrderedAndStable();
     TestPendingActionQueueDeduplicatesAndPreservesOriginalExpiry();
     TestPendingActionQueuePriorityFifoExpiryAndClockWrap();
+    TestPendingActionQueueAgePromotionPreventsPriorityStarvation();
     TestPendingActionQueueRejectsInvalidAndFullEntries();
     TestEnginePendingQueueRevalidatesCurrentEligibilityAndResetClearsIt();
     TestEnginePendingQueueDropsForeignGroupMapAndInstanceContext();
     TestEnginePendingQueuePriorityChannelDeferralPreservesOriginalExpiry();
+    TestEnginePendingQueueFairnessSurvivesRevalidatedWorkSort();
     TestDecisionCycleQueuesOptInActionsAndDispatchesPendingWork();
     TestDecisionCycleBlocksPendingChannelsAndHonorsOriginalExpiry();
     TestExecuteSelectedDispatchesByPriorityWithStableTies();

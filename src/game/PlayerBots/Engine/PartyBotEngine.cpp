@@ -301,12 +301,11 @@ PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
     }
 
     std::stable_sort(work.begin(), work.end(),
-        [](PendingWork const& left, PendingWork const& right) {
-            if (left.evaluation.candidate.finalPriority !=
-                right.evaluation.candidate.finalPriority)
-                return left.evaluation.candidate.finalPriority >
-                    right.evaluation.candidate.finalPriority;
-            return left.entry.ordinal < right.entry.ordinal;
+        [&executionContext](PendingWork const& left, PendingWork const& right) {
+            // Keep the same age-promotion ordering as PendingActionQueue::PopNext.
+            // This post-revalidation sort must not undo the fairness decision.
+            return PendingActionQueue::ComesBefore(
+                left.entry, right.entry, executionContext.nowMs);
         });
 
     DecisionReport report;

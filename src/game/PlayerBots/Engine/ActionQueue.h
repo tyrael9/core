@@ -106,6 +106,27 @@ public:
     static std::size_t const Capacity = 32;
     static std::uint32_t const MaxLifetimeMs = 0x7fffffffu;
 
+    // Once an entry has waited this long, age takes precedence over new work.
+    // Live entries have TTL < 2^31 ms, so unsigned elapsed-time arithmetic is
+    // wrap-safe for every entry that can still be present in the queue.
+    static std::uint32_t const FairnessWaitMs = 3000u;
+
+    static bool ComesBefore(Entry const& left, Entry const& right,
+                            std::uint32_t nowMs)
+    {
+        std::uint32_t const leftWaitMs = nowMs - left.enqueuedAtMs;
+        std::uint32_t const rightWaitMs = nowMs - right.enqueuedAtMs;
+        bool const leftPromoted = leftWaitMs >= FairnessWaitMs;
+        bool const rightPromoted = rightWaitMs >= FairnessWaitMs;
+        if (leftPromoted != rightPromoted)
+            return leftPromoted;
+        if (leftPromoted && leftWaitMs != rightWaitMs)
+            return leftWaitMs > rightWaitMs;
+        if (!leftPromoted && left.priority != right.priority)
+            return left.priority > right.priority;
+        return left.ordinal < right.ordinal;
+    }
+
     PendingActionEnqueueResult Enqueue(ActionCandidate const& candidate,
                                        std::uint32_t nowMs,
                                        std::uint32_t lifetimeMs)
@@ -165,13 +186,8 @@ public:
 
         std::size_t best = 0;
         for (std::size_t i = 1; i < m_entries.size(); ++i)
-        {
-            Entry const& candidate = m_entries[i];
-            Entry const& current = m_entries[best];
-            if (candidate.priority > current.priority ||
-                (candidate.priority == current.priority && candidate.ordinal < current.ordinal))
+            if (ComesBefore(m_entries[i], m_entries[best], nowMs))
                 best = i;
-        }
 
         entry = m_entries[best];
         m_entries.erase(m_entries.begin() + best);

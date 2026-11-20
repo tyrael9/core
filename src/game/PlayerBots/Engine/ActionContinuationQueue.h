@@ -244,6 +244,14 @@ public:
         return static_cast<std::int32_t>(nowMs - expiresAtMs) >= 0;
     }
 
+    static bool IsValidRequest(
+        ActionDependencyRequest const& request,
+        ActionCandidate const& candidate,
+        PendingActionQueue::Context const& context)
+    {
+        return IsWellFormedRequest(request, candidate, context);
+    }
+
 private:
     static bool SameContext(PendingActionQueue::Context const& left,
                             PendingActionQueue::Context const& right)

@@ -4713,10 +4713,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     newEngineAuthorityAI.m_initialized = true;
     newEngineAuthorityAI.m_simulatorExecutionAuthorityOverride =
         static_cast<int32>(ExecutionAuthorityMode::NewEngine);
-    newEngineAuthorityAI.m_updateTimer.Reset(PB_UPDATE_INTERVAL);
+    newEngineAuthorityAI.m_updateTimer.Reset(1000);
     PlayerAI* const previousTankAIForNewEngineAuthority = tank->AI();
     tank->SetAI(&newEngineAuthorityAI);
-    newEngineAuthorityAI.UpdateAI(PB_UPDATE_INTERVAL);
+    newEngineAuthorityAI.UpdateAI(1000);
     bool const f29NewEngineAuthorityPassed =
         newEngineAuthorityAI.m_simulatorNewEngineTickCount == 1 &&
         newEngineAuthorityAI.m_simulatorLegacyPolicyEntryCount == 0 &&

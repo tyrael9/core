@@ -29,6 +29,7 @@
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "SpellMgr.h"
+#include "Timer.h"
 
 #include <algorithm>
 #include <chrono>
@@ -4989,7 +4990,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     snapshot.mapId = map.GetId();
     snapshot.instanceId = map.GetInstanceId();
     snapshot.epoch = 3;
-    snapshot.capturedAtMs = 3000;
+    uint32 const engineActionNowMs = WorldTimer::getMSTime();
+    snapshot.capturedAtMs = engineActionNowMs;
 
     PartyMemberSnapshot healerMember;
     healerMember.guid = healer->GetObjectGuid().GetRawValue();
@@ -5018,13 +5020,13 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     std::shared_ptr<PartyCoordinator> coordinator(new PartyCoordinator());
     coordinator->ConfigureEncounterTraceBudget(32, 16);
     EncounterTransition const engineTraceEncounter =
-        coordinator->ObserveEncounter(snapshot, 3000, 30000);
+        coordinator->ObserveEncounter(snapshot, engineActionNowMs, 30000);
     engineActionAI.m_partyCoordinator = coordinator;
     engineActionAI.m_partyCoordinatorMapId = map.GetId();
     engineActionAI.m_partyCoordinatorInstanceId = map.GetInstanceId();
     engineActionAI.m_decisionTrace.BeginTick();
     healer->SetAI(&engineActionAI);
-    DecisionContext context(snapshot, snapshot.members[0], *coordinator, 3000,
+    DecisionContext context(snapshot, snapshot.members[0], *coordinator, engineActionNowMs,
                             &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
     PartyBotEngine& engine = engineActionAI.m_partyBotEngine;
     std::shared_ptr<CaptureCoreSpellTerminalListener> coreTerminalListener(

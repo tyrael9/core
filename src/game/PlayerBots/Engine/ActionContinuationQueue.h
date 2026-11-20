@@ -73,7 +73,7 @@ public:
                     return ActionContinuationEnqueueResult::DuplicateParent;
         }
 
-        if (m_entries.size() >= Capacity)
+        if (m_entries.size() + m_ready.size() >= Capacity)
             return ActionContinuationEnqueueResult::Full;
 
         Entry entry;
@@ -156,6 +156,11 @@ public:
     // branches are registered and every prerequisite in every branch resolved.
     std::size_t CollectReady(std::vector<Entry>& ready)
     {
+        // Entries in m_ready have already satisfied their dependencies and
+        // been tombstoned. They are retried without re-running group resolution.
+        ready.insert(ready.end(), m_ready.begin(), m_ready.end());
+        m_ready.clear();
+
         std::vector<std::uint64_t> visitedGroups;
         std::size_t removed = 0;
         for (std::size_t i = 0; i < m_entries.size();)
@@ -253,6 +258,18 @@ public:
         return removed;
     }
 
+    // PendingActionQueue can be full when an external Core result makes a
+    // continuation ready. Keep that already-settled entry in a bounded retry
+    // backlog so the next Engine dispatch can release it after slots free.
+    bool RestoreReady(Entry const& entry, std::uint32_t nowMs)
+    {
+        if (IsExpired(nowMs, entry.expiresAtMs) ||
+            m_entries.size() + m_ready.size() >= Capacity)
+            return false;
+        m_ready.push_back(entry);
+        return true;
+    }
+
     std::size_t PruneExpired(std::uint32_t nowMs)
     {
         std::vector<std::uint64_t> expiredGroups;
@@ -287,14 +304,20 @@ public:
                     std::find(expiredGroups.begin(), expiredGroups.end(),
                               entry.request.alternativeGroupId) != expiredGroups.end();
             }), m_entries.end());
-        return previousSize - m_entries.size();
+        std::size_t const removedEntries = previousSize - m_entries.size();
+        std::size_t const previousReadySize = m_ready.size();
+        m_ready.erase(std::remove_if(m_ready.begin(), m_ready.end(),
+            [nowMs](Entry const& entry) { return IsExpired(nowMs, entry.expiresAtMs); }),
+            m_ready.end());
+        return removedEntries + previousReadySize - m_ready.size();
     }
 
-    std::size_t Size() const { return m_entries.size(); }
-    bool Empty() const { return m_entries.empty(); }
+    std::size_t Size() const { return m_entries.size() + m_ready.size(); }
+    bool Empty() const { return m_entries.empty() && m_ready.empty(); }
     void Clear()
     {
         m_entries.clear();
+        m_ready.clear();
         m_recentlySettled.clear();
         m_nextOrdinal = 0;
     }
@@ -457,6 +480,7 @@ private:
     }
 
     std::vector<Entry> m_entries;
+    std::vector<Entry> m_ready;
     std::vector<SettledDependency> m_recentlySettled;
     std::uint64_t m_nextOrdinal = 0;
 };

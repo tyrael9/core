@@ -1066,6 +1066,46 @@ void TestPointMovementTerminalDependencyUsesCorrelationStatusAndHistory()
         engine.ExecutePendingActions(nextTick);
         assert(child->executeCount == 0);
     }
+
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("movement_failed_arrival_followup");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+
+        ActionDependencyRequest request;
+        request.lifetimeMs = 1200;
+        ActionDependencyPrerequisite prerequisite;
+        prerequisite.source = ActionDependencyEventSource::PointMovementTerminal;
+        prerequisite.actionId = 8803;
+        prerequisite.encounterId = f.coordinator.GetEncounterId();
+        prerequisite.targetGuid = f.bot.guid;
+        prerequisite.pointId = 19;
+        prerequisite.requiredMovementStatus = PointMovementTerminalStatus::Reached;
+        request.prerequisites.push_back(prerequisite);
+        ActionCandidate continuation = Candidate(
+            "movement_failed_arrival_followup", 25.0f, ActionChannel::Utility);
+        continuation.finalPriority = 25.0f;
+        assert(engine.QueueActionDependency(f.context, request, continuation) ==
+               ActionContinuationEnqueueResult::Queued);
+
+        PointMovementTerminalEvent failedArrival;
+        failedArrival.actionId = prerequisite.actionId;
+        failedArrival.encounterId = prerequisite.encounterId;
+        failedArrival.moverGuid = prerequisite.targetGuid;
+        failedArrival.pointId = prerequisite.pointId;
+        failedArrival.status = PointMovementTerminalStatus::Failed;
+        failedArrival.occurredAtMs = 1100;
+        failedArrival.finalDistance = 3.0f;
+        engine.NotifyPointMovementTerminal(failedArrival);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 0);
+        DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1101);
+        engine.ExecutePendingActions(nextTick);
+        assert(child->executeCount == 0);
+    }
 }
 void TestFailedActionResultRejectsMixedDependency()
 {

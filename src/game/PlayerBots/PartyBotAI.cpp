@@ -843,6 +843,7 @@ void PartyBotAI::OnItemUseMutation(
     event.itemExistsAfter = itemExistsAfter;
     event.occurredAtMs = WorldTimer::getMSTime();
     m_partyBotEngine.RecordItemUseMutation(event);
+    m_partyBotEngine.InvalidateDecisionState();
 }
 
 void PartyBotAI::OnPointMovementResult(uint64 actionId, uint64 encounterId,

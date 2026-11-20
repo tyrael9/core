@@ -230,6 +230,12 @@ public:
         if (root->dispatchClosed)
             return ItemUseTrackerResult::Duplicate;
         root->dispatchClosed = true;
+        if (IsExpired(nowMs, root->expiresAtMs)) {
+            ItemUseId const expiredId = root->id;
+            BuildTerminal(*root, nowMs, ItemUseAggregateStatus::Expired, terminal);
+            RemoveRoot(expiredId);
+            return ItemUseTrackerResult::Completed;
+        }
         if (TryFinalize(*root, nowMs, terminal))
             return ItemUseTrackerResult::Completed;
         return ItemUseTrackerResult::Accepted;
@@ -257,6 +263,12 @@ public:
             return ItemUseTrackerResult::Duplicate;
         child->status = status;
         child->terminalAtMs = nowMs;
+        if (IsExpired(nowMs, root->expiresAtMs)) {
+            ItemUseId const expiredId = root->id;
+            BuildTerminal(*root, nowMs, ItemUseAggregateStatus::Expired, terminal);
+            RemoveRoot(expiredId);
+            return ItemUseTrackerResult::Completed;
+        }
         if (TryFinalize(*root, nowMs, terminal))
             return ItemUseTrackerResult::Completed;
         return ItemUseTrackerResult::Accepted;

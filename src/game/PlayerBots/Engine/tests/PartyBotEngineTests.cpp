@@ -448,6 +448,49 @@ void TestItemUseAggregateNoChildrenDuplicateSlotsAndCapacity()
             ItemUseTrackerResult::Completed);
 }
 
+void TestItemUseAggregateLateChildCannotBeatDeadline()
+{
+    ItemUseAggregateTracker tracker;
+    ItemUseId root = 0;
+    std::uint32_t const start = 0xfffffff0u;
+    assert(tracker.Begin(ItemUseRequest(start, 40), root) ==
+           ItemUseTrackerResult::Accepted);
+    ItemUseChildId child = 0;
+    assert(tracker.RegisterChild(root, 0, 439, false, child) ==
+           ItemUseTrackerResult::Accepted);
+
+    ItemUseTerminalEvent terminal;
+    assert(tracker.CloseDispatch(root, 0x00000017u, terminal) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.GetPendingRootCount() == 1);
+
+    // Exact expiry is wrap-safe. The delayed Core child did finish, but its
+    // terminal arrived after the root deadline and cannot turn it into success.
+    assert(tracker.RecordChildTerminal(root, child,
+        ItemUseChildStatus::Succeeded, 0x00000018u, terminal) ==
+        ItemUseTrackerResult::Completed);
+    assert(terminal.status == ItemUseAggregateStatus::Expired);
+    assert(terminal.itemUseId == root);
+    assert(terminal.childCount == 1);
+    assert(terminal.completedChildCount == 1);
+    assert(terminal.succeededChildCount == 1);
+    assert(tracker.GetPendingRootCount() == 0);
+    assert(tracker.RecordChildTerminal(root, child,
+        ItemUseChildStatus::Succeeded, 0x00000019u, terminal) ==
+        ItemUseTrackerResult::AlreadySettled);
+
+    ItemUseId closeRoot = 0;
+    assert(tracker.Begin(ItemUseRequest(3000, 100), closeRoot) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.RegisterChild(closeRoot, 0, 439, false, child) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.CloseDispatch(closeRoot, 3100, terminal) ==
+           ItemUseTrackerResult::Completed);
+    assert(terminal.status == ItemUseAggregateStatus::Expired);
+    assert(terminal.completedChildCount == 0);
+    assert(tracker.GetPendingRootCount() == 0);
+}
+
 void TestItemUseAggregateExpiryAndClockWrap()
 {
     ItemUseAggregateTracker tracker;
@@ -4634,6 +4677,7 @@ int main() {
     TestItemUseAggregateRecordsMutationSeparately();
     TestItemUseAggregateNoChildrenDuplicateSlotsAndCapacity();
     TestItemUseAggregateExpiryAndClockWrap();
+    TestItemUseAggregateLateChildCannotBeatDeadline();
     TestCoreActionRuntimeIsPreservedAcrossDecisionAndPendingContexts();
     TestExecuteSelectedDispatchesByPriorityWithStableTies();    TestExecuteSelectedHonorsPerDispatchLimit();
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();

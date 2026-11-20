@@ -136,6 +136,13 @@ public:
     uint32 m_partyCoordinatorInstanceId = 0;
     uint32 m_engineShadowTraceMs = 0;
     bool m_engineShadowStrategiesRegistered = false;
+    // Per-instance simulator seam; -1 keeps the process configuration authoritative.
+    int32 m_simulatorExecutionAuthorityOverride = -1;
+    uint32 m_simulatorNewEngineTickCount = 0;
+    uint32 m_simulatorLegacyPolicyEntryCount = 0;
+    uint32 m_simulatorLegacyPolicyDispatchCount = 0;
+    uint32 m_simulatorEngineDecisionCycleCount = 0;
+    uint32 m_simulatorEngineCandidateCount = 0;
     mutable uint64 m_pendingCastTraceActionId = 0;
     uint64 m_activeEngineActionId = 0;
     uint64 m_activeEngineActionEncounterId = 0;

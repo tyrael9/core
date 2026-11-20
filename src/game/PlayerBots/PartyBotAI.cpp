@@ -54,10 +54,12 @@ enum PartyBotSpells
 
 namespace
 {
-    PartyBotEngine::ExecutionAuthorityMode GetPartyBotExecutionAuthority()
+    PartyBotEngine::ExecutionAuthorityMode GetPartyBotExecutionAuthority(int32 simulatorOverride)
     {
-        return PartyBotEngine::ResolveExecutionAuthorityMode(
-            sConfig.GetIntDefault("PlayerBot.EngineAuthority", 0));
+        int32 const configuredValue = simulatorOverride >= 0
+            ? simulatorOverride
+            : sConfig.GetIntDefault("PlayerBot.EngineAuthority", 0);
+        return PartyBotEngine::ResolveExecutionAuthorityMode(configuredValue);
     }
 
     bool AdmitPartyEncounterTrace(
@@ -1287,10 +1289,17 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     // Legacy remains the default. Shadow evaluates read-only; NewEngine is an
     // explicit exclusive authority mode and never falls through to Legacy policy.
-    PartyBotEngine::ExecutionAuthorityMode const authority = GetPartyBotExecutionAuthority();
+    PartyBotEngine::ExecutionAuthorityMode const authority =
+        GetPartyBotExecutionAuthority(m_simulatorExecutionAuthorityOverride);
     UpdatePartyBotEngineShadow();
     if (!PartyBotEngine::ShouldRunLegacyPolicy(authority))
+    {
+        if (m_simulatorExecutionAuthorityOverride >= 0)
+            ++m_simulatorNewEngineTickCount;
         return;
+    }
+    if (m_simulatorExecutionAuthorityOverride >= 0)
+        ++m_simulatorLegacyPolicyEntryCount;
 
     // Healers must support the group even when they have not personally entered combat.
     bool const partyInCombat = IsHealerClass(me->GetClass()) && IsPartyInCombat();
@@ -1444,6 +1453,8 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (!me->IsInCombat() && !healerSupportingPartyCombat && !me->IsMounted())
     {
+        if (m_simulatorExecutionAuthorityOverride >= 0)
+            ++m_simulatorLegacyPolicyDispatchCount;
         UpdateOutOfCombatAI();
 
         if (m_isBuffing)
@@ -1526,7 +1537,11 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     }
 
     if (me->IsInCombat() || healerSupportingPartyCombat)
+    {
+        if (m_simulatorExecutionAuthorityOverride >= 0)
+            ++m_simulatorLegacyPolicyDispatchCount;
         UpdateInCombatAI();
+    }
 }
 
 
@@ -1590,7 +1605,8 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     uint32 const mapId = me->GetMapId();
     uint32 const instanceId = me->GetInstanceId();
     uint32 const nowMs = WorldTimer::getMSTime();
-    PartyBotEngine::ExecutionAuthorityMode const authority = GetPartyBotExecutionAuthority();
+    PartyBotEngine::ExecutionAuthorityMode const authority =
+        GetPartyBotExecutionAuthority(m_simulatorExecutionAuthorityOverride);
     bool const enabled = PartyBotEngine::ShouldEvaluateEngine(
         authority, sConfig.GetBoolDefault("PlayerBot.EngineShadow", false));
     int32 const configuredSettleMs =
@@ -1783,6 +1799,11 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     PartyBotEngine::DecisionReport report = m_partyBotEngine.Evaluate(context);
     if (authority == PartyBotEngine::ExecutionAuthorityMode::NewEngine)
         m_partyBotEngine.ExecuteDecisionCycle(context, report);
+    if (m_simulatorExecutionAuthorityOverride >= 0)
+    {
+        ++m_simulatorEngineDecisionCycleCount;
+        m_simulatorEngineCandidateCount = static_cast<uint32>(report.candidates.size());
+    }
 
     if (m_engineShadowTraceMs <= PB_UPDATE_INTERVAL)
     {

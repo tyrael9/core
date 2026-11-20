@@ -4701,6 +4701,46 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: Core-backed PartyBotEngine prioritised trigger telemetry by actionable active state, then active-empty, then inactive; cadence-skipped rows were deprioritised by the four-row cap, while healer-candidate attribution remained intact.");
 
+    // F29: drive the real PartyBotAI::UpdateAI entry with an explicit per-instance
+    // NewEngine override. The process config remains Shadow-enabled for the
+    // surrounding F17/F27 fixtures; this bot must nevertheless run an empty
+    // authoritative Engine cycle and return before entering any Legacy policy.
+    PartyBotAI newEngineAuthorityAI(
+        dps, map.GetId(), map.GetInstanceId(),
+        tank->GetPositionX(), tank->GetPositionY(),
+        tank->GetPositionZ(), tank->GetOrientation());
+    newEngineAuthorityAI.SetPlayer(tank);
+    newEngineAuthorityAI.m_initialized = true;
+    newEngineAuthorityAI.m_simulatorExecutionAuthorityOverride =
+        static_cast<int32>(ExecutionAuthorityMode::NewEngine);
+    newEngineAuthorityAI.m_updateTimer.Reset(PB_UPDATE_INTERVAL);
+    PlayerAI* const previousTankAIForNewEngineAuthority = tank->AI();
+    tank->SetAI(&newEngineAuthorityAI);
+    newEngineAuthorityAI.UpdateAI(PB_UPDATE_INTERVAL);
+    bool const f29NewEngineAuthorityPassed =
+        newEngineAuthorityAI.m_simulatorNewEngineTickCount == 1 &&
+        newEngineAuthorityAI.m_simulatorLegacyPolicyEntryCount == 0 &&
+        newEngineAuthorityAI.m_simulatorLegacyPolicyDispatchCount == 0 &&
+        newEngineAuthorityAI.m_simulatorEngineDecisionCycleCount == 1 &&
+        newEngineAuthorityAI.m_simulatorEngineCandidateCount == 0 &&
+        !newEngineAuthorityAI.m_engineShadowStrategiesRegistered &&
+        newEngineAuthorityAI.m_partyCoordinator &&
+        newEngineAuthorityAI.m_partyCoordinatorMapId == map.GetId() &&
+        newEngineAuthorityAI.m_partyCoordinatorInstanceId == map.GetInstanceId();
+    tank->SetAI(previousTankAIForNewEngineAuthority);
+    sLog.Out(LOG_BASIC, f29NewEngineAuthorityPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] NewEngine authority tick: newEngineTicks=%u legacyEntries=%u legacyDispatches=%u decisionCycles=%u candidates=%u shadowPoliciesRegistered=%u coordinator=%u.",
+             newEngineAuthorityAI.m_simulatorNewEngineTickCount,
+             newEngineAuthorityAI.m_simulatorLegacyPolicyEntryCount,
+             newEngineAuthorityAI.m_simulatorLegacyPolicyDispatchCount,
+             newEngineAuthorityAI.m_simulatorEngineDecisionCycleCount,
+             newEngineAuthorityAI.m_simulatorEngineCandidateCount,
+             newEngineAuthorityAI.m_engineShadowStrategiesRegistered ? 1u : 0u,
+             newEngineAuthorityAI.m_partyCoordinator ? 1u : 0u);
+    if (f29NewEngineAuthorityPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F29 real PartyBotAI::UpdateAI ran one empty exclusive NewEngine decision cycle and returned before Legacy policy entry/dispatch, with no Shadow probe strategies registered.");
+
     dps->SetAI(previousDpsAIForPartyTrace);
     secondPartyTraceAI.Remove();
     tank->SetAI(previousTankAIForPartyTrace);
@@ -4712,7 +4752,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         tankResurrectionObserved && partyBotEncounterLifecycleTraced &&
         partyBotTraceBudgetPassed && unmanagedMemberStateTracePassed &&
         shutdownFlushNoDuplicate && instanceTransferTracePassed &&
-        f17TriggerTelemetryPassed &&
+        f17TriggerTelemetryPassed && f29NewEngineAuthorityPassed &&
         tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&

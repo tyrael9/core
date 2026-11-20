@@ -280,3 +280,12 @@ Pure tests cover value retention, Succeeded/Interrupted status, null/duplicate/f
 ## F33 PendingActionQueue fairness (implementation/CI pending)
 
 The pending queue currently revalidates actions and sorts by current priority/FIFO, but a continuous stream of higher-priority arrivals can starve an older eligible action until its TTL expires. F33 introduces a bounded 3,000 ms age-promotion threshold. Once promoted, an entry outranks all unpromoted entries; promoted entries order by longest wait then original FIFO ordinal. Duplicate refresh and deferral must preserve the original enqueue time and expiry. The fairness comparator is shared by queue extraction and the executor's revalidated-work sort.
+
+
+## F33 PendingActionQueue starvation resistance
+
+The queue uses a bounded 3,000 ms age-promotion threshold. Entries waiting less than the threshold retain current revalidated priority-first/FIFO ordering. Once an unexpired entry reaches the threshold, it outranks all not-yet-promoted entries; among promoted entries, the longest wait wins and original FIFO ordinal breaks ties. Unsigned elapsed-time arithmetic is safe across uint32 millisecond wrap because every live TTL is less than 2^31 ms. Duplicate refresh and requeue preserve the original enqueue time, ordinal and expiry.
+
+The executor uses the same comparator after revalidation and refreshes the local priority from the current candidate evaluation before sorting. Pure tests cover the 2,999/3,000 ms boundary, continuous higher-priority arrivals, ordering among promoted entries and clock wrap. An Engine integration test uses same-channel queued work to prove that a long-waiting lower-priority action executes first and the fresh higher-priority action is deferred to the next tick.
+
+Trusted Push CI [#44680955006](https://github.com/tyrael9/core/actions/runs/44680955006), head 5ae65fd4167779a9d98f0c7ccdc34c0aab024e69, passed pure Engine tests, report collector, full Linux ARM64 build and fixture-backed Vanilla 5875 runtime through final Runtime PASS. The same run enforced the F32 terminal-listener marker introduced in run-ci.sh. PR CI [#44680961189](https://github.com/tyrael9/core/actions/runs/44680961189) passed the pure/build path.

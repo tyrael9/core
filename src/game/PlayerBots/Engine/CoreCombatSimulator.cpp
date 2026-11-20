@@ -5283,7 +5283,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
             selectedAlternativeRequest.alternativeGroupId = 3501;
             selectedAlternativeRequest.alternativeIndex = 0;
             selectedAlternativeRequest.alternativeCount = 2;
-            ActionTerminalPrerequisite const& realParent =
+            CoreSpellTerminalEvent const& realParent =
                 coreTerminalListener->events[1];
             ActionTerminalPrerequisite selectedParent;
             selectedParent.actionId = realParent.actionId;

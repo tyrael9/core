@@ -165,8 +165,8 @@ Remaining audit work is action-specific:
 
 - Spell heal, taunt, interrupt, CC, dispel, resurrection and AoE must each prove exact target relation, target state, range, LOS, immunity/control, resource, GCD/cooldown and resulting Core outcome.
 - Threat estimates must remain fail-closed until the complete set of Core side effects, recipient fan-out, SpellScript/AuraScript/proc and triggered effects is enumerated. Current component parity fixtures do not make whole-action forecasts complete.
-- Movement must have typed terminal semantics. In the pinned Core, `PointMovementGenerator<Player>::Finalize` is shared by natural spline completion and forced cleanup. `PlayerAI::MovementInform(POINT_MOTION_TYPE, id)` therefore cannot prove successful arrival.
-- Item-use completion, cancellation and failure callbacks remain unaudited.
+- Player point movement now has a typed terminal source on the opt-in `MotionMaster::MovePointForEngine` path. Natural spline completion plus destination tolerance emits Reached; forced cleanup emits Interrupted; natural completion outside tolerance emits Failed. Legacy MovePoint and MovementInform semantics remain unchanged. F39 pure and real-Core regressions are recorded in ROADMAP.md and TESTING.md.
+- F40 completes the item-use lifecycle audit and proves one immediate potion consumption plus zero-charge rejection in the real Core simulator. A typed aggregate source for multi-spell fan-out, delayed impacts, cancellation and separately observed item mutation remains unimplemented.
 - Complete source/destination map and instance lifecycle closure remains open for all production teleport/script paths.
 - Preserve the Core packet-processing classifications that make Group roster reads safe from map tasks; revisit the snapshot contract if group mutation opcodes are reclassified.
 

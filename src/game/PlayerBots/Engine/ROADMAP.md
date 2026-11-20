@@ -13,9 +13,9 @@ Legacy PartyBot fixes are maintenance work only. They do not count as new-engine
 
 ## Current overall position (2026-11-20)
 
-The project is in **Phase 4: production action-executor preparation**, not class-rotation implementation. F29–F39 are implemented and have pure/ARM64/fixture-backed evidence. F39 adds a correlated, destination-checked Player point-movement terminal source; F40 audits item-use lifecycle semantics but its aggregate event source and production action adapters remain open. NewEngine authority is exclusive and tested, but the production class/role Core action registry is empty; NewEngine intentionally does nothing rather than falling back to Legacy. Legacy remains the default.
+The project is in **Phase 4: production action-executor preparation**, not class-rotation implementation. F29–F40 are implemented/audited and have pure/ARM64/fixture-backed evidence. F39 adds a correlated, destination-checked Player point-movement terminal source. F40 audits item-use lifecycle semantics and verifies a real Core potion use/consumption plus zero-charge rejection; the multi-spell item-use aggregate event source and production action adapters remain open. NewEngine authority is exclusive and tested, but the production class/role Core action registry is empty; NewEngine intentionally does nothing rather than falling back to Legacy. Legacy remains the default.
 
-Latest full source validation is trusted Push CI [#44795113292](https://github.com/tyrael9/core/actions/runs/44795113292), source head `7401404cbb06aaa9ea93a4e0377d6fc1ae0ab816`, ending in fixture-backed Vanilla 5875 `Runtime PASS`. PR CI [#44795123687](https://github.com/tyrael9/core/actions/runs/44795123687) passed pure tests and Linux ARM64 build; the fixture runtime is intentionally skipped on PRs because fixture secrets are not exposed. PR #1 remains Draft, with no image publication or deployment.
+Latest full source validation is trusted Push CI [#44811193873](https://github.com/tyrael9/core/actions/runs/44811193873), source head `4c438e3a384bfef73c3c7ce0231f676cc81d0bc5`, ending in fixture-backed Vanilla 5875 `Runtime PASS`. Its runtime log includes F39 reached/interrupt coverage and F40 potion-effect/consumption plus zero-charge rejection. PR CI [#44811204867](https://github.com/tyrael9/core/actions/runs/44811204867) passed pure tests and Linux ARM64 build; the fixture runtime is intentionally skipped on PRs because fixture secrets are not exposed. PR #1 remains Draft, with no image publication or deployment.
 
 ## Phase 0 — pinned baseline and lifecycle safety
 
@@ -564,7 +564,7 @@ F34 completes a generic async continuation foundation, not production class/role
 
 Pure regressions cover successful late registration/history replay, interrupted rejection and natural-completion destination-mismatch (`Failed`) rejection. The trusted Core Player fixture proves natural arrival, release through the continuation queue, next-dispatch child execution and forced `ClearType` interruption. Push CI [#44795113292](https://github.com/tyrael9/core/actions/runs/44795113292) passed full Vanilla 5875 Runtime PASS; the F39 log reports `reached=1`, `continuationReleased=1`, `followup=1` and `forcedInterrupted=1`. PR CI [#44795123687](https://github.com/tyrael9/core/actions/runs/44795123687) passed pure tests and ARM64 build; fixture runtime is intentionally skipped on PRs.
 
-## F40 — item-use lifecycle audit (audit complete; typed item-use source open)
+## F40 — item-use lifecycle audit and first Core fixture (audit/runtime fixture complete; aggregate source open)
 
 Pinned Core item use is not a single Spell call or a single terminal event:
 
@@ -575,11 +575,13 @@ Pinned Core item use is not a single Spell call or a single terminal event:
 
 Consequently, do not map one `Spell::finish` callback directly to `ItemUseSucceeded` or `ItemConsumed`. A safe future source needs a root item-use action identity plus item GUID/entry/slot, per-spell child identities and terminal outcomes, explicit request rejection/prepare failure, and separately observed charge/count/item-destruction state. It must define how multi-spell fan-out, skipped invalid spell slots, triggered children, delayed impacts and cancellation aggregate before implementation. Existing CoreSpellTerminal remains useful per-spell evidence but is not an item-use aggregate.
 
+The first real Core fixture uses item 118 (Minor Healing Potion, spell 439) through `Player::CastItemUseSpell` with the same implicit self-target semantics as `HandleUseItemOpcode`. The trusted runtime reports health `858>956`, item consumption, and a fresh Player's zero-charge rejection with the item retained. This proves one immediate consumable path and one pre-consumption rejection path; it does not yet prove multi-slot fan-out aggregation, delayed item use, cancellation or binding side effects. Push CI [#44811193873](https://github.com/tyrael9/core/actions/runs/44811193873) passed the full simulator.
+
 ## Next implementation order
 
-1. Design the item-use aggregate identity and per-spell fan-out contract; add no production adapter until prepare/finish/cancel and item-mutation observation points are fully specified.
-2. Add a real Core fixture for an item with a known on-use spell, including successful consumption/charge mutation and cancellation/rejection controls.
-3. Continue production executor boundary and shared per-action pre-execution validation; do not register incomplete production actions in NewEngine.
+1. Design the item-use aggregate identity and per-spell fan-out contract, including root/child correlation, item mutation, delayed impacts and cancellation; add no production adapter until prepare/finish/cancel semantics are specified.
+2. Extend the real Core fixture to multi-spell items, delayed use and cancellation/interrupt before and after item consumption.
+3. Build the production executor boundary and shared per-action pre-execution validation; do not register incomplete production actions in NewEngine.
 4. Add audited generic Core actions incrementally with exact accepted/rejected/terminal outcome tests, then start generic state-machine behaviors.
 
 F35–F40 are engine/runtime infrastructure and Core lifecycle audit milestones only. They do not imply production class/role actions, full state-machine behavior or gameplay readiness.

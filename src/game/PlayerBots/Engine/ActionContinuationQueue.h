@@ -3,6 +3,7 @@
 
 #include "ActionQueue.h"
 #include "ActionContinuation.h"
+#include "ActionResultListener.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -108,6 +109,40 @@ public:
                     prerequisite.requiredStatus == event.status
                     ? PrerequisiteState::Satisfied
                     : PrerequisiteState::Rejected;
+            }
+        }
+    }
+
+    void ObserveActionResult(ActionResultEvent const& event)
+    {
+        if (!event.actionId || !event.encounterId)
+            return;
+        for (Entry& entry : m_entries)
+        {
+            for (std::size_t i = 0; i < entry.request.prerequisites.size(); ++i)
+            {
+                if (entry.states[i] != PrerequisiteState::Waiting)
+                    continue;
+                ActionDependencyPrerequisite const& prerequisite =
+                    entry.request.prerequisites[i];
+                if (prerequisite.source != ActionDependencyEventSource::ActionResult ||
+                    prerequisite.actionId != event.actionId ||
+                    prerequisite.encounterId != event.encounterId)
+                    continue;
+
+                bool const targetMatches =
+                    !prerequisite.targetGuid ||
+                    prerequisite.targetGuid == event.candidate.targetGuid;
+                bool const spellMatches =
+                    !prerequisite.spellId ||
+                    prerequisite.spellId == event.candidate.spellId;
+                bool const matches =
+                    prerequisite.expectedActionName == event.candidate.actionName &&
+                    targetMatches && spellMatches &&
+                    prerequisite.requiredActionResult == event.result &&
+                    prerequisite.requiredAttempted == event.attempted;
+                entry.states[i] = matches
+                    ? PrerequisiteState::Satisfied : PrerequisiteState::Rejected;
             }
         }
     }
@@ -276,9 +311,13 @@ private:
         {
             ActionTerminalPrerequisite const& a = left[i];
             ActionTerminalPrerequisite const& b = right[i];
-            if (a.actionId != b.actionId || a.encounterId != b.encounterId ||
+            if (a.source != b.source ||
+                a.actionId != b.actionId || a.encounterId != b.encounterId ||
                 a.targetGuid != b.targetGuid || a.spellId != b.spellId ||
-                a.requiredStatus != b.requiredStatus)
+                a.requiredStatus != b.requiredStatus ||
+                a.expectedActionName != b.expectedActionName ||
+                a.requiredActionResult != b.requiredActionResult ||
+                a.requiredAttempted != b.requiredAttempted)
                 return false;
         }
         return true;
@@ -314,14 +353,31 @@ private:
 
         for (std::size_t i = 0; i < request.prerequisites.size(); ++i)
         {
-            ActionTerminalPrerequisite const& prerequisite = request.prerequisites[i];
-            if (!prerequisite.actionId || prerequisite.encounterId != context.encounterId ||
-                !prerequisite.targetGuid || !prerequisite.spellId ||
-                static_cast<std::uint8_t>(prerequisite.requiredStatus) >
-                    static_cast<std::uint8_t>(CoreSpellTerminalStatus::Interrupted))
+            ActionDependencyPrerequisite const& prerequisite = request.prerequisites[i];
+            if (!prerequisite.actionId || prerequisite.encounterId != context.encounterId)
                 return false;
+
+            if (prerequisite.source == ActionDependencyEventSource::CoreSpellTerminal)
+            {
+                if (!prerequisite.targetGuid || !prerequisite.spellId ||
+                    static_cast<std::uint8_t>(prerequisite.requiredStatus) >
+                        static_cast<std::uint8_t>(CoreSpellTerminalStatus::Interrupted) ||
+                    !prerequisite.expectedActionName.empty())
+                    return false;
+            }
+            else if (prerequisite.source == ActionDependencyEventSource::ActionResult)
+            {
+                if (prerequisite.expectedActionName.empty() ||
+                    static_cast<std::uint8_t>(prerequisite.requiredActionResult) >
+                        static_cast<std::uint8_t>(ActionResult::Skipped))
+                    return false;
+            }
+            else
+                return false;
+
             for (std::size_t j = 0; j < i; ++j)
-                if (request.prerequisites[j].actionId == prerequisite.actionId)
+                if (request.prerequisites[j].source == prerequisite.source &&
+                    request.prerequisites[j].actionId == prerequisite.actionId)
                     return false;
         }
         return true;

@@ -459,7 +459,8 @@ void TestItemUseAggregateExpiryAndClockWrap()
     assert(expired[0].itemUseId == root);
     assert(expired[0].status == ItemUseAggregateStatus::Expired);
     assert(expired[0].completedChildCount == 0);
-    assert(tracker.CloseDispatch(root, 0x00000019u, expired.emplace_back()) ==
+    ItemUseTerminalEvent lateTerminal;
+    assert(tracker.CloseDispatch(root, 0x00000019u, lateTerminal) ==
            ItemUseTrackerResult::AlreadySettled);
 }
 

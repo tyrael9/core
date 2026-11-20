@@ -2,7 +2,7 @@
 
 ## Automated compile CI
 
-The focused workflow at .github/workflows/partybot-core-build.yml runs the standalone PartyBot Engine tests, Python unit tests for the read-only encounter report collector, and builds the pinned Vanilla 1.12.1 / build 5875 C++14 Core on Linux ARM64, matching the Oracle A1 target.
+The focused workflow at .github/workflows/partybot-core-build.yml runs the standalone PartyBot Engine tests, Python unit tests for the read-only encounter report collector, and builds the pinned Vanilla 1.12.1 / build 5875 C++14 Core on Linux ARM64, matching the Oracle A1 target. Trusted branch pushes additionally run the fixture-backed simulator when the extracted-data URL and checksum secrets are available; PR jobs deliberately skip that fixture runtime because secrets are not exposed.
 
 A successful run proves configure/compile/link in that CI environment. It does not prove runtime behavior, live snapshot correctness, instance persistence, database compatibility beyond compilation or successful operation on the Oracle realm. It is not permission to deploy.
 
@@ -198,6 +198,15 @@ The existing `CombatBotBaseAI::DoCastSpell` path invokes `TraceDecision("spell_c
 
 Validation in this slice consists of the C++14/API build plus the full fixture-backed Core regression. The simulator independently proves the Core Player cast acceptance, pending-cast/GCD, completion, interruption, mana and healing semantics, but it does not yet assert the PartyBotAI structured log line itself. A dedicated trace-output parser/integration assertion remains open. Direct raw `Player::CastSpell` sites outside `DoCastSpell`, terminal events after encounter closure and downstream damage/heal application are not yet traced by this hook.
 
+## F39 — correlated Player point-movement terminal results
+
+The legacy PointMovementGenerator<Player>::Finalize callback is not proof of arrival: Core invokes it both after natural spline completion and during forced cleanup/cancellation. F39 adds an opt-in MotionMaster::MovePointForEngine path that carries the originating Engine actionId, encounterId, point ID and arrival tolerance through the existing Core Player point generator. Ordinary MovePoint callers and PlayerAI::MovementInform retain their prior behavior.
+
+PointMovementGenerator::Update records natural spline completion. Its Finalize publishes a value-only typed event through the additive PlayerAI::OnPointMovementResult hook: Reached requires natural completion plus a finite final 3D distance within tolerance; forced cleanup emits Interrupted; natural completion outside tolerance emits Failed. PartyBotAI forwards the result into the Engine's bounded 128-event history, listener and continuation queue. A PointMovementTerminal prerequisite matches action ID, encounter ID, mover GUID, point ID and required status. Like other terminal callbacks, it can release a child into the pending queue but does not execute that child inside the Core callback; normal next-dispatch revalidation remains mandatory.
+
+Pure regression coverage verifies listener delivery, late dependency registration/history replay, successful next-dispatch continuation and rejection of an interrupted result when Reached is required. Trusted Push CI [#44795113292](https://github.com/tyrael9/core/actions/runs/44795113292) ran the real Vanilla 5875 Core Player fixture and reported setup=1 started=1 events=2 reached=1 continuationReleased=1 followup=1 forcedStarted=1 forcedInterrupted=1 distance=0.000 cleanup=12.000, followed by the dedicated F39 PASS marker and final Runtime PASS. PR CI [#44795123687](https://github.com/tyrael9/core/actions/runs/44795123687) passed pure tests and ARM64 build; PR fixture runtime is intentionally skipped.
+
+This proves the point-movement terminal seam and its continuation integration, not a production movement policy, full NewEngine gameplay, or item-use lifecycle. Item-use terminal semantics remain open.
 ## Encounter heartbeat threat samples and target-change trace
 
 The existing immutable `PartySnapshot` already copies each hostile's real `ThreatManager` references on the map thread. The encounter `party_snapshot` record now emits up to two references per hostile, including unit GUID, threat value in tenths, and online/accessibility/melee-reachability bits. It includes each hostile's total reference count and omitted count; the complete payload remains capped at 1600 characters with the existing `truncated` marker. It does not sort or infer references beyond the order supplied by the Core snapshot.

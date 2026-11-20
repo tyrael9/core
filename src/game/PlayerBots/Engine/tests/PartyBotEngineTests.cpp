@@ -738,6 +738,48 @@ ActionDependencyRequest MakeDependencyRequest(
     return request;
 }
 
+void TestRejectedContinuationIsTombstonedUntilQueueReset()
+{
+    ActionContinuationQueue queue;
+    PendingActionQueue::Context scope;
+    scope.groupId = 5;
+    scope.mapId = 33;
+    scope.instanceId = 101;
+    scope.botGuid = 11;
+    scope.encounterId = 77;
+    scope.encounterActive = true;
+    scope.scoped = true;
+
+    ActionTerminalPrerequisite const parent = MakePrerequisite(
+        2101, 77, 22, 2050, CoreSpellTerminalStatus::Succeeded);
+    ActionDependencyRequest request = MakeDependencyRequest(1000, parent);
+    ActionCandidate candidate = Candidate(
+        "rejected_parent_child", 20.0f, ActionChannel::Utility);
+    candidate.finalPriority = 20.0f;
+
+    assert(queue.Enqueue(request, candidate, 1000, scope, 1000) ==
+           ActionContinuationEnqueueResult::Queued);
+    CoreSpellTerminalEvent failed;
+    failed.actionId = parent.actionId;
+    failed.encounterId = parent.encounterId;
+    failed.targetGuid = parent.targetGuid;
+    failed.spellId = parent.spellId;
+    failed.occurredAtMs = 1100;
+    failed.status = CoreSpellTerminalStatus::Failed;
+    queue.ObserveTerminal(failed);
+
+    std::vector<ActionContinuationQueue::Entry> ready;
+    queue.CollectReady(ready);
+    assert(ready.empty() && queue.Empty());
+    assert(queue.Enqueue(request, candidate, 1200, scope, 1200) ==
+           ActionContinuationEnqueueResult::DuplicateParent);
+
+    // A reset starts a new lifecycle and clears the settled-key history.
+    queue.Clear();
+    assert(queue.Enqueue(request, candidate, 1200, scope, 1200) ==
+           ActionContinuationEnqueueResult::Queued);
+}
+
 void TestCoreTerminalCannotSatisfyActionResultPrerequisite()
 {
     ActionContinuationQueue queue;
@@ -3841,6 +3883,7 @@ int main() {
     TestActionResultListenersAreBoundedAndSnapshotDuringDispatch();
     TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded();
     TestCoreSpellSuccessReleasesAndExecutesBoundedContinuation();
+    TestRejectedContinuationIsTombstonedUntilQueueReset();
     TestCoreTerminalCannotSatisfyActionResultPrerequisite();
     TestActionResultAndCoreSpellPrerequisitesAreDistinctAndAnded();
     TestLateActionResultDependencyRegistrationUsesRecentEventHistory();

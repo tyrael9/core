@@ -100,9 +100,13 @@ Existing methods include Player::Attack(Unit*, bool), PartyBotAI::AttackStart(Un
 
 Movement needs its own arbitration lane. A mechanic escape or forced reposition must not be canceled by routine chase/follow/facing behavior. Do not assume a Move* request succeeded merely because it was issued.
 
-### F39 terminal callback audit
+### F39 typed movement terminal implementation
 
-For `PointMovementGenerator<Player>`, natural completion is observed when `Update()` sees the MoveSpline finalized and returns false; MotionMaster then expires the generator. But `Finalize()` also runs during forced cleanup (`DirectClean`, `DirectExpire`, `ClearType`) and calls the legacy `PlayerAI::MovementInform`. Thus the legacy callback means generator finalization, not necessarily arrival. A typed Engine result must carry action/encounter IDs in the generator, separately record natural completion, check the actual final position against the requested destination and report reached versus interrupted/failed. Legacy MovementInform behavior must remain compatible for existing PlayerAI consumers.
+The Engine-only `MotionMaster::MovePointForEngine` entry point carries action/encounter IDs and destination tolerance into `PointMovementGenerator<Player>`; ordinary `MovePoint` and legacy `PlayerAI::MovementInform` remain unchanged. `Update()` records natural spline completion. `Finalize()` emits `Reached` only when the final finite 3D distance is within tolerance, `Interrupted` on forced cleanup/cancellation and `Failed` if the spline naturally completes outside tolerance. PartyBotAI forwards the value-only result to the Engine's bounded event ledger and typed continuation source. Pure tests cover late registration and rejection of both Interrupted and Failed terminals when Reached is required; trusted Push CI #44795113292 proves natural arrival, continuation dispatch and forced ClearType interruption in the real Core Player fixture.
+
+### F40 item-use lifecycle audit
+
+`WorldSession::HandleUseItemOpcode` validates the item-use request and can bind the item before spell preparation. `Player::CastItemUseSpell` creates one Spell per valid ON_USE item spell slot; later slots are triggered and invalid spell IDs are skipped. Thus one item-use request fans out into multiple Spell lifecycles. `Spell::IsCastByItem()` exposes only a boolean, while `m_CastItem` is private and the existing PlayerAI observer has no cast-item GUID/root-request correlation. `TakeCastItem` can decrement charges or destroy expendable items at different points for delayed and immediate spells; `TakeReagents` may clear the cast item when it is also a reagent. A Spell terminal, effect application, charge mutation and item destruction are distinct outcomes. A future aggregate must carry root item-use identity plus per-spell child results and separately observe item mutation; no item-use aggregate source is implemented.
 
 ## 6. Map update and threading observations
 

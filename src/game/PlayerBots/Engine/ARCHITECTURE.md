@@ -273,7 +273,7 @@ Not yet implemented / still gated:
 
 - A production vMaNGOS action executor with audited generic, class and role adapters.
 - Uniform immediate pre-execution validation of target identity/state, map/instance, range, LOS, spell, resource and cooldown for each action.
-- Typed PointMovementGenerator movement terminal results and audited item-use terminal outcomes. The F39 movement audit found that legacy `MovementInform` is called on forced cleanup as well as natural completion.
+- Typed Player point-movement terminal results are implemented for the opt-in `MovePointForEngine` path (F39); legacy `MovePoint`/`MovementInform` semantics are unchanged. F40 audited item-use fan-out and consumption timing; a typed item-use aggregate source remains open.
 - Full generic bot state machine, class/role strategies, shared party policy and encounter mechanics.
 - Remaining trace coverage: richer AI state/boss selection, broader arbitration alternatives, ordinary party-member per-hit health deltas, cross-map closure and deployment diagnostics integration.
 

@@ -5086,6 +5086,12 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     std::shared_ptr<SimulatorCoreSpellContinuationAction> continuationAction(
         new SimulatorCoreSpellContinuationAction(continuationExecutionCount));
     bool const continuationActionRegistered = engine.RegisterAction(continuationAction);
+    uint32 actionResultAndSpellFollowupCount = 0;
+    std::shared_ptr<SimulatorCoreSpellContinuationAction> actionResultAndSpellFollowup(
+        new SimulatorCoreSpellContinuationAction(
+            actionResultAndSpellFollowupCount, "core_action_result_and_spell_followup"));
+    bool const actionResultAndSpellFollowupRegistered =
+        engine.RegisterAction(actionResultAndSpellFollowup);
     std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
     ActionCandidate continuationCandidate;
     continuationCandidate.actionName = "core_spell_terminal_followup";
@@ -5204,12 +5210,25 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         ActionContinuationEnqueueResult::Invalid;
     PendingActionDispatchSummary f35AlternativeDispatch;
     bool f35AlternativeGroupPassed = false;
+    ActionContinuationEnqueueResult f36MixedDependencyResult =
+        ActionContinuationEnqueueResult::Invalid;
+    PendingActionDispatchSummary f36MixedDependencyDispatch;
+    bool f36MixedDependencyPassed = false;
     if (f35SecondCastReady)
     {
         // Keep a damaged target for the second ordinary Core heal. The first
         // cast above already proved its own health/Mana side effects.
         patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
         healAction->DisableContinuationRegistration();
+        ActionCandidate actionResultAndSpellCandidate;
+        actionResultAndSpellCandidate.actionName =
+            "core_action_result_and_spell_followup";
+        actionResultAndSpellCandidate.targetGuid = patientMember.guid;
+        actionResultAndSpellCandidate.basePriority = 25.0f;
+        actionResultAndSpellCandidate.finalPriority = 25.0f;
+        actionResultAndSpellCandidate.channel = ActionChannel::Utility;
+        healAction->SetActionResultAndSpellDependencyCandidate(
+            actionResultAndSpellCandidate);
         engineActionAI.m_decisionTrace.BeginTick();
         DecisionContext secondCastContext(
             snapshot, snapshot.members[0], *coordinator, WorldTimer::getMSTime(),
@@ -5246,6 +5265,26 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
             coreTerminalListener->events.size() == 2 &&
             coreTerminalListener->events[1].actionId == f35SecondActionId &&
             coreTerminalListener->events[1].status == CoreSpellTerminalStatus::Succeeded;
+
+        f36MixedDependencyResult =
+            healAction->GetActionResultAndSpellDependencyResult();
+        if (f35SecondCastCompleted && actionResultAndSpellFollowupRegistered &&
+            f36MixedDependencyResult == ActionContinuationEnqueueResult::Queued &&
+            engine.GetPendingContinuationCount() == 0 &&
+            engine.GetPendingActionCount() == 1)
+        {
+            DecisionContext f36DispatchContext(
+                snapshot, snapshot.members[0], *coordinator, WorldTimer::getMSTime(),
+                &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+            f36MixedDependencyDispatch =
+                engine.ExecutePendingActions(f36DispatchContext);
+            f36MixedDependencyPassed =
+                f36MixedDependencyDispatch.selected == 1 &&
+                f36MixedDependencyDispatch.executed == 1 &&
+                actionResultAndSpellFollowupCount == 1 &&
+                engine.GetPendingContinuationCount() == 0 &&
+                engine.GetPendingActionCount() == 0;
+        }
 
         f35MultiCoreTerminalsPassed = f35SecondCastCompleted &&
             coreTerminalListener->events[0].actionId == engineActionId &&
@@ -5482,7 +5521,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         !engineActionTracePassed || !coreSpellTerminalPassed || !continuationEnqueued ||
         !continuationDispatched || !f35MultiDependencyDispatched ||
         !f35MultiCoreTerminalsPassed || !f35AlternativeGroupPassed ||
-        !decisionSummaryTracePassed || !cleaned)
+        !f36MixedDependencyPassed || !decisionSummaryTracePassed || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Engine-to-Player normal spell/heal smoke test failed.");
@@ -5496,7 +5535,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F34 released the registered continuation only after the matching successful Core terminal and executed it through the next Engine pending dispatch.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Engine Player spell/heal F35: secondReady=%u secondSelected=%u secondAccepted=%u secondCompleted=%u coreEvents=%zu dependencyResult=%u pending=%zu dispatched=%u continuationExecutions=%u altFirst=%u altSecond=%u altSelected=%u altRejected=%u altDispatched=%u altSelectedExec=%u altRejectedExec=%u.",
+             "[PartyBotSimulator] Engine Player spell/heal F35/F36: secondReady=%u secondSelected=%u secondAccepted=%u secondCompleted=%u coreEvents=%zu dependencyResult=%u pending=%zu dispatched=%u continuationExecutions=%u altFirst=%u altSecond=%u altSelected=%u altRejected=%u altDispatched=%u altSelectedExec=%u altRejectedExec=%u mixedResult=%u mixedSelected=%zu mixedExecuted=%zu mixedFollowups=%u mixedPassed=%u.",
              f35SecondCastReady ? 1u : 0u, f35SecondCastSelected ? 1u : 0u,
              f35SecondCastAccepted ? 1u : 0u, f35SecondCastCompleted ? 1u : 0u,
              coreTerminalListener->events.size(),
@@ -5506,9 +5545,12 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              static_cast<uint32>(f35AlternativeSecondResult),
              f35AlternativeDispatch.selected, f35AlternativeDispatch.rejected,
              f35AlternativeGroupPassed ? 1u : 0u,
-             f35AlternativeSelectedExecutions, f35AlternativeRejectedExecutions);
+             f35AlternativeSelectedExecutions, f35AlternativeRejectedExecutions,
+             static_cast<uint32>(f36MixedDependencyResult),
+             f36MixedDependencyDispatch.selected, f36MixedDependencyDispatch.executed,
+             actionResultAndSpellFollowupCount, f36MixedDependencyPassed ? 1u : 0u);
     if (!f35MultiDependencyDispatched || !f35MultiCoreTerminalsPassed ||
-        !f35AlternativeGroupPassed)
+        !f35AlternativeGroupPassed || !f36MixedDependencyPassed)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] F35 multi-prerequisite / alternative Core terminal fixture failed.");
@@ -5518,6 +5560,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              "[PartyBotSimulator] PASS: F35 gated one follow-up on two distinct successful Core Spell::finish terminals and dispatched it through the normal Engine pending queue.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F35 resolved a real Core terminal alternative group, rejected the higher-priority wrong-status branch, and dispatched the valid branch.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F36 required both the synchronous successful ActionResult and the later successful Core Spell::finish for the same action ID before dispatching its child.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F20 DecisionSummary aggregated the complete executed Core Player heal report and emitted the bounded encounter summary.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,

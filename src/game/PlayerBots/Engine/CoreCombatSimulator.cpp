@@ -11,6 +11,7 @@
 #include "Movement/MotionMaster.h"
 #include "PlayerBots/Engine/Action.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
+#include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
 #include "PlayerBots/Engine/PartyCoordinator.h"
 #include "PlayerBots/Engine/PartySnapshot.h"
@@ -4712,7 +4713,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     newEngineAuthorityAI.SetPlayer(tank);
     newEngineAuthorityAI.m_initialized = true;
     newEngineAuthorityAI.m_simulatorExecutionAuthorityOverride =
-        static_cast<int32>(ExecutionAuthorityMode::NewEngine);
+        static_cast<int32>(PartyBotEngine::ExecutionAuthorityMode::NewEngine);
     newEngineAuthorityAI.m_updateTimer.Reset(1000);
     PlayerAI* const previousTankAIForNewEngineAuthority = tank->AI();
     tank->SetAI(&newEngineAuthorityAI);

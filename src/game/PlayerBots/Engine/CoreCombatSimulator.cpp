@@ -935,7 +935,7 @@ public:
         uint64 const encounterId = context.coordinator.GetEncounterId();
         if (!mover || resolved.target != mover || !candidate.actionId || !encounterId ||
             !context.continuationSink || !candidate.hasDestination ||
-            !m_arrivalTolerance || !std::isfinite(m_arrivalTolerance) ||
+            !std::isfinite(m_arrivalTolerance) || m_arrivalTolerance <= 0.0f ||
             !mover->IsAlive() ||
             mover->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE |
                                 UNIT_STATE_POSSESSED) ||

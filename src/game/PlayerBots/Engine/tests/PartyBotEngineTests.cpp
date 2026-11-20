@@ -573,7 +573,7 @@ public:
     std::uint32_t executeCoreCalls = 0;
     bool executeCoreSawResolvedContext = false;
     bool rejectPreflight = false;
-    std::uint32_t preflightChecks = 0;
+    mutable std::uint32_t preflightChecks = 0;
 protected:
     ActionExecutionResult ValidateCoreAction(
         DecisionContext const&, ActionCandidate const&,

@@ -4713,7 +4713,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     newEngineAuthorityAI.SetPlayer(tank);
     newEngineAuthorityAI.m_initialized = true;
     newEngineAuthorityAI.m_simulatorExecutionAuthorityOverride =
-        static_cast<int32>(PartyBotEngine::ExecutionAuthorityMode::NewEngine);
+        static_cast<int32>(ExecutionAuthorityMode::NewEngine);
     newEngineAuthorityAI.m_updateTimer.Reset(1000);
     PlayerAI* const previousTankAIForNewEngineAuthority = tank->AI();
     tank->SetAI(&newEngineAuthorityAI);

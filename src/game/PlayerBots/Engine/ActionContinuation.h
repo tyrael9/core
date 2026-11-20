@@ -25,15 +25,32 @@ enum class ActionContinuationEnqueueResult : std::uint8_t
     Expired
 };
 
-// One required terminal outcome from a prior Engine-owned Core Spell.
-struct ActionTerminalPrerequisite
+enum class ActionDependencyEventSource : std::uint8_t
 {
+    CoreSpellTerminal,
+    ActionResult
+};
+
+// One required result from a prior Engine action. CoreSpellTerminal expresses
+// the later Core Spell::finish outcome; ActionResult expresses only the
+// synchronous Action::Execute boundary. These sources are intentionally
+// distinct even when they share the same actionId.
+struct ActionDependencyPrerequisite
+{
+    ActionDependencyEventSource source = ActionDependencyEventSource::CoreSpellTerminal;
     ActionId actionId = 0;
     std::uint64_t encounterId = 0;
     Guid targetGuid = 0;
     std::uint32_t spellId = 0;
     CoreSpellTerminalStatus requiredStatus = CoreSpellTerminalStatus::Succeeded;
+    std::string expectedActionName;
+    ActionResult requiredActionResult = ActionResult::Success;
+    bool requiredAttempted = true;
 };
+
+// Source compatibility for F34/F35 callers; new generic dependencies should
+// prefer ActionDependencyPrerequisite.
+using ActionTerminalPrerequisite = ActionDependencyPrerequisite;
 
 // Multiple prerequisites are ANDed. A non-zero alternativeGroupId makes
 // this candidate one branch in a bounded one-of-N group. All N branches must

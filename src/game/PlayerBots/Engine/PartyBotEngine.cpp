@@ -105,7 +105,7 @@ bool PartyBotEngine::ReleaseContinuation(
 
 ActionContinuationEnqueueResult PartyBotEngine::QueueActionContinuation(
     DecisionContext const& context, ActionCandidate const& parentCandidate,
-    ActionCandidate const& continuationCandidate, std::uint32_t lifetimeMs) {
+    ActionCandidate const& continuationCandidate, std::uint32_t lifetimeMs) const {
     if (!context.coordinator.HasActiveEncounter() ||
         !context.coordinator.GetEncounterId() ||
         context.snapshot.groupId != context.coordinator.GetEncounterGroupId() ||

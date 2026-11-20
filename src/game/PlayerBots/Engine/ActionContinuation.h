@@ -33,7 +33,7 @@ public:
         DecisionContext const& context,
         ActionCandidate const& parentCandidate,
         ActionCandidate const& continuationCandidate,
-        std::uint32_t lifetimeMs) = 0;
+        std::uint32_t lifetimeMs) const = 0;
 };
 } // namespace PartyBotEngine
 

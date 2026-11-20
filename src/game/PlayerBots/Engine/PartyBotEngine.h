@@ -39,7 +39,7 @@ public:
     void NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event) const;
     ActionContinuationEnqueueResult QueueActionContinuation(
         DecisionContext const& context, ActionCandidate const& parentCandidate,
-        ActionCandidate const& continuationCandidate, std::uint32_t lifetimeMs) override;
+        ActionCandidate const& continuationCandidate, std::uint32_t lifetimeMs) const override;
     std::size_t GetPendingContinuationCount() const { return m_actionContinuationQueue.Size(); }
     std::size_t GetActionResultListenerCount() const {
         return m_actionResultListeners.size();

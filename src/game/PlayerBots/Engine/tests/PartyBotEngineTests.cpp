@@ -64,6 +64,73 @@ public:
 private:
     std::string m_name;
 };
+class DependencyRegisteringTestAction final : public Action {
+public:
+    DependencyRegisteringTestAction(
+        std::string name, std::string childName,
+        ActionContinuationEnqueueResult& enqueueResult,
+        ActionResult executionResult = ActionResult::Success)
+        : m_name(std::move(name)), m_childName(std::move(childName)),
+          m_enqueueResult(enqueueResult), m_executionResult(executionResult) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsPossible(DecisionContext const&, ActionCandidate const&, std::string&) const override {
+        return true;
+    }
+    bool IsUseful(DecisionContext const&, ActionCandidate const&, std::string&) const override {
+        return true;
+    }
+    ThreatImpactEstimate EstimateThreatImpact(
+        DecisionContext const& context, ActionCandidate const&) const override {
+        ThreatImpactEstimate estimate;
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.snapshotEpoch = context.snapshot.epoch;
+        estimate.reason = "test_dependency_parent_no_threat";
+        return estimate;
+    }
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override {
+        ActionDependencyRequest request;
+        request.lifetimeMs = 1500;
+
+        ActionDependencyPrerequisite actionResult;
+        actionResult.source = ActionDependencyEventSource::ActionResult;
+        actionResult.actionId = candidate.actionId;
+        actionResult.encounterId = context.coordinator.GetEncounterId();
+        actionResult.targetGuid = candidate.targetGuid;
+        actionResult.spellId = candidate.spellId;
+        actionResult.expectedActionName = candidate.actionName;
+        actionResult.requiredActionResult = ActionResult::Success;
+        actionResult.requiredAttempted = true;
+        request.prerequisites.push_back(actionResult);
+
+        ActionDependencyPrerequisite spellTerminal;
+        spellTerminal.source = ActionDependencyEventSource::CoreSpellTerminal;
+        spellTerminal.actionId = candidate.actionId;
+        spellTerminal.encounterId = context.coordinator.GetEncounterId();
+        spellTerminal.targetGuid = candidate.targetGuid;
+        spellTerminal.spellId = candidate.spellId;
+        spellTerminal.requiredStatus = CoreSpellTerminalStatus::Succeeded;
+        request.prerequisites.push_back(spellTerminal);
+
+        ActionCandidate child;
+        child.actionName = m_childName;
+        child.targetGuid = candidate.targetGuid;
+        child.basePriority = 25.0f;
+        child.finalPriority = 25.0f;
+        child.channel = ActionChannel::Utility;
+        m_enqueueResult = context.continuationSink
+            ? context.continuationSink->QueueActionDependency(context, request, child)
+            : ActionContinuationEnqueueResult::Invalid;
+        return m_executionResult;
+    }
+
+private:
+    std::string m_name;
+    std::string m_childName;
+    ActionContinuationEnqueueResult& m_enqueueResult;
+    ActionResult m_executionResult;
+};
+
 class CaptureReservationTraceSink final : public ReservationTraceSink {
 public:
     void RecordReservationEvent(DecisionContext const&,
@@ -669,6 +736,178 @@ ActionDependencyRequest MakeDependencyRequest(
     request.lifetimeMs = lifetimeMs;
     request.prerequisites.push_back(prerequisite);
     return request;
+}
+
+void TestActionResultAndCoreSpellPrerequisitesAreDistinctAndAnded()
+{
+    Fixture f;
+    BeginContinuationTestEncounter(f);
+    PartyBotEngine::PartyBotEngine engine;
+    auto child = std::make_shared<TestAction>("mixed_result_and_spell_child");
+    child->pendingLifetimeMs = 2000;
+    assert(engine.RegisterAction(child));
+
+    ActionContinuationEnqueueResult enqueueResult = ActionContinuationEnqueueResult::Invalid;
+    auto parent = std::make_shared<DependencyRegisteringTestAction>(
+        "mixed_result_and_spell_parent", "mixed_result_and_spell_child", enqueueResult);
+    assert(engine.RegisterAction(parent));
+
+    auto trigger = std::make_shared<TestTrigger>("mixed_result_and_spell_trigger");
+    ActionCandidate parentCandidate = Candidate(
+        "mixed_result_and_spell_parent", 50.0f, ActionChannel::GlobalCooldown);
+    parentCandidate.spellId = 2050;
+    trigger->generated.push_back(parentCandidate);
+    auto strategy = std::make_shared<Strategy>("mixed_result_and_spell_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    engine.ExecuteSelected(f.context, report);
+    ActionId const parentActionId =
+        report.candidates[report.selectedIndices[0]].actionId;
+    assert(parentActionId != 0);
+    assert(enqueueResult == ActionContinuationEnqueueResult::Queued);
+
+    // The ActionResult event is generated synchronously after Execute returns.
+    // It must satisfy only the typed ActionResult prerequisite, not the Core
+    // Spell::finish prerequisite, even though both share one action ID.
+    assert(engine.GetPendingContinuationCount() == 1);
+    assert(engine.GetPendingActionCount() == 0);
+
+    CoreSpellTerminalEvent terminal;
+    terminal.actionId = parentActionId;
+    terminal.encounterId = f.coordinator.GetEncounterId();
+    terminal.targetGuid = parentCandidate.targetGuid;
+    terminal.spellId = parentCandidate.spellId;
+    terminal.occurredAtMs = 1100;
+    terminal.status = CoreSpellTerminalStatus::Succeeded;
+    engine.NotifyCoreSpellTerminal(terminal);
+
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 1);
+    DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1101);
+    PendingActionDispatchSummary const dispatch = engine.ExecutePendingActions(nextTick);
+    assert(dispatch.selected == 1 && dispatch.executed == 1);
+    assert(child->executeCount == 1);
+}
+
+void TestLateActionResultDependencyRegistrationUsesRecentEventHistory()
+{
+    Fixture f;
+    BeginContinuationTestEncounter(f);
+    PartyBotEngine::PartyBotEngine engine;
+    auto parent = std::make_shared<TestAction>("late_action_result_parent");
+    auto child = std::make_shared<TestAction>("late_action_result_child");
+    child->pendingLifetimeMs = 2000;
+    assert(engine.RegisterAction(parent) && engine.RegisterAction(child));
+
+    auto trigger = std::make_shared<TestTrigger>("late_action_result_trigger");
+    ActionCandidate parentCandidate = Candidate(
+        "late_action_result_parent", 50.0f, ActionChannel::GlobalCooldown);
+    parentCandidate.spellId = 2050;
+    trigger->generated.push_back(parentCandidate);
+    auto strategy = std::make_shared<Strategy>("late_action_result_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    engine.ExecuteSelected(f.context, report);
+    ActionId const parentActionId = report.candidates[report.selectedIndices[0]].actionId;
+    assert(parentActionId != 0);
+
+    CoreSpellTerminalEvent terminal;
+    terminal.actionId = parentActionId;
+    terminal.encounterId = f.coordinator.GetEncounterId();
+    terminal.targetGuid = parentCandidate.targetGuid;
+    terminal.spellId = parentCandidate.spellId;
+    terminal.occurredAtMs = 1050;
+    terminal.status = CoreSpellTerminalStatus::Succeeded;
+    engine.NotifyCoreSpellTerminal(terminal);
+
+    ActionDependencyRequest request;
+    request.lifetimeMs = 1200;
+    ActionDependencyPrerequisite actionResult;
+    actionResult.source = ActionDependencyEventSource::ActionResult;
+    actionResult.actionId = parentActionId;
+    actionResult.encounterId = f.coordinator.GetEncounterId();
+    actionResult.targetGuid = parentCandidate.targetGuid;
+    actionResult.spellId = parentCandidate.spellId;
+    actionResult.expectedActionName = parentCandidate.actionName;
+    actionResult.requiredActionResult = ActionResult::Success;
+    actionResult.requiredAttempted = true;
+    request.prerequisites.push_back(actionResult);
+
+    ActionDependencyPrerequisite spellTerminal;
+    spellTerminal.source = ActionDependencyEventSource::CoreSpellTerminal;
+    spellTerminal.actionId = parentActionId;
+    spellTerminal.encounterId = f.coordinator.GetEncounterId();
+    spellTerminal.targetGuid = parentCandidate.targetGuid;
+    spellTerminal.spellId = parentCandidate.spellId;
+    spellTerminal.requiredStatus = CoreSpellTerminalStatus::Succeeded;
+    request.prerequisites.push_back(spellTerminal);
+
+    ActionCandidate childCandidate = Candidate(
+        "late_action_result_child", 25.0f, ActionChannel::Utility);
+    childCandidate.finalPriority = 25.0f;
+    DecisionContext lateContext(f.snapshot, f.bot, f.coordinator, 1100);
+    assert(engine.QueueActionDependency(lateContext, request, childCandidate) ==
+           ActionContinuationEnqueueResult::ReleasedImmediately);
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 1);
+
+    DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1101);
+    PendingActionDispatchSummary const dispatch = engine.ExecutePendingActions(nextTick);
+    assert(dispatch.selected == 1 && dispatch.executed == 1);
+    assert(child->executeCount == 1);
+}
+
+void TestFailedActionResultRejectsMixedDependency()
+{
+    Fixture f;
+    BeginContinuationTestEncounter(f);
+    PartyBotEngine::PartyBotEngine engine;
+    auto child = std::make_shared<TestAction>("failed_action_result_child");
+    child->pendingLifetimeMs = 2000;
+    assert(engine.RegisterAction(child));
+
+    ActionContinuationEnqueueResult enqueueResult = ActionContinuationEnqueueResult::Invalid;
+    auto parent = std::make_shared<DependencyRegisteringTestAction>(
+        "failed_action_result_parent", "failed_action_result_child",
+        enqueueResult, ActionResult::Failed);
+    assert(engine.RegisterAction(parent));
+
+    auto trigger = std::make_shared<TestTrigger>("failed_action_result_trigger");
+    ActionCandidate parentCandidate = Candidate(
+        "failed_action_result_parent", 50.0f, ActionChannel::GlobalCooldown);
+    parentCandidate.spellId = 2050;
+    trigger->generated.push_back(parentCandidate);
+    auto strategy = std::make_shared<Strategy>("failed_action_result_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    engine.ExecuteSelected(f.context, report);
+    assert(enqueueResult == ActionContinuationEnqueueResult::Queued);
+    assert(report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Failed);
+    // A failed synchronous adapter result rejects the ActionResult branch;
+    // a later successful Core Spell terminal cannot resurrect this dependency.
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 0);
+
+    CoreSpellTerminalEvent terminal;
+    terminal.actionId = report.candidates[report.selectedIndices[0]].actionId;
+    terminal.encounterId = f.coordinator.GetEncounterId();
+    terminal.targetGuid = parentCandidate.targetGuid;
+    terminal.spellId = parentCandidate.spellId;
+    terminal.occurredAtMs = 1100;
+    terminal.status = CoreSpellTerminalStatus::Succeeded;
+    engine.NotifyCoreSpellTerminal(terminal);
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 0);
+    assert(child->executeCount == 0);
 }
 
 void TestActionDependenciesRequireAllAndPrerequisites()
@@ -3520,6 +3759,9 @@ int main() {
     TestActionResultListenersAreBoundedAndSnapshotDuringDispatch();
     TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded();
     TestCoreSpellSuccessReleasesAndExecutesBoundedContinuation();
+    TestActionResultAndCoreSpellPrerequisitesAreDistinctAndAnded();
+    TestLateActionResultDependencyRegistrationUsesRecentEventHistory();
+    TestFailedActionResultRejectsMixedDependency();
     TestActionDependenciesRequireAllAndPrerequisites();
     TestLateDependencyRegistrationUsesLatestTerminalAndWrapSafeTime();
     TestLateDependencyRegistrationRejectsKnownFailedParent();

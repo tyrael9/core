@@ -852,9 +852,18 @@ public:
         m_registerContinuation = true;
     }
     void DisableContinuationRegistration() { m_registerContinuation = false; }
+    void SetActionResultAndSpellDependencyCandidate(ActionCandidate const& candidate)
+    {
+        m_actionResultAndSpellCandidate = candidate;
+        m_registerActionResultAndSpellDependency = true;
+    }
     ActionContinuationEnqueueResult GetContinuationResult() const
     {
         return m_continuationResult;
+    }
+    ActionContinuationEnqueueResult GetActionResultAndSpellDependencyResult() const
+    {
+        return m_actionResultAndSpellDependencyResult;
     }
 
     ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
@@ -916,6 +925,40 @@ public:
                 m_continuationResult != ActionContinuationEnqueueResult::ReleasedImmediately)
                 return ActionResult::Failed;
         }
+        if (m_registerActionResultAndSpellDependency)
+        {
+            if (!context.continuationSink)
+                return ActionResult::Failed;
+            ActionDependencyRequest request;
+            request.lifetimeMs = 4000;
+
+            ActionDependencyPrerequisite actionResult;
+            actionResult.source = ActionDependencyEventSource::ActionResult;
+            actionResult.actionId = candidate.actionId;
+            actionResult.encounterId = context.coordinator.GetEncounterId();
+            actionResult.targetGuid = candidate.targetGuid;
+            actionResult.spellId = candidate.spellId;
+            actionResult.expectedActionName = candidate.actionName;
+            actionResult.requiredActionResult = ActionResult::Success;
+            actionResult.requiredAttempted = true;
+            request.prerequisites.push_back(actionResult);
+
+            ActionDependencyPrerequisite spellTerminal;
+            spellTerminal.source = ActionDependencyEventSource::CoreSpellTerminal;
+            spellTerminal.actionId = candidate.actionId;
+            spellTerminal.encounterId = context.coordinator.GetEncounterId();
+            spellTerminal.targetGuid = candidate.targetGuid;
+            spellTerminal.spellId = candidate.spellId;
+            spellTerminal.requiredStatus = CoreSpellTerminalStatus::Succeeded;
+            request.prerequisites.push_back(spellTerminal);
+
+            m_actionResultAndSpellDependencyResult =
+                context.continuationSink->QueueActionDependency(
+                    context, request, m_actionResultAndSpellCandidate);
+            if (m_actionResultAndSpellDependencyResult !=
+                ActionContinuationEnqueueResult::Queued)
+                return ActionResult::Failed;
+        }
 
         Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
         Player* caster = unit ? unit->ToPlayer() : nullptr;
@@ -954,6 +997,10 @@ private:
     ActionCandidate m_continuationCandidate;
     bool m_registerContinuation = false;
     ActionContinuationEnqueueResult m_continuationResult = ActionContinuationEnqueueResult::Invalid;
+    ActionCandidate m_actionResultAndSpellCandidate;
+    bool m_registerActionResultAndSpellDependency = false;
+    ActionContinuationEnqueueResult m_actionResultAndSpellDependencyResult =
+        ActionContinuationEnqueueResult::Invalid;
 };
 
 

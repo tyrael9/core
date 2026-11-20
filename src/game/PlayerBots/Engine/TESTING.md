@@ -277,11 +277,6 @@ The Engine owns a bounded CoreSpellTerminalListener registry. Core Spell::prepar
 
 Pure tests cover value retention, Succeeded/Interrupted status, null/duplicate/full registration and callback-time registration. Trusted Push CI #44677767691 passed the pure suite, ARM64 build and complete Vanilla 5875 simulator. The real Player heal fixture registered the listener on the same PartyBotAI Engine and received one successful terminal correlated to the original action/encounter/target/spell. PR CI #44677772862 passed the pure/build path and intentionally skipped the push-only fixture. This completes terminal-result transport, not production action adapters or gameplay readiness.
 
-## F33 PendingActionQueue fairness (implementation/CI pending)
-
-The pending queue currently revalidates actions and sorts by current priority/FIFO, but a continuous stream of higher-priority arrivals can starve an older eligible action until its TTL expires. F33 introduces a bounded 3,000 ms age-promotion threshold. Once promoted, an entry outranks all unpromoted entries; promoted entries order by longest wait then original FIFO ordinal. Duplicate refresh and deferral must preserve the original enqueue time and expiry. The fairness comparator is shared by queue extraction and the executor's revalidated-work sort.
-
-
 ## F33 PendingActionQueue starvation resistance
 
 The queue uses a bounded 3,000 ms age-promotion threshold. Entries waiting less than the threshold retain current revalidated priority-first/FIFO ordering. Once an unexpired entry reaches the threshold, it outranks all not-yet-promoted entries; among promoted entries, the longest wait wins and original FIFO ordinal breaks ties. Unsigned elapsed-time arithmetic is safe across uint32 millisecond wrap because every live TTL is less than 2^31 ms. Duplicate refresh and requeue preserve the original enqueue time, ordinal and expiry.
@@ -289,3 +284,16 @@ The queue uses a bounded 3,000 ms age-promotion threshold. Entries waiting less 
 The executor uses the same comparator after revalidation and refreshes the local priority from the current candidate evaluation before sorting. Pure tests cover the 2,999/3,000 ms boundary, continuous higher-priority arrivals, ordering among promoted entries and clock wrap. An Engine integration test uses same-channel queued work to prove that a long-waiting lower-priority action executes first and the fresh higher-priority action is deferred to the next tick.
 
 Trusted Push CI [#44680955006](https://github.com/tyrael9/core/actions/runs/44680955006), head 5ae65fd4167779a9d98f0c7ccdc34c0aab024e69, passed pure Engine tests, report collector, full Linux ARM64 build and fixture-backed Vanilla 5875 runtime through final Runtime PASS. The same run enforced the F32 terminal-listener marker introduced in run-ci.sh. PR CI [#44680961189](https://github.com/tyrael9/core/actions/runs/44680961189) passed the pure/build path.
+
+
+## F34 Core-terminal-gated action continuations
+
+An Engine action may register one follow-up candidate through the const ActionContinuationSink in its Engine-owned DecisionContext before starting its root Spell. The queue is bounded to 32 value-only entries and keyed by parent action ID plus encounter, while retaining the parent target/spell identity and owner group/map/instance/bot scope. A matching CoreSpellTerminalEvent with Succeeded status releases the child into the normal PendingActionQueue; Failed, Interrupted, wrong target/spell, foreign encounter, expired TTL or queue teardown must never release it. A small bounded recent-terminal ledger also handles instant spells that finish before a continuation registration call returns.
+
+Released work remains subject to normal PendingActionQueue dequeue revalidation, threat budget, channel arbitration and owner-context checks. It is not executed inside Spell::finish. The simulator's generic heal adapter makes continuation opt-in, preserving unrelated existing heal fixtures. All timestamps in the F34 Core fixture use WorldTimer's monotonic clock so registration TTL and Core terminal timestamps share one time domain.
+
+Pure tests cover the successful path, failure/interruption, identity/context mismatch, expiry, capacity, duplicate parent, late terminal registration and stale post-release context. Trusted Push CI [#44689339405](https://github.com/tyrael9/core/actions/runs/44689339405), head e3be7ef90743b06953ce5caba23ea59de6280c30, passed pure tests, ARM64 build and full Vanilla 5875 runtime. The runtime line logged continuationResult=0 coreTerminal=1 pendingBeforeDispatch=1 dispatchSelected=1 dispatchExecuted=1 dispatchRejected=0 dispatchStale=0 continuationExecuted=1 continuationEnqueued=1 continuationDispatched=1; F34 and F32 markers and final Runtime PASS were present. PR CI [#44689346106](https://github.com/tyrael9/core/actions/runs/44689346106) passed the pure/build path.
+
+## F35 typed prerequisites and alternative branches (planned)
+
+F35 will generalize the one-parent F34 continuation into bounded AND prerequisites and mutually exclusive one-of-N alternatives. The dependency payload remains value-only and context-scoped; all satisfied branches are routed to the existing PendingActionQueue for fresh revalidation rather than executed in the terminal callback. Required coverage includes mixed success/failure prerequisites, deterministic alternative selection/ties, expiry without TTL extension, duplicate/missing parent, stale context and teardown.

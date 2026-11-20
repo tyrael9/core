@@ -540,3 +540,14 @@ The pure Engine suite verifies priority ordering just before the fairness bounda
 Push CI [#44680955006](https://github.com/tyrael9/core/actions/runs/44680955006), head 5ae65fd4167779a9d98f0c7ccdc34c0aab024e69, passed pure tests, ARM64 server/realm compilation, simulator harness syntax and the complete trusted Vanilla 5875 runtime. The run also passed the F32 terminal-listener shell gate and final Runtime PASS. PR CI [#44680961189](https://github.com/tyrael9/core/actions/runs/44680961189) passed the pure/build path.
 
 F33 affects only the Engine-owned pending queue. It does not change Legacy or Shadow scheduling/execution behavior.
+
+
+## Stage F34 — Core-terminal-gated action continuation (passed)
+
+The real Engine-selected Player Lesser Heal action registers a core_spell_terminal_followup before invoking Core CastSpell. The continuation stores the root action ID, encounter, target and spell identity plus a bounded TTL and owner group/map/instance/bot scope. The root Spell reaches Spell::finish; only its matching successful terminal event moves the follow-up to the Engine PendingActionQueue. The fixture then calls the next pending dispatch and requires one selected/executed child, with no rejected or stale entries. A failed/interrupted or mismatched event cannot unlock the child, and the queue still revalidates all normal action and threat conditions at dispatch time.
+
+The simulator healer helper enables this branch only for the F34 fixture; older Player follow/cast, range/LOS and movement-interrupt fixtures continue to use the original path. The fixture now uses WorldTimer's monotonic clock for snapshot capture, encounter start and Engine context so the Core Spell terminal timestamp and continuation TTL share a clock domain.
+
+Trusted Push CI [#44689339405](https://github.com/tyrael9/core/actions/runs/44689339405), head e3be7ef90743b06953ce5caba23ea59de6280c30, passed pure Engine tests, full Linux ARM64 server/realm build and the complete Vanilla 5875 simulator. The log reported continuationResult=0 coreTerminal=1 continuationWaiters=0 pendingBeforeDispatch=1 dispatchSelected=1 dispatchExecuted=1 dispatchRejected=0 dispatchStale=0 continuationExecuted=1 continuationEnqueued=1 continuationDispatched=1, emitted the dedicated F34 marker, passed the F32 terminal-listener marker and reached final Runtime PASS. PR CI [#44689346106](https://github.com/tyrael9/core/actions/runs/44689346106) passed the pure/build validation.
+
+F34 verifies generic terminal-gated continuation mechanics only; it does not claim class/role rotations or NewEngine gameplay readiness.

@@ -503,3 +503,30 @@ F32 completes the transport and Core lifecycle correlation only. It does not add
 - [x] PR CI [#44680961189](https://github.com/tyrael9/core/actions/runs/44680961189) passed pure tests, report collector, Linux ARM64 server/realm build and simulator harness syntax. The fixture-backed runtime remains push-only.
 
 This closes the first Phase 4 queue starvation policy. It does not add action prerequisites, alternatives, continuations or production class/role adapters.
+
+
+## F34 — bounded Core-terminal-gated action continuations (pure/ARM64/full-runtime CI passed)
+
+- [x] Add a per-Engine bounded 32-entry continuation queue containing only value data: parent action ID, encounter ID, parent target/spell identity, child candidate, owner group/map/instance/bot scope, enqueue time, expiry and FIFO ordinal.
+- [x] Expose a const continuation sink through Engine-owned DecisionContext; adapters may register one child action before initiating their root Spell. Child actions must already be registered and explicitly opt in to pending dispatch with a positive bounded lifetime.
+- [x] Release only after the matching Core Spell terminal is Succeeded and action ID, encounter ID, target GUID and spell ID all match. Failed/interrupted or mismatched terminal events consume and reject the continuation; TTL expiry and queue reset clear abandoned entries.
+- [x] Route released children through the existing Engine PendingActionQueue. They still undergo fresh IsPossible/IsUseful/threat-budget/multiplier/channel/context checks on the next Engine dispatch; Spell callbacks never execute actions directly.
+- [x] Add a bounded recent-terminal ledger for the instant-cast race where a root Spell may finish before its adapter registers the continuation. Late registration checks the same terminal identity and original terminal-time TTL before releasing.
+- [x] Add pure tests for success/release/dispatch, failed and interrupted terminal rejection, target/spell mismatch, foreign encounter, child TTL expiration, periodic queue pruning, 32-entry capacity, duplicate-parent rejection, late-terminal registration and stale owner/map/group/instance drop.
+- [x] Extend the real Core Player Lesser Heal fixture. It registers a follow-up action before CastSpell, requires the matching successful Spell::finish event, then proves the follow-up enters and executes through the next PendingActionQueue dispatch.
+- [x] Keep continuation opt-in in the simulator heal helper so pre-existing follow/cast, range/LOS rejection and movement-interrupt fixtures retain their original no-continuation behavior. Use the same WorldTimer monotonic time domain for the fixture snapshot, encounter start and Engine context; Core Spell terminal timestamps and continuation TTLs then share one clock.
+- [x] Trusted Push CI [#44689339405](https://github.com/tyrael9/core/actions/runs/44689339405), head e3be7ef90743b06953ce5caba23ea59de6280c30, passed pure Engine tests, report collector tests, Linux ARM64 server/realm build, simulator harness syntax, fixture download and full Vanilla 5875 runtime through final Runtime PASS. The real fixture logged continuationResult=0 coreTerminal=1 pendingBeforeDispatch=1 dispatchSelected=1 dispatchExecuted=1 dispatchRejected=0 dispatchStale=0 continuationExecuted=1 continuationEnqueued=1 continuationDispatched=1, plus the dedicated F34 PASS marker.
+- [x] PR CI [#44689346106](https://github.com/tyrael9/core/actions/runs/44689346106) passed pure tests, report collector, ARM64 server/realm build and simulator harness syntax. Runtime fixture remains push-only.
+
+F34 completes a generic async continuation foundation, not production class/role combat adapters or gameplay readiness. The default remains Legacy, and NewEngine remains an explicit development-only authority mode.
+
+## F35 — typed prerequisites and alternative action branches (planned)
+
+Extend Engine actions beyond a single parent-to-child continuation. A bounded, value-only dependency record should support:
+- AND prerequisites on explicitly named parent action IDs and required terminal statuses;
+- mutually exclusive alternative branches with deterministic priority/FIFO selection;
+- branch expiry inherited from the originating action/encounter TTL, never extended by refresh;
+- fail-closed handling for failed/interrupted prerequisites, missing parent records, duplicate branch identity and foreign group/map/instance/bot/encounter context;
+- release of ready branches into the existing PendingActionQueue for fresh eligibility, threat-budget and channel revalidation.
+
+The implementation should preserve the one-parent continuation API as a zero/one-prerequisite convenience, keep callbacks value-only, and remain completely outside Legacy/Shadow execution until dedicated NewEngine adapters opt in. Pure tests and a Core-backed fixture should cover success/failure combinations, one-of-N alternatives, deterministic ties, timeout and teardown.

@@ -1,4 +1,5 @@
 #include "PartyBotEngine.h"
+#include "ItemUseAggregate.h"
 #include "CoreAction.h"
 #include "ExecutionAuthority.h"
 #include "Value.h"
@@ -236,6 +237,230 @@ struct Fixture {
 ActionCandidate Candidate(std::string name, float priority, ActionChannel channel) {
     ActionCandidate c; c.actionName = std::move(name); c.targetGuid = 22;
     c.basePriority = priority; c.channel = channel; return c;
+}
+
+ItemUseRequestDescriptor ItemUseRequest(
+    std::uint32_t nowMs = 1000, std::uint32_t lifetimeMs = 5000)
+{
+    ItemUseRequestDescriptor request;
+    request.actionId = 91;
+    request.encounterId = 17;
+    request.actorGuid = 100;
+    request.itemGuid = 200;
+    request.itemEntry = 118;
+    request.requestedSpellSlot = ItemUseAggregateTracker::UnknownSlot;
+    request.itemCountBefore = 1;
+    request.startedAtMs = nowMs;
+    request.lifetimeMs = lifetimeMs;
+    return request;
+}
+
+void TestItemUseAggregateWaitsForFanoutClosure()
+{
+    ItemUseAggregateTracker tracker;
+    ItemUseId root = 0;
+    assert(tracker.Begin(ItemUseRequest(), root) == ItemUseTrackerResult::Accepted);
+    assert(root != 0);
+
+    ItemUseChildId first = 0, second = 0;
+    assert(tracker.RegisterChild(root, 0, 439, false, first) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.RegisterChild(root, 2, 440, true, second) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.MarkSlotSkipped(root, 1) == ItemUseTrackerResult::Accepted);
+
+    ItemUseTerminalEvent terminal;
+    assert(tracker.RecordChildTerminal(root, first,
+        ItemUseChildStatus::Succeeded, 1010, terminal) ==
+        ItemUseTrackerResult::Accepted);
+    // A synchronous first child does not close the logical item request.
+    assert(tracker.GetPendingRootCount() == 1);
+    assert(tracker.RecordChildTerminal(root, second,
+        ItemUseChildStatus::Succeeded, 1011, terminal) ==
+        ItemUseTrackerResult::Accepted);
+    assert(tracker.GetPendingRootCount() == 1);
+
+    assert(tracker.CloseDispatch(root, 1012, terminal) ==
+           ItemUseTrackerResult::Completed);
+    assert(terminal.itemUseId == root);
+    assert(terminal.actionId == 91);
+    assert(terminal.encounterId == 17);
+    assert(terminal.status == ItemUseAggregateStatus::AllSucceeded);
+    assert(terminal.childCount == 2);
+    assert(terminal.completedChildCount == 2);
+    assert(terminal.succeededChildCount == 2);
+    assert(terminal.skippedSlotCount == 1);
+    assert(tracker.GetPendingRootCount() == 0);
+    assert(tracker.RecordChildTerminal(root, first,
+        ItemUseChildStatus::Succeeded, 1013, terminal) ==
+        ItemUseTrackerResult::AlreadySettled);
+}
+
+void TestItemUseAggregateDelayedChildAndPartialOutcomes()
+{
+    ItemUseAggregateTracker tracker;
+    ItemUseId root = 0;
+    assert(tracker.Begin(ItemUseRequest(), root) == ItemUseTrackerResult::Accepted);
+    ItemUseChildId first = 0, delayed = 0, failed = 0;
+    assert(tracker.RegisterChild(root, 0, 439, false, first) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.RegisterChild(root, 1, 440, true, delayed) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.RegisterChild(root, 3, 441, true, failed) ==
+           ItemUseTrackerResult::Accepted);
+
+    ItemUseTerminalEvent terminal;
+    assert(tracker.RecordChildTerminal(root, first,
+        ItemUseChildStatus::Succeeded, 1010, terminal) ==
+        ItemUseTrackerResult::Accepted);
+    assert(tracker.RecordChildTerminal(root, failed,
+        ItemUseChildStatus::Failed, 1011, terminal) ==
+        ItemUseTrackerResult::Accepted);
+    assert(tracker.CloseDispatch(root, 1012, terminal) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.GetPendingRootCount() == 1);
+
+    // Dispatch is closed, but the root stays pending until the delayed child
+    // reaches its own Core Spell terminal.
+    assert(tracker.RecordChildTerminal(root, delayed,
+        ItemUseChildStatus::Succeeded, 2500, terminal) ==
+        ItemUseTrackerResult::Completed);
+    assert(terminal.status == ItemUseAggregateStatus::PartialSuccess);
+    assert(terminal.childCount == 3);
+    assert(terminal.completedChildCount == 3);
+    assert(terminal.succeededChildCount == 2);
+    assert(terminal.failedChildCount == 1);
+    assert(terminal.interruptedChildCount == 0);
+}
+
+void TestItemUseAggregateAllFailureAndInterruptStatuses()
+{
+    ItemUseAggregateTracker tracker;
+    ItemUseTerminalEvent terminal;
+    ItemUseId failedRoot = 0;
+    assert(tracker.Begin(ItemUseRequest(), failedRoot) == ItemUseTrackerResult::Accepted);
+    ItemUseChildId failedA = 0, failedB = 0;
+    assert(tracker.RegisterChild(failedRoot, 0, 439, false, failedA) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.RegisterChild(failedRoot, 1, 440, true, failedB) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.RecordChildTerminal(failedRoot, failedA,
+        ItemUseChildStatus::Failed, 1010, terminal) ==
+        ItemUseTrackerResult::Accepted);
+    assert(tracker.RecordChildTerminal(failedRoot, failedB,
+        ItemUseChildStatus::Interrupted, 1011, terminal) ==
+        ItemUseTrackerResult::Accepted);
+    assert(tracker.CloseDispatch(failedRoot, 1012, terminal) ==
+           ItemUseTrackerResult::Completed);
+    assert(terminal.status == ItemUseAggregateStatus::AllFailed);
+    assert(terminal.failedChildCount == 1);
+    assert(terminal.interruptedChildCount == 1);
+
+    ItemUseId interruptedRoot = 0;
+    assert(tracker.Begin(ItemUseRequest(2000), interruptedRoot) ==
+           ItemUseTrackerResult::Accepted);
+    ItemUseChildId interruptedA = 0, interruptedB = 0;
+    assert(tracker.RegisterChild(interruptedRoot, 0, 439, false, interruptedA) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.RegisterChild(interruptedRoot, 1, 440, true, interruptedB) ==
+           ItemUseTrackerResult::Accepted);
+    assert(tracker.RecordChildTerminal(interruptedRoot, interruptedA,
+        ItemUseChildStatus::Interrupted, 2010, terminal) ==
+        ItemUseTrackerResult::Accepted);
+    assert(tracker.RecordChildTerminal(interruptedRoot, interruptedB,
+        ItemUseChildStatus::Interrupted, 2011, terminal) ==
+        ItemUseTrackerResult::Accepted);
+    assert(tracker.CloseDispatch(interruptedRoot, 2012, terminal) ==
+           ItemUseTrackerResult::Completed);
+    assert(terminal.status == ItemUseAggregateStatus::AllInterrupted);
+}
+
+void TestItemUseAggregateRecordsMutationSeparately()
+{
+    ItemUseAggregateTracker tracker;
+    ItemUseId root = 0;
+    assert(tracker.Begin(ItemUseRequest(), root) == ItemUseTrackerResult::Accepted);
+    ItemUseChildId child = 0;
+    assert(tracker.RegisterChild(root, 0, 439, false, child) ==
+           ItemUseTrackerResult::Accepted);
+
+    ItemUseMutationEvent mutation;
+    mutation.itemUseId = root;
+    mutation.childId = child;
+    mutation.itemGuid = 200;
+    mutation.itemEntry = 118;
+    mutation.kind = ItemUseMutationKind::ItemDestroyed;
+    mutation.phase = ItemUseMutationPhase::BeforeEffects;
+    mutation.beforeCount = 1;
+    mutation.afterCount = 0;
+    mutation.itemExistsAfter = false;
+    mutation.occurredAtMs = 1010;
+    assert(tracker.RecordMutation(mutation) == ItemUseTrackerResult::Accepted);
+
+    ItemUseTerminalEvent terminal;
+    assert(tracker.RecordChildTerminal(root, child,
+        ItemUseChildStatus::Interrupted, 1011, terminal) ==
+        ItemUseTrackerResult::Accepted);
+    assert(tracker.CloseDispatch(root, 1012, terminal) ==
+           ItemUseTrackerResult::Completed);
+    assert(terminal.status == ItemUseAggregateStatus::AllInterrupted);
+    assert(terminal.observedMutationCount == 1);
+
+    ItemUseMutationEvent emitted;
+    assert(tracker.PopMutationEvent(emitted));
+    assert(emitted.itemUseId == root);
+    assert(emitted.childId == child);
+    assert(emitted.kind == ItemUseMutationKind::ItemDestroyed);
+    assert(emitted.beforeCount == 1 && emitted.afterCount == 0);
+    assert(!emitted.itemExistsAfter);
+    assert(!tracker.PopMutationEvent(emitted));
+}
+
+void TestItemUseAggregateNoChildrenDuplicateSlotsAndCapacity()
+{
+    ItemUseAggregateTracker tracker;
+    ItemUseTerminalEvent terminal;
+    ItemUseId empty = 0;
+    assert(tracker.Begin(ItemUseRequest(), empty) == ItemUseTrackerResult::Accepted);
+    assert(tracker.MarkSlotSkipped(empty, 0) == ItemUseTrackerResult::Accepted);
+    assert(tracker.MarkSlotSkipped(empty, 0) == ItemUseTrackerResult::SlotAlreadyReported);
+    assert(tracker.CloseDispatch(empty, 1001, terminal) ==
+           ItemUseTrackerResult::Completed);
+    assert(terminal.status == ItemUseAggregateStatus::NoChildren);
+    assert(terminal.skippedSlotCount == 1);
+
+    ItemUseId active[ItemUseAggregateTracker::Capacity] = {};
+    for (std::size_t i = 0; i < ItemUseAggregateTracker::Capacity; ++i)
+        assert(tracker.Begin(ItemUseRequest(
+            static_cast<std::uint32_t>(2000 + i)), active[i]) ==
+            ItemUseTrackerResult::Accepted);
+    ItemUseId overflow = 0;
+    assert(tracker.Begin(ItemUseRequest(3000), overflow) == ItemUseTrackerResult::Full);
+    for (std::size_t i = 0; i < ItemUseAggregateTracker::Capacity; ++i)
+        assert(tracker.CloseDispatch(active[i], 4000, terminal) ==
+            ItemUseTrackerResult::Completed);
+}
+
+void TestItemUseAggregateExpiryAndClockWrap()
+{
+    ItemUseAggregateTracker tracker;
+    ItemUseId root = 0;
+    std::uint32_t const start = 0xfffffff0u;
+    assert(tracker.Begin(ItemUseRequest(start, 40), root) ==
+           ItemUseTrackerResult::Accepted);
+    ItemUseChildId child = 0;
+    assert(tracker.RegisterChild(root, 0, 439, false, child) ==
+           ItemUseTrackerResult::Accepted);
+    assert(!ItemUseAggregateTracker::IsExpired(0x00000010u, 0x00000018u));
+    std::vector<ItemUseTerminalEvent> expired;
+    assert(tracker.PruneExpired(0x00000017u, expired) == 0);
+    assert(tracker.PruneExpired(0x00000018u, expired) == 1);
+    assert(expired.size() == 1);
+    assert(expired[0].itemUseId == root);
+    assert(expired[0].status == ItemUseAggregateStatus::Expired);
+    assert(expired[0].completedChildCount == 0);
+    assert(tracker.CloseDispatch(root, 0x00000019u, expired.emplace_back()) ==
+           ItemUseTrackerResult::AlreadySettled);
 }
 
 class TestCoreActionRuntime final : public CoreActionRuntime {
@@ -4241,6 +4466,12 @@ int main() {
     TestEnginePendingQueueFairnessSurvivesRevalidatedWorkSort();
     TestDecisionCycleQueuesOptInActionsAndDispatchesPendingWork();
     TestDecisionCycleBlocksPendingChannelsAndHonorsOriginalExpiry();
+    TestItemUseAggregateWaitsForFanoutClosure();
+    TestItemUseAggregateDelayedChildAndPartialOutcomes();
+    TestItemUseAggregateAllFailureAndInterruptStatuses();
+    TestItemUseAggregateRecordsMutationSeparately();
+    TestItemUseAggregateNoChildrenDuplicateSlotsAndCapacity();
+    TestItemUseAggregateExpiryAndClockWrap();
     TestCoreActionRuntimeIsPreservedAcrossDecisionAndPendingContexts();
     TestExecuteSelectedDispatchesByPriorityWithStableTies();    TestExecuteSelectedHonorsPerDispatchLimit();
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();

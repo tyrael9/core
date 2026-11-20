@@ -60,6 +60,7 @@ enum class CandidateStatus : std::uint8_t {
     RejectedThreatBudget,
     NotSelected,
     Selected,
+    Queued,
     Executed,
     ExecutionFailed
 };
@@ -191,6 +192,7 @@ struct DecisionSummary {
     // Count arbitration winners from selectedIndices, even after execution
     // changes their CandidateStatus to Executed or ExecutionFailed.
     std::uint32_t selectedCount = 0;
+    std::uint32_t pendingQueuedCount = 0;
     std::uint32_t channelLoserCount = 0;
     std::uint32_t missingActionCount = 0;
     std::uint32_t impossibleCount = 0;
@@ -251,6 +253,9 @@ inline DecisionSummary SummarizeDecisionReport(DecisionReport const& report) {
             case CandidateStatus::NotSelected:
                 if (evaluation.reason == "lower_priority_same_channel")
                     IncrementDecisionSummaryCount(summary.channelLoserCount);
+                break;
+            case CandidateStatus::Queued:
+                IncrementDecisionSummaryCount(summary.pendingQueuedCount);
                 break;
             case CandidateStatus::Executed:
                 IncrementDecisionSummaryCount(summary.executedCount);

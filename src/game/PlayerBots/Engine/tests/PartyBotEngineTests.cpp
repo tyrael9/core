@@ -442,6 +442,70 @@ void TestEnginePendingQueuePriorityChannelDeferralPreservesOriginalExpiry()
     assert(order.size() == 1);
 }
 
+void TestDecisionCycleQueuesOptInActionsAndDispatchesPendingWork()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    auto action = std::make_shared<TestAction>("deferred_cast");
+    action->pendingLifetimeMs = 1000;
+    assert(engine.RegisterAction(action));
+
+    auto trigger = std::make_shared<TestTrigger>("deferred_trigger");
+    trigger->generated.push_back(Candidate(
+        "deferred_cast", 50.0f, ActionChannel::GlobalCooldown));
+    auto strategy = std::make_shared<Strategy>("deferred_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    PendingActionDispatchSummary cycle = engine.ExecuteDecisionCycle(f.context, report);
+    assert(cycle.newlyQueued == 1);
+    assert(cycle.executed == 1);
+    assert(action->executeCount == 1);
+    assert(engine.GetPendingActionCount() == 0);
+    assert(report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed);
+    assert(SummarizeDecisionReport(report).executedCount == 1);
+}
+
+void TestDecisionCycleBlocksPendingChannelsAndHonorsOriginalExpiry()
+{
+    Fixture f;
+    PartyBotEngine::PartyBotEngine engine;
+    auto pending = std::make_shared<TestAction>("old_pending");
+    auto immediate = std::make_shared<TestAction>("current_immediate");
+    pending->pendingLifetimeMs = 500;
+    assert(engine.RegisterAction(pending) && engine.RegisterAction(immediate));
+
+    ActionCandidate oldCandidate = Candidate(
+        "old_pending", 10.0f, ActionChannel::GlobalCooldown);
+    assert(engine.QueuePendingAction(f.context, oldCandidate) ==
+        PendingActionEnqueueResult::Queued);
+
+    auto trigger = std::make_shared<TestTrigger>("immediate_trigger");
+    trigger->generated.push_back(Candidate(
+        "current_immediate", 30.0f, ActionChannel::GlobalCooldown));
+    auto strategy = std::make_shared<Strategy>("immediate_strategy");
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(f.context);
+    PendingActionDispatchSummary first = engine.ExecuteDecisionCycle(f.context, report);
+    assert(immediate->executeCount == 1);
+    assert(pending->executeCount == 0);
+    assert(first.requeued == 1);
+    assert(engine.GetPendingActionCount() == 1);
+
+    DecisionContext expiredContext(f.snapshot, f.bot, f.coordinator, 1500);
+    DecisionReport emptyReport;
+    emptyReport.snapshotEpoch = f.snapshot.epoch;
+    PendingActionDispatchSummary expired =
+        engine.ExecuteDecisionCycle(expiredContext, emptyReport);
+    assert(expired.expired == 1);
+    assert(pending->executeCount == 0);
+    assert(engine.GetPendingActionCount() == 0);
+}
+
 void TestExecutionAuthorityModesAreExplicitAndFailSafe()
 {
     assert(ResolveExecutionAuthorityMode(0) == ExecutionAuthorityMode::Legacy);
@@ -803,6 +867,7 @@ void TestDecisionSummaryCountsAllArbitrationOutcomes()
     add(CandidateStatus::RejectedThreatBudget, "threat_budget_exceeded");
     // NotSelected without the channel-arbitration reason is not a channel loser.
     add(CandidateStatus::NotSelected, "other_not_selected");
+    add(CandidateStatus::Queued, "pending_action_queued");
 
     DecisionSummary const summary = SummarizeDecisionReport(report);
     assert(summary.candidateCount == 12);
@@ -817,6 +882,7 @@ void TestDecisionSummaryCountsAllArbitrationOutcomes()
     assert(summary.threatBudgetVetoCount == 1);
     assert(summary.executedCount == 1);
     assert(summary.executionFailedCount == 1);
+    assert(summary.pendingQueuedCount == 1);
 }
 
 void TestPriorityAndChannelArbitration() {
@@ -1866,6 +1932,49 @@ void TestEngineThreatBudgetAccountsForHigherPriorityCandidates() {
     assert(report.candidates[1].status == CandidateStatus::RejectedThreatBudget);
 }
 
+void TestPendingDispatchAggregatesThreatImpactAcrossCandidates()
+{
+    Fixture f;
+    PrepareEngineThreatFixture(f);
+    PartyBotEngine::PartyBotEngine engine;
+    auto higher = std::make_shared<TestAction>("pending_higher");
+    auto lower = std::make_shared<TestAction>("pending_lower");
+    higher->pendingLifetimeMs = 1000;
+    lower->pendingLifetimeMs = 1000;
+    higher->useThreatImpact = lower->useThreatImpact = true;
+    higher->threatImpact = MakeThreatEstimate(
+        f.snapshot.epoch, f.bot.guid, 9001, 12.0f);
+    lower->threatImpact = MakeThreatEstimate(
+        f.snapshot.epoch, f.bot.guid, 9001, 12.0f);
+    higher->threatImpact.reservationDurationMs = 1000;
+    lower->threatImpact.reservationDurationMs = 1000;
+    assert(engine.RegisterAction(higher) && engine.RegisterAction(lower));
+
+    ActionCandidate highCandidate = Candidate(
+        "pending_higher", 20.0f, ActionChannel::Movement);
+    ActionCandidate lowCandidate = Candidate(
+        "pending_lower", 10.0f, ActionChannel::Utility);
+    assert(engine.QueuePendingAction(f.context, highCandidate) ==
+        PendingActionEnqueueResult::Queued);
+    assert(engine.QueuePendingAction(f.context, lowCandidate) ==
+        PendingActionEnqueueResult::Queued);
+
+    PendingActionDispatchSummary const dispatch =
+        engine.ExecutePendingActions(f.context);
+    assert(dispatch.dequeued == 2);
+    assert(dispatch.selected == 1 && dispatch.executed == 1);
+    assert(dispatch.requeued == 1);
+    assert(higher->executeCount == 1 && lower->executeCount == 0);
+    assert(engine.GetPendingActionCount() == 1);
+
+    DecisionContext expiredContext(
+        f.snapshot, f.bot, f.coordinator, f.context.nowMs + 1000);
+    PendingActionDispatchSummary const expired =
+        engine.ExecutePendingActions(expiredContext);
+    assert(expired.expired == 1);
+    assert(engine.GetPendingActionCount() == 0);
+}
+
 void TestThreatBudgetCoreThresholdProjection() {
     PartySnapshot snapshot;
     snapshot.capturedAtMs = 1000;
@@ -2404,6 +2513,8 @@ int main() {
     TestEnginePendingQueueRevalidatesCurrentEligibilityAndResetClearsIt();
     TestEnginePendingQueueDropsForeignGroupMapAndInstanceContext();
     TestEnginePendingQueuePriorityChannelDeferralPreservesOriginalExpiry();
+    TestDecisionCycleQueuesOptInActionsAndDispatchesPendingWork();
+    TestDecisionCycleBlocksPendingChannelsAndHonorsOriginalExpiry();
     TestExecuteSelectedDispatchesByPriorityWithStableTies();
     TestExecuteSelectedHonorsPerDispatchLimit();
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();
@@ -2432,6 +2543,7 @@ int main() {
     TestEngineThreatBudgetSelectionAndExecutionReservations();
     TestEngineThreatBudgetRejectsUnknownAndOverBudgetCandidates();
     TestEngineThreatBudgetAccountsForHigherPriorityCandidates();
+    TestPendingDispatchAggregatesThreatImpactAcrossCandidates();
     TestEngineRevalidatesReservationsImmediatelyBeforeExecution();
     TestEngineRollsBackPartialFanoutWhenReservationCapacityIsReached();
     TestEngineReleasesThreatReservationWhenExecutionFails();

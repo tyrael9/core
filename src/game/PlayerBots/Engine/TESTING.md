@@ -246,3 +246,13 @@ The runtime exposes three explicit modes through `PlayerBot.EngineAuthority`:
 - `2` NewEngine: exclusive Engine authority. `PartyBotAI::UpdateAI` returns before Legacy follow/healing/combat/class policy. Unknown settings resolve to Legacy.
 
 The old `PlayerBot.EngineShadow` boolean remains a backward-compatible way to enable read-only evaluation while the authority is Legacy. NewEngine forces Engine evaluation, does not register `shadow_*` candidate probes as executable strategy policy, and processes only actual registered Engine work and pending actions. The current repository has no production Core action adapters registered for this mode, so it deliberately does nothing rather than invoking Legacy. Pure C++ tests cover mode selection and the no-Legacy contract. A Core-backed runtime assertion instrumenting actual Legacy entry points remains open.
+
+
+## F30 NewEngine decision-cycle integration
+
+The pure Engine suite exercises the single `ExecuteDecisionCycle` entry point. A selected TTL-enabled action is routed through the Engine-owned pending queue and reflected back into the source report as Executed when same-tick pending dispatch succeeds. Immediate actions reserve their channels before pending dispatch; a pending action on the same channel stays queued and expires at its original deadline if the channel remains occupied. The pending dispatcher shares the immediate action budget and accumulates selected threat impact across pending candidates before evaluating subsequent entries.
+
+The fixture-backed Vanilla runtime still validates Core lifecycle compatibility; live NewEngine action execution remains opt-in and lacks production class adapters.
+
+
+F30 additionally verifies pending-dispatch threat aggregation. Two different-channel pending actions each estimate 12 threat points to the same hostile/recipient pair; the first is selected and executes, while the combined second projection is deferred and expires at its original deadline.

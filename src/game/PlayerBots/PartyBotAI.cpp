@@ -1574,6 +1574,7 @@ char const* ShadowCandidateStatusName(PartyBotEngine::CandidateStatus status)
         case CandidateStatus::RejectedThreatBudget: return "rejected_threat_budget";
         case CandidateStatus::NotSelected: return "not_selected";
         case CandidateStatus::Selected: return "selected";
+        case CandidateStatus::Queued: return "queued";
         case CandidateStatus::Executed: return "executed";
         case CandidateStatus::ExecutionFailed: return "execution_failed";
         default: return "unknown";
@@ -1780,6 +1781,8 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     PartyBotEngine::DecisionContext context(*snapshot, *botSnapshot, *m_partyCoordinator,
                                                nowMs, &m_decisionTrace, nullptr, this);
     PartyBotEngine::DecisionReport report = m_partyBotEngine.Evaluate(context);
+    if (authority == PartyBotEngine::ExecutionAuthorityMode::NewEngine)
+        m_partyBotEngine.ExecuteDecisionCycle(context, report);
 
     if (m_engineShadowTraceMs <= PB_UPDATE_INTERVAL)
     {
@@ -1922,13 +1925,6 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     else
         m_engineShadowTraceMs -= PB_UPDATE_INTERVAL;
 
-    if (authority == PartyBotEngine::ExecutionAuthorityMode::NewEngine)
-    {
-        // Only real strategies/actions registered by the Engine may run here.
-        // Shadow-only probes are deliberately not registered in this mode.
-        m_partyBotEngine.ExecuteSelected(context, report);
-        m_partyBotEngine.ExecutePendingActions(context);
-    }
 }
 
 void PartyBotAI::UpdateOutOfCombatAI()

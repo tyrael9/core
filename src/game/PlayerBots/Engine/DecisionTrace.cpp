@@ -489,7 +489,7 @@ void DecisionTrace::RecordEncounterDecisionSummary(
 
     std::string const safeRole = SafeTraceToken(role);
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=decision_summary group=%u map=%u instance=%u bot=%u elapsed_ms=%u snapshot_epoch=%u role=%s candidates=%u selected=%u executed=%u execution_failed=%u channel_losers=%u missing_action=%u impossible=%u useless=%u multiplier_veto=%u invalid_priority=%u threat_unknown=%u threat_budget_veto=%u candidate_detail_limit=%u candidate_detail_omitted=%u",
+             "[PartyBotEngineTrace] trace_version=1 encounter_id=%llu seq=%u event=decision_summary group=%u map=%u instance=%u bot=%u elapsed_ms=%u snapshot_epoch=%u role=%s candidates=%u selected=%u executed=%u execution_failed=%u channel_losers=%u missing_action=%u impossible=%u useless=%u multiplier_veto=%u invalid_priority=%u threat_unknown=%u threat_budget_veto=%u pending_queued=%u candidate_detail_limit=%u candidate_detail_omitted=%u",
              static_cast<unsigned long long>(encounterId), sequence,
              groupId, mapId, instanceId, bot->GetGUIDLow(), elapsedMs,
              snapshotEpoch, safeRole.c_str(), summary.candidateCount,
@@ -498,7 +498,8 @@ void DecisionTrace::RecordEncounterDecisionSummary(
              summary.missingActionCount, summary.impossibleCount,
              summary.uselessCount, summary.multiplierVetoCount,
              summary.invalidPriorityCount, summary.threatUnknownCount,
-             summary.threatBudgetVetoCount, summary.candidateDetailLimit,
+             summary.threatBudgetVetoCount, summary.pendingQueuedCount,
+             summary.candidateDetailLimit,
              summary.candidateDetailOmitted);
 }
 

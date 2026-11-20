@@ -8,6 +8,7 @@
 #include "ValueCache.h"
 #include <map>
 #include <memory>
+#include <vector>
 namespace PartyBotEngine {
 struct PendingActionDispatchSummary
 {
@@ -20,6 +21,8 @@ struct PendingActionDispatchSummary
     std::size_t selected = 0;
     std::size_t executed = 0;
     std::size_t failed = 0;
+    std::size_t newlyQueued = 0;
+    std::vector<CandidateEvaluation> completedCandidates;
 };
 
 class PartyBotEngine {
@@ -38,9 +41,12 @@ public:
     PendingActionEnqueueResult QueuePendingAction(
         DecisionContext const& context, ActionCandidate const& candidate) const;
     std::size_t QueueSelectedActions(
-        DecisionContext const& context, DecisionReport const& report) const;
+        DecisionContext const& context, DecisionReport& report) const;
     PendingActionDispatchSummary ExecutePendingActions(
-        DecisionContext& context, std::size_t maxActionsPerDispatch = 8) const;
+        DecisionContext& context, std::size_t maxActionsPerDispatch = 8,
+        std::uint32_t blockedChannelMask = 0) const;
+    PendingActionDispatchSummary ExecuteDecisionCycle(
+        DecisionContext& context, DecisionReport& report) const;
     std::size_t GetPendingActionCount() const { return m_pendingActionQueue.Size(); }
     void ClearPendingActions() const { m_pendingActionQueue.Clear(); }
     // Only call when Strategy mode owns the relevant decision domain.

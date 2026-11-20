@@ -77,3 +77,13 @@ Still required:
 ## F28 verification boundary
 
 The Engine-owned queue API and pure regressions passed trusted push CI [#44652673352](https://github.com/tyrael9/core/actions/runs/44652673352), including the existing fixture-backed Vanilla 5875 simulator and final `Runtime PASS`. PR CI [#44652680243](https://github.com/tyrael9/core/actions/runs/44652680243) passed the full ARM64 build and pure test suite. The Core simulator validates lifecycle hook compatibility only; it does not yet exercise pending queue APIs as active gameplay because the New Engine tick/authority loop has not been wired.
+
+
+## F30 decision-cycle dispatch
+
+`PartyBotEngine::ExecuteDecisionCycle` is the NewEngine tick dispatcher. It queues selected actions only when their registered Action returns a positive `GetPendingLifetimeMs()`; zero-TTL actions stay in the immediate batch. Immediate actions consume their channel and count against the shared eight-action tick ceiling. The pending dispatcher sees the remaining budget and a mask of channels already consumed by immediate work. Same-channel pending entries are requeued with unchanged expiry.
+
+Pending candidates are revalidated against the current snapshot, selected with an aggregate selected-threat estimate, and dispatched through the existing executor. The originating DecisionReport is updated when a same-tick pending candidate executes or fails/rejects. A `pending_queued` summary bucket distinguishes queue insertion from ordinary selected/executed candidates.
+
+
+The pending dispatcher passes one shared `ThreatImpactTotals` accumulator to `AssessThreatImpactBudget`. That helper adds each safe candidate's fan-out totals only after all recipient rows pass. Later candidates are therefore checked against both live coordinator reservations and higher-priority pending work selected earlier in the same dispatch. A pure regression covers two individually safe 12-point actions whose combined projection exceeds Core headroom.

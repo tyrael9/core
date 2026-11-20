@@ -137,25 +137,59 @@ PendingActionEnqueueResult PartyBotEngine::QueuePendingAction(
 }
 
 std::size_t PartyBotEngine::QueueSelectedActions(
-    DecisionContext const& context, DecisionReport const& report) const {
+    DecisionContext const& context, DecisionReport& report) const {
     std::size_t queued = 0;
     for (std::size_t index : report.selectedIndices) {
         if (index >= report.candidates.size())
             continue;
-        CandidateEvaluation const& evaluation = report.candidates[index];
+        CandidateEvaluation& evaluation = report.candidates[index];
         if (evaluation.status != CandidateStatus::Selected)
             continue;
+        std::shared_ptr<Action> action = FindAction(evaluation.candidate.actionName);
+        if (!action || !action->GetPendingLifetimeMs())
+            continue;
+
         PendingActionEnqueueResult const result =
             QueuePendingAction(context, evaluation.candidate);
         if (result == PendingActionEnqueueResult::Queued ||
-            result == PendingActionEnqueueResult::UpdatedExisting)
+            result == PendingActionEnqueueResult::UpdatedExisting) {
+            evaluation.status = CandidateStatus::Queued;
+            evaluation.actionResult = ActionResult::NotAttempted;
+            evaluation.reason = result == PendingActionEnqueueResult::Queued
+                ? "pending_action_queued" : "pending_action_refreshed";
             ++queued;
+        } else {
+            evaluation.status = CandidateStatus::ExecutionFailed;
+            evaluation.actionResult = ActionResult::Failed;
+            switch (result) {
+                case PendingActionEnqueueResult::Full:
+                    evaluation.reason = "pending_queue_full";
+                    break;
+                case PendingActionEnqueueResult::Invalid:
+                    evaluation.reason = "pending_queue_invalid";
+                    break;
+                case PendingActionEnqueueResult::ActionNotRegistered:
+                    evaluation.reason = "pending_action_not_registered";
+                    break;
+                case PendingActionEnqueueResult::LifetimeDisabled:
+                    evaluation.reason = "pending_action_lifetime_invalid";
+                    break;
+                case PendingActionEnqueueResult::NotEligible:
+                    evaluation.reason = "pending_action_not_eligible";
+                    break;
+                case PendingActionEnqueueResult::Queued:
+                case PendingActionEnqueueResult::UpdatedExisting:
+                    evaluation.reason = "pending_queue_unexpected_result";
+                    break;
+            }
+        }
     }
     return queued;
 }
 
 PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
-    DecisionContext& context, std::size_t maxActionsPerDispatch) const {
+    DecisionContext& context, std::size_t maxActionsPerDispatch,
+    std::uint32_t blockedChannelMask) const {
     PendingActionDispatchSummary summary;
     if (!maxActionsPerDispatch)
         return summary;
@@ -199,6 +233,7 @@ PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
             EvaluateCandidate(executionContext, entry.candidate);
         if (evaluation.status != CandidateStatus::NotSelected) {
             ++summary.rejected;
+            summary.completedCandidates.push_back(evaluation);
             continue;
         }
         PendingWork item;
@@ -219,6 +254,11 @@ PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
     DecisionReport report;
     report.snapshotEpoch = executionContext.snapshot.epoch;
     std::set<ActionChannel> occupiedChannels;
+    for (std::uint32_t channel = 0;
+         channel <= static_cast<std::uint32_t>(ActionChannel::Utility); ++channel) {
+        if (blockedChannelMask & (1u << channel))
+            occupiedChannels.insert(static_cast<ActionChannel>(channel));
+    }
     ThreatImpactTotals selectedThreatInReport;
     auto defer = [&](PendingWork& item) {
         item.entry.candidate = item.evaluation.candidate;
@@ -257,10 +297,80 @@ PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
     if (!report.selectedIndices.empty())
         ExecuteSelected(context, report);
     for (CandidateEvaluation const& evaluation : report.candidates) {
-        if (evaluation.status == CandidateStatus::Executed)
+        if (evaluation.status == CandidateStatus::Executed) {
             ++summary.executed;
-        else if (evaluation.status == CandidateStatus::ExecutionFailed)
+            summary.completedCandidates.push_back(evaluation);
+        } else if (evaluation.status == CandidateStatus::ExecutionFailed) {
             ++summary.failed;
+            summary.completedCandidates.push_back(evaluation);
+        }
+    }
+    return summary;
+}
+
+PendingActionDispatchSummary PartyBotEngine::ExecuteDecisionCycle(
+    DecisionContext& context, DecisionReport& report) const {
+    // TTL-enabled current decisions enter the pending queue first. Immediate
+    // actions then reserve their channels and share the eight-action tick cap.
+    PendingActionDispatchSummary summary;
+    summary.newlyQueued = QueueSelectedActions(context, report);
+
+    std::uint32_t blockedChannelMask = 0;
+    std::size_t immediateSelected = 0;
+    for (std::size_t index : report.selectedIndices) {
+        if (index >= report.candidates.size())
+            continue;
+        CandidateEvaluation const& evaluation = report.candidates[index];
+        if (evaluation.status != CandidateStatus::Selected)
+            continue;
+        ++immediateSelected;
+        blockedChannelMask |= 1u << static_cast<std::uint32_t>(
+            evaluation.candidate.channel);
+    }
+
+    if (immediateSelected)
+        ExecuteSelected(context, report);
+
+    std::size_t const pendingBudget =
+        8 - std::min<std::size_t>(immediateSelected, 8);
+    if (pendingBudget) {
+        PendingActionDispatchSummary pending =
+            ExecutePendingActions(context, pendingBudget, blockedChannelMask);
+        summary.expired += pending.expired;
+        summary.dequeued += pending.dequeued;
+        summary.staleContext += pending.staleContext;
+        summary.rejected += pending.rejected;
+        summary.requeued += pending.requeued;
+        summary.queueFull += pending.queueFull;
+        summary.selected += pending.selected;
+        summary.executed += pending.executed;
+        summary.failed += pending.failed;
+        summary.completedCandidates.insert(summary.completedCandidates.end(),
+            pending.completedCandidates.begin(), pending.completedCandidates.end());
+    }
+
+    auto sameIdentity = [](ActionCandidate const& left, ActionCandidate const& right) {
+        return left.actionName == right.actionName &&
+            left.targetGuid == right.targetGuid &&
+            left.spellId == right.spellId &&
+            left.channel == right.channel &&
+            left.hasDestination == right.hasDestination &&
+            (!left.hasDestination ||
+                (left.destinationX == right.destinationX &&
+                 left.destinationY == right.destinationY &&
+                 left.destinationZ == right.destinationZ));
+    };
+    for (CandidateEvaluation const& completed : summary.completedCandidates) {
+        for (std::size_t index : report.selectedIndices) {
+            if (index >= report.candidates.size())
+                continue;
+            CandidateEvaluation& source = report.candidates[index];
+            if (source.status != CandidateStatus::Queued ||
+                !sameIdentity(source.candidate, completed.candidate))
+                continue;
+            source = completed;
+            break;
+        }
     }
     return summary;
 }

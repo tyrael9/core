@@ -57,11 +57,11 @@ public:
                        char const* reason, uint32 detail = 0) const final;
     uint64 OnSpellCastPreparing(Spell const* spell, uint32 spellId,
                                 uint64 coreTargetGuid, uint64& encounterId,
-                                uint64& traceTargetGuid) final;
+                                uint64& traceTargetGuid, bool& engineAction) final;
     void OnSpellCastFinished(Spell const* spell, uint64 actionId,
                              uint64 encounterId, uint32 spellId,
                              uint64 targetGuid, bool success,
-                             bool interrupted) final;
+                             bool interrupted, bool engineAction) final;
     void OnAliveStateChanged(bool wasAlive, bool isAlive) final;
     void OnDamageTaken(uint64 attackerGuid, uint32 damage,
                        uint32 healthBefore, uint32 healthAfter,

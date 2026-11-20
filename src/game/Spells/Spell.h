@@ -295,6 +295,7 @@ class Spell
         uint64 m_partyBotTraceEncounterId = 0;
         uint64 m_partyBotTraceTargetGuid = 0;
         bool m_partyBotTraceInterrupted = false;
+        bool m_partyBotTraceEngineAction = false;
 
         void SetCastTime(int32 castTime) { m_casttime = castTime; }
         int32 GetCastTime() const { return m_casttime; }

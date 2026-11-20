@@ -101,6 +101,27 @@ public:
     std::vector<ActionResultEvent> events;
 };
 
+class CaptureCoreSpellTerminalListener final : public CoreSpellTerminalListener {
+public:
+    void OnCoreSpellTerminal(CoreSpellTerminalEvent const& event) override { events.push_back(event); }
+    std::vector<CoreSpellTerminalEvent> events;
+};
+class RegisterCoreSpellTerminalListenerDuringCallback final : public CoreSpellTerminalListener {
+public:
+    RegisterCoreSpellTerminalListenerDuringCallback(
+        PartyBotEngine::PartyBotEngine& engine,
+        std::shared_ptr<CoreSpellTerminalListener> next)
+        : m_engine(engine), m_next(std::move(next)) {}
+    void OnCoreSpellTerminal(CoreSpellTerminalEvent const& event) override {
+        events.push_back(event);
+        if (!registered) registered = m_engine.AddCoreSpellTerminalListener(m_next);
+    }
+    std::vector<CoreSpellTerminalEvent> events;
+    bool registered = false;
+private:
+    PartyBotEngine::PartyBotEngine& m_engine;
+    std::shared_ptr<CoreSpellTerminalListener> m_next;
+};
 class TestTrigger : public Trigger {
 public:
     explicit TestTrigger(std::string name) : m_name(std::move(name)) {}
@@ -816,6 +837,50 @@ void TestEngineActionAttemptAndResultTrace()
     assert(report.candidates[report.selectedIndices[0]].threatActionId == 0);
 }
 
+void TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded()
+{
+    PartyBotEngine::PartyBotEngine engine;
+    auto first = std::make_shared<CaptureCoreSpellTerminalListener>();
+    auto late = std::make_shared<CaptureCoreSpellTerminalListener>();
+    auto registering = std::make_shared<RegisterCoreSpellTerminalListenerDuringCallback>(engine, late);
+    assert(engine.AddCoreSpellTerminalListener(first));
+    assert(!engine.AddCoreSpellTerminalListener(first));
+    assert(!engine.AddCoreSpellTerminalListener(std::shared_ptr<CoreSpellTerminalListener>()));
+    assert(engine.AddCoreSpellTerminalListener(registering));
+    assert(engine.GetCoreSpellTerminalListenerCount() == 2);
+    CoreSpellTerminalEvent event;
+    event.actionId = 0x12345678u;
+    event.encounterId = 0x87654321u;
+    event.targetGuid = 0x1122334455667788ull;
+    event.spellId = 2061;
+    event.occurredAtMs = 4567;
+    event.status = CoreSpellTerminalStatus::Succeeded;
+    // No DecisionContext, trace sink or EngineActionObserver participates.
+    engine.NotifyCoreSpellTerminal(event);
+    assert(first->events.size() == 1 && registering->events.size() == 1);
+    assert(late->events.empty() && registering->registered);
+    assert(first->events[0].actionId == event.actionId);
+    assert(first->events[0].encounterId == event.encounterId);
+    assert(first->events[0].targetGuid == event.targetGuid);
+    assert(first->events[0].spellId == event.spellId);
+    assert(first->events[0].occurredAtMs == event.occurredAtMs);
+    assert(first->events[0].status == CoreSpellTerminalStatus::Succeeded);
+    event.actionId += 1;
+    event.status = CoreSpellTerminalStatus::Interrupted;
+    engine.NotifyCoreSpellTerminal(event);
+    assert(first->events.size() == 2 && registering->events.size() == 2);
+    assert(late->events.size() == 1);
+    assert(late->events[0].actionId == event.actionId);
+    assert(late->events[0].status == CoreSpellTerminalStatus::Interrupted);
+    std::vector<std::shared_ptr<CaptureCoreSpellTerminalListener>> extras;
+    while (engine.GetCoreSpellTerminalListenerCount() < 32) {
+        auto extra = std::make_shared<CaptureCoreSpellTerminalListener>();
+        assert(engine.AddCoreSpellTerminalListener(extra));
+        extras.push_back(extra);
+    }
+    assert(engine.GetCoreSpellTerminalListenerCount() == 32);
+    assert(!engine.AddCoreSpellTerminalListener(std::make_shared<CaptureCoreSpellTerminalListener>()));
+}
 void TestActionResultListenersReceiveDispatchOutcomesWithoutTraceSinks()
 {
     Fixture f;
@@ -2622,6 +2687,7 @@ int main() {
     TestEngineActionAttemptAndResultTrace();
     TestActionResultListenersReceiveDispatchOutcomesWithoutTraceSinks();
     TestActionResultListenersAreBoundedAndSnapshotDuringDispatch();
+    TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded();
     TestCandidateTraceSelectionPreservesArbitrationSelectionAfterExecution();
     TestDecisionSummaryCountsAllArbitrationOutcomes();
     TestActionQueueIsBoundedPriorityOrderedAndStable();

@@ -46,16 +46,17 @@ class PlayerAI
         // Returning zero from the prepare hook opts out of lifecycle correlation.
         virtual uint64 OnSpellCastPreparing(Spell const* /*spell*/, uint32 /*spellId*/,
                                             uint64 /*coreTargetGuid*/, uint64& encounterId,
-                                            uint64& traceTargetGuid)
+                                            uint64& traceTargetGuid, bool& engineAction)
         {
             encounterId = 0;
             traceTargetGuid = 0;
+            engineAction = false;
             return 0;
         }
         virtual void OnSpellCastFinished(Spell const* /*spell*/, uint64 /*actionId*/,
                                          uint64 /*encounterId*/, uint32 /*spellId*/,
                                          uint64 /*traceTargetGuid*/, bool /*success*/,
-                                         bool /*interrupted*/) {}
+                                         bool /*interrupted*/, bool /*engineAction*/) {}
         // Notify observers only when the Core changes a Player between alive and dead.
         virtual void OnAliveStateChanged(bool /*wasAlive*/, bool /*isAlive*/) {}
         // Called after Core applies one hit to a Player; values are actual health before/after.

@@ -528,33 +528,51 @@ void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntr
 
 uint64 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
                                         uint64 coreTargetGuid, uint64& encounterId,
-                                        uint64& traceTargetGuid)
+                                        uint64& traceTargetGuid, bool& engineAction)
 {
     encounterId = 0;
     traceTargetGuid = 0;
+    engineAction = false;
     if (me)
         m_partyBotEngine.InvalidateDecisionState();
 
-    // Direct Engine adapters may call Player::CastSpell without passing through
-    // CombatBotBaseAI::DoCastSpell. Bind the host's active Engine action ID here;
-    // the Core Spell object will retain it until finish/cancel.
-    if (!m_pendingCastTraceActionId && !m_activeEngineActionSpellBound &&
-        m_decisionTrace.IsEnabled() &&
-        m_partyCoordinator && m_partyCoordinator->HasActiveEncounter() &&
-        m_activeEngineActionId &&
-        m_activeEngineActionEncounterId == m_partyCoordinator->GetEncounterId() &&
+    // EngineActionObserver brackets Action::Execute even with DecisionTrace off.
+    // Bind the action ID to this root Spell independently of diagnostics; Spell
+    // carries the source bit until its later Core finish/cancel callback.
+    bool const matchesActiveEngineAction = m_activeEngineActionId &&
+        !m_activeEngineActionSpellBound &&
         (!m_activeEngineActionSpellId || m_activeEngineActionSpellId == spellId) &&
         (!m_activeEngineActionTargetGuid ||
-         !coreTargetGuid || m_activeEngineActionTargetGuid == coreTargetGuid))
+         !coreTargetGuid || m_activeEngineActionTargetGuid == coreTargetGuid);
+    if (matchesActiveEngineAction)
     {
-        m_pendingCastTraceActionId = m_activeEngineActionId;
-        m_pendingCastTraceEncounterId = m_activeEngineActionEncounterId;
-        m_pendingCastTraceTargetGuid = m_activeEngineActionTargetGuid
+        engineAction = true;
+        encounterId = m_activeEngineActionEncounterId;
+        traceTargetGuid = m_activeEngineActionTargetGuid
             ? m_activeEngineActionTargetGuid : coreTargetGuid;
-        m_pendingCastTraceSpellId = spellId;
-        m_pendingCastTraceSpellBound = false;
+        m_activeEngineActionSpellBound = true;
+
+        // Preserve diagnostic cast_terminal correlation if an active encounter
+        // and trace window exist. Listener delivery does not depend on this.
+        if (!m_pendingCastTraceActionId && me && m_decisionTrace.IsEnabled() &&
+            m_partyCoordinator && m_partyCoordinator->HasActiveEncounter() &&
+            m_partyCoordinatorMapId == me->GetMapId() &&
+            m_partyCoordinatorInstanceId == me->GetInstanceId() &&
+            m_partyCoordinator->GetEncounterId() == m_activeEngineActionEncounterId)
+        {
+            m_pendingCastTraceActionId = m_activeEngineActionId;
+            m_pendingCastTraceEncounterId = m_activeEngineActionEncounterId;
+            m_pendingCastTraceTargetGuid = traceTargetGuid;
+            m_pendingCastTraceSpellId = spellId;
+            m_pendingCastTraceSpellBound = false;
+        }
+        if (!m_decisionTrace.IsEnabled() || !m_pendingCastTraceActionId ||
+            m_pendingCastTraceActionId != m_activeEngineActionId)
+            return m_activeEngineActionId;
     }
 
+    // Legacy DoCastSpell correlation remains trace-only and never masquerades
+    // as an Engine action ID.
     if (!me || !m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
         !m_partyCoordinator->HasActiveEncounter() ||
         !m_pendingCastTraceActionId || m_pendingCastTraceSpellBound ||
@@ -572,9 +590,6 @@ uint64 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
         return 0;
 
     m_pendingCastTraceSpellBound = true;
-    if (m_activeEngineActionId == m_pendingCastTraceActionId &&
-        m_activeEngineActionEncounterId == m_pendingCastTraceEncounterId)
-        m_activeEngineActionSpellBound = true;
     encounterId = m_pendingCastTraceEncounterId;
     traceTargetGuid = m_pendingCastTraceTargetGuid;
     return m_pendingCastTraceActionId;
@@ -583,10 +598,27 @@ uint64 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
 void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint64 actionId,
                                      uint64 encounterId, uint32 spellId,
                                      uint64 targetGuid, bool success,
-                                     bool interrupted)
+                                     bool interrupted, bool engineAction)
 {
     if (me)
         m_partyBotEngine.InvalidateDecisionState();
+
+    // Core terminal is separate from the synchronous Action::Execute result.
+    // Notify before trace gates so listeners work with DecisionTrace disabled.
+    if (engineAction && actionId)
+    {
+        PartyBotEngine::CoreSpellTerminalEvent event;
+        event.actionId = actionId;
+        event.encounterId = encounterId;
+        event.targetGuid = targetGuid;
+        event.spellId = spellId;
+        event.occurredAtMs = WorldTimer::getMSTime();
+        event.status = interrupted
+            ? PartyBotEngine::CoreSpellTerminalStatus::Interrupted
+            : (success ? PartyBotEngine::CoreSpellTerminalStatus::Succeeded
+                       : PartyBotEngine::CoreSpellTerminalStatus::Failed);
+        m_partyBotEngine.NotifyCoreSpellTerminal(event);
+    }
 
     bool const matchingPendingCast = actionId &&
         actionId == m_pendingCastTraceActionId &&

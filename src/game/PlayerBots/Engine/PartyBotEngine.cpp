@@ -24,6 +24,16 @@ bool PartyBotEngine::AddActionResultListener(
     m_actionResultListeners.push_back(std::move(listener));
     return true;
 }
+bool PartyBotEngine::AddCoreSpellTerminalListener(
+    std::shared_ptr<CoreSpellTerminalListener> listener) {
+    if (!listener || m_coreSpellTerminalListeners.size() >= 32)
+        return false;
+    for (auto const& registered : m_coreSpellTerminalListeners)
+        if (registered == listener)
+            return false;
+    m_coreSpellTerminalListeners.push_back(std::move(listener));
+    return true;
+}
 
 void PartyBotEngine::NotifyActionResult(
     DecisionContext const& context, CandidateEvaluation const& evaluation,
@@ -51,6 +61,17 @@ void PartyBotEngine::NotifyActionResult(
             listener->OnActionResult(context, event);
 }
 
+void PartyBotEngine::NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event) const {
+    if (m_coreSpellTerminalListeners.empty())
+        return;
+    // Spell::finish may outlive the dispatch DecisionContext. Deliver only
+    // self-contained scalar data and a stable snapshot of registered listeners.
+    std::vector<std::shared_ptr<CoreSpellTerminalListener>> const listeners =
+        m_coreSpellTerminalListeners;
+    for (auto const& listener : listeners)
+        if (listener)
+            listener->OnCoreSpellTerminal(event);
+}
 void PartyBotEngine::AddMultiplier(std::shared_ptr<Multiplier> multiplier) {
     if (multiplier) m_multipliers.push_back(std::move(multiplier));
 }

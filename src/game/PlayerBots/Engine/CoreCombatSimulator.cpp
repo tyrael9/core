@@ -791,6 +791,12 @@ bool CreateSimulatorPlayer(Map& map, uint32 factionId, WorldSession& session, Pl
     return player->IsInWorld() && player->HasSpell(SIMULATOR_HEAL_SPELL_ID);
 }
 
+class CaptureCoreSpellTerminalListener final : public CoreSpellTerminalListener
+{
+public:
+    void OnCoreSpellTerminal(CoreSpellTerminalEvent const& event) override { events.push_back(event); }
+    std::vector<CoreSpellTerminalEvent> events;
+};
 class SimulatorCorePlayerHealAction final : public Action
 {
 public:
@@ -4857,16 +4863,7 @@ public:
             candidate.actionName = "missing_candidate_trace_probe";
             candidate.targetGuid = context.snapshot.members.size() > 1
                 ? context.snapshot.members[1].guid : context.bot.guid;
-            candidate.basePriority = 200.0f - static_cast<float>(i) * 10.0f;
-            candidate.channel = ActionChannel::Utility;
-            candidates.push_back(candidate);
-        }
-    }
-private:
-    std::string m_name = "simulator_candidate_trace_overflow";
-};
-
-bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
+            candidate.basbool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
     uint32 partyFaction = 0, unusedHostileFaction = 0;
@@ -4954,7 +4951,11 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     healer->SetAI(&engineActionAI);
     DecisionContext context(snapshot, snapshot.members[0], *coordinator, 3000,
                             &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
-    PartyBotEngine engine;
+    PartyBotEngine& engine = engineActionAI.m_partyBotEngine;
+    std::shared_ptr<CaptureCoreSpellTerminalListener> coreTerminalListener(
+        new CaptureCoreSpellTerminalListener());
+    bool const coreTerminalListenerRegistered =
+        engine.AddCoreSpellTerminalListener(coreTerminalListener);
     std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
     bool const registered = engine.RegisterAction(healAction);
     std::shared_ptr<Strategy> strategy(new Strategy("simulator_healer_triage"));
@@ -5007,6 +5008,13 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         report.candidates[report.selectedIndices[0]].candidate.actionId == engineActionId &&
         engineActionAI.m_activeEngineActionId == 0 &&
         engineActionAI.m_pendingCastTraceActionId == 0;
+    bool const coreSpellTerminalPassed = coreTerminalListenerRegistered &&
+        coreTerminalListener->events.size() == 1 &&
+        coreTerminalListener->events[0].actionId == engineActionId &&
+        coreTerminalListener->events[0].encounterId == coordinator->GetEncounterId() &&
+        coreTerminalListener->events[0].targetGuid == patientMember.guid &&
+        coreTerminalListener->events[0].spellId == SIMULATOR_HEAL_SPELL_ID &&
+        coreTerminalListener->events[0].status == CoreSpellTerminalStatus::Succeeded;
 
     DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
     std::vector<std::size_t> const candidateDetailIndices =
@@ -5100,7 +5108,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              static_cast<unsigned long long>(engineActionId), cleaned ? 1u : 0u);
 
     if (!registered || !selected || !accepted || !completed ||
-        !engineActionTracePassed || !decisionSummaryTracePassed || !cleaned)
+        !engineActionTracePassed || !coreSpellTerminalPassed ||
+        !decisionSummaryTracePassed || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Engine-to-Player normal spell/heal smoke test failed.");
@@ -5110,8 +5119,14 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: Engine action ID flowed through PartyBotAI into Core Spell::prepare/finish; one action_id correlated the adapter attempt/result and the later successful Core cast terminal, with real healing and mana effects.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F32 Core Spell::finish delivered a value-only terminal event to the registered Engine listener with the same action/encounter/spell/target correlation as the adapter attempt; Core success was distinct from SPELL_CAST_OK acceptance.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F20 DecisionSummary aggregated the complete executed Core Player heal report and emitted the bounded encounter summary.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F24 candidate detail cap reported five complete candidates, retained the selected Core heal first after execution, emitted three rows and counted two omitted alternatives.");
+    return true;
+}
+L_MINIMAL,
              "[PartyBotSimulator] PASS: F24 candidate detail cap reported five complete candidates, retained the selected Core heal first after execution, emitted three rows and counted two omitted alternatives.");
     return true;
 }

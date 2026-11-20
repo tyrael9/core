@@ -2,6 +2,7 @@
 #define MANGOS_PARTYBOT_PARTYBOT_ENGINE_H
 #include "Action.h"
 #include "ActionResultListener.h"
+#include "CoreSpellTerminalListener.h"
 #include "ActionQueue.h"
 #include "Multiplier.h"
 #include "Strategy.h"
@@ -31,6 +32,9 @@ public:
     void AddStrategy(std::shared_ptr<Strategy> strategy);
     bool RegisterAction(std::shared_ptr<Action> action);
     bool AddActionResultListener(std::shared_ptr<ActionResultListener> listener);
+    bool AddCoreSpellTerminalListener(std::shared_ptr<CoreSpellTerminalListener> listener);
+    std::size_t GetCoreSpellTerminalListenerCount() const { return m_coreSpellTerminalListeners.size(); }
+    void NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event) const;
     std::size_t GetActionResultListenerCount() const {
         return m_actionResultListeners.size();
     }
@@ -68,6 +72,7 @@ private:
     std::map<std::string, std::shared_ptr<Action>> m_actions;
     std::vector<std::shared_ptr<Multiplier>> m_multipliers;
     std::vector<std::shared_ptr<ActionResultListener>> m_actionResultListeners;
+    std::vector<std::shared_ptr<CoreSpellTerminalListener>> m_coreSpellTerminalListeners;
     mutable ValueCache m_valueCache;
     mutable TriggerScheduler m_triggerScheduler;
     mutable PendingActionQueue m_pendingActionQueue;

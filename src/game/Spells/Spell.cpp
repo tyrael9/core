@@ -3371,7 +3371,8 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
                 m_partyBotTraceActionId = ai->OnSpellCastPreparing(
                     this, m_spellInfo->Id,
                     m_targets.getUnitTargetGuid().GetRawValue(),
-                    m_partyBotTraceEncounterId, m_partyBotTraceTargetGuid);
+                    m_partyBotTraceEncounterId, m_partyBotTraceTargetGuid,
+                    m_partyBotTraceEngineAction);
         }
     }
 
@@ -4356,7 +4357,7 @@ void Spell::finish(bool ok)
                 ai->OnSpellCastFinished(
                     this, m_partyBotTraceActionId, m_partyBotTraceEncounterId,
                     m_spellInfo->Id, m_partyBotTraceTargetGuid,
-                    ok, m_partyBotTraceInterrupted);
+                    ok, m_partyBotTraceInterrupted, m_partyBotTraceEngineAction);
         }
     }
 

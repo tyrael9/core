@@ -27,6 +27,7 @@
 #include "AI/PlayerAI.h"
 #include "PlayerBots/PartyBotAI.h"
 #include "Spell.h"
+#include "SpellCastTargetsInfo.h"
 #include "SpellAuras.h"
 #include "SpellMgr.h"
 #include "Timer.h"
@@ -5102,6 +5103,113 @@ private:
     std::string m_name = "simulator_candidate_trace_overflow";
 };
 
+bool RunEngineCoreItemUseSmokeTest(Map& map)
+{
+    WorldSession session(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* player = nullptr;
+    if (!CreateSimulatorPlayer(map, 1, session, player, 0.0f, 9.0f, 4.0f))
+    {
+        if (session.GetPlayer())
+            session.LogoutPlayer(false);
+        else if (player)
+            delete player;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] F40 item-use Player fixture creation failed.");
+        return false;
+    }
+
+    static uint32 const MinorHealingPotionItemId = 118;
+    ItemPrototype const* potionPrototype =
+        sObjectMgr.GetItemPrototype(MinorHealingPotionItemId);
+    uint32 spellSlot = MAX_ITEM_PROTO_SPELLS;
+    if (potionPrototype)
+    {
+        for (uint32 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+            if (potionPrototype->Spells[i].SpellId &&
+                potionPrototype->Spells[i].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+            {
+                spellSlot = i;
+                break;
+            }
+    }
+
+    bool const prototypeValid = potionPrototype &&
+        spellSlot < MAX_ITEM_PROTO_SPELLS &&
+        potionPrototype->Spells[spellSlot].SpellCharges < 0 &&
+        sSpellMgr.GetSpellEntry(potionPrototype->Spells[spellSlot].SpellId);
+
+    Item* potion = prototypeValid
+        ? player->StoreNewItemInInventorySlot(MinorHealingPotionItemId, 1) : nullptr;
+    ObjectGuid const potionGuid = potion ? potion->GetObjectGuid() : ObjectGuid();
+    int32 const initialCharges = potion ? potion->GetSpellCharges(spellSlot) : 0;
+    uint32 const potionHealthBefore = player->GetMaxHealth() / 2;
+    player->SetHealth(potionHealthBefore);
+
+    SpellCastTargets validTargets;
+    validTargets.setUnitTarget(player);
+    validTargets.PrepareForSpellSystem(player);
+    if (potion)
+        player->CastItemUseSpell(potion, validTargets);
+
+    for (uint32 tick = 0; tick < 8 &&
+         player->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    uint32 const potionHealthAfter = player->GetHealth();
+    bool const potionConsumed = potionGuid && player->GetItemByGuid(potionGuid) == nullptr;
+    bool const successfulUse = prototypeValid && potion && initialCharges < 0 &&
+        potionHealthAfter > potionHealthBefore && potionConsumed &&
+        player->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+
+    Item* noChargePotion = prototypeValid
+        ? player->StoreNewItemInInventorySlot(MinorHealingPotionItemId, 1) : nullptr;
+    ObjectGuid const noChargeGuid = noChargePotion
+        ? noChargePotion->GetObjectGuid() : ObjectGuid();
+    if (noChargePotion)
+        noChargePotion->SetSpellCharges(spellSlot, 0);
+    uint32 const rejectedHealthBefore = player->GetHealth();
+
+    SpellCastTargets rejectedTargets;
+    rejectedTargets.setUnitTarget(player);
+    rejectedTargets.PrepareForSpellSystem(player);
+    if (noChargePotion)
+        player->CastItemUseSpell(noChargePotion, rejectedTargets);
+
+    for (uint32 tick = 0; tick < 4 &&
+         player->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    Item* rejectedStillOwned = noChargeGuid
+        ? player->GetItemByGuid(noChargeGuid) : nullptr;
+    bool const rejectedWithoutConsumption = noChargePotion && rejectedStillOwned &&
+        rejectedStillOwned->GetCount() == 1 &&
+        rejectedStillOwned->GetSpellCharges(spellSlot) == 0 &&
+        player->GetHealth() == rejectedHealthBefore &&
+        player->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+
+    session.LogoutPlayer(false);
+    bool const cleaned = session.GetPlayer() == nullptr;
+    bool const passed = successfulUse && rejectedWithoutConsumption && cleaned;
+    sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] F40 Core item use: prototype=%u spellSlot=%u spellId=%u initialCharges=%d healed=%u>%u consumed=%u zeroChargeRejected=%u itemRetained=%u cleanup=%u.",
+             prototypeValid ? 1u : 0u, spellSlot,
+             prototypeValid ? potionPrototype->Spells[spellSlot].SpellId : 0u,
+             initialCharges, potionHealthBefore, potionHealthAfter,
+             potionConsumed ? 1u : 0u, rejectedWithoutConsumption ? 1u : 0u,
+             rejectedStillOwned ? 1u : 0u, cleaned ? 1u : 0u);
+    if (passed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F40 real Core item use applied a potion effect and consumed the expendable item, while zero charges rejected use without consuming the item.");
+    return passed;
+}
+
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -7297,6 +7405,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
+    bool const itemUsePassed = RunEngineCoreItemUseSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
     bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
     bool const playerFollowCastSafetyPassed = RunEngineCorePlayerFollowCastSafetySmokeTest(*map);
@@ -7312,7 +7421,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && periodicManaLeechPassed && periodicLifeLeechPassed && engineExecutorPassed &&
-                              creatureHealPassed && playerHealPassed &&
+                              creatureHealPassed && playerHealPassed && itemUsePassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&

@@ -190,19 +190,24 @@ The simulator now contains a bounded first Core-backed Creature/threat scenario:
 
 This Stage B section is deliberately a **Core Creature damage/threat smoke test**, not an autonomous encounter simulation. Later Stage C–E sections document the separately implemented Engine attack and spell/heal slices; movement, boss scripts and multi-phase encounter mechanics remain future work. The probe AI only counts update callbacks. Actor stats are normalized to a large health pool to keep the test damage non-lethal. The tick loop is bounded but still depends on Core wall-clock cell-update cadence; this does not establish deterministic replay.
 
-## Current status and next gate
+## Current status and next gate (2026-11-20)
 
-**Runtime evidence (2026-11-17):** [push CI #44049443380](https://github.com/tyrael9/core/actions/runs/44049443380) passed end to end on commit \`16d73f712fa3698b8a2411bac8e087cbb8dc4d26\`. The run downloaded the complete 1.21 GiB Vanilla 5875 extracted-data fixture, verified SHA-256, initialized disposable database copies, built the ARM64 server and ran the opt-in Core simulator. Runtime assertions passed for:
+The simulator is now a substantial fixture-backed test layer for the pinned Vanilla 5875 Core; it is not a full autonomous dungeon/raid simulator and does not authenticate real production PlayerBots.
 
-- Real Creature updates, direct damage, generated threat and the Core 110% melee victim-switch threshold.
-- Engine-selected tank assist calling real \`Unit::Attack\`, with actual victim verification.
-- Engine-selected triggered Creature Lesser Heal, with actual health increase.
-- Engine-selected normal non-triggered Player Lesser Heal: spell known, \`SPELL_CAST_OK\`, pending generic cast and GCD, mana \`2896>2866\`, target health \`50000>83386\`, cast completion and Player logout cleanup.
-- Test map and all actors deleted; \`mangosd\` shut down successfully.
+The most recent complete source-code validation is trusted Push CI [#44716873212](https://github.com/tyrael9/core/actions/runs/44716873212), source head `08d06610d2e042fc62963a9677d7ed481dc501ac`. It passed the standalone PartyBotEngine tests, report collector tests, Linux ARM64 `mangosd` + `realmd` build, simulator harness checks, full extracted-data fixture download/checksum, disposable-schema run and final Core simulator `Runtime PASS`; the simulator log artifact was uploaded. The current branch head `e2ed0247e586b48d545e1eb189a8529d3a5b024b` changes documentation only after that source head. The later docs-only Push/PR runs [#44718136178](https://github.com/tyrael9/core/actions/runs/44718136178) and [#44718146532](https://github.com/tyrael9/core/actions/runs/44718146532) intentionally skipped the ARM64 and runtime jobs.
 
-The Player fixture is a real Core Player object with a local no-socket WorldSession, but is not authenticated as a production PlayerBot and is not inserted into a real five-member Core Group. The map update cadence is wall-clock throttled; the simulator waits between bounded updates rather than faking cast completion. Deterministic replay and broader lifecycle/failure coverage remain open.
+Fixture-backed coverage includes:
 
-The entry point remains opt-in through \`PartyBot.Simulator.Enable\`, checks all four DB schema names against the \`partybot_sim_\` prefix, and runs after Core initialization before world listeners. The workflow is push-only and has no image-publish or deployment side effects.
+- Real Core map/Creature lifecycle, AI update, damage, ThreatManager references, native target selection and cleanup.
+- Engine-selected `Unit::Attack`, triggered Creature healing and ordinary non-triggered Player Lesser Heal through Core cast acceptance, pending/GCD, mana, completion and actual health change. The Player uses a local no-socket WorldSession, not a production account/session.
+- Real five-Player Core Group roster and production PartySnapshotBuilder; multi-add threatAssist/healer threat, Main Tank and healer death cleanup/recovery, companion Pet threat snapshots and stale-reference removal.
+- Core-derived MovePoint and FollowMovementGenerator behavior, target handoff/recovery, follow pause/resume during no-movement casting, Core range/resource/LOS/control-state checks, and native relocation-driven cast interruption.
+- Source/destination Map/instance transfer and teardown, encounter trace lifecycle, party-wide trace-budget overflow, ordinary member sampled health/death/resurrection, PartyBotAI per-hit damage/death, Trigger and candidate prioritization, Engine action-to-Core Spell terminal correlation and NewEngine authority isolation.
+- F35 typed AND/alternative prerequisites, F36 mixed ActionResult + Core Spell terminal prerequisites, F37 idempotent settlement and F38 full-PendingActionQueue ready-backlog preservation are covered by pure regressions and trusted push fixture runs.
+
+The fixture-backed Player and Group scenarios prove selected Core APIs and lifecycle seams; they are not a full authenticated production PlayerBot party, class rotation, continuous dungeon AI or boss encounter. Deterministic replay and Stage G dungeon/raid encounter scripting remain future work. F39 is an audit finding only: PointMovementGenerator's legacy `MovementInform` callback also occurs on forced finalization, so typed movement terminal-result instrumentation and its runtime fixture have not been implemented.
+
+The runner checks all four DB names are isolated under `partybot_sim_*`, reuses normal Core startup/shutdown while skipping public listeners, and never connects to or modifies the Oracle realm. The workflow has no image-publication or deployment step.
 
 ### Optional GitHub Actions runtime runner
 
@@ -472,9 +477,9 @@ Runtime verification for the latest Power/Mana-Leech fixtures is still pending. 
 
 
 
-### Periodic-life-leech composite runtime slice (pending)
+### Periodic-life-leech composite runtime slice (fixture-backed runtime passed)
 
-A further fixture covers Core's shared `SPELL_AURA_PERIODIC_LEECH` damage/self-heal path. It creates one friendly caster and two real hostile references on that caster, applies a native ordinary periodic-leech Aura to hostile A, and waits for one real Core tick. The fixture compares hostile A's ThreatManager delta against the sum of its applied periodic-damage component plus half of the caster's actual self-heal assist, and compares hostile B against the other half of the heal-assist fan-out. It reuses the damage/heal component rows and deliberately leaves the full action estimate Unknown. The CI runner requires a dedicated PASS marker. Build/pure-test validation is separate; this full runtime stage remains pending until a trusted push can download the extracted 5875 fixture and reaches final Runtime PASS.
+A further fixture covers Core's shared `SPELL_AURA_PERIODIC_LEECH` damage/self-heal path. It creates one friendly caster and two real hostile references on that caster, applies a native ordinary periodic-leech Aura to hostile A, and waits for one real Core tick. The fixture compares hostile A's ThreatManager delta against the sum of its applied periodic-damage component plus half of the caster's actual self-heal assist, and compares hostile B against the other half of the heal-assist fan-out. It reuses the damage/heal component rows and deliberately leaves the full action estimate Unknown. The CI runner requires a dedicated PASS marker. Trusted push CI [#44556650342](https://github.com/tyrael9/core/actions/runs/44556650342) passed this fixture together with the complete ARM64/Vanilla 5875 runtime and final simulator Runtime PASS. The later full regression run [#44716873212](https://github.com/tyrael9/core/actions/runs/44716873212) also passed the simulator-wide suite.
 
 
 ## Stage F14 — sampled non-PlayerBots member health and lifecycle trace

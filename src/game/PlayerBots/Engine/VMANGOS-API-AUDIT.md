@@ -100,6 +100,10 @@ Existing methods include Player::Attack(Unit*, bool), PartyBotAI::AttackStart(Un
 
 Movement needs its own arbitration lane. A mechanic escape or forced reposition must not be canceled by routine chase/follow/facing behavior. Do not assume a Move* request succeeded merely because it was issued.
 
+### F39 terminal callback audit
+
+For `PointMovementGenerator<Player>`, natural completion is observed when `Update()` sees the MoveSpline finalized and returns false; MotionMaster then expires the generator. But `Finalize()` also runs during forced cleanup (`DirectClean`, `DirectExpire`, `ClearType`) and calls the legacy `PlayerAI::MovementInform`. Thus the legacy callback means generator finalization, not necessarily arrival. A typed Engine result must carry action/encounter IDs in the generator, separately record natural completion, check the actual final position against the requested destination and report reached versus interrupted/failed. Legacy MovementInform behavior must remain compatible for existing PlayerAI consumers.
+
 ## 6. Map update and threading observations
 
 Source files: src/game/Maps/MapManager.cpp, src/game/Maps/Map.cpp, src/game/Maps/Map.h, src/game/Objects/Object.h and src/game/Objects/Player.cpp.
@@ -128,7 +132,7 @@ The pinned Core explicitly documents the packet-thread contract in src/game/Pack
 
 This resolves the earlier concern for the normal group packet path: Group roster writes are serialized in the World packet phase, while map tasks may safely read/iterate Groups. PACKET_PROCESS_ASYNC can overlap map updates, but group mutation opcodes are classified as PACKET_PROCESS_GROUP, not ASYNC.
 
-The implemented PartySnapshotBuilder follows this contract: it copies GUIDs from Group::GetMemberSlots(), resolves them through the current Map::GetUnit(), includes only current-map/current-instance players, and never stores Group, MemberSlot, Unit or Player pointers in the resulting snapshot. It also captures each member's current attackers and their threat-list entries. The builder is compiled but not yet called by PartyBotAI.
+The implemented PartySnapshotBuilder follows this contract: it copies GUIDs from Group::GetMemberSlots(), resolves them through the current Map::GetUnit(), includes only current-map/current-instance players, and never stores Group, MemberSlot, Unit or Player pointers in the resulting snapshot. It also captures each member's current attackers and their threat-list entries. PartyBotAI calls `PartySnapshotBuilder::GetOrBuild` from the NewEngine map-thread update path before `ExecuteDecisionCycle`; the real five-Player Group fixture validates roster, scalar copies, cache reuse and teardown.
 
 This conclusion relies on preserving the Core packet-processing classifications. If a future change reclassifies group mutation handlers as MAP or ASYNC, the snapshot safety contract must be revisited.
 
@@ -136,7 +140,7 @@ This conclusion relies on preserving the Core packet-processing classifications.
 
 New game source files are registered in src/game/CMakeLists.txt. Every new Engine .cpp must be added there.
 
-The repository has no dedicated game unit-test target. A standalone C++14 test harness exists under Engine/tests and is run by the PartyBot Core build workflow. It tests the pure decision layer, reservation amounts/expiry, snapshot cache age and coordinator shard identity without live Map/Player objects. The live snapshot builder is compile-tested by the full Core build.
+The repository has no dedicated game unit-test target. A standalone C++14 harness under Engine/tests covers pure policy/queue/coordinator semantics. Separately, the opt-in headless simulator constructs real pinned-Core Maps, Players, Groups, Creatures, spells, threat references and movement generators on disposable schemas; it verifies the production snapshot builder and selected Core integration paths. These fixtures are not authenticated production PlayerBots or live-realm tests.
 
 ## 8. Current reusable seams
 
@@ -149,17 +153,18 @@ The repository has no dedicated game unit-test target. A standalone C++14 test h
 
 These are integration seams, not a reason to keep old class routines as the main decision engine.
 
-## 9. Remaining audit work before first Strategy-mode action
+## 9. Remaining action-adapter audit
 
-- Prove Group roster mutation serialization or implement a safe roster snapshot contract.
-- Audit action-specific target validation for heal, taunt, interrupt, CC, dispel, resurrection and AoE.
-- Determine how to resolve hostile threat-list GUIDs safely and handle offline/inaccessible references.
-- Decide coordinator creation/destruction and snapshot cache invalidation across player update passes.
-- Identify existing test targets and the best focused deterministic harness.
-- Document what happens when bots split across maps or group membership changes during combat.
+The earlier Group roster serialization, same-map GUID resolution, hostile reference discovery, offline threat reference handling and PartySnapshotBuilder cache/lifecycle prerequisites are now implemented and covered by Core fixtures. They are no longer blockers for the first generic adapter.
 
-No code should depend on guessed TrinityCore/AzerothCore APIs. Real Strategy-mode execution waits until these remaining items are closed.
+Remaining audit work is action-specific:
 
+- Spell heal, taunt, interrupt, CC, dispel, resurrection and AoE must each prove exact target relation, target state, range, LOS, immunity/control, resource, GCD/cooldown and resulting Core outcome.
+- Threat estimates must remain fail-closed until the complete set of Core side effects, recipient fan-out, SpellScript/AuraScript/proc and triggered effects is enumerated. Current component parity fixtures do not make whole-action forecasts complete.
+- Movement must have typed terminal semantics. In the pinned Core, `PointMovementGenerator<Player>::Finalize` is shared by natural spline completion and forced cleanup. `PlayerAI::MovementInform(POINT_MOTION_TYPE, id)` therefore cannot prove successful arrival.
+- Item-use completion, cancellation and failure callbacks remain unaudited.
+- Complete source/destination map and instance lifecycle closure remains open for all production teleport/script paths.
+- Preserve the Core packet-processing classifications that make Group roster reads safe from map tasks; revisit the snapshot contract if group mutation opcodes are reclassified.
 
 ## 10. Role and target snapshot adapter
 
@@ -192,7 +197,7 @@ Pinned Core source supports a test Player without inventing a parallel fake play
 - \`SpellCaster::IsSpellReady\`, \`HasGCD\`, \`GetCurrentSpell\` and non-triggered \`CastSpell\` are used to distinguish readiness, GCD, pending cast and completion.
 - \`WorldSession::LogoutPlayer(false)\` performs normal in-world Player removal/deletion; the fixture checks the session's Player pointer is cleared before deleting the remaining Creature actor.
 
-The Stage E runtime assertion requires a known Priest Lesser Heal (2050), a successful non-triggered Core cast result, a pending generic spell/GCD immediately after acceptance, subsequent cast completion, an actual target health increase and mana consumption. This validates one normal Player spell lifecycle. It does not yet establish production bot session authentication, Group membership, movement interruption, or all failure/rejection paths.
+The Stage E runtime assertion requires a known Priest Lesser Heal (2050), a successful non-triggered Core cast result, a pending generic spell/GCD immediately after acceptance, subsequent cast completion, an actual target health increase and mana consumption. This validates one normal Player spell lifecycle. It does not establish production bot session authentication or production class/role adapter completeness. Separate simulator scenarios cover five-member Group behavior, movement/follow, interruption through Core's native relocation path and selected range/LOS/resource rejection cases; those do not substitute for per-adapter acceptance matrices.
 
 
 Stage E runtime note: \`Map::Update(uint32 t_diff)\` calls \`UpdatePlayers()\`, but that method compares the real \`WorldTimer::getMSTime()\` against \`m_lastPlayersUpdate\` and the configured player-update interval. The synthetic \`t_diff\` alone does not force a Player update. The simulator sleeps for a bounded 250 ms between map updates so the real monotonic cadence advances; the normal \`Player::Update -> Unit::Update -> EventProcessor\` path completes the cast.

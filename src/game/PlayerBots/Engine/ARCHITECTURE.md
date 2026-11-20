@@ -14,7 +14,7 @@ Research and API boundaries:
 
 ## 2. Runtime authority: no hybrid AI
 
-The supported runtime authority model has two modes.
+The runtime exposes two execution-authority modes plus a separate observe-only diagnostics mode.
 
 ### Legacy mode
 

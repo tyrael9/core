@@ -23,35 +23,25 @@ Owner-disconnect persistence was runtime-tested on the Oracle test realm on 2026
 
 This validates the existing lifecycle-host/Legacy path only. Keep it as a regression test when modifying PartyBotAI host integration.
 
-## Current Shadow smoke test (diagnostics only)
+## Runtime authority and safe smoke-test boundary
 
-The current implementation has PlayerBot.EngineShadow and PlayerBot.DecisionTrace flags. This is an observe-only test, not New Engine execution:
+The runtime exposes three explicit values through `PlayerBot.EngineAuthority`:
 
-1. On a disposable test realm, set PlayerBot.EngineShadow = 1.
-2. Set PlayerBot.DecisionTrace = 1.
-3. Restart the game server only after the intended test image has been separately approved/deployed.
-4. Form a party and keep the PartyBots on the same map/instance.
-5. Inspect [PartyBotShadow] and [PartyBotShadowDecision] lines for group/map/instance identity, member/hostile counts, role, strategy, target GUID, priority and selection status.
-6. Remember that the old PartyBot still performs all actual combat behavior after the Shadow evaluation. These logs cannot prove an action was cast or a target was changed by the Engine.
+- `0` Legacy (default): the existing PartyBot runtime remains authoritative.
+- `1` Shadow: evaluate and log Engine observations; Legacy remains the sole executor.
+- `2` NewEngine: exclusive Engine authority; `PartyBotAI::UpdateAI` returns before Legacy follow/heal/combat/class policy.
 
-The current Shadow trace is limited to a summary and at most three candidate details per bot per ten seconds. It is only sufficient for snapshot/candidate smoke tests, not full boss-fight diagnosis.
+`PlayerBot.EngineShadow` remains a backward-compatible read-only opt-in while authority is Legacy. NewEngine excludes the observational `shadow_*` probes from executable policy. Its decision cycle and pending dispatcher are wired, but no production class/role Core adapters are registered. An empty NewEngine registry deliberately does nothing; it never falls back to Legacy. Keep the default at Legacy.
 
-## Required New Engine encounter trace
+The trusted Core fixture for F29 invokes the real `PartyBotAI::UpdateAI` under a per-instance NewEngine override and requires one Engine decision cycle, zero Shadow probe strategies, zero Legacy policy entries/dispatches and a valid coordinator. This proves authority isolation and deliberate no-op behavior, not gameplay readiness.
 
-Before New Engine mode is used for meaningful combat tests, implement the event contract in DECISION-TRACE.md. Required minimum evidence:
-- encounter start/end, encounter ID and sequence number;
-- party roster with class/role and same-map availability;
-- per-bot state heartbeat during combat (health, mana, state, current cast and victim);
-- trigger activation/inactivation with reason;
-- candidate action, priority, channel, Possible/Useful outcome and rejection reason;
-- arbitration outcome and competing-action/reservation explanation;
-- action attempt and authoritative Core execution result, recorded separately;
-- target changes and reason;
-- threat samples when the vMaNGOS API exposes valid comparable values;
-- casts/interruption/failure, health changes and death events;
-- trace truncation or collection errors explicitly marked.
+## Current encounter trace evidence and open gates
 
-Do not silently suppress action results, death events or encounter-end summaries to satisfy normal sampling limits. Trace must be bounded and must not perform synchronous DB/network work on map threads.
+The structured encounter stream now includes encounter boundaries/IDs/sequences, party snapshots and Core threat references, sampled Trigger and candidate details, target changes, Engine threat-reservation outcomes, action-attempt/ActionResult/Core Spell terminal correlation, Player damage records, bot alive-state records, ordinary Group-member sampled health/death/resurrection, a shared detail/important-event budget, terminal/overflow handling and shutdown flush. The local read-only report collector is implemented and unit-tested.
+
+The trace is bounded, sampled and not lossless. Remaining gaps include richer class/AI state-machine facts, primary boss selection, more arbitration alternatives than the bounded candidate sample, per-hit health deltas for ordinary non-PlayerBots Group members, complete cross-map/instance closure and integration into the deployment diagnostics command. The wrapper integration exists in Draft `tyrael9/vmangos-deploy` PR #1 and has syntax/collector CI evidence, but remains unmerged and has not been tested on the live Oracle host.
+
+For the full event schema and fixture acceptance records see DECISION-TRACE.md. Do not treat Shadow candidates as proof of action execution or cast acceptance.
 
 ## Post-fight collection workflow
 
@@ -73,9 +63,9 @@ When the encounter ID is unknown, a time window can discover encounters represen
 python3 tools/partybot_trace_report.py /path/to/log-directory --since 2026-11-19T05:00:00Z --until 2026-11-19T06:00:00Z --output-dir ./partybot-reports
 ```
 
-The tool writes a Markdown timeline/diagnostic summary and a companion raw log containing all available trace lines for the selected encounter IDs. Input files are never changed. Time-window arguments must use the same timezone style as source log timestamps. The repository-local collector is not yet wired into the existing `tyrael9/vmangos-deploy` diagnostics wrapper. The eventual wrapper must remain read-only: it must not restart containers, change configuration, run SQL, access/mutate database volumes or deploy images.
+The tool writes a Markdown timeline/diagnostic summary and a companion raw log containing all available trace lines for the selected encounter IDs. Input files are never changed. Time-window arguments must use the same timezone style as source log timestamps. Integration is present in Draft `tyrael9/vmangos-deploy` PR #1, including exact-ID/time-window selectors and a mode-restricted report directory; its isolated workflow passed syntax/collector checks, but the PR remains unmerged and has not been exercised on the Oracle host. The wrapper must remain read-only: it must not restart containers, change configuration, run SQL, access/mutate database volumes or deploy images.
 
-The deployment repository currently has a Shadow diagnostics script. It must be extended only after the structured Engine trace schema is implemented; until then, the existing script is not a full encounter-report collector.
+The deployment repository's Draft PR #1 contains the read-only report collector integration. Until that PR is merged and run on the live host, the existing deployed command must not be assumed to provide full encounter reports.
 
 ## Pure decision-engine tests
 
@@ -87,17 +77,24 @@ Current test coverage includes deterministic priority ordering, one action per c
 
 These tests cover pure decision logic only. They do not validate live PartyBotAI integration, map-thread safety or vMaNGOS action execution.
 
-## New Engine acceptance tests (planned)
+## New Engine acceptance gates
 
-- Values are cached, invalidated and refreshed at the expected epoch/cadence.
-- Trigger intervals avoid repeated expensive scans while state transitions invalidate promptly.
-- Action prerequisites, alternatives and continuers produce deterministic bounded queues.
-- Every executor adapter reports the actual Core outcome (accepted, failed, interrupted, impossible or skipped).
-- New Engine mode never calls Legacy class/role combat or out-of-combat policy.
-- Missing behavior produces an explicit no-op and trace, never a Legacy fallback.
-- Encounter traces can be parsed into one report and retain high-value events at event-budget limits.
-- Coordinator reservations and arbitration behave correctly with staggered bot update ticks.
-- Owner reconnect/instance persistence regression remains intact.
+### Generic engine/runtime foundations — implemented and tested
+
+- Value cache, trigger cadence, lifecycle invalidation and reset hooks.
+- Bounded immediate and pending queues, fresh dequeue revalidation, one shared eight-action decision-cycle budget, channel and aggregate threat admission.
+- Exclusive NewEngine authority with an explicit empty-registry no-op and zero Legacy policy fallback.
+- Bounded ActionResult/Core Spell terminal listeners; typed AND/alternative dependencies; late event registration; idempotency tombstones; starvation resistance; ready-backlog preservation under queue pressure.
+- Core-backed spell, movement/follow, range/LOS/resource, Group/death recovery and NewEngine authority fixtures.
+
+### Production action readiness — still open
+
+- Register audited production generic/class/role Core adapters with structured outcomes.
+- Revalidate GUID, target life/relationship, map/instance, range, LOS, spell, resource, cooldown and control state immediately before every adapter side effect.
+- Add typed movement and item terminal-result sources; do not infer success from a generic generator-finalization callback.
+- Complete action-specific threat forecasts and hard safety policy before enabling actions which can cause threat/CC/resource/movement side effects.
+- Extend trace facts for missing state-machine/boss context and close remaining cross-map/deployment diagnostics gaps.
+- Add in-game tests separately from fixture-backed CI, and keep Legacy as the default until an explicitly approved test-realm validation.
 
 ## Validation vocabulary
 
@@ -134,7 +131,7 @@ The Stage B source audit has now verified the temporary-Creature lifecycle contr
 The first Core-backed scenario must report separate assertions for actor insertion/lookup, real `Unit::DealDamage` health/death effects, real threat references, `ThreatManager::getHostileTarget` selection and switching, custom `CreatureAI::UpdateAI` callback delivery, and cleanup. Calling a Core method directly is valid evidence for that method's semantics, but must not be presented as proof that a full autonomous combat loop or map tick executed it.
 
 
-### Stage B Core Creature damage/threat smoke test (Core runtime assertions passed; runner marker fix pending)
+### Stage B Core Creature damage/threat smoke test (runtime and runner gate passed)
 
 The opt-in simulator now attempts a three-Creature scenario on its isolated test map. It chooses an ordinary non-NPC, non-civilian, non-pet normal-rank template with no immunities or spawn/script side effects, plus a mutually hostile faction-template pair from the loaded DB/DBC data. It creates a threat owner plus two hostile actors and verifies each actor is registered by `Map::GetCreature`. Each actor first runs `Creature::AIM_Initialize()` and then replaces the template AI with a probe AI before insertion. The actors are active objects; bounded real map ticks must increment all three AI update counters.
 
@@ -222,7 +219,7 @@ The fixture creates a real Stockades dungeon Map (map ID 34) while the source is
 
 After destination insertion, the fixture calls the normal `PartyBotAI::UpdatePartyBotEngineShadow` entry point (Shadow is enabled only in the disposable simulator config). It requires both bots to reacquire the same new `(group,map,instance)` registry shard, verifies a real five-member destination snapshot, and requires a distinct active encounter ID. It then moves every Player back to the source Map, requires the destination encounter's one-shot terminal admission to be consumed, verifies both bot references are cleared and all five Players are restored, and explicitly removes the disposable GroupBind for map 34, then deletes the temporary destination Map. The CI runner requires the F27 PASS marker and exactly three `last_partybot_left_map` end records: the existing F16 regression plus the F27 source and destination closures.
 
-This is a different-Map-ID dungeon transfer regression. It does not yet cover a different Map ID or every production teleport/instance-script ordering. Trusted push CI [#44645889761](https://github.com/tyrael9/core/actions/runs/44645889761) emitted the F27 PASS marker and completed source/destination teardown successfully. The overall runner then failed on its F17 trigger ordering check because that grep was not scoped to F17's encounter ID; the shell gate correction and final aggregate `Runtime PASS` verification remain pending.
+This is a different-Map-ID dungeon transfer regression. It does not yet cover a different Map ID or every production teleport/instance-script ordering. Trusted push CI [#44645889761](https://github.com/tyrael9/core/actions/runs/44645889761) emitted the F27 PASS marker and completed source/destination teardown successfully. The first aggregate runner attempt failed on an F17 trigger-order grep that was not scoped to F17's encounter ID. The gate was corrected; trusted push CI [#44647149956](https://github.com/tyrael9/core/actions/runs/44647149956) later passed the complete ARM64 fixture-backed simulator and final `Runtime PASS`.
 
 
 ## F28 Engine-owned pending action integration
@@ -294,14 +291,12 @@ Released work remains subject to normal PendingActionQueue dequeue revalidation,
 
 Pure tests cover the successful path, failure/interruption, identity/context mismatch, expiry, capacity, duplicate parent, late terminal registration and stale post-release context. Trusted Push CI [#44689339405](https://github.com/tyrael9/core/actions/runs/44689339405), head e3be7ef90743b06953ce5caba23ea59de6280c30, passed pure tests, ARM64 build and full Vanilla 5875 runtime. The runtime line logged continuationResult=0 coreTerminal=1 pendingBeforeDispatch=1 dispatchSelected=1 dispatchExecuted=1 dispatchRejected=0 dispatchStale=0 continuationExecuted=1 continuationEnqueued=1 continuationDispatched=1; F34 and F32 markers and final Runtime PASS were present. PR CI [#44689346106](https://github.com/tyrael9/core/actions/runs/44689346106) passed the pure/build path.
 
-## F35 typed prerequisites and alternative branches (partially implemented)
+## F35–F38 typed dependency and queue-pressure acceptance (complete)
 
-The dependency request now supports up to four ANDed Core Spell terminal prerequisites and one bounded 2–8-way alternative group. The queue waits until all alternative branches are registered and all prerequisite terminals are observed, then selects the highest-priority eligible branch with stable FIFO ties. A branch whose terminal does not match its required target, spell or status is rejected without preventing another alternative from winning. Ordinary AND dependencies return `ParentTerminalRejected` immediately when a known terminal has already failed the requested identity/status.
+Pure C++ regressions cover AND prerequisites, mixed success/failure and event sources, alternative atomicity and priority/FIFO selection, rejected branches, late registration, out-of-order prerequisites, latest-terminal TTL origin, uint32 clock wrap, failed-parent rejection, expiry, capacity, duplicate/tombstone behavior, stale context, teardown and ready-backlog preservation under a full PendingActionQueue. Trusted fixture-backed runs [#44702889745](https://github.com/tyrael9/core/actions/runs/44702889745), [#44704096882](https://github.com/tyrael9/core/actions/runs/44704096882), [#44713147805](https://github.com/tyrael9/core/actions/runs/44713147805), [#44715114823](https://github.com/tyrael9/core/actions/runs/44715114823) and [#44716873212](https://github.com/tyrael9/core/actions/runs/44716873212) passed the required runtime gates. The last run passed pure tests, report collector, ARM64 server/realm build and the complete Vanilla 5875 simulator through final Runtime PASS.
 
-Late registration is supported through the bounded recent-terminal ledger (128 events), including instant casts that finish before the action registers its dependency. TTL remains an absolute deadline: when all prerequisites already terminated, the deadline is anchored to the latest terminal timestamp rather than the later registration time. The comparison and expiry checks are wrap-safe for the Core's uint32 monotonic millisecond clock. Released candidates are enqueued into the normal PendingActionQueue with only their remaining lifetime and still receive fresh eligibility, threat, channel and context checks before execution.
+## F39 movement terminal semantics — audited, implementation pending
 
-Pure C++ regressions cover AND prerequisites, mixed success/failure, alternative atomicity and priority/FIFO selection, rejected alternative branches, late registration, multi-prerequisite out-of-order completion, latest-terminal deadline selection, uint32 clock wrap, immediate known-failed-parent rejection, expiry, capacity, duplicate parent, stale context and teardown. Trusted push CI [#44702889745](https://github.com/tyrael9/core/actions/runs/44702889745) passed the Core-backed AND fixture: two ordinary non-triggered Lesser Heals were issued by the same PartyBotAI Engine and completed through Core Spell::finish with distinct action IDs (1 and 3), the two-parent dependency was registered after both completions, and its child executed through the normal PendingActionQueue. Runtime diagnostics reported `secondReady=1 secondSelected=1 secondAccepted=1 secondCompleted=1 coreEvents=2 dependencyResult=1 dispatched=1 continuationExecutions=2`, and the full Vanilla 5875 simulator reached Runtime PASS. The Core simulator additionally registers a two-branch alternative group against the real second terminal. Trusted push CI [#44704096882](https://github.com/tyrael9/core/actions/runs/44704096882) passed the required runtime gate: both branches returned `Queued`, the higher-priority branch requiring `Failed` was rejected against the real `Succeeded` Core terminal, and only the valid lower-priority branch executed (`altDispatched=1`, `altSelectedExec=1`, `altRejectedExec=0`). The full Vanilla 5875 fixture ended with Runtime PASS. F36 now extends the same typed dependency model with `ActionResult` prerequisites. `ActionResultEvent` carries the encounter ID captured at the dispatcher boundary; the Engine records it in a bounded 128-event recent-result ledger and feeds it to the continuation queue even when no diagnostic ActionResultListener is registered. A prerequisite must select its source explicitly: Core Spell prerequisites match target/spell/final status, while ActionResult prerequisites match action name, optional target/spell identity, `ActionResult` value and the attempted flag. `ObserveTerminal` cannot satisfy an ActionResult prerequisite. Mixed-source AND prerequisites may intentionally share an action ID but resolve only when both independent event sources arrive. Pure regressions cover a mixed ActionResult + Core Spell dependency, action-result late registration, failed adapter-result rejection and proof that a Core terminal alone cannot satisfy an ActionResult prerequisite. The Core simulator now configures a real second Lesser Heal to register this mixed dependency before calling Core CastSpell; the synchronous successful ActionResult is observed after `Action::Execute` returns, and the later successful Core `Spell::finish` releases the child through `PendingActionQueue`. The required F36 marker passed in trusted Push CI [#44713147805](https://github.com/tyrael9/core/actions/runs/44713147805). The real second Player Lesser Heal produced `engine_action_result` success (`action_id=3`, `seq=8`) followed by the matching successful Core `cast_terminal` (`action_id=3`, `seq=9`); the child then executed once through the ordinary pending queue (`mixedSelected=1 mixedExecuted=1 mixedFollowups=1 mixedPassed=1`). The full Vanilla 5875 simulator reached Runtime PASS and its log artifact was uploaded. F37 gives settled dependency registrations a bounded 128-entry idempotency history. Ordinary AND keys compare their typed prerequisite set independent of vector order; alternative group IDs are single-use within the owner context. Successful release, rejected AND resolution, alternative winner/no-winner settlement and expiry all tombstone the key, while queue reset clears the ledger. Pure regressions retry successful AND dependencies (including reversed prerequisite order), resolved alternative IDs, expired alternative groups, and rejected parents; reset permits a new lifecycle. Trusted Push CI [#44715114823](https://github.com/tyrael9/core/actions/runs/44715114823) passed the full fixture-backed Vanilla 5875 run.
+Pinned Core `PointMovementGenerator<Player>::Finalize` calls the legacy `PlayerAI::MovementInform` for both natural MoveSpline completion and forced cleanup paths. This callback alone is not a successful-arrival result. Any typed adapter must carry the originating Engine action/encounter IDs, distinguish natural completion from cancellation/finalization, and require the actual Player position to be within an explicit tolerance of the requested destination. A real Core fixture must cover successful arrival and forced cleanup without emitting success. See ROADMAP.md and VMANGOS-API-AUDIT.md.
 
-F38 covers PendingActionQueue capacity backpressure. The continuation queue now holds a separate bounded ready backlog for dependencies whose prerequisite set is already settled but whose child cannot fit in the full 32-entry PendingActionQueue. It retains the original absolute expiry and the single-use tombstone, retries after dispatch frees capacity, and still routes the child through ordinary dequeue-time revalidation and action execution. The pure pressure test fills all 32 pending slots, registers a recently satisfied dependency, confirms the continuation remains queued, dispatches one filler to free a slot, confirms the child is transferred to PendingActionQueue but not run in that same tick, then executes it on the next dispatch. Trusted Push CI [#44716873212](https://github.com/tyrael9/core/actions/runs/44716873212) passed pure tests, report collector, ARM64 server/realm build, simulator harness validation, fixture-backed Core runtime and final Runtime PASS; the runtime artifact was uploaded. F39 movement-terminal audit: Core `PointMovementGenerator<Player>::Finalize` calls the legacy `PlayerAI::MovementInform` on both normal MoveSpline completion and forced cleanup (`DirectClean`, `DirectExpire`, `ClearType`). The callback therefore reports generator finalization, not necessarily arrival. Do not satisfy a movement dependency from this legacy callback alone. The next typed movement-result source must preserve the originating Engine action/encounter IDs and distinguish natural completion (including a destination-position check) from cancellation/failed travel. Item-use terminal semantics remain a separate audit.
-
-Remaining work includes explicit terminal result sources for movement/item actions and further lifecycle/duplicate-group contracts.
+No production class/role action adapters are registered in NewEngine. The current CI evidence validates generic foundations and selected simulator slices only; it does not establish playable NewEngine combat.

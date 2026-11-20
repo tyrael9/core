@@ -61,11 +61,128 @@ void PartyBotEngine::NotifyActionResult(
             listener->OnActionResult(context, event);
 }
 
-void PartyBotEngine::NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event) const {
-    if (m_coreSpellTerminalListeners.empty())
+void PartyBotEngine::RememberCoreSpellTerminal(
+    CoreSpellTerminalEvent const& event) const {
+    if (!event.actionId || !event.encounterId)
         return;
-    // Spell::finish may outlive the dispatch DecisionContext. Deliver only
-    // self-contained scalar data and a stable snapshot of registered listeners.
+    for (CoreSpellTerminalEvent const& existing : m_recentCoreSpellTerminals)
+        if (existing.actionId == event.actionId &&
+            existing.encounterId == event.encounterId)
+            return;
+    static std::size_t const Capacity = 32;
+    if (m_recentCoreSpellTerminals.size() >= Capacity)
+        m_recentCoreSpellTerminals.erase(m_recentCoreSpellTerminals.begin());
+    m_recentCoreSpellTerminals.push_back(event);
+}
+
+CoreSpellTerminalEvent const* PartyBotEngine::FindRecentCoreSpellTerminal(
+    ActionId actionId, std::uint64_t encounterId) const {
+    for (CoreSpellTerminalEvent const& event : m_recentCoreSpellTerminals)
+        if (event.actionId == actionId && event.encounterId == encounterId)
+            return &event;
+    return nullptr;
+}
+
+bool PartyBotEngine::ReleaseContinuation(
+    ActionContinuationQueue::Entry const& entry, std::uint32_t nowMs) const {
+    if (ActionContinuationQueue::IsExpired(nowMs, entry.expiresAtMs))
+        return false;
+    std::uint32_t const remainingMs = entry.expiresAtMs - nowMs;
+    if (static_cast<std::int32_t>(remainingMs) <= 0)
+        return false;
+    std::shared_ptr<Action> action = FindAction(entry.candidate.actionName);
+    if (!action)
+        return false;
+    std::uint32_t const actionLifetimeMs = action->GetPendingLifetimeMs();
+    if (!actionLifetimeMs || actionLifetimeMs > PendingActionQueue::MaxLifetimeMs)
+        return false;
+    std::uint32_t const boundedLifetimeMs = std::min(remainingMs, actionLifetimeMs);
+    PendingActionEnqueueResult const result = m_pendingActionQueue.Enqueue(
+        entry.candidate, nowMs, boundedLifetimeMs, entry.context);
+    return result == PendingActionEnqueueResult::Queued ||
+        result == PendingActionEnqueueResult::UpdatedExisting;
+}
+
+ActionContinuationEnqueueResult PartyBotEngine::QueueActionContinuation(
+    DecisionContext const& context, ActionCandidate const& parentCandidate,
+    ActionCandidate const& continuationCandidate, std::uint32_t lifetimeMs) {
+    if (!context.coordinator.HasActiveEncounter() ||
+        !context.coordinator.GetEncounterId() ||
+        context.snapshot.groupId != context.coordinator.GetEncounterGroupId() ||
+        context.snapshot.mapId != context.coordinator.GetEncounterMapId() ||
+        context.snapshot.instanceId != context.coordinator.GetEncounterInstanceId())
+        return ActionContinuationEnqueueResult::ParentEncounterInactive;
+    if (!context.snapshot.groupId || !context.bot.guid ||
+        context.snapshot.mapId != context.bot.mapId ||
+        context.snapshot.instanceId != context.bot.instanceId ||
+        !parentCandidate.actionId || !parentCandidate.spellId ||
+        !parentCandidate.targetGuid || continuationCandidate.actionName.empty() ||
+        !std::isfinite(continuationCandidate.basePriority) ||
+        !std::isfinite(continuationCandidate.finalPriority) ||
+        (continuationCandidate.hasDestination &&
+            (!std::isfinite(continuationCandidate.destinationX) ||
+             !std::isfinite(continuationCandidate.destinationY) ||
+             !std::isfinite(continuationCandidate.destinationZ))) ||
+        !lifetimeMs || lifetimeMs > ActionContinuationQueue::MaxLifetimeMs)
+        return ActionContinuationEnqueueResult::Invalid;
+
+    std::shared_ptr<Action> continuationAction = FindAction(continuationCandidate.actionName);
+    if (!continuationAction)
+        return ActionContinuationEnqueueResult::ChildActionNotRegistered;
+    std::uint32_t const actionLifetimeMs = continuationAction->GetPendingLifetimeMs();
+    if (!actionLifetimeMs || actionLifetimeMs > PendingActionQueue::MaxLifetimeMs)
+        return ActionContinuationEnqueueResult::ChildLifetimeDisabled;
+    lifetimeMs = std::min(lifetimeMs, actionLifetimeMs);
+
+    PendingActionQueue::Context pendingContext;
+    pendingContext.groupId = context.snapshot.groupId;
+    pendingContext.mapId = context.snapshot.mapId;
+    pendingContext.instanceId = context.snapshot.instanceId;
+    pendingContext.botGuid = context.bot.guid;
+    pendingContext.encounterId = context.coordinator.GetEncounterId();
+    pendingContext.encounterActive = context.coordinator.HasActiveEncounter();
+    pendingContext.scoped = true;
+
+    CoreSpellTerminalEvent const* terminal = FindRecentCoreSpellTerminal(
+        parentCandidate.actionId, pendingContext.encounterId);
+    if (terminal) {
+        if (terminal->status != CoreSpellTerminalStatus::Succeeded ||
+            terminal->targetGuid != parentCandidate.targetGuid ||
+            terminal->spellId != parentCandidate.spellId)
+            return ActionContinuationEnqueueResult::ParentTerminalRejected;
+        ActionContinuationQueue::Entry entry;
+        entry.parentActionId = parentCandidate.actionId;
+        entry.parentTargetGuid = parentCandidate.targetGuid;
+        entry.parentSpellId = parentCandidate.spellId;
+        entry.candidate = continuationCandidate;
+        entry.context = pendingContext;
+        entry.enqueuedAtMs = terminal->occurredAtMs;
+        entry.expiresAtMs = terminal->occurredAtMs + lifetimeMs;
+        std::uint32_t releaseAtMs = context.nowMs;
+        if (static_cast<std::int32_t>(releaseAtMs - terminal->occurredAtMs) < 0)
+            releaseAtMs = terminal->occurredAtMs;
+        if (ActionContinuationQueue::IsExpired(releaseAtMs, entry.expiresAtMs))
+            return ActionContinuationEnqueueResult::Expired;
+        return ReleaseContinuation(entry, releaseAtMs)
+            ? ActionContinuationEnqueueResult::ReleasedImmediately
+            : ActionContinuationEnqueueResult::PendingQueueFull;
+    }
+
+    ActionContinuationEnqueueResult const result = m_actionContinuationQueue.Enqueue(
+        parentCandidate, continuationCandidate, context.nowMs, lifetimeMs,
+        pendingContext);
+    return result;
+}
+
+void PartyBotEngine::NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event) const {
+    RememberCoreSpellTerminal(event);
+    ActionContinuationQueue::Entry continuation;
+    if (m_actionContinuationQueue.Take(event.actionId, event.encounterId, continuation) &&
+        event.status == CoreSpellTerminalStatus::Succeeded &&
+        event.targetGuid == continuation.parentTargetGuid &&
+        event.spellId == continuation.parentSpellId)
+        ReleaseContinuation(continuation, event.occurredAtMs);
+
     std::vector<std::shared_ptr<CoreSpellTerminalListener>> const listeners =
         m_coreSpellTerminalListeners;
     for (auto const& listener : listeners)
@@ -89,6 +206,8 @@ void PartyBotEngine::ResetDecisionState() const {
     m_valueCache.InvalidateAll();
     m_triggerScheduler.Clear();
     m_pendingActionQueue.Clear();
+    m_actionContinuationQueue.Clear();
+    m_recentCoreSpellTerminals.clear();
 }
 bool PartyBotEngine::InvalidateTrigger(std::string const& strategyName,
                                        std::string const& triggerName) const {
@@ -177,7 +296,7 @@ PendingActionEnqueueResult PartyBotEngine::QueuePendingAction(
         context.snapshot, context.bot, context.coordinator, context.nowMs,
         context.reservationTrace,
         context.valueCache ? context.valueCache : &m_valueCache,
-        context.engineActionObserver);
+        context.engineActionObserver, this);
     CandidateEvaluation evaluation = EvaluateCandidate(evaluationContext, candidate);
     if (evaluation.status != CandidateStatus::NotSelected)
         return PendingActionEnqueueResult::NotEligible;
@@ -249,6 +368,7 @@ PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
     DecisionContext& context, std::size_t maxActionsPerDispatch,
     std::uint32_t blockedChannelMask) const {
     PendingActionDispatchSummary summary;
+    summary.expiredContinuations = m_actionContinuationQueue.PruneExpired(context.nowMs);
     if (!maxActionsPerDispatch)
         return summary;
     maxActionsPerDispatch = std::min<std::size_t>(maxActionsPerDispatch, 8);
@@ -256,7 +376,7 @@ PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
         context.snapshot, context.bot, context.coordinator, context.nowMs,
         context.reservationTrace,
         context.valueCache ? context.valueCache : &m_valueCache,
-        context.engineActionObserver);
+        context.engineActionObserver, this);
     PendingActionQueue::Context currentContext;
     currentContext.groupId = executionContext.snapshot.groupId;
     currentContext.mapId = executionContext.snapshot.mapId;
@@ -373,6 +493,7 @@ PendingActionDispatchSummary PartyBotEngine::ExecuteDecisionCycle(
     // TTL-enabled current decisions enter the pending queue first. Immediate
     // actions then reserve their channels and share the eight-action tick cap.
     PendingActionDispatchSummary summary;
+    summary.expiredContinuations = m_actionContinuationQueue.PruneExpired(context.nowMs);
     summary.newlyQueued = QueueSelectedActions(context, report);
 
     std::uint32_t blockedChannelMask = 0;
@@ -397,6 +518,7 @@ PendingActionDispatchSummary PartyBotEngine::ExecuteDecisionCycle(
         PendingActionDispatchSummary pending =
             ExecutePendingActions(context, pendingBudget, blockedChannelMask);
         summary.expired += pending.expired;
+        summary.expiredContinuations += pending.expiredContinuations;
         summary.dequeued += pending.dequeued;
         summary.staleContext += pending.staleContext;
         summary.rejected += pending.rejected;
@@ -440,7 +562,7 @@ DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
         context.snapshot, context.bot, context.coordinator, context.nowMs,
         context.reservationTrace,
         context.valueCache ? context.valueCache : &m_valueCache,
-        context.engineActionObserver);
+        context.engineActionObserver, this);
     DecisionReport report;
     report.snapshotEpoch = evaluationContext.snapshot.epoch;
     auto retainTriggerEvaluation = [&report](TriggerEvaluation&& observation) {
@@ -526,7 +648,7 @@ void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& r
         context.snapshot, context.bot, context.coordinator, context.nowMs,
         context.reservationTrace,
         context.valueCache ? context.valueCache : &m_valueCache,
-        context.engineActionObserver);
+        context.engineActionObserver, this);
     auto recordReservation = [&executionContext](ReservationTraceEvent const& event) {
         if (executionContext.reservationTrace)
             executionContext.reservationTrace->RecordReservationEvent(executionContext, event);

@@ -801,11 +801,57 @@ public:
     std::vector<CoreSpellTerminalEvent> events;
 };
 
+class SimulatorCoreSpellContinuationAction final : public Action
+{
+public:
+    explicit SimulatorCoreSpellContinuationAction(uint32& executeCount)
+        : m_executeCount(executeCount) {}
+    std::string const& GetName() const override { return m_name; }
+    std::uint32_t GetPendingLifetimeMs() const override { return 5000; }
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        return MakeSimulatorNoThreatEstimate(
+            context, "simulator_spell_continuation_has_no_threat");
+    }
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        PartyMemberSnapshot const* target = context.snapshot.FindMember(candidate.targetGuid);
+        if (!target || !target->alive || !context.bot.alive)
+        {
+            reason = "continuation_target_or_owner_unavailable";
+            return false;
+        }
+        return true;
+    }
+    bool IsUseful(DecisionContext const&, ActionCandidate const&, std::string&) const override
+    {
+        return true;
+    }
+    ActionResult Execute(DecisionContext&, ActionCandidate const&) override
+    {
+        ++m_executeCount;
+        return ActionResult::Success;
+    }
+private:
+    uint32& m_executeCount;
+    std::string m_name = "core_spell_terminal_followup";
+};
+
 class SimulatorCorePlayerHealAction final : public Action
 {
 public:
     explicit SimulatorCorePlayerHealAction(Map& map) : m_map(map) {}
     std::string const& GetName() const override { return m_name; }
+    void SetContinuationCandidate(ActionCandidate const& candidate)
+    {
+        m_continuationCandidate = candidate;
+    }
+    ActionContinuationEnqueueResult GetContinuationResult() const
+    {
+        return m_continuationResult;
+    }
 
     ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
                                                ActionCandidate const&) const override
@@ -856,6 +902,14 @@ public:
 
     ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
     {
+        if (!context.continuationSink)
+            return ActionResult::Failed;
+        m_continuationResult = context.continuationSink->QueueActionContinuation(
+            context, candidate, m_continuationCandidate, 4000);
+        if (m_continuationResult != ActionContinuationEnqueueResult::Queued &&
+            m_continuationResult != ActionContinuationEnqueueResult::ReleasedImmediately)
+            return ActionResult::Failed;
+
         Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
         Player* caster = unit ? unit->ToPlayer() : nullptr;
         Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
@@ -890,6 +944,8 @@ private:
     uint32 m_manaAfterAccept = 0;
     bool m_castPendingAfterAccept = false;
     bool m_gcdAfterAccept = false;
+    ActionCandidate m_continuationCandidate;
+    ActionContinuationEnqueueResult m_continuationResult = ActionContinuationEnqueueResult::Invalid;
 };
 
 
@@ -4970,7 +5026,18 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         new CaptureCoreSpellTerminalListener());
     bool const coreTerminalListenerRegistered =
         engine.AddCoreSpellTerminalListener(coreTerminalListener);
+    uint32 continuationExecutionCount = 0;
+    std::shared_ptr<SimulatorCoreSpellContinuationAction> continuationAction(
+        new SimulatorCoreSpellContinuationAction(continuationExecutionCount));
+    bool const continuationActionRegistered = engine.RegisterAction(continuationAction);
     std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
+    ActionCandidate continuationCandidate;
+    continuationCandidate.actionName = "core_spell_terminal_followup";
+    continuationCandidate.targetGuid = patientMember.guid;
+    continuationCandidate.basePriority = 25.0f;
+    continuationCandidate.finalPriority = 25.0f;
+    continuationCandidate.channel = ActionChannel::Utility;
+    healAction->SetContinuationCandidate(continuationCandidate);
     bool const registered = engine.RegisterAction(healAction);
     std::shared_ptr<Strategy> strategy(new Strategy("simulator_healer_triage"));
     strategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
@@ -5029,6 +5096,21 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         coreTerminalListener->events[0].targetGuid == patientMember.guid &&
         coreTerminalListener->events[0].spellId == SIMULATOR_HEAL_SPELL_ID &&
         coreTerminalListener->events[0].status == CoreSpellTerminalStatus::Succeeded;
+    bool const continuationEnqueued = healAction->GetContinuationResult() ==
+        ActionContinuationEnqueueResult::Queued;
+    PendingActionDispatchSummary continuationDispatch;
+    bool continuationDispatched = false;
+    if (coreSpellTerminalPassed && continuationEnqueued && continuationActionRegistered)
+    {
+        DecisionContext continuationContext(
+            snapshot, snapshot.members[0], *coordinator,
+            coreTerminalListener->events[0].occurredAtMs + 1,
+            &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+        continuationDispatch = engine.ExecutePendingActions(continuationContext);
+        continuationDispatched = continuationDispatch.selected == 1 &&
+            continuationDispatch.executed == 1 && continuationExecutionCount == 1 &&
+            engine.GetPendingContinuationCount() == 0 && engine.GetPendingActionCount() == 0;
+    }
 
     DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
     std::vector<std::size_t> const candidateDetailIndices =
@@ -5121,9 +5203,9 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              candidateDetailRowsEmitted,
              static_cast<unsigned long long>(engineActionId), cleaned ? 1u : 0u);
 
-    if (!registered || !selected || !accepted || !completed ||
-        !engineActionTracePassed || !coreSpellTerminalPassed ||
-        !decisionSummaryTracePassed || !cleaned)
+    if (!registered || !continuationActionRegistered || !selected || !accepted || !completed ||
+        !engineActionTracePassed || !coreSpellTerminalPassed || !continuationEnqueued ||
+        !continuationDispatched || !decisionSummaryTracePassed || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Engine-to-Player normal spell/heal smoke test failed.");
@@ -5134,6 +5216,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
              "[PartyBotSimulator] PASS: Engine action ID flowed through PartyBotAI into Core Spell::prepare/finish; one action_id correlated the adapter attempt/result and the later successful Core cast terminal, with real healing and mana effects.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F32 Core Spell::finish delivered a value-only terminal event to the registered Engine listener with the same action/encounter/spell/target correlation as the adapter attempt; Core success was distinct from SPELL_CAST_OK acceptance.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F34 released the registered continuation only after the matching successful Core terminal and executed it through the next Engine pending dispatch.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F20 DecisionSummary aggregated the complete executed Core Player heal report and emitted the bounded encounter summary.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,

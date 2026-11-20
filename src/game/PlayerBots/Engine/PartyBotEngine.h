@@ -3,6 +3,7 @@
 #include "Action.h"
 #include "ActionResultListener.h"
 #include "CoreSpellTerminalListener.h"
+#include "ActionContinuationQueue.h"
 #include "ActionQueue.h"
 #include "Multiplier.h"
 #include "Strategy.h"
@@ -15,6 +16,7 @@ namespace PartyBotEngine {
 struct PendingActionDispatchSummary
 {
     std::size_t expired = 0;
+    std::size_t expiredContinuations = 0;
     std::size_t dequeued = 0;
     std::size_t staleContext = 0;
     std::size_t rejected = 0;
@@ -27,7 +29,7 @@ struct PendingActionDispatchSummary
     std::vector<CandidateEvaluation> completedCandidates;
 };
 
-class PartyBotEngine {
+class PartyBotEngine : public ActionContinuationSink {
 public:
     void AddStrategy(std::shared_ptr<Strategy> strategy);
     bool RegisterAction(std::shared_ptr<Action> action);
@@ -35,6 +37,10 @@ public:
     bool AddCoreSpellTerminalListener(std::shared_ptr<CoreSpellTerminalListener> listener);
     std::size_t GetCoreSpellTerminalListenerCount() const { return m_coreSpellTerminalListeners.size(); }
     void NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event) const;
+    ActionContinuationEnqueueResult QueueActionContinuation(
+        DecisionContext const& context, ActionCandidate const& parentCandidate,
+        ActionCandidate const& continuationCandidate, std::uint32_t lifetimeMs) override;
+    std::size_t GetPendingContinuationCount() const { return m_actionContinuationQueue.Size(); }
     std::size_t GetActionResultListenerCount() const {
         return m_actionResultListeners.size();
     }
@@ -57,7 +63,7 @@ public:
     PendingActionDispatchSummary ExecuteDecisionCycle(
         DecisionContext& context, DecisionReport& report) const;
     std::size_t GetPendingActionCount() const { return m_pendingActionQueue.Size(); }
-    void ClearPendingActions() const { m_pendingActionQueue.Clear(); }
+    void ClearPendingActions() const { m_pendingActionQueue.Clear(); m_actionContinuationQueue.Clear(); m_recentCoreSpellTerminals.clear(); }
     // Only call when Strategy mode owns the relevant decision domain.
     void ExecuteSelected(DecisionContext& context, DecisionReport& report) const;
 private:
@@ -68,6 +74,11 @@ private:
                             ActionId actionId, bool attempted,
                             ActionResult result, char const* reason) const;
     std::shared_ptr<Action> FindAction(std::string const& name) const;
+    bool ReleaseContinuation(ActionContinuationQueue::Entry const& entry,
+                             std::uint32_t nowMs) const;
+    void RememberCoreSpellTerminal(CoreSpellTerminalEvent const& event) const;
+    CoreSpellTerminalEvent const* FindRecentCoreSpellTerminal(
+        ActionId actionId, std::uint64_t encounterId) const;
     std::vector<std::shared_ptr<Strategy>> m_strategies;
     std::map<std::string, std::shared_ptr<Action>> m_actions;
     std::vector<std::shared_ptr<Multiplier>> m_multipliers;
@@ -76,6 +87,8 @@ private:
     mutable ValueCache m_valueCache;
     mutable TriggerScheduler m_triggerScheduler;
     mutable PendingActionQueue m_pendingActionQueue;
+    mutable ActionContinuationQueue m_actionContinuationQueue;
+    mutable std::vector<CoreSpellTerminalEvent> m_recentCoreSpellTerminals;
 };
 }
 #endif

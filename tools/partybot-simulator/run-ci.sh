@@ -324,6 +324,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F32 Core Spell::finish delivered a valu
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F34 released the registered continuation only after the matching successful Core terminal and executed it through the next Engine pending dispatch." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F34 Core-terminal continuation PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 
 if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine selected a formation destination and the Core PointMovementGenerator moved the actor to it." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Core PointMovementGenerator PASS marker was not found." | tee -a "$LOG_FILE"

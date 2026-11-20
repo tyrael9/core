@@ -1,6 +1,7 @@
 #ifndef MANGOS_PARTYBOT_ACTION_H
 #define MANGOS_PARTYBOT_ACTION_H
 #include "DecisionContext.h"
+#include "ActionContinuation.h"
 #include "ThreatImpact.h"
 namespace PartyBotEngine {
 class Action {

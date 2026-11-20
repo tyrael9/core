@@ -380,6 +380,275 @@ void TestPendingActionQueueAgePromotionPreventsPriorityStarvation()
            entry.candidate.actionName == "oldest");
 }
 
+void BeginContinuationTestEncounter(Fixture& f)
+{
+    f.snapshot.epoch = 8;
+    f.bot.inCombat = true;
+    f.snapshot.members.clear();
+    f.snapshot.members.push_back(f.bot);
+    EncounterTransition const started =
+        f.coordinator.ObserveEncounter(f.snapshot, f.context.nowMs, 10000);
+    assert(started.kind == EncounterTransitionKind::Started);
+    assert(started.encounterId != 0);
+}
+
+ActionCandidate MakeContinuationParent(ActionId actionId = 77)
+{
+    ActionCandidate parent = Candidate("parent_spell", 50.0f, ActionChannel::GlobalCooldown);
+    parent.actionId = actionId;
+    parent.targetGuid = 22;
+    parent.spellId = 2050;
+    return parent;
+}
+
+ActionCandidate MakeContinuationCandidate()
+{
+    ActionCandidate candidate = Candidate("followup_action", 30.0f, ActionChannel::Utility);
+    candidate.finalPriority = 30.0f;
+    return candidate;
+}
+
+void TestCoreSpellSuccessReleasesAndExecutesBoundedContinuation()
+{
+    Fixture f;
+    BeginContinuationTestEncounter(f);
+    PartyBotEngine::PartyBotEngine engine;
+    auto child = std::make_shared<TestAction>("followup_action");
+    child->pendingLifetimeMs = 2000;
+    assert(engine.RegisterAction(child));
+
+    ActionCandidate const parent = MakeContinuationParent();
+    ActionCandidate const continuation = MakeContinuationCandidate();
+    assert(engine.QueueActionContinuation(f.context, parent, continuation, 1500) ==
+           ActionContinuationEnqueueResult::Queued);
+    assert(engine.GetPendingContinuationCount() == 1);
+    assert(engine.GetPendingActionCount() == 0);
+
+    CoreSpellTerminalEvent terminal;
+    terminal.actionId = parent.actionId;
+    terminal.encounterId = f.coordinator.GetEncounterId();
+    terminal.targetGuid = parent.targetGuid;
+    terminal.spellId = parent.spellId;
+    terminal.occurredAtMs = 1200;
+    terminal.status = CoreSpellTerminalStatus::Succeeded;
+    engine.NotifyCoreSpellTerminal(terminal);
+
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 1);
+    DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1201);
+    PendingActionDispatchSummary const dispatched = engine.ExecutePendingActions(nextTick);
+    assert(dispatched.dequeued == 1 && dispatched.selected == 1 && dispatched.executed == 1);
+    assert(child->executeCount == 1);
+    assert(engine.GetPendingActionCount() == 0);
+}
+
+void TestFailedInterruptedAndMismatchedTerminalsNeverReleaseContinuations()
+{
+    CoreSpellTerminalStatus const failures[] = {
+        CoreSpellTerminalStatus::Failed,
+        CoreSpellTerminalStatus::Interrupted
+    };
+    for (CoreSpellTerminalStatus status : failures)
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("followup_action");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+        ActionCandidate const parent = MakeContinuationParent();
+        assert(engine.QueueActionContinuation(
+            f.context, parent, MakeContinuationCandidate(), 1500) ==
+            ActionContinuationEnqueueResult::Queued);
+        CoreSpellTerminalEvent terminal;
+        terminal.actionId = parent.actionId;
+        terminal.encounterId = f.coordinator.GetEncounterId();
+        terminal.targetGuid = parent.targetGuid;
+        terminal.spellId = parent.spellId;
+        terminal.occurredAtMs = 1200;
+        terminal.status = status;
+        engine.NotifyCoreSpellTerminal(terminal);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 0);
+        DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1201);
+        engine.ExecutePendingActions(nextTick);
+        assert(child->executeCount == 0);
+    }
+
+    Fixture f;
+    BeginContinuationTestEncounter(f);
+    PartyBotEngine::PartyBotEngine engine;
+    auto child = std::make_shared<TestAction>("followup_action");
+    child->pendingLifetimeMs = 2000;
+    assert(engine.RegisterAction(child));
+    ActionCandidate const parent = MakeContinuationParent();
+    assert(engine.QueueActionContinuation(
+        f.context, parent, MakeContinuationCandidate(), 1500) ==
+        ActionContinuationEnqueueResult::Queued);
+    CoreSpellTerminalEvent mismatched;
+    mismatched.actionId = parent.actionId;
+    mismatched.encounterId = f.coordinator.GetEncounterId();
+    mismatched.targetGuid = parent.targetGuid + 1;
+    mismatched.spellId = parent.spellId;
+    mismatched.occurredAtMs = 1200;
+    mismatched.status = CoreSpellTerminalStatus::Succeeded;
+    engine.NotifyCoreSpellTerminal(mismatched);
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 0);
+}
+
+void TestContinuationExpiryEncounterIsolationCapacityAndLateTerminalRace()
+{
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("followup_action");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+        ActionCandidate const parent = MakeContinuationParent();
+        assert(engine.QueueActionContinuation(
+            f.context, parent, MakeContinuationCandidate(), 100) ==
+            ActionContinuationEnqueueResult::Queued);
+        CoreSpellTerminalEvent expired;
+        expired.actionId = parent.actionId;
+        expired.encounterId = f.coordinator.GetEncounterId();
+        expired.targetGuid = parent.targetGuid;
+        expired.spellId = parent.spellId;
+        expired.occurredAtMs = 1100;
+        expired.status = CoreSpellTerminalStatus::Succeeded;
+        engine.NotifyCoreSpellTerminal(expired);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 0);
+    }
+
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("followup_action");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+        ActionCandidate const parent = MakeContinuationParent();
+        assert(engine.QueueActionContinuation(
+            f.context, parent, MakeContinuationCandidate(), 1000) ==
+            ActionContinuationEnqueueResult::Queued);
+        CoreSpellTerminalEvent foreign;
+        foreign.actionId = parent.actionId;
+        foreign.encounterId = f.coordinator.GetEncounterId() + 1;
+        foreign.targetGuid = parent.targetGuid;
+        foreign.spellId = parent.spellId;
+        foreign.occurredAtMs = 1100;
+        foreign.status = CoreSpellTerminalStatus::Succeeded;
+        engine.NotifyCoreSpellTerminal(foreign);
+        assert(engine.GetPendingContinuationCount() == 1);
+        assert(engine.GetPendingActionCount() == 0);
+        engine.ResetDecisionState();
+        assert(engine.GetPendingContinuationCount() == 0);
+    }
+
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("followup_action");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+        assert(engine.QueueActionContinuation(
+            f.context, MakeContinuationParent(500), MakeContinuationCandidate(), 100) ==
+            ActionContinuationEnqueueResult::Queued);
+        DecisionContext afterExpiry(f.snapshot, f.bot, f.coordinator, 1100);
+        PendingActionDispatchSummary const pruned = engine.ExecutePendingActions(afterExpiry);
+        assert(pruned.expiredContinuations == 1);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 0 && child->executeCount == 0);
+    }
+
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("followup_action");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+        ActionCandidate const parent = MakeContinuationParent(199);
+        CoreSpellTerminalEvent alreadyFinished;
+        alreadyFinished.actionId = parent.actionId;
+        alreadyFinished.encounterId = f.coordinator.GetEncounterId();
+        alreadyFinished.targetGuid = parent.targetGuid;
+        alreadyFinished.spellId = parent.spellId;
+        alreadyFinished.occurredAtMs = 1100;
+        alreadyFinished.status = CoreSpellTerminalStatus::Succeeded;
+        engine.NotifyCoreSpellTerminal(alreadyFinished);
+        DecisionContext tooLate(f.snapshot, f.bot, f.coordinator, 2200);
+        assert(engine.QueueActionContinuation(
+            tooLate, parent, MakeContinuationCandidate(), 1000) ==
+            ActionContinuationEnqueueResult::Expired);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 0);
+    }
+
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("followup_action");
+        child->pendingLifetimeMs = 5000;
+        assert(engine.RegisterAction(child));
+        ActionCandidate const continuation = MakeContinuationCandidate();
+        for (ActionId id = 1; id <= ActionContinuationQueue::Capacity; ++id) {
+            ActionCandidate parent = MakeContinuationParent(id);
+            assert(engine.QueueActionContinuation(
+                f.context, parent, continuation, 4000) ==
+                ActionContinuationEnqueueResult::Queued);
+        }
+        assert(engine.GetPendingContinuationCount() == ActionContinuationQueue::Capacity);
+        assert(engine.QueueActionContinuation(
+            f.context, MakeContinuationParent(33), continuation, 4000) ==
+            ActionContinuationEnqueueResult::Full);
+        assert(engine.QueueActionContinuation(
+            f.context, MakeContinuationParent(1), continuation, 4000) ==
+            ActionContinuationEnqueueResult::DuplicateParent);
+    }
+
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("followup_action");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+        ActionCandidate const parent = MakeContinuationParent(99);
+        CoreSpellTerminalEvent alreadyFinished;
+        alreadyFinished.actionId = parent.actionId;
+        alreadyFinished.encounterId = f.coordinator.GetEncounterId();
+        alreadyFinished.targetGuid = parent.targetGuid;
+        alreadyFinished.spellId = parent.spellId;
+        alreadyFinished.occurredAtMs = 1100;
+        alreadyFinished.status = CoreSpellTerminalStatus::Succeeded;
+        engine.NotifyCoreSpellTerminal(alreadyFinished);
+        DecisionContext afterTerminal(f.snapshot, f.bot, f.coordinator, 1200);
+        assert(engine.QueueActionContinuation(
+            afterTerminal, parent, MakeContinuationCandidate(), 1000) ==
+            ActionContinuationEnqueueResult::ReleasedImmediately);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 1);
+
+        PartySnapshot foreignSnapshot = f.snapshot;
+        PartyMemberSnapshot foreignBot = f.bot;
+        foreignSnapshot.groupId += 1;
+        foreignSnapshot.mapId += 1;
+        foreignSnapshot.instanceId += 1;
+        foreignBot.mapId = foreignSnapshot.mapId;
+        foreignBot.instanceId = foreignSnapshot.instanceId;
+        DecisionContext foreignContext(foreignSnapshot, foreignBot, f.coordinator, 1201);
+        PendingActionDispatchSummary const stale =
+            engine.ExecutePendingActions(foreignContext);
+        assert(stale.staleContext == 1 && stale.executed == 0);
+        assert(child->executeCount == 0 && engine.GetPendingActionCount() == 0);
+    }
+}
+
 void TestPendingActionQueueRejectsInvalidAndFullEntries()
 {
     PendingActionQueue queue;
@@ -2776,6 +3045,9 @@ int main() {
     TestActionResultListenersReceiveDispatchOutcomesWithoutTraceSinks();
     TestActionResultListenersAreBoundedAndSnapshotDuringDispatch();
     TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded();
+    TestCoreSpellSuccessReleasesAndExecutesBoundedContinuation();
+    TestFailedInterruptedAndMismatchedTerminalsNeverReleaseContinuations();
+    TestContinuationExpiryEncounterIsolationCapacityAndLateTerminalRace();
     TestCandidateTraceSelectionPreservesArbitrationSelectionAfterExecution();
     TestDecisionSummaryCountsAllArbitrationOutcomes();
     TestActionQueueIsBoundedPriorityOrderedAndStable();

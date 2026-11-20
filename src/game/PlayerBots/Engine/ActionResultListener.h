@@ -13,6 +13,9 @@ struct ActionResultEvent
 {
     ActionCandidate candidate;
     ActionId actionId = 0;
+    // Encounter identity is captured at the dispatcher boundary so a result
+    // cannot satisfy a dependency after a map/encounter lifecycle transition.
+    std::uint64_t encounterId = 0;
     ActionResult result = ActionResult::NotAttempted;
     bool attempted = false;
     std::uint32_t snapshotEpoch = 0;

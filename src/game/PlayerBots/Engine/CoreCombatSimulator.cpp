@@ -5154,14 +5154,14 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
     if (!prototypeValid)
         return false;
 
-    class SimulatorItemUseCapture final : public PartyBotEngine::ItemUseTerminalListener
+    class SimulatorItemUseCapture final : public ItemUseTerminalListener
     {
     public:
-        void OnItemUseTerminal(PartyBotEngine::ItemUseTerminalEvent const& event) override
+        void OnItemUseTerminal(ItemUseTerminalEvent const& event) override
         {
             events.push_back(event);
         }
-        std::vector<PartyBotEngine::ItemUseTerminalEvent> events;
+        std::vector<ItemUseTerminalEvent> events;
     };
 
     // First Player proves the successful ON_USE path using the same implicit
@@ -5213,13 +5213,13 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
         successPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
 
     std::uint32_t successMutationCount = 0;
-    PartyBotEngine::ItemUseMutationEvent successMutation;
+    ItemUseMutationEvent successMutation;
     while (successAI.m_partyBotEngine.PopItemUseMutationEvent(successMutation))
         ++successMutationCount;
     bool const successfulAggregate = successListenerAdded &&
         successItemUseCapture->events.size() == 1 &&
         successItemUseCapture->events[0].status ==
-            PartyBotEngine::ItemUseAggregateStatus::AllSucceeded &&
+            ItemUseAggregateStatus::AllSucceeded &&
         successItemUseCapture->events[0].childCount == 1 &&
         successItemUseCapture->events[0].completedChildCount == 1 &&
         successItemUseCapture->events[0].observedMutationCount == successMutationCount &&
@@ -5284,7 +5284,7 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
     bool const rejectedAggregate = rejectedListenerAdded &&
         rejectedItemUseCapture->events.size() == 1 &&
         rejectedItemUseCapture->events[0].status ==
-            PartyBotEngine::ItemUseAggregateStatus::AllFailed &&
+            ItemUseAggregateStatus::AllFailed &&
         rejectedItemUseCapture->events[0].childCount == 1 &&
         rejectedItemUseCapture->events[0].completedChildCount == 1 &&
         rejectedItemUseCapture->events[0].observedMutationCount == 0 &&

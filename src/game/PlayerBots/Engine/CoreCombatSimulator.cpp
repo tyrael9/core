@@ -805,8 +805,9 @@ public:
 class SimulatorCoreSpellContinuationAction final : public Action
 {
 public:
-    explicit SimulatorCoreSpellContinuationAction(uint32& executeCount)
-        : m_executeCount(executeCount) {}
+    explicit SimulatorCoreSpellContinuationAction(
+        uint32& executeCount, std::string name = "core_spell_terminal_followup")
+        : m_executeCount(executeCount), m_name(std::move(name)) {}
     std::string const& GetName() const override { return m_name; }
     std::uint32_t GetPendingLifetimeMs() const override { return 5000; }
     ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
@@ -837,7 +838,7 @@ public:
     }
 private:
     uint32& m_executeCount;
-    std::string m_name = "core_spell_terminal_followup";
+    std::string m_name;
 };
 
 class SimulatorCorePlayerHealAction final : public Action
@@ -5148,6 +5149,14 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         ActionContinuationEnqueueResult::Invalid;
     PendingActionDispatchSummary f35DependencyDispatch;
     bool f35MultiDependencyDispatched = false;
+    uint32 f35AlternativeSelectedExecutions = 0;
+    uint32 f35AlternativeRejectedExecutions = 0;
+    ActionContinuationEnqueueResult f35AlternativeFirstResult =
+        ActionContinuationEnqueueResult::Invalid;
+    ActionContinuationEnqueueResult f35AlternativeSecondResult =
+        ActionContinuationEnqueueResult::Invalid;
+    PendingActionDispatchSummary f35AlternativeDispatch;
+    bool f35AlternativeGroupPassed = false;
     if (f35SecondCastReady)
     {
         // Keep a damaged target for the second ordinary Core heal. The first
@@ -5239,6 +5248,88 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
                     continuationExecutionCount == 2 &&
                     engine.GetPendingContinuationCount() == 0 &&
                     engine.GetPendingActionCount() == 0;
+            }
+        }
+
+        // Reuse the real second Core terminal to prove atomic one-of-N
+        // selection. The lower-priority branch requires Success; a higher-
+        // priority sibling requires Failed and must be rejected by the actual
+        // Core Spell::finish result before the group chooses a winner.
+        if (f35MultiCoreTerminalsPassed && f35MultiDependencyDispatched)
+        {
+            std::shared_ptr<SimulatorCoreSpellContinuationAction> alternativeSelectedAction(
+                new SimulatorCoreSpellContinuationAction(
+                    f35AlternativeSelectedExecutions,
+                    "core_spell_alternative_selected"));
+            std::shared_ptr<SimulatorCoreSpellContinuationAction> alternativeRejectedAction(
+                new SimulatorCoreSpellContinuationAction(
+                    f35AlternativeRejectedExecutions,
+                    "core_spell_alternative_rejected"));
+            bool const alternativesRegistered =
+                engine.RegisterAction(alternativeSelectedAction) &&
+                engine.RegisterAction(alternativeRejectedAction);
+
+            ActionCandidate selectedAlternative = continuationCandidate;
+            selectedAlternative.actionName = "core_spell_alternative_selected";
+            selectedAlternative.basePriority = 10.0f;
+            selectedAlternative.finalPriority = 10.0f;
+            ActionCandidate rejectedAlternative = continuationCandidate;
+            rejectedAlternative.actionName = "core_spell_alternative_rejected";
+            rejectedAlternative.basePriority = 1000.0f;
+            rejectedAlternative.finalPriority = 1000.0f;
+
+            ActionDependencyRequest selectedAlternativeRequest;
+            selectedAlternativeRequest.lifetimeMs = 4000;
+            selectedAlternativeRequest.alternativeGroupId = 3501;
+            selectedAlternativeRequest.alternativeIndex = 0;
+            selectedAlternativeRequest.alternativeCount = 2;
+            ActionTerminalPrerequisite const& realParent =
+                coreTerminalListener->events[1];
+            ActionTerminalPrerequisite selectedParent;
+            selectedParent.actionId = realParent.actionId;
+            selectedParent.encounterId = realParent.encounterId;
+            selectedParent.targetGuid = realParent.targetGuid;
+            selectedParent.spellId = realParent.spellId;
+            selectedParent.requiredStatus = CoreSpellTerminalStatus::Succeeded;
+            selectedAlternativeRequest.prerequisites.push_back(selectedParent);
+
+            ActionDependencyRequest rejectedAlternativeRequest =
+                selectedAlternativeRequest;
+            rejectedAlternativeRequest.alternativeIndex = 1;
+            rejectedAlternativeRequest.prerequisites[0].requiredStatus =
+                CoreSpellTerminalStatus::Failed;
+
+            if (alternativesRegistered)
+            {
+                DecisionContext alternativeContext(
+                    snapshot, snapshot.members[0], *coordinator, WorldTimer::getMSTime(),
+                    &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+                f35AlternativeFirstResult = engine.QueueActionDependency(
+                    alternativeContext, selectedAlternativeRequest, selectedAlternative);
+                f35AlternativeSecondResult = engine.QueueActionDependency(
+                    alternativeContext, rejectedAlternativeRequest, rejectedAlternative);
+
+                bool const groupResolved = 
+                    f35AlternativeFirstResult == ActionContinuationEnqueueResult::Queued &&
+                    f35AlternativeSecondResult == ActionContinuationEnqueueResult::Queued &&
+                    engine.GetPendingContinuationCount() == 0 &&
+                    engine.GetPendingActionCount() == 1;
+                if (groupResolved)
+                {
+                    DecisionContext alternativeDispatchContext(
+                        snapshot, snapshot.members[0], *coordinator,
+                        WorldTimer::getMSTime(),
+                        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+                    f35AlternativeDispatch =
+                        engine.ExecutePendingActions(alternativeDispatchContext);
+                    f35AlternativeGroupPassed =
+                        f35AlternativeDispatch.selected == 1 &&
+                        f35AlternativeDispatch.executed == 1 &&
+                        f35AlternativeSelectedExecutions == 1 &&
+                        f35AlternativeRejectedExecutions == 0 &&
+                        engine.GetPendingContinuationCount() == 0 &&
+                        engine.GetPendingActionCount() == 0;
+                }
             }
         }
     }
@@ -5343,7 +5434,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     if (!registered || !continuationActionRegistered || !selected || !accepted || !completed ||
         !engineActionTracePassed || !coreSpellTerminalPassed || !continuationEnqueued ||
         !continuationDispatched || !f35MultiDependencyDispatched ||
-        !f35MultiCoreTerminalsPassed || !decisionSummaryTracePassed || !cleaned)
+        !f35MultiCoreTerminalsPassed || !f35AlternativeGroupPassed ||
+        !decisionSummaryTracePassed || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Engine-to-Player normal spell/heal smoke test failed.");
@@ -5357,20 +5449,28 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F34 released the registered continuation only after the matching successful Core terminal and executed it through the next Engine pending dispatch.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Engine Player spell/heal F35: secondReady=%u secondSelected=%u secondAccepted=%u secondCompleted=%u coreEvents=%zu dependencyResult=%u pending=%zu dispatched=%u continuationExecutions=%u.",
+             "[PartyBotSimulator] Engine Player spell/heal F35: secondReady=%u secondSelected=%u secondAccepted=%u secondCompleted=%u coreEvents=%zu dependencyResult=%u pending=%zu dispatched=%u continuationExecutions=%u altFirst=%u altSecond=%u altSelected=%u altRejected=%u altDispatched=%u altSelectedExec=%u altRejectedExec=%u.",
              f35SecondCastReady ? 1u : 0u, f35SecondCastSelected ? 1u : 0u,
              f35SecondCastAccepted ? 1u : 0u, f35SecondCastCompleted ? 1u : 0u,
              coreTerminalListener->events.size(),
              static_cast<uint32>(f35DependencyResult), engine.GetPendingActionCount(),
-             f35MultiDependencyDispatched ? 1u : 0u, continuationExecutionCount);
-    if (!f35MultiDependencyDispatched || !f35MultiCoreTerminalsPassed)
+             f35MultiDependencyDispatched ? 1u : 0u, continuationExecutionCount,
+             static_cast<uint32>(f35AlternativeFirstResult),
+             static_cast<uint32>(f35AlternativeSecondResult),
+             f35AlternativeDispatch.selected, f35AlternativeDispatch.rejected,
+             f35AlternativeGroupPassed ? 1u : 0u,
+             f35AlternativeSelectedExecutions, f35AlternativeRejectedExecutions);
+    if (!f35MultiDependencyDispatched || !f35MultiCoreTerminalsPassed ||
+        !f35AlternativeGroupPassed)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] F35 multi-prerequisite Core terminal fixture failed.");
+                 "[PartyBotSimulator] F35 multi-prerequisite / alternative Core terminal fixture failed.");
         return false;
     }
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F35 gated one follow-up on two distinct successful Core Spell::finish terminals and dispatched it through the normal Engine pending queue.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F35 resolved a real Core terminal alternative group, rejected the higher-priority wrong-status branch, and dispatched the valid branch.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F20 DecisionSummary aggregated the complete executed Core Player heal report and emitted the bounded encounter summary.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,

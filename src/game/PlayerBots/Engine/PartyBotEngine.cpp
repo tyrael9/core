@@ -160,6 +160,12 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
     pendingContext.encounterActive = context.coordinator.HasActiveEncounter();
     pendingContext.scoped = true;
 
+    // Validate before consulting terminal history so malformed requests cannot
+    // be reported as a parent-result rejection.
+    if (!ActionContinuationQueue::IsValidRequest(
+            boundedRequest, continuationCandidate, pendingContext))
+        return ActionContinuationEnqueueResult::Invalid;
+
     // If every prerequisite already has a terminal, late registration
     // inherits its deadline from the latest prerequisite terminal, not from
     // the adapter call that happened after completion. Otherwise the normal
@@ -175,11 +181,27 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
                 matchedTerminal = &terminal;
                 break;
             }
-        if (!matchedTerminal ||
-            static_cast<std::int32_t>(context.nowMs - matchedTerminal->occurredAtMs) < 0) {
+        if (!matchedTerminal) {
             allPrerequisitesAlreadyTerminal = false;
-            break;
+            continue;
         }
+        // The caller may have captured a context timestamp just before this
+        // terminal was observed. Do not use a future event to anchor its TTL.
+        if (static_cast<std::int32_t>(context.nowMs - matchedTerminal->occurredAtMs) < 0) {
+            allPrerequisitesAlreadyTerminal = false;
+            continue;
+        }
+
+        bool const matchesPrerequisite =
+            matchedTerminal->targetGuid == prerequisite.targetGuid &&
+            matchedTerminal->spellId == prerequisite.spellId &&
+            matchedTerminal->status == prerequisite.requiredStatus;
+        // A failed parent invalidates an ordinary AND dependency immediately.
+        // For alternatives, a rejected branch must remain registered so the
+        // whole one-of-N group can settle and choose another eligible branch.
+        if (!matchesPrerequisite && !boundedRequest.alternativeGroupId)
+            return ActionContinuationEnqueueResult::ParentTerminalRejected;
+
         if (!hasLatestTerminal ||
             static_cast<std::int32_t>(matchedTerminal->occurredAtMs - latestTerminalMs) > 0) {
             latestTerminalMs = matchedTerminal->occurredAtMs;

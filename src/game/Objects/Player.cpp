@@ -7380,7 +7380,7 @@ void Player::CastItemUseSpell(Item* item, SpellCastTargets const& targets,
     int count = 0;
     for (uint8 slotIndex = 0; slotIndex < MAX_ITEM_PROTO_SPELLS; ++slotIndex)
     {
-        ItemSpell const& spellData = proto->Spells[slotIndex];
+        auto const& spellData = proto->Spells[slotIndex];
         if (!spellData.SpellId)
         {
             if (itemUseId && itemUseAI)

@@ -86,7 +86,15 @@ public:
     PendingActionDispatchSummary ExecuteDecisionCycle(
         DecisionContext& context, DecisionReport& report) const;
     std::size_t GetPendingActionCount() const { return m_pendingActionQueue.Size(); }
-    void ClearPendingActions() const { m_pendingActionQueue.Clear(); m_actionContinuationQueue.Clear(); m_recentCoreSpellTerminals.clear(); m_recentActionResults.clear(); m_recentPointMovementTerminals.clear(); }
+    void ClearPendingActions() const {
+        m_pendingActionQueue.Clear();
+        m_actionContinuationQueue.Clear();
+        m_recentCoreSpellTerminals.clear();
+        m_recentActionResults.clear();
+        m_recentPointMovementTerminals.clear();
+        m_recentItemUseTerminals.clear();
+        m_itemUseAggregateTracker.Clear();
+    }
     // Only call when Strategy mode owns the relevant decision domain.
     void ExecuteSelected(DecisionContext& context, DecisionReport& report) const;
 private:

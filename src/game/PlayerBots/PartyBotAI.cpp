@@ -1293,6 +1293,7 @@ void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
 
 void PartyBotAI::OnMapLeave(uint32 mapId, uint32 instanceId)
 {
+    m_partyBotEngine.ExpireAllItemUses(WorldTimer::getMSTime());
     if (!me || !m_partyCoordinator ||
         m_partyCoordinatorMapId != mapId ||
         m_partyCoordinatorInstanceId != instanceId)
@@ -1326,7 +1327,6 @@ void PartyBotAI::OnMapLeave(uint32 mapId, uint32 instanceId)
         }
     }
 
-    m_partyBotEngine.ExpireAllItemUses(WorldTimer::getMSTime());
     m_partyBotEngine.ResetDecisionState();
     m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
     if (!anotherPartyBotRemains && m_partyCoordinator->HasActiveEncounter())

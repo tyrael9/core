@@ -182,6 +182,13 @@ public:
     }
     std::vector<PointMovementTerminalEvent> events;
 };
+class CaptureItemUseTerminalListener final : public ItemUseTerminalListener {
+public:
+    void OnItemUseTerminal(ItemUseTerminalEvent const& event) override {
+        events.push_back(event);
+    }
+    std::vector<ItemUseTerminalEvent> events;
+};
 class RegisterCoreSpellTerminalListenerDuringCallback final : public CoreSpellTerminalListener {
 public:
     RegisterCoreSpellTerminalListenerDuringCallback(
@@ -523,6 +530,59 @@ private:
     std::string m_name;
 };
 
+void TestPartyBotEnginePublishesItemUseRootAndIndependentMutation()
+{
+    PartyBotEngine::PartyBotEngine engine;
+    auto listener = std::make_shared<CaptureItemUseTerminalListener>();
+    assert(engine.AddItemUseTerminalListener(listener));
+
+    ItemUseId root = 0;
+    assert(engine.BeginItemUse(ItemUseRequest(), root) ==
+           ItemUseTrackerResult::Accepted);
+    assert(root != 0);
+    assert(engine.GetPendingItemUseCount() == 1);
+
+    ItemUseChildId child = 0;
+    assert(engine.RegisterItemUseChild(root, 0, 439, false, child) ==
+           ItemUseTrackerResult::Accepted);
+
+    ItemUseMutationEvent mutation;
+    mutation.itemUseId = root;
+    mutation.childId = child;
+    mutation.itemGuid = 200;
+    mutation.itemEntry = 118;
+    mutation.kind = ItemUseMutationKind::ChargeChanged;
+    mutation.phase = ItemUseMutationPhase::AfterEffects;
+    mutation.slotIndex = 0;
+    mutation.beforeCharges = -2;
+    mutation.afterCharges = -1;
+    mutation.itemExistsAfter = true;
+    mutation.occurredAtMs = 1010;
+    assert(engine.RecordItemUseMutation(mutation) == ItemUseTrackerResult::Accepted);
+
+    ItemUseTerminalEvent terminal;
+    assert(engine.RecordItemUseChildTerminal(
+        root, child, ItemUseChildStatus::Succeeded, 1011) ==
+        ItemUseTrackerResult::Accepted);
+    assert(listener->events.empty());
+    assert(engine.CloseItemUseDispatch(root, 1012) ==
+           ItemUseTrackerResult::Completed);
+
+    assert(engine.GetPendingItemUseCount() == 0);
+    assert(listener->events.size() == 1);
+    assert(listener->events[0].itemUseId == root);
+    assert(listener->events[0].status == ItemUseAggregateStatus::AllSucceeded);
+    assert(listener->events[0].observedMutationCount == 1);
+    assert(listener->events[0].succeededChildCount == 1);
+
+    ItemUseMutationEvent emitted;
+    assert(engine.PopItemUseMutationEvent(emitted));
+    assert(emitted.itemUseId == root);
+    assert(emitted.childId == child);
+    assert(emitted.kind == ItemUseMutationKind::ChargeChanged);
+    assert(emitted.beforeCharges == -2 && emitted.afterCharges == -1);
+    assert(!engine.PopItemUseMutationEvent(emitted));
+}
 void TestCoreActionRuntimeIsPreservedAcrossDecisionAndPendingContexts()
 {
     Fixture f;
@@ -4467,6 +4527,7 @@ int main() {
     TestEnginePendingQueueFairnessSurvivesRevalidatedWorkSort();
     TestDecisionCycleQueuesOptInActionsAndDispatchesPendingWork();
     TestDecisionCycleBlocksPendingChannelsAndHonorsOriginalExpiry();
+    TestPartyBotEnginePublishesItemUseRootAndIndependentMutation();
     TestItemUseAggregateWaitsForFanoutClosure();
     TestItemUseAggregateDelayedChildAndPartialOutcomes();
     TestItemUseAggregateAllFailureAndInterruptStatuses();

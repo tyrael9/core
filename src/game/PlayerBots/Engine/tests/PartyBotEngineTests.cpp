@@ -722,6 +722,209 @@ void TestActionDependenciesRequireAllAndPrerequisites()
     assert(child->executeCount == 1);
 }
 
+void TestLateDependencyRegistrationUsesLatestTerminalAndWrapSafeTime()
+{
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("late_multi_prerequisite");
+        child->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(child));
+
+        std::uint64_t const encounterId = f.coordinator.GetEncounterId();
+        ActionDependencyRequest request;
+        request.lifetimeMs = 300;
+        request.prerequisites.push_back(MakePrerequisite(
+            1601, encounterId, 22, 2050, CoreSpellTerminalStatus::Succeeded));
+        request.prerequisites.push_back(MakePrerequisite(
+            1602, encounterId, 23, 2061, CoreSpellTerminalStatus::Succeeded));
+        ActionCandidate candidate = Candidate(
+            "late_multi_prerequisite", 30.0f, ActionChannel::Utility);
+        candidate.finalPriority = 30.0f;
+
+        // Completion notifications may arrive out of prerequisite order.
+        CoreSpellTerminalEvent later;
+        later.actionId = 1602;
+        later.encounterId = encounterId;
+        later.targetGuid = 23;
+        later.spellId = 2061;
+        later.occurredAtMs = 1500;
+        later.status = CoreSpellTerminalStatus::Succeeded;
+        engine.NotifyCoreSpellTerminal(later);
+
+        CoreSpellTerminalEvent earlier;
+        earlier.actionId = 1601;
+        earlier.encounterId = encounterId;
+        earlier.targetGuid = 22;
+        earlier.spellId = 2050;
+        earlier.occurredAtMs = 1100;
+        earlier.status = CoreSpellTerminalStatus::Succeeded;
+        engine.NotifyCoreSpellTerminal(earlier);
+
+        DecisionContext lateContext(f.snapshot, f.bot, f.coordinator, 1700);
+        assert(engine.QueueActionDependency(lateContext, request, candidate) ==
+               ActionContinuationEnqueueResult::ReleasedImmediately);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 1);
+
+        // The lifetime is anchored to the latest parent terminal (1500), not
+        // to this late registration (1700) or the earlier terminal (1100).
+        DecisionContext expiryContext(f.snapshot, f.bot, f.coordinator, 1800);
+        PendingActionDispatchSummary const expired =
+            engine.ExecutePendingActions(expiryContext);
+        assert(expired.expired == 1 && expired.executed == 0);
+        assert(engine.GetPendingActionCount() == 0);
+        assert(child->executeCount == 0);
+    }
+
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto child = std::make_shared<TestAction>("wrap_safe_dependency");
+        child->pendingLifetimeMs = 1000;
+        assert(engine.RegisterAction(child));
+
+        std::uint64_t const encounterId = f.coordinator.GetEncounterId();
+        ActionDependencyRequest request;
+        request.lifetimeMs = 40;
+        request.prerequisites.push_back(MakePrerequisite(
+            1701, encounterId, 22, 2050, CoreSpellTerminalStatus::Succeeded));
+        request.prerequisites.push_back(MakePrerequisite(
+            1702, encounterId, 23, 2061, CoreSpellTerminalStatus::Succeeded));
+        ActionCandidate candidate = Candidate(
+            "wrap_safe_dependency", 30.0f, ActionChannel::Utility);
+        candidate.finalPriority = 30.0f;
+
+        CoreSpellTerminalEvent beforeWrap;
+        beforeWrap.actionId = 1701;
+        beforeWrap.encounterId = encounterId;
+        beforeWrap.targetGuid = 22;
+        beforeWrap.spellId = 2050;
+        beforeWrap.occurredAtMs = 0xfffffff0u;
+        beforeWrap.status = CoreSpellTerminalStatus::Succeeded;
+        engine.NotifyCoreSpellTerminal(beforeWrap);
+
+        CoreSpellTerminalEvent afterWrap;
+        afterWrap.actionId = 1702;
+        afterWrap.encounterId = encounterId;
+        afterWrap.targetGuid = 23;
+        afterWrap.spellId = 2061;
+        afterWrap.occurredAtMs = 10u;
+        afterWrap.status = CoreSpellTerminalStatus::Succeeded;
+        engine.NotifyCoreSpellTerminal(afterWrap);
+
+        DecisionContext afterWrapContext(f.snapshot, f.bot, f.coordinator, 40u);
+        assert(engine.QueueActionDependency(afterWrapContext, request, candidate) ==
+               ActionContinuationEnqueueResult::ReleasedImmediately);
+        assert(engine.GetPendingActionCount() == 1);
+
+        DecisionContext wrappedExpiry(f.snapshot, f.bot, f.coordinator, 50u);
+        PendingActionDispatchSummary const expired =
+            engine.ExecutePendingActions(wrappedExpiry);
+        assert(expired.expired == 1 && expired.executed == 0);
+        assert(engine.GetPendingActionCount() == 0);
+        assert(child->executeCount == 0);
+    }
+}
+
+void TestLateDependencyRegistrationRejectsKnownFailedParent()
+{
+    Fixture f;
+    BeginContinuationTestEncounter(f);
+    PartyBotEngine::PartyBotEngine engine;
+    auto child = std::make_shared<TestAction>("late_failed_parent_child");
+    child->pendingLifetimeMs = 2000;
+    assert(engine.RegisterAction(child));
+
+    std::uint64_t const encounterId = f.coordinator.GetEncounterId();
+    ActionDependencyRequest request;
+    request.lifetimeMs = 1000;
+    request.prerequisites.push_back(MakePrerequisite(
+        1801, encounterId, 22, 2050, CoreSpellTerminalStatus::Succeeded));
+    request.prerequisites.push_back(MakePrerequisite(
+        1802, encounterId, 23, 2061, CoreSpellTerminalStatus::Succeeded));
+    ActionCandidate candidate = Candidate(
+        "late_failed_parent_child", 30.0f, ActionChannel::Utility);
+    candidate.finalPriority = 30.0f;
+
+    // One AND prerequisite has already failed before the continuation is
+    // registered; another prerequisite has not completed.
+    CoreSpellTerminalEvent failed;
+    failed.actionId = 1801;
+    failed.encounterId = encounterId;
+    failed.targetGuid = 22;
+    failed.spellId = 2050;
+    failed.occurredAtMs = 1100;
+    failed.status = CoreSpellTerminalStatus::Failed;
+    engine.NotifyCoreSpellTerminal(failed);
+
+    DecisionContext lateContext(f.snapshot, f.bot, f.coordinator, 1200);
+    assert(engine.QueueActionDependency(lateContext, request, candidate) ==
+           ActionContinuationEnqueueResult::ParentTerminalRejected);
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 0);
+    assert(child->executeCount == 0);
+}
+
+void TestAlternativeDependencyKeepsRejectedBranchUntilGroupResolution()
+{
+    Fixture f;
+    BeginContinuationTestEncounter(f);
+    PartyBotEngine::PartyBotEngine engine;
+    auto eligible = std::make_shared<TestAction>("alternative_eligible");
+    auto rejected = std::make_shared<TestAction>("alternative_rejected");
+    eligible->pendingLifetimeMs = rejected->pendingLifetimeMs = 2000;
+    assert(engine.RegisterAction(eligible) && engine.RegisterAction(rejected));
+
+    std::uint64_t const encounterId = f.coordinator.GetEncounterId();
+    ActionTerminalPrerequisite const succeededParent = MakePrerequisite(
+        1901, encounterId, 22, 2050, CoreSpellTerminalStatus::Succeeded);
+    ActionDependencyRequest eligibleRequest = MakeDependencyRequest(
+        1000, succeededParent);
+    eligibleRequest.alternativeGroupId = 703;
+    eligibleRequest.alternativeIndex = 0;
+    eligibleRequest.alternativeCount = 2;
+    ActionDependencyRequest rejectedRequest = eligibleRequest;
+    rejectedRequest.alternativeIndex = 1;
+    rejectedRequest.prerequisites[0].requiredStatus = CoreSpellTerminalStatus::Failed;
+
+    ActionCandidate eligibleCandidate = Candidate(
+        "alternative_eligible", 10.0f, ActionChannel::Utility);
+    ActionCandidate rejectedCandidate = Candidate(
+        "alternative_rejected", 100.0f, ActionChannel::Utility);
+    eligibleCandidate.finalPriority = 10.0f;
+    rejectedCandidate.finalPriority = 100.0f;
+
+    assert(engine.QueueActionDependency(f.context, eligibleRequest, eligibleCandidate) ==
+           ActionContinuationEnqueueResult::Queued);
+
+    CoreSpellTerminalEvent succeeded;
+    succeeded.actionId = succeededParent.actionId;
+    succeeded.encounterId = encounterId;
+    succeeded.targetGuid = succeededParent.targetGuid;
+    succeeded.spellId = succeededParent.spellId;
+    succeeded.occurredAtMs = 1100;
+    succeeded.status = CoreSpellTerminalStatus::Succeeded;
+    engine.NotifyCoreSpellTerminal(succeeded);
+
+    // A failed branch is normal in a one-of-N group. It must not be surfaced
+    // as a globally rejected parent while another branch remains eligible.
+    DecisionContext lateContext(f.snapshot, f.bot, f.coordinator, 1200);
+    assert(engine.QueueActionDependency(lateContext, rejectedRequest, rejectedCandidate) ==
+           ActionContinuationEnqueueResult::Queued);
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 1);
+
+    DecisionContext dispatchContext(f.snapshot, f.bot, f.coordinator, 1201);
+    PendingActionDispatchSummary const dispatched =
+        engine.ExecutePendingActions(dispatchContext);
+    assert(dispatched.executed == 1);
+    assert(eligible->executeCount == 1);
+    assert(rejected->executeCount == 0);
+}
+
 void TestActionDependenciesRejectFailedAndInvalidAndPrerequisites()
 {
     Fixture f;
@@ -3318,6 +3521,9 @@ int main() {
     TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded();
     TestCoreSpellSuccessReleasesAndExecutesBoundedContinuation();
     TestActionDependenciesRequireAllAndPrerequisites();
+    TestLateDependencyRegistrationUsesLatestTerminalAndWrapSafeTime();
+    TestLateDependencyRegistrationRejectsKnownFailedParent();
+    TestAlternativeDependencyKeepsRejectedBranchUntilGroupResolution();
     TestActionDependenciesRejectFailedAndInvalidAndPrerequisites();
     TestActionAlternativeGroupsWaitForAllBranchesAndChoosePriority();
     TestActionAlternativeGroupsUseFifoForPriorityTiesAndCancelOnExpiry();

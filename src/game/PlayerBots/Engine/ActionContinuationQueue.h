@@ -370,17 +370,27 @@ private:
     {
         if (left.size() != right.size())
             return false;
-        for (std::size_t i = 0; i < left.size(); ++i)
-        {
-            ActionTerminalPrerequisite const& a = left[i];
-            ActionTerminalPrerequisite const& b = right[i];
-            if (a.source != b.source ||
-                a.actionId != b.actionId || a.encounterId != b.encounterId ||
-                a.targetGuid != b.targetGuid || a.spellId != b.spellId ||
-                a.requiredStatus != b.requiredStatus ||
-                a.expectedActionName != b.expectedActionName ||
-                a.requiredActionResult != b.requiredActionResult ||
-                a.requiredAttempted != b.requiredAttempted)
+        // Prerequisites are ANDed, so registration identity is a set rather
+        // than a caller-selected vector order. A reordered retry is still the
+        // same dependency and must not dispatch the child a second time.
+        auto samePrerequisite = [](ActionTerminalPrerequisite const& a,
+                                   ActionTerminalPrerequisite const& b) {
+            return a.source == b.source &&
+                a.actionId == b.actionId && a.encounterId == b.encounterId &&
+                a.targetGuid == b.targetGuid && a.spellId == b.spellId &&
+                a.requiredStatus == b.requiredStatus &&
+                a.expectedActionName == b.expectedActionName &&
+                a.requiredActionResult == b.requiredActionResult &&
+                a.requiredAttempted == b.requiredAttempted;
+        };
+        for (ActionTerminalPrerequisite const& prerequisite : left) {
+            bool found = false;
+            for (ActionTerminalPrerequisite const& candidate : right)
+                if (samePrerequisite(prerequisite, candidate)) {
+                    found = true;
+                    break;
+                }
+            if (!found)
                 return false;
         }
         return true;

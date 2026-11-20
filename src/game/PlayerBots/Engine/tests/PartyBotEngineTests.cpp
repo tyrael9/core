@@ -1,4 +1,5 @@
 #include "PartyBotEngine.h"
+#include "CoreAction.h"
 #include "ExecutionAuthority.h"
 #include "Value.h"
 #include "ShadowStrategies.h"
@@ -235,6 +236,118 @@ struct Fixture {
 ActionCandidate Candidate(std::string name, float priority, ActionChannel channel) {
     ActionCandidate c; c.actionName = std::move(name); c.targetGuid = 22;
     c.basePriority = priority; c.channel = channel; return c;
+}
+
+class TestCoreActionRuntime final : public CoreActionRuntime {
+public:
+    CoreActionResolution ResolveUnitContext(
+        DecisionContext const&, Guid targetGuid) const override {
+        ++resolveCalls;
+        CoreActionResolution result;
+        result.status = CoreActionResolveStatus::Resolved;
+        result.actor = reinterpret_cast<Player*>(const_cast<TestCoreActionRuntime*>(this));
+        result.target = targetGuid
+            ? reinterpret_cast<Unit*>(const_cast<TestCoreActionRuntime*>(this)) : nullptr;
+        result.map = reinterpret_cast<Map*>(const_cast<TestCoreActionRuntime*>(this));
+        result.reason = "test_core_context_resolved";
+        return result;
+    }
+    mutable std::uint32_t resolveCalls = 0;
+};
+
+class TestCoreAction final : public CoreAction {
+public:
+    explicit TestCoreAction(std::string name) : m_name(std::move(name)) {}
+    std::string const& GetName() const override { return m_name; }
+    bool IsPossible(DecisionContext const& context, ActionCandidate const&,
+                    std::string& reason) const override {
+        ++possibleChecks;
+        if (!context.coreActionRuntime) reason = "missing_core_runtime";
+        return context.coreActionRuntime != nullptr;
+    }
+    bool IsUseful(DecisionContext const& context, ActionCandidate const&,
+                  std::string& reason) const override {
+        ++usefulChecks;
+        if (!context.coreActionRuntime) reason = "missing_core_runtime";
+        return context.coreActionRuntime != nullptr;
+    }
+    ThreatImpactEstimate EstimateThreatImpact(
+        DecisionContext const& context, ActionCandidate const&) const override {
+        ThreatImpactEstimate estimate;
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.snapshotEpoch = context.snapshot.epoch;
+        estimate.reason = "test_core_action_no_threat";
+        return estimate;
+    }
+    std::uint32_t GetPendingLifetimeMs() const override { return 1500; }
+    std::uint32_t possibleChecks = 0;
+    std::uint32_t usefulChecks = 0;
+    std::uint32_t executeCoreCalls = 0;
+    bool executeCoreSawResolvedContext = false;
+protected:
+    ActionResult ExecuteCore(DecisionContext&, ActionCandidate const&,
+                             CoreActionResolution const& resolved) override {
+        ++executeCoreCalls;
+        executeCoreSawResolvedContext = resolved.IsResolved() &&
+            resolved.actor && resolved.target && resolved.map;
+        return executeCoreSawResolvedContext
+            ? ActionResult::Success : ActionResult::Impossible;
+    }
+private:
+    std::string m_name;
+};
+
+void TestCoreActionRuntimeIsPreservedAcrossDecisionAndPendingContexts()
+{
+    Fixture f;
+    TestCoreActionRuntime runtime;
+    f.context.coreActionRuntime = &runtime;
+
+    // Evaluate() and ExecuteSelected() each make an internal context copy.
+    PartyBotEngine::PartyBotEngine immediateEngine;
+    auto immediateAction = std::make_shared<TestCoreAction>("core_immediate");
+    assert(immediateEngine.RegisterAction(immediateAction));
+    auto trigger = std::make_shared<TestTrigger>("core_action_trigger");
+    trigger->generated.push_back(
+        Candidate("core_immediate", 20.0f, ActionChannel::Utility));
+    auto strategy = std::make_shared<Strategy>("core_action_strategy");
+    strategy->AddTrigger(trigger);
+    immediateEngine.AddStrategy(strategy);
+
+    DecisionReport report = immediateEngine.Evaluate(f.context);
+    assert(report.selectedIndices.size() == 1);
+    assert(immediateAction->possibleChecks == 1);
+    assert(immediateAction->usefulChecks == 1);
+    assert(report.candidates[0].status == CandidateStatus::Selected);
+    immediateEngine.ExecuteSelected(f.context, report);
+    assert(report.candidates[0].status == CandidateStatus::Executed);
+    assert(immediateAction->executeCoreCalls == 1);
+    assert(immediateAction->executeCoreSawResolvedContext);
+    assert(runtime.resolveCalls == 1);
+
+    // QueuePendingAction() and ExecutePendingActions() also create internal
+    // copies. Eligibility must be revalidated and execution must re-resolve.
+    PartyBotEngine::PartyBotEngine pendingEngine;
+    auto pendingAction = std::make_shared<TestCoreAction>("core_pending");
+    assert(pendingEngine.RegisterAction(pendingAction));
+    ActionCandidate pendingCandidate =
+        Candidate("core_pending", 15.0f, ActionChannel::Utility);
+    assert(pendingEngine.QueuePendingAction(f.context, pendingCandidate) ==
+           PendingActionEnqueueResult::Queued);
+    assert(pendingAction->possibleChecks == 1);
+    assert(pendingAction->usefulChecks == 1);
+    assert(pendingEngine.GetPendingActionCount() == 1);
+
+    PendingActionDispatchSummary pending =
+        pendingEngine.ExecutePendingActions(f.context);
+    assert(pending.dequeued == 1);
+    assert(pending.executed == 1);
+    assert(pending.rejected == 0);
+    assert(pendingAction->possibleChecks == 2);
+    assert(pendingAction->usefulChecks == 2);
+    assert(pendingAction->executeCoreCalls == 1);
+    assert(pendingAction->executeCoreSawResolvedContext);
+    assert(runtime.resolveCalls == 2);
 }
 
 void TestActionQueueIsBoundedPriorityOrderedAndStable()
@@ -4128,8 +4241,8 @@ int main() {
     TestEnginePendingQueueFairnessSurvivesRevalidatedWorkSort();
     TestDecisionCycleQueuesOptInActionsAndDispatchesPendingWork();
     TestDecisionCycleBlocksPendingChannelsAndHonorsOriginalExpiry();
-    TestExecuteSelectedDispatchesByPriorityWithStableTies();
-    TestExecuteSelectedHonorsPerDispatchLimit();
+    TestCoreActionRuntimeIsPreservedAcrossDecisionAndPendingContexts();
+    TestExecuteSelectedDispatchesByPriorityWithStableTies();    TestExecuteSelectedHonorsPerDispatchLimit();
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();
     TestReservationOwnershipAndExpiry();
     TestThreatReservationAggregationAndActionRelease();

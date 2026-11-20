@@ -5240,7 +5240,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
             }
         }
     }
-    uint32 const f34ContinuationExecutionCount = 1;
+    uint32 const f34ContinuationExecutionCount = continuationExecutionCount;
 
     DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
     std::vector<std::size_t> const candidateDetailIndices =

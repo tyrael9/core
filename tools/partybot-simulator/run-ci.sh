@@ -334,6 +334,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F35 gated one follow-up on two distinct
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F35 resolved a real Core terminal alternative group, rejected the higher-priority wrong-status branch, and dispatched the valid branch." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F35 Core-terminal alternative-group PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 
 if ! grep -Fq "[PartyBotSimulator] PASS: PartyBotEngine selected a formation destination and the Core PointMovementGenerator moved the actor to it." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Core PointMovementGenerator PASS marker was not found." | tee -a "$LOG_FILE"

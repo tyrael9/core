@@ -877,8 +877,13 @@ public:
             ? context.coreActionRuntime->ResolveUnitContext(context, candidate.targetGuid)
             : CoreActionResolution();
         Player* mover = resolved.actor;
-        if (!resolved.IsResolved() || !mover || resolved.target != mover ||
-            !mover->IsAlive() || candidate.targetGuid != context.bot.guid || !candidate.hasDestination ||
+        if (!resolved.IsResolved())
+        {
+            reason = resolved.reason;
+            return false;
+        }
+        if (!mover || resolved.target != mover || !mover->IsAlive() ||
+            candidate.targetGuid != context.bot.guid || !candidate.hasDestination ||
             !std::isfinite(candidate.destinationX) ||
             !std::isfinite(candidate.destinationY) ||
             !std::isfinite(candidate.destinationZ) ||
@@ -899,7 +904,12 @@ public:
             ? context.coreActionRuntime->ResolveUnitContext(context, candidate.targetGuid)
             : CoreActionResolution();
         Player* mover = resolved.actor;
-        if (!resolved.IsResolved() || !mover || resolved.target != mover)
+        if (!resolved.IsResolved())
+        {
+            reason = resolved.reason;
+            return false;
+        }
+        if (!mover || resolved.target != mover)
         {
             reason = "simulator_player_point_move_actor_missing";
             return false;
@@ -921,9 +931,22 @@ public:
     {
         Player* mover = resolved.actor;
         uint64 const encounterId = context.coordinator.GetEncounterId();
-        if (!mover || !candidate.actionId || !encounterId ||
-            !context.continuationSink || !candidate.hasDestination)
+        if (!mover || resolved.target != mover || !candidate.actionId || !encounterId ||
+            !context.continuationSink || !candidate.hasDestination ||
+            !mover->IsAlive() ||
+            mover->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE |
+                                UNIT_STATE_POSSESSED) ||
+            mover->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE ||
+            !std::isfinite(candidate.destinationX) ||
+            !std::isfinite(candidate.destinationY) ||
+            !std::isfinite(candidate.destinationZ))
             return ActionResult::Impossible;
+
+        float const dx = mover->GetPositionX() - candidate.destinationX;
+        float const dy = mover->GetPositionY() - candidate.destinationY;
+        float const dz = mover->GetPositionZ() - candidate.destinationZ;
+        if (dx * dx + dy * dy + dz * dz <= m_arrivalTolerance * m_arrivalTolerance)
+            return ActionResult::Useless;
 
         ActionDependencyRequest request;
         request.lifetimeMs = 4000;
@@ -5790,7 +5813,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         engine.GetPendingContinuationCount() == 0 && engine.GetPendingActionCount() == 1;
     DecisionContext movementContinuationContext(
         snapshot, snapshot.members[0], *coordinator, WorldTimer::getMSTime(),
-        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI, &engine);
+        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI, &engine,
+        &engineActionAI);
     PendingActionDispatchSummary const movementFollowupDispatch =
         engine.ExecutePendingActions(movementContinuationContext);
     bool const movementFollowupDispatched = movementContinuationReleased &&

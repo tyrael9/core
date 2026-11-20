@@ -66,7 +66,7 @@ public:
     PendingActionDispatchSummary ExecuteDecisionCycle(
         DecisionContext& context, DecisionReport& report) const;
     std::size_t GetPendingActionCount() const { return m_pendingActionQueue.Size(); }
-    void ClearPendingActions() const { m_pendingActionQueue.Clear(); m_actionContinuationQueue.Clear(); m_recentCoreSpellTerminals.clear(); }
+    void ClearPendingActions() const { m_pendingActionQueue.Clear(); m_actionContinuationQueue.Clear(); m_recentCoreSpellTerminals.clear(); m_recentActionResults.clear(); }
     // Only call when Strategy mode owns the relevant decision domain.
     void ExecuteSelected(DecisionContext& context, DecisionReport& report) const;
 private:
@@ -82,6 +82,7 @@ private:
     bool ReleaseReadyActionDependencies(
         std::uint32_t nowMs, ActionCandidate const* registeringCandidate = nullptr) const;
     void RememberCoreSpellTerminal(CoreSpellTerminalEvent const& event) const;
+    void RememberActionResult(ActionResultEvent const& event) const;
     std::vector<std::shared_ptr<Strategy>> m_strategies;
     std::map<std::string, std::shared_ptr<Action>> m_actions;
     std::vector<std::shared_ptr<Multiplier>> m_multipliers;
@@ -92,6 +93,7 @@ private:
     mutable PendingActionQueue m_pendingActionQueue;
     mutable ActionContinuationQueue m_actionContinuationQueue;
     mutable std::vector<CoreSpellTerminalEvent> m_recentCoreSpellTerminals;
+    mutable std::vector<ActionResultEvent> m_recentActionResults;
 };
 }
 #endif

@@ -256,3 +256,6 @@ The fixture-backed Vanilla runtime still validates Core lifecycle compatibility;
 
 
 F30 additionally verifies pending-dispatch threat aggregation. Two different-channel pending actions each estimate 12 threat points to the same hostile/recipient pair; the first is selected and executes, while the combined second projection is deferred and expires at its original deadline.
+
+
+F30 CI acceptance: trusted push run [#44664709181](https://github.com/tyrael9/core/actions/runs/44664709181) passed the pure suite, report collector, ARM64 build and fixture-backed Vanilla 5875 simulator through final `Runtime PASS`. The F20 shell fixture assertion was updated to require the new `pending_queued=0` field in the complete decision-summary schema; the expected F20 PASS marker appeared on this run. PR run [#44664715713](https://github.com/tyrael9/core/actions/runs/44664715713) passed the pure/build path and correctly skipped the push-only runtime fixture.

@@ -449,15 +449,16 @@ The queue integration does not add class rotations, Legacy fallback, production 
 NewEngine authority mode is an opt-in development safety gate, not a gameplay-ready configuration. The current registry contains no production class action adapters, and the default Shadow probes are intentionally excluded from NewEngine mode. The default remains Legacy.
 
 
-## F30 — New Engine tick integration for immediate and pending action dispatch (CI pending)
+## F30 — New Engine tick integration for immediate and pending action dispatch (pure/ARM64/runtime CI passed)
 
 - [x] Add `ExecuteDecisionCycle` as the single NewEngine tick boundary. It moves selected actions with a positive action-specific TTL into the Engine-owned PendingActionQueue; actions with the default zero TTL remain immediate-only.
 - [x] Execute immediate candidates first and reserve their channels for the remainder of the tick. Pending candidates sharing those channels are deferred without extending their original expiry.
 - [x] Enforce one shared eight-action budget across immediate and pending execution. If immediate dispatch consumes the cap, pending work remains queued for the next tick.
 - [x] Aggregate each selected pending action's threat estimate before assessing the next pending candidate, avoiding per-action independent budget checks.
 - [x] Reflect pending enqueue, same-tick completion and revalidation rejection back into the originating DecisionReport; add a bounded `pending_queued` summary count and candidate trace status.
-- [x] Add pure regressions for selected TTL action routing/completion, immediate-versus-pending channel exclusion, and immutable expiry under deferral.
-- [ ] Run pure Engine suite, ARM64 build and trusted fixture-backed Vanilla 5875 simulator CI.
+- [x] Add pure regressions for selected TTL action routing/completion, immediate-versus-pending channel exclusion, immutable expiry under deferral, and cumulative threat headroom across multiple pending candidates.
+- [x] Trusted push CI [#44664709181](https://github.com/tyrael9/core/actions/runs/44664709181), head `04f18173c9621c1f18ecab1f7031c5f9a338803e`, passed `PartyBotEngine tests passed`, read-only report collector tests, Linux ARM64 server/realm build, simulator harness syntax, fixture-backed Core simulator and final `Runtime PASS`. F20's complete `decision_summary` fixture now explicitly includes `pending_queued=0`; the simulator log emitted the expected F20 PASS marker. This fixture continues to run existing Legacy/Shadow-owned Core scenarios; it does not claim live NewEngine gameplay adapters or execute the new pending dispatcher as a production rotation.
+- [x] PR CI [#44664715713](https://github.com/tyrael9/core/actions/runs/44664715713) passed changed-path classification, pure Engine tests, report collector tests and the full Linux ARM64 server/realm build. Fixture-backed runtime is intentionally push-only.
 - [x] Add a pending-dispatch aggregate threat-budget regression: two individually safe 12-point candidates targeting the same Core threat recipient cannot both dispatch when their combined projection exceeds headroom.
 - [ ] Add a mixed immediate/pending eight-action ceiling regression if future channel expansion allows more than the current four mutually-exclusive channels; expand queue fairness/result-listener semantics in later Phase 4 work.
 

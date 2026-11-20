@@ -87,3 +87,8 @@ Pending candidates are revalidated against the current snapshot, selected with a
 
 
 The pending dispatcher passes one shared `ThreatImpactTotals` accumulator to `AssessThreatImpactBudget`. That helper adds each safe candidate's fan-out totals only after all recipient rows pass. Later candidates are therefore checked against both live coordinator reservations and higher-priority pending work selected earlier in the same dispatch. A pure regression covers two individually safe 12-point actions whose combined projection exceeds Core headroom.
+
+
+## F30 verification boundary
+
+F30 passed trusted push CI [#44664709181](https://github.com/tyrael9/core/actions/runs/44664709181): the pure Engine suite, full ARM64 build and existing fixture-backed Vanilla 5875 simulator reached final `Runtime PASS`. PR CI [#44664715713](https://github.com/tyrael9/core/actions/runs/44664715713) passed the test/build path. The simulator validates compatibility of existing Core/PartyBot lifecycle behavior; the new `ExecuteDecisionCycle` and pending dispatch semantics are verified by pure Engine tests. NewEngine still has no production class action adapters, so no claim of live class-rotation gameplay is made.

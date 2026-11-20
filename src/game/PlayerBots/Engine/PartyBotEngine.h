@@ -37,6 +37,9 @@ public:
     bool AddCoreSpellTerminalListener(std::shared_ptr<CoreSpellTerminalListener> listener);
     std::size_t GetCoreSpellTerminalListenerCount() const { return m_coreSpellTerminalListeners.size(); }
     void NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event) const;
+    ActionContinuationEnqueueResult QueueActionDependency(
+        DecisionContext const& context, ActionDependencyRequest const& request,
+        ActionCandidate const& continuationCandidate) const override;
     ActionContinuationEnqueueResult QueueActionContinuation(
         DecisionContext const& context, ActionCandidate const& parentCandidate,
         ActionCandidate const& continuationCandidate, std::uint32_t lifetimeMs) const override;
@@ -76,9 +79,9 @@ private:
     std::shared_ptr<Action> FindAction(std::string const& name) const;
     bool ReleaseContinuation(ActionContinuationQueue::Entry const& entry,
                              std::uint32_t nowMs) const;
+    bool ReleaseReadyActionDependencies(
+        std::uint32_t nowMs, ActionCandidate const* registeringCandidate = nullptr) const;
     void RememberCoreSpellTerminal(CoreSpellTerminalEvent const& event) const;
-    CoreSpellTerminalEvent const* FindRecentCoreSpellTerminal(
-        ActionId actionId, std::uint64_t encounterId) const;
     std::vector<std::shared_ptr<Strategy>> m_strategies;
     std::map<std::string, std::shared_ptr<Action>> m_actions;
     std::vector<std::shared_ptr<Multiplier>> m_multipliers;

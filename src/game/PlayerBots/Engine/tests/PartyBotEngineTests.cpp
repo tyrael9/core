@@ -649,6 +649,277 @@ void TestContinuationExpiryEncounterIsolationCapacityAndLateTerminalRace()
     }
 }
 
+ActionTerminalPrerequisite MakePrerequisite(
+    ActionId actionId, std::uint64_t encounterId, Guid targetGuid,
+    std::uint32_t spellId, CoreSpellTerminalStatus status)
+{
+    ActionTerminalPrerequisite prerequisite;
+    prerequisite.actionId = actionId;
+    prerequisite.encounterId = encounterId;
+    prerequisite.targetGuid = targetGuid;
+    prerequisite.spellId = spellId;
+    prerequisite.requiredStatus = status;
+    return prerequisite;
+}
+
+ActionDependencyRequest MakeDependencyRequest(
+    std::uint32_t lifetimeMs, ActionTerminalPrerequisite const& prerequisite)
+{
+    ActionDependencyRequest request;
+    request.lifetimeMs = lifetimeMs;
+    request.prerequisites.push_back(prerequisite);
+    return request;
+}
+
+void TestActionDependenciesRequireAllAndPrerequisites()
+{
+    Fixture f;
+    BeginContinuationTestEncounter(f);
+    PartyBotEngine::PartyBotEngine engine;
+    auto child = std::make_shared<TestAction>("followup_and");
+    child->pendingLifetimeMs = 2000;
+    assert(engine.RegisterAction(child));
+
+    std::uint64_t const encounterId = f.coordinator.GetEncounterId();
+    ActionCandidate candidate = Candidate("followup_and", 30.0f, ActionChannel::Utility);
+    candidate.finalPriority = 30.0f;
+    ActionDependencyRequest request;
+    request.lifetimeMs = 1500;
+    request.prerequisites.push_back(MakePrerequisite(
+        1001, encounterId, 22, 2050, CoreSpellTerminalStatus::Succeeded));
+    request.prerequisites.push_back(MakePrerequisite(
+        1002, encounterId, 23, 2061, CoreSpellTerminalStatus::Succeeded));
+
+    assert(engine.QueueActionDependency(f.context, request, candidate) ==
+           ActionContinuationEnqueueResult::Queued);
+    assert(engine.GetPendingContinuationCount() == 1);
+
+    CoreSpellTerminalEvent first;
+    first.actionId = 1001;
+    first.encounterId = encounterId;
+    first.targetGuid = 22;
+    first.spellId = 2050;
+    first.occurredAtMs = 1100;
+    first.status = CoreSpellTerminalStatus::Succeeded;
+    engine.NotifyCoreSpellTerminal(first);
+    assert(engine.GetPendingContinuationCount() == 1);
+    assert(engine.GetPendingActionCount() == 0);
+
+    CoreSpellTerminalEvent second;
+    second.actionId = 1002;
+    second.encounterId = encounterId;
+    second.targetGuid = 23;
+    second.spellId = 2061;
+    second.occurredAtMs = 1200;
+    second.status = CoreSpellTerminalStatus::Succeeded;
+    engine.NotifyCoreSpellTerminal(second);
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 1);
+
+    DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1201);
+    PendingActionDispatchSummary const dispatch = engine.ExecutePendingActions(nextTick);
+    assert(dispatch.selected == 1 && dispatch.executed == 1);
+    assert(child->executeCount == 1);
+}
+
+void TestActionDependenciesRejectFailedAndInvalidAndPrerequisites()
+{
+    Fixture f;
+    BeginContinuationTestEncounter(f);
+    PartyBotEngine::PartyBotEngine engine;
+    auto child = std::make_shared<TestAction>("followup_and_failure");
+    child->pendingLifetimeMs = 2000;
+    assert(engine.RegisterAction(child));
+
+    std::uint64_t const encounterId = f.coordinator.GetEncounterId();
+    ActionCandidate candidate = Candidate(
+        "followup_and_failure", 20.0f, ActionChannel::Utility);
+    candidate.finalPriority = 20.0f;
+    ActionDependencyRequest request;
+    request.lifetimeMs = 1500;
+    request.prerequisites.push_back(MakePrerequisite(
+        1101, encounterId, 22, 2050, CoreSpellTerminalStatus::Succeeded));
+    request.prerequisites.push_back(MakePrerequisite(
+        1102, encounterId, 23, 2061, CoreSpellTerminalStatus::Succeeded));
+    assert(engine.QueueActionDependency(f.context, request, candidate) ==
+           ActionContinuationEnqueueResult::Queued);
+
+    CoreSpellTerminalEvent success;
+    success.actionId = 1101;
+    success.encounterId = encounterId;
+    success.targetGuid = 22;
+    success.spellId = 2050;
+    success.occurredAtMs = 1100;
+    success.status = CoreSpellTerminalStatus::Succeeded;
+    engine.NotifyCoreSpellTerminal(success);
+
+    CoreSpellTerminalEvent failed;
+    failed.actionId = 1102;
+    failed.encounterId = encounterId;
+    failed.targetGuid = 23;
+    failed.spellId = 2061;
+    failed.occurredAtMs = 1200;
+    failed.status = CoreSpellTerminalStatus::Failed;
+    engine.NotifyCoreSpellTerminal(failed);
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 0);
+    DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1201);
+    engine.ExecutePendingActions(nextTick);
+    assert(child->executeCount == 0);
+
+    ActionDependencyRequest duplicate = MakeDependencyRequest(
+        1000, MakePrerequisite(1201, encounterId, 22, 2050,
+                               CoreSpellTerminalStatus::Succeeded));
+    duplicate.prerequisites.push_back(duplicate.prerequisites[0]);
+    assert(engine.QueueActionDependency(f.context, duplicate, candidate) ==
+           ActionContinuationEnqueueResult::Invalid);
+
+    ActionDependencyRequest wrongEncounter = MakeDependencyRequest(
+        1000, MakePrerequisite(1202, encounterId + 1, 22, 2050,
+                               CoreSpellTerminalStatus::Succeeded));
+    assert(engine.QueueActionDependency(f.context, wrongEncounter, candidate) ==
+           ActionContinuationEnqueueResult::ParentEncounterInactive);
+}
+
+void TestActionAlternativeGroupsWaitForAllBranchesAndChoosePriority()
+{
+    Fixture f;
+    BeginContinuationTestEncounter(f);
+    PartyBotEngine::PartyBotEngine engine;
+    std::vector<std::string> order;
+    auto lower = std::make_shared<TestAction>("alternative_lower");
+    auto higher = std::make_shared<TestAction>("alternative_higher");
+    lower->pendingLifetimeMs = higher->pendingLifetimeMs = 2000;
+    lower->executionOrder = higher->executionOrder = &order;
+    assert(engine.RegisterAction(lower) && engine.RegisterAction(higher));
+
+    std::uint64_t const encounterId = f.coordinator.GetEncounterId();
+    ActionTerminalPrerequisite const parent = MakePrerequisite(
+        1301, encounterId, 22, 2050, CoreSpellTerminalStatus::Succeeded);
+    ActionDependencyRequest lowerRequest = MakeDependencyRequest(1500, parent);
+    lowerRequest.alternativeGroupId = 700;
+    lowerRequest.alternativeIndex = 0;
+    lowerRequest.alternativeCount = 2;
+    ActionDependencyRequest higherRequest = lowerRequest;
+    higherRequest.alternativeIndex = 1;
+
+    ActionCandidate lowerCandidate = Candidate(
+        "alternative_lower", 10.0f, ActionChannel::Utility);
+    lowerCandidate.finalPriority = 10.0f;
+    ActionCandidate higherCandidate = Candidate(
+        "alternative_higher", 30.0f, ActionChannel::Utility);
+    higherCandidate.finalPriority = 30.0f;
+
+    assert(engine.QueueActionDependency(f.context, lowerRequest, lowerCandidate) ==
+           ActionContinuationEnqueueResult::Queued);
+    CoreSpellTerminalEvent terminal;
+    terminal.actionId = parent.actionId;
+    terminal.encounterId = encounterId;
+    terminal.targetGuid = parent.targetGuid;
+    terminal.spellId = parent.spellId;
+    terminal.occurredAtMs = 1100;
+    terminal.status = CoreSpellTerminalStatus::Succeeded;
+    engine.NotifyCoreSpellTerminal(terminal);
+    // One registered branch is not enough to settle an alternative group.
+    assert(engine.GetPendingContinuationCount() == 1);
+    assert(engine.GetPendingActionCount() == 0);
+
+    // The second branch is registered after the Core terminal. Its prereq is
+    // seeded from the recent-terminal ledger and the group resolves atomically.
+    assert(engine.QueueActionDependency(f.context, higherRequest, higherCandidate) ==
+           ActionContinuationEnqueueResult::ReleasedImmediately);
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == 1);
+    DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1200);
+    PendingActionDispatchSummary const dispatch = engine.ExecutePendingActions(nextTick);
+    assert(dispatch.selected == 1 && dispatch.executed == 1);
+    assert(order.size() == 1 && order[0] == "alternative_higher");
+    assert(lower->executeCount == 0 && higher->executeCount == 1);
+}
+
+void TestActionAlternativeGroupsUseFifoForPriorityTiesAndCancelOnExpiry()
+{
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        std::vector<std::string> order;
+        auto first = std::make_shared<TestAction>("alternative_first");
+        auto second = std::make_shared<TestAction>("alternative_second");
+        first->pendingLifetimeMs = second->pendingLifetimeMs = 2000;
+        first->executionOrder = second->executionOrder = &order;
+        assert(engine.RegisterAction(first) && engine.RegisterAction(second));
+
+        std::uint64_t const encounterId = f.coordinator.GetEncounterId();
+        ActionTerminalPrerequisite const parent = MakePrerequisite(
+            1401, encounterId, 22, 2050, CoreSpellTerminalStatus::Succeeded);
+        ActionDependencyRequest firstRequest = MakeDependencyRequest(1500, parent);
+        firstRequest.alternativeGroupId = 701;
+        firstRequest.alternativeIndex = 0;
+        firstRequest.alternativeCount = 2;
+        ActionDependencyRequest secondRequest = firstRequest;
+        secondRequest.alternativeIndex = 1;
+        ActionCandidate firstCandidate = Candidate(
+            "alternative_first", 20.0f, ActionChannel::Utility);
+        ActionCandidate secondCandidate = Candidate(
+            "alternative_second", 20.0f, ActionChannel::Utility);
+        firstCandidate.finalPriority = secondCandidate.finalPriority = 20.0f;
+
+        assert(engine.QueueActionDependency(f.context, firstRequest, firstCandidate) ==
+               ActionContinuationEnqueueResult::Queued);
+        assert(engine.QueueActionDependency(f.context, secondRequest, secondCandidate) ==
+               ActionContinuationEnqueueResult::Queued);
+        CoreSpellTerminalEvent terminal;
+        terminal.actionId = parent.actionId;
+        terminal.encounterId = encounterId;
+        terminal.targetGuid = parent.targetGuid;
+        terminal.spellId = parent.spellId;
+        terminal.occurredAtMs = 1100;
+        terminal.status = CoreSpellTerminalStatus::Succeeded;
+        engine.NotifyCoreSpellTerminal(terminal);
+        DecisionContext nextTick(f.snapshot, f.bot, f.coordinator, 1200);
+        engine.ExecutePendingActions(nextTick);
+        assert(order.size() == 1 && order[0] == "alternative_first");
+        assert(first->executeCount == 1 && second->executeCount == 0);
+    }
+
+    {
+        Fixture f;
+        BeginContinuationTestEncounter(f);
+        PartyBotEngine::PartyBotEngine engine;
+        auto first = std::make_shared<TestAction>("expired_alternative_first");
+        auto second = std::make_shared<TestAction>("expired_alternative_second");
+        first->pendingLifetimeMs = second->pendingLifetimeMs = 2000;
+        assert(engine.RegisterAction(first) && engine.RegisterAction(second));
+        std::uint64_t const encounterId = f.coordinator.GetEncounterId();
+        ActionTerminalPrerequisite const parent = MakePrerequisite(
+            1501, encounterId, 22, 2050, CoreSpellTerminalStatus::Succeeded);
+        ActionDependencyRequest firstRequest = MakeDependencyRequest(100, parent);
+        firstRequest.alternativeGroupId = 702;
+        firstRequest.alternativeIndex = 0;
+        firstRequest.alternativeCount = 2;
+        ActionDependencyRequest secondRequest = MakeDependencyRequest(500, parent);
+        secondRequest.alternativeGroupId = 702;
+        secondRequest.alternativeIndex = 1;
+        secondRequest.alternativeCount = 2;
+        ActionCandidate firstCandidate = Candidate(
+            "expired_alternative_first", 20.0f, ActionChannel::Utility);
+        ActionCandidate secondCandidate = Candidate(
+            "expired_alternative_second", 10.0f, ActionChannel::Utility);
+        firstCandidate.finalPriority = 20.0f;
+        secondCandidate.finalPriority = 10.0f;
+        assert(engine.QueueActionDependency(f.context, firstRequest, firstCandidate) ==
+               ActionContinuationEnqueueResult::Queued);
+        assert(engine.QueueActionDependency(f.context, secondRequest, secondCandidate) ==
+               ActionContinuationEnqueueResult::Queued);
+        DecisionContext expiryTick(f.snapshot, f.bot, f.coordinator, 1100);
+        PendingActionDispatchSummary const pruned = engine.ExecutePendingActions(expiryTick);
+        assert(pruned.expiredContinuations == 2);
+        assert(engine.GetPendingContinuationCount() == 0);
+        assert(engine.GetPendingActionCount() == 0);
+    }
+}
+
 void TestPendingActionQueueRejectsInvalidAndFullEntries()
 {
     PendingActionQueue queue;
@@ -3046,6 +3317,10 @@ int main() {
     TestActionResultListenersAreBoundedAndSnapshotDuringDispatch();
     TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded();
     TestCoreSpellSuccessReleasesAndExecutesBoundedContinuation();
+    TestActionDependenciesRequireAllAndPrerequisites();
+    TestActionDependenciesRejectFailedAndInvalidAndPrerequisites();
+    TestActionAlternativeGroupsWaitForAllBranchesAndChoosePriority();
+    TestActionAlternativeGroupsUseFifoForPriorityTiesAndCancelOnExpiry();
     TestFailedInterruptedAndMismatchedTerminalsNeverReleaseContinuations();
     TestContinuationExpiryEncounterIsolationCapacityAndLateTerminalRace();
     TestCandidateTraceSelectionPreservesArbitrationSelectionAfterExecution();

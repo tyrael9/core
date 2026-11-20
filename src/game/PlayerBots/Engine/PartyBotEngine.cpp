@@ -69,18 +69,10 @@ void PartyBotEngine::RememberCoreSpellTerminal(
         if (existing.actionId == event.actionId &&
             existing.encounterId == event.encounterId)
             return;
-    static std::size_t const Capacity = 32;
+    static std::size_t const Capacity = 128;
     if (m_recentCoreSpellTerminals.size() >= Capacity)
         m_recentCoreSpellTerminals.erase(m_recentCoreSpellTerminals.begin());
     m_recentCoreSpellTerminals.push_back(event);
-}
-
-CoreSpellTerminalEvent const* PartyBotEngine::FindRecentCoreSpellTerminal(
-    ActionId actionId, std::uint64_t encounterId) const {
-    for (CoreSpellTerminalEvent const& event : m_recentCoreSpellTerminals)
-        if (event.actionId == actionId && event.encounterId == encounterId)
-            return &event;
-    return nullptr;
 }
 
 bool PartyBotEngine::ReleaseContinuation(
@@ -103,9 +95,34 @@ bool PartyBotEngine::ReleaseContinuation(
         result == PendingActionEnqueueResult::UpdatedExisting;
 }
 
-ActionContinuationEnqueueResult PartyBotEngine::QueueActionContinuation(
-    DecisionContext const& context, ActionCandidate const& parentCandidate,
-    ActionCandidate const& continuationCandidate, std::uint32_t lifetimeMs) const {
+bool PartyBotEngine::ReleaseReadyActionDependencies(
+    std::uint32_t nowMs, ActionCandidate const* registeringCandidate) const {
+    std::vector<ActionContinuationQueue::Entry> ready;
+    m_actionContinuationQueue.CollectReady(ready);
+    bool registeringCandidateReleased = false;
+    auto sameIdentity = [](ActionCandidate const& left, ActionCandidate const& right) {
+        return left.actionName == right.actionName &&
+            left.targetGuid == right.targetGuid &&
+            left.spellId == right.spellId &&
+            left.channel == right.channel &&
+            left.hasDestination == right.hasDestination &&
+            (!left.hasDestination ||
+                (left.destinationX == right.destinationX &&
+                 left.destinationY == right.destinationY &&
+                 left.destinationZ == right.destinationZ));
+    };
+    for (ActionContinuationQueue::Entry const& entry : ready) {
+        bool const released = ReleaseContinuation(entry, nowMs);
+        if (released && registeringCandidate &&
+            sameIdentity(entry.candidate, *registeringCandidate))
+            registeringCandidateReleased = true;
+    }
+    return registeringCandidateReleased;
+}
+
+ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
+    DecisionContext const& context, ActionDependencyRequest const& request,
+    ActionCandidate const& continuationCandidate) const {
     if (!context.coordinator.HasActiveEncounter() ||
         !context.coordinator.GetEncounterId() ||
         context.snapshot.groupId != context.coordinator.GetEncounterGroupId() ||
@@ -115,15 +132,10 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionContinuation(
     if (!context.snapshot.groupId || !context.bot.guid ||
         context.snapshot.mapId != context.bot.mapId ||
         context.snapshot.instanceId != context.bot.instanceId ||
-        !parentCandidate.actionId || !parentCandidate.spellId ||
-        !parentCandidate.targetGuid || continuationCandidate.actionName.empty() ||
-        !std::isfinite(continuationCandidate.basePriority) ||
-        !std::isfinite(continuationCandidate.finalPriority) ||
-        (continuationCandidate.hasDestination &&
-            (!std::isfinite(continuationCandidate.destinationX) ||
-             !std::isfinite(continuationCandidate.destinationY) ||
-             !std::isfinite(continuationCandidate.destinationZ))) ||
-        !lifetimeMs || lifetimeMs > ActionContinuationQueue::MaxLifetimeMs)
+        request.prerequisites.empty() ||
+        request.prerequisites.size() > ActionContinuationQueue::MaxPrerequisites ||
+        !request.lifetimeMs ||
+        request.lifetimeMs > ActionContinuationQueue::MaxLifetimeMs)
         return ActionContinuationEnqueueResult::Invalid;
 
     std::shared_ptr<Action> continuationAction = FindAction(continuationCandidate.actionName);
@@ -132,7 +144,12 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionContinuation(
     std::uint32_t const actionLifetimeMs = continuationAction->GetPendingLifetimeMs();
     if (!actionLifetimeMs || actionLifetimeMs > PendingActionQueue::MaxLifetimeMs)
         return ActionContinuationEnqueueResult::ChildLifetimeDisabled;
-    lifetimeMs = std::min(lifetimeMs, actionLifetimeMs);
+
+    ActionDependencyRequest boundedRequest = request;
+    boundedRequest.lifetimeMs = std::min(request.lifetimeMs, actionLifetimeMs);
+    for (ActionTerminalPrerequisite const& prerequisite : boundedRequest.prerequisites)
+        if (prerequisite.encounterId != context.coordinator.GetEncounterId())
+            return ActionContinuationEnqueueResult::ParentEncounterInactive;
 
     PendingActionQueue::Context pendingContext;
     pendingContext.groupId = context.snapshot.groupId;
@@ -143,45 +160,40 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionContinuation(
     pendingContext.encounterActive = context.coordinator.HasActiveEncounter();
     pendingContext.scoped = true;
 
-    CoreSpellTerminalEvent const* terminal = FindRecentCoreSpellTerminal(
-        parentCandidate.actionId, pendingContext.encounterId);
-    if (terminal) {
-        if (terminal->status != CoreSpellTerminalStatus::Succeeded ||
-            terminal->targetGuid != parentCandidate.targetGuid ||
-            terminal->spellId != parentCandidate.spellId)
-            return ActionContinuationEnqueueResult::ParentTerminalRejected;
-        ActionContinuationQueue::Entry entry;
-        entry.parentActionId = parentCandidate.actionId;
-        entry.parentTargetGuid = parentCandidate.targetGuid;
-        entry.parentSpellId = parentCandidate.spellId;
-        entry.candidate = continuationCandidate;
-        entry.context = pendingContext;
-        entry.enqueuedAtMs = terminal->occurredAtMs;
-        entry.expiresAtMs = terminal->occurredAtMs + lifetimeMs;
-        std::uint32_t releaseAtMs = context.nowMs;
-        if (static_cast<std::int32_t>(releaseAtMs - terminal->occurredAtMs) < 0)
-            releaseAtMs = terminal->occurredAtMs;
-        if (ActionContinuationQueue::IsExpired(releaseAtMs, entry.expiresAtMs))
-            return ActionContinuationEnqueueResult::Expired;
-        return ReleaseContinuation(entry, releaseAtMs)
-            ? ActionContinuationEnqueueResult::ReleasedImmediately
-            : ActionContinuationEnqueueResult::PendingQueueFull;
-    }
-
     ActionContinuationEnqueueResult const result = m_actionContinuationQueue.Enqueue(
-        parentCandidate, continuationCandidate, context.nowMs, lifetimeMs,
-        pendingContext);
-    return result;
+        boundedRequest, continuationCandidate, context.nowMs, pendingContext);
+    if (result != ActionContinuationEnqueueResult::Queued)
+        return result;
+
+    // Instant casts can finish before an adapter registers a dependency. Seed
+    // every prerequisite from the bounded terminal ledger before deciding.
+    for (CoreSpellTerminalEvent const& event : m_recentCoreSpellTerminals)
+        m_actionContinuationQueue.ObserveTerminal(event);
+    return ReleaseReadyActionDependencies(context.nowMs, &continuationCandidate)
+        ? ActionContinuationEnqueueResult::ReleasedImmediately
+        : ActionContinuationEnqueueResult::Queued;
+}
+
+ActionContinuationEnqueueResult PartyBotEngine::QueueActionContinuation(
+    DecisionContext const& context, ActionCandidate const& parentCandidate,
+    ActionCandidate const& continuationCandidate, std::uint32_t lifetimeMs) const {
+    ActionDependencyRequest request;
+    request.lifetimeMs = lifetimeMs;
+    ActionTerminalPrerequisite prerequisite;
+    prerequisite.actionId = parentCandidate.actionId;
+    prerequisite.encounterId = context.coordinator.GetEncounterId();
+    prerequisite.targetGuid = parentCandidate.targetGuid;
+    prerequisite.spellId = parentCandidate.spellId;
+    prerequisite.requiredStatus = CoreSpellTerminalStatus::Succeeded;
+    request.prerequisites.push_back(prerequisite);
+    return QueueActionDependency(context, request, continuationCandidate);
 }
 
 void PartyBotEngine::NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event) const {
     RememberCoreSpellTerminal(event);
-    ActionContinuationQueue::Entry continuation;
-    if (m_actionContinuationQueue.Take(event.actionId, event.encounterId, continuation) &&
-        event.status == CoreSpellTerminalStatus::Succeeded &&
-        event.targetGuid == continuation.parentTargetGuid &&
-        event.spellId == continuation.parentSpellId)
-        ReleaseContinuation(continuation, event.occurredAtMs);
+    m_actionContinuationQueue.PruneExpired(event.occurredAtMs);
+    m_actionContinuationQueue.ObserveTerminal(event);
+    ReleaseReadyActionDependencies(event.occurredAtMs);
 
     std::vector<std::shared_ptr<CoreSpellTerminalListener>> const listeners =
         m_coreSpellTerminalListeners;

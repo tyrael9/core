@@ -3,6 +3,7 @@
 
 #include "CoreSpellTerminalListener.h"
 #include "PointMovementTerminalListener.h"
+#include "ItemUseTerminalListener.h"
 #include "DecisionTypes.h"
 #include <cstdint>
 #include <vector>
@@ -30,7 +31,8 @@ enum class ActionDependencyEventSource : std::uint8_t
 {
     CoreSpellTerminal,
     ActionResult,
-    PointMovementTerminal
+    PointMovementTerminal,
+    ItemUseTerminal
 };
 
 // One required result from a prior Engine action. CoreSpellTerminal expresses
@@ -50,6 +52,8 @@ struct ActionDependencyPrerequisite
     bool requiredAttempted = true;
     std::uint32_t pointId = 0;
     PointMovementTerminalStatus requiredMovementStatus = PointMovementTerminalStatus::Reached;
+    ItemUseId itemUseId = 0;
+    ItemUseAggregateStatus requiredItemUseStatus = ItemUseAggregateStatus::AllSucceeded;
 };
 
 // Source compatibility for F34/F35 callers; new generic dependencies should

@@ -4,6 +4,7 @@
 #include "ActionQueue.h"
 #include "ActionContinuation.h"
 #include "ActionResultListener.h"
+#include "ItemUseTerminalListener.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -138,6 +139,30 @@ public:
                     prerequisite.targetGuid == event.moverGuid &&
                     prerequisite.pointId == event.pointId &&
                     prerequisite.requiredMovementStatus == event.status
+                    ? PrerequisiteState::Satisfied : PrerequisiteState::Rejected;
+            }
+        }
+    }
+
+    void ObserveItemUseTerminal(ItemUseTerminalEvent const& event)
+    {
+        if (!event.itemUseId || !event.actionId || !event.encounterId)
+            return;
+        for (Entry& entry : m_entries)
+        {
+            for (std::size_t i = 0; i < entry.request.prerequisites.size(); ++i)
+            {
+                if (entry.states[i] != PrerequisiteState::Waiting)
+                    continue;
+                ActionDependencyPrerequisite const& prerequisite =
+                    entry.request.prerequisites[i];
+                if (prerequisite.source != ActionDependencyEventSource::ItemUseTerminal ||
+                    prerequisite.actionId != event.actionId ||
+                    prerequisite.encounterId != event.encounterId ||
+                    prerequisite.itemUseId != event.itemUseId)
+                    continue;
+                entry.states[i] =
+                    prerequisite.requiredItemUseStatus == event.status
                     ? PrerequisiteState::Satisfied : PrerequisiteState::Rejected;
             }
         }
@@ -432,7 +457,9 @@ private:
                 a.requiredActionResult == b.requiredActionResult &&
                 a.requiredAttempted == b.requiredAttempted &&
                 a.pointId == b.pointId &&
-                a.requiredMovementStatus == b.requiredMovementStatus;
+                a.requiredMovementStatus == b.requiredMovementStatus &&
+                a.itemUseId == b.itemUseId &&
+                a.requiredItemUseStatus == b.requiredItemUseStatus;
         };
         for (ActionTerminalPrerequisite const& prerequisite : left) {
             bool found = false;
@@ -504,12 +531,22 @@ private:
                         static_cast<std::uint8_t>(PointMovementTerminalStatus::Failed))
                     return false;
             }
+            else if (prerequisite.source == ActionDependencyEventSource::ItemUseTerminal)
+            {
+                if (!prerequisite.itemUseId || prerequisite.targetGuid ||
+                    prerequisite.spellId || !prerequisite.expectedActionName.empty() ||
+                    prerequisite.pointId ||
+                    static_cast<std::uint8_t>(prerequisite.requiredItemUseStatus) >
+                        static_cast<std::uint8_t>(ItemUseAggregateStatus::Expired))
+                    return false;
+            }
             else
                 return false;
 
             for (std::size_t j = 0; j < i; ++j)
                 if (request.prerequisites[j].source == prerequisite.source &&
-                    request.prerequisites[j].actionId == prerequisite.actionId)
+                    request.prerequisites[j].actionId == prerequisite.actionId &&
+                    request.prerequisites[j].itemUseId == prerequisite.itemUseId)
                     return false;
         }
         return true;

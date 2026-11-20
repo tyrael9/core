@@ -256,6 +256,21 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
                     prerequisite.requiredActionResult == matchedResult->result &&
                     prerequisite.requiredAttempted == matchedResult->attempted;
             }
+        } else if (prerequisite.source == ActionDependencyEventSource::ItemUseTerminal) {
+            ItemUseTerminalEvent const* matchedItemUse = nullptr;
+            for (ItemUseTerminalEvent const& event : m_recentItemUseTerminals)
+                if (event.actionId == prerequisite.actionId &&
+                    event.encounterId == prerequisite.encounterId &&
+                    event.itemUseId == prerequisite.itemUseId) {
+                    matchedItemUse = &event;
+                    break;
+                }
+            if (matchedItemUse) {
+                foundEvent = true;
+                occurredAtMs = matchedItemUse->occurredAtMs;
+                matchesPrerequisite =
+                    matchedItemUse->status == prerequisite.requiredItemUseStatus;
+            }
         } else if (prerequisite.source == ActionDependencyEventSource::PointMovementTerminal) {
             PointMovementTerminalEvent const* matchedMovement = nullptr;
             for (PointMovementTerminalEvent const& event : m_recentPointMovementTerminals)
@@ -315,6 +330,8 @@ ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
         m_actionContinuationQueue.ObserveActionResult(event);
     for (PointMovementTerminalEvent const& event : m_recentPointMovementTerminals)
         m_actionContinuationQueue.ObservePointMovementTerminal(event);
+    for (ItemUseTerminalEvent const& event : m_recentItemUseTerminals)
+        m_actionContinuationQueue.ObserveItemUseTerminal(event);
     return ReleaseReadyActionDependencies(context.nowMs, &continuationCandidate)
         ? ActionContinuationEnqueueResult::ReleasedImmediately
         : ActionContinuationEnqueueResult::Queued;
@@ -347,6 +364,104 @@ void PartyBotEngine::NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event
         if (listener)
             listener->OnCoreSpellTerminal(event);
 }
+bool PartyBotEngine::AddItemUseTerminalListener(
+    std::shared_ptr<ItemUseTerminalListener> listener) {
+    if (!listener || m_itemUseTerminalListeners.size() >= 32)
+        return false;
+    for (auto const& registered : m_itemUseTerminalListeners)
+        if (registered == listener)
+            return false;
+    m_itemUseTerminalListeners.push_back(std::move(listener));
+    return true;
+}
+
+void PartyBotEngine::RememberItemUseTerminal(ItemUseTerminalEvent const& event) const {
+    if (!event.itemUseId)
+        return;
+    for (ItemUseTerminalEvent const& existing : m_recentItemUseTerminals)
+        if (existing.itemUseId == event.itemUseId)
+            return;
+    static std::size_t const Capacity = 128;
+    if (m_recentItemUseTerminals.size() >= Capacity)
+        m_recentItemUseTerminals.erase(m_recentItemUseTerminals.begin());
+    m_recentItemUseTerminals.push_back(event);
+}
+
+void PartyBotEngine::NotifyItemUseTerminal(ItemUseTerminalEvent const& event) const {
+    RememberItemUseTerminal(event);
+    if (event.actionId && event.encounterId) {
+        m_actionContinuationQueue.PruneExpired(event.occurredAtMs);
+        m_actionContinuationQueue.ObserveItemUseTerminal(event);
+        ReleaseReadyActionDependencies(event.occurredAtMs);
+    }
+    std::vector<std::shared_ptr<ItemUseTerminalListener>> const listeners =
+        m_itemUseTerminalListeners;
+    for (auto const& listener : listeners)
+        if (listener)
+            listener->OnItemUseTerminal(event);
+}
+
+ItemUseTrackerResult PartyBotEngine::BeginItemUse(
+    ItemUseRequestDescriptor const& request, ItemUseId& itemUseId) {
+    return m_itemUseAggregateTracker.Begin(request, itemUseId);
+}
+
+ItemUseTrackerResult PartyBotEngine::RegisterItemUseChild(
+    ItemUseId itemUseId, std::uint8_t slotIndex, std::uint32_t spellId,
+    bool triggered, ItemUseChildId& childId) {
+    return m_itemUseAggregateTracker.RegisterChild(itemUseId, slotIndex, spellId, triggered, childId);
+}
+
+ItemUseTrackerResult PartyBotEngine::MarkItemUseSlotSkipped(
+    ItemUseId itemUseId, std::uint8_t slotIndex) {
+    return m_itemUseAggregateTracker.MarkSlotSkipped(itemUseId, slotIndex);
+}
+
+ItemUseTrackerResult PartyBotEngine::CloseItemUseDispatch(
+    ItemUseId itemUseId, std::uint32_t nowMs) {
+    ItemUseTerminalEvent event;
+    ItemUseTrackerResult const result = m_itemUseAggregateTracker.CloseDispatch(itemUseId, nowMs, event);
+    if (result == ItemUseTrackerResult::Completed)
+        NotifyItemUseTerminal(event);
+    return result;
+}
+
+ItemUseTrackerResult PartyBotEngine::RecordItemUseChildTerminal(
+    ItemUseId itemUseId, ItemUseChildId childId, ItemUseChildStatus status, std::uint32_t nowMs) {
+    ItemUseTerminalEvent event;
+    ItemUseTrackerResult const result =
+        m_itemUseAggregateTracker.RecordChildTerminal(itemUseId, childId, status, nowMs, event);
+    if (result == ItemUseTrackerResult::Completed)
+        NotifyItemUseTerminal(event);
+    return result;
+}
+
+ItemUseTrackerResult PartyBotEngine::RecordItemUseMutation(ItemUseMutationEvent const& event) {
+    return m_itemUseAggregateTracker.RecordMutation(event);
+}
+
+std::size_t PartyBotEngine::PruneExpiredItemUses(std::uint32_t nowMs) {
+    std::vector<ItemUseTerminalEvent> expired;
+    expired.reserve(ItemUseAggregateTracker::Capacity);
+    std::size_t const count = m_itemUseAggregateTracker.PruneExpired(nowMs, expired);
+    for (ItemUseTerminalEvent const& event : expired)
+        NotifyItemUseTerminal(event);
+    return count;
+}
+
+std::size_t PartyBotEngine::ExpireAllItemUses(std::uint32_t nowMs) {
+    std::vector<ItemUseTerminalEvent> expired;
+    expired.reserve(ItemUseAggregateTracker::Capacity);
+    std::size_t const count = m_itemUseAggregateTracker.ExpireAll(nowMs, expired);
+    for (ItemUseTerminalEvent const& event : expired)
+        NotifyItemUseTerminal(event);
+    return count;
+}
+
+bool PartyBotEngine::PopItemUseMutationEvent(ItemUseMutationEvent& event) {
+    return m_itemUseAggregateTracker.PopMutationEvent(event);
+}
+
 bool PartyBotEngine::AddPointMovementTerminalListener(
     std::shared_ptr<PointMovementTerminalListener> listener) {
     if (!listener || m_pointMovementTerminalListeners.size() >= 32)
@@ -390,6 +505,8 @@ void PartyBotEngine::ResetDecisionState() const {
     m_recentCoreSpellTerminals.clear();
     m_recentActionResults.clear();
     m_recentPointMovementTerminals.clear();
+    m_recentItemUseTerminals.clear();
+    m_itemUseAggregateTracker.Clear();
 }
 bool PartyBotEngine::InvalidateTrigger(std::string const& strategyName,
                                        std::string const& triggerName) const {

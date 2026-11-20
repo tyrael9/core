@@ -270,7 +270,8 @@ public:
         if (!root)
             return WasRecentlySettled(event.itemUseId)
                 ? ItemUseTrackerResult::AlreadySettled : ItemUseTrackerResult::NotFound;
-        if (!event.itemGuid || !event.itemEntry ||
+        if ((!event.itemGuid && event.kind != ItemUseMutationKind::ReagentConsumed) ||
+            !event.itemEntry ||
             static_cast<std::uint8_t>(event.kind) >
                 static_cast<std::uint8_t>(ItemUseMutationKind::ReagentConsumed) ||
             static_cast<std::uint8_t>(event.phase) >
@@ -316,6 +317,30 @@ public:
             ++count;
         }
         return count;
+    }
+
+    std::size_t ExpireAll(
+        std::uint32_t nowMs, std::vector<ItemUseTerminalEvent>& expired)
+    {
+        std::size_t count = 0;
+        for (Root const& root : m_roots) {
+            ItemUseTerminalEvent event;
+            BuildTerminal(root, nowMs, ItemUseAggregateStatus::Expired, event);
+            expired.push_back(event);
+            RememberSettled(root.id);
+            ++count;
+        }
+        m_roots.clear();
+        return count;
+    }
+
+    void Clear()
+    {
+        m_roots.clear();
+        m_mutations.clear();
+        m_recentlySettled.fill(0);
+        m_nextSettledSlot = 0;
+        m_droppedMutationEvents = 0;
     }
 
     std::size_t GetPendingRootCount() const { return m_roots.size(); }

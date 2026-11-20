@@ -4,6 +4,8 @@
 #include "ActionResultListener.h"
 #include "CoreSpellTerminalListener.h"
 #include "PointMovementTerminalListener.h"
+#include "ItemUseAggregate.h"
+#include "ItemUseTerminalListener.h"
 #include "ActionContinuationQueue.h"
 #include "ActionQueue.h"
 #include "Multiplier.h"
@@ -41,6 +43,20 @@ public:
     bool AddPointMovementTerminalListener(std::shared_ptr<PointMovementTerminalListener> listener);
     std::size_t GetPointMovementTerminalListenerCount() const { return m_pointMovementTerminalListeners.size(); }
     void NotifyPointMovementTerminal(PointMovementTerminalEvent const& event) const;
+    bool AddItemUseTerminalListener(std::shared_ptr<ItemUseTerminalListener> listener);
+    ItemUseTrackerResult BeginItemUse(ItemUseRequestDescriptor const& request, ItemUseId& itemUseId);
+    ItemUseTrackerResult RegisterItemUseChild(ItemUseId itemUseId, std::uint8_t slotIndex,
+        std::uint32_t spellId, bool triggered, ItemUseChildId& childId);
+    ItemUseTrackerResult MarkItemUseSlotSkipped(ItemUseId itemUseId, std::uint8_t slotIndex);
+    ItemUseTrackerResult CloseItemUseDispatch(ItemUseId itemUseId, std::uint32_t nowMs);
+    ItemUseTrackerResult RecordItemUseChildTerminal(ItemUseId itemUseId, ItemUseChildId childId,
+        ItemUseChildStatus status, std::uint32_t nowMs);
+    ItemUseTrackerResult RecordItemUseMutation(ItemUseMutationEvent const& event);
+    std::size_t PruneExpiredItemUses(std::uint32_t nowMs);
+    std::size_t ExpireAllItemUses(std::uint32_t nowMs);
+    bool PopItemUseMutationEvent(ItemUseMutationEvent& event);
+    std::size_t GetPendingItemUseCount() const { return m_itemUseAggregateTracker.GetPendingRootCount(); }
+    void NotifyItemUseTerminal(ItemUseTerminalEvent const& event) const;
     ActionContinuationEnqueueResult QueueActionDependency(
         DecisionContext const& context, ActionDependencyRequest const& request,
         ActionCandidate const& continuationCandidate) const override;
@@ -88,12 +104,15 @@ private:
     void RememberCoreSpellTerminal(CoreSpellTerminalEvent const& event) const;
     void RememberActionResult(ActionResultEvent const& event) const;
     void RememberPointMovementTerminal(PointMovementTerminalEvent const& event) const;
+    void RememberItemUseTerminal(ItemUseTerminalEvent const& event) const;
     std::vector<std::shared_ptr<Strategy>> m_strategies;
     std::map<std::string, std::shared_ptr<Action>> m_actions;
     std::vector<std::shared_ptr<Multiplier>> m_multipliers;
     std::vector<std::shared_ptr<ActionResultListener>> m_actionResultListeners;
     std::vector<std::shared_ptr<CoreSpellTerminalListener>> m_coreSpellTerminalListeners;
     std::vector<std::shared_ptr<PointMovementTerminalListener>> m_pointMovementTerminalListeners;
+    std::vector<std::shared_ptr<ItemUseTerminalListener>> m_itemUseTerminalListeners;
+    mutable ItemUseAggregateTracker m_itemUseAggregateTracker;
     mutable ValueCache m_valueCache;
     mutable TriggerScheduler m_triggerScheduler;
     mutable PendingActionQueue m_pendingActionQueue;
@@ -101,6 +120,7 @@ private:
     mutable std::vector<CoreSpellTerminalEvent> m_recentCoreSpellTerminals;
     mutable std::vector<ActionResultEvent> m_recentActionResults;
     mutable std::vector<PointMovementTerminalEvent> m_recentPointMovementTerminals;
+    mutable std::vector<ItemUseTerminalEvent> m_recentItemUseTerminals;
 };
 }
 #endif

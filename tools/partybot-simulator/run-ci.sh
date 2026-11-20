@@ -257,7 +257,7 @@ if ! grep -Eq '\[PartyBotEngineTrace\].*event=candidate .*group=3 map=33 instanc
     echo "[PartyBotSimulator] The selected Core heal was not retained in the candidate detail sample after execution." | tee -a "$LOG_FILE"
     exit 1
 fi
-decision_summary_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=decision_summary .*candidates=5 selected=1 executed=1 execution_failed=0 channel_losers=0 missing_action=4 impossible=0 useless=0 multiplier_veto=0 invalid_priority=0 threat_unknown=0 threat_budget_veto=0 candidate_detail_limit=3 candidate_detail_omitted=2([^[:alnum:]_]|$)' "$LOG_FILE" || true)"
+decision_summary_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=decision_summary .*candidates=5 selected=1 executed=1 execution_failed=0 channel_losers=0 missing_action=4 impossible=0 useless=0 multiplier_veto=0 invalid_priority=0 threat_unknown=0 threat_budget_veto=0 pending_queued=0 candidate_detail_limit=3 candidate_detail_omitted=2([^[:alnum:]_]|$)' "$LOG_FILE" || true)"
 if [[ "$decision_summary_count" != "1" ]]; then
     echo "[PartyBotSimulator] Expected exactly one complete F20 decision_summary for the executed Core Player heal, found $decision_summary_count." | tee -a "$LOG_FILE"
     exit 1

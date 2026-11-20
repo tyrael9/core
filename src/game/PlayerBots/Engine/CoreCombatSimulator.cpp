@@ -3926,7 +3926,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     // Exercise the actual PartyBotAI callback and formatted encounter trace,
     // not only the Core PlayerAI observer boundary. Use a fresh active
     // coordinator so both emitted events have a deterministic shared identity.
-    std::shared_ptr<PartyCoordinator> partyTraceCoordinator(new PartyCoordinator());
+    std::shared_ptr<PartyCoordinator> partyTraceCoordinator =
+        PartyCoordinatorRegistry::GetOrCreate(group->GetId(), map.GetId(), map.GetInstanceId());
     PartySnapshot partyTraceSnapshot;
     partyTraceSnapshot.groupId = group->GetId();
     partyTraceSnapshot.mapId = map.GetId();
@@ -4263,6 +4264,225 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                      "[PartyBotSimulator] PASS: source Map::Remove retained an encounter while another PartyBotAI remained, then the last bot closed the old map shard exactly once before both Players were re-added.");
     }
 
+    // F27: move the full real Group through Map::Remove/Map::Add into a
+    // second instance of the same dungeon Map. The source shard must close on
+    // its Map thread; the ordinary PartyBotAI Shadow update must then acquire
+    // a different registry entry and start a new encounter from the destination
+    // Map's real five-Player snapshot. Moving back also verifies destination
+    // teardown and leaves the original simulator fixture intact.
+    Map* destinationMap = sMapMgr.CreateTestMap(
+        map.GetId(), true, tank->GetPositionX(), tank->GetPositionY());
+    bool instanceTransferTracePassed = false;
+    if (destinationMap && destinationMap->GetId() == map.GetId() &&
+        destinationMap->GetInstanceId() &&
+        destinationMap->GetInstanceId() != map.GetInstanceId())
+    {
+        partyTraceAI.m_decisionTrace.BeginTick();
+        secondPartyTraceAI.m_decisionTrace.BeginTick();
+        tank->SetInCombatState();
+        partyTraceAI.UpdatePartyBotEngineShadow();
+        secondPartyTraceAI.UpdatePartyBotEngineShadow();
+
+        std::shared_ptr<PartyCoordinator> sourceCoordinator = partyTraceAI.m_partyCoordinator;
+        std::uint64_t const sourceEncounterId = sourceCoordinator
+            ? sourceCoordinator->GetEncounterId() : 0;
+        bool const sourceShardReady = sourceCoordinator &&
+            sourceCoordinator == partyTraceCoordinator &&
+            secondPartyTraceAI.m_partyCoordinator == sourceCoordinator &&
+            sourceCoordinator->HasActiveEncounter() && sourceEncounterId &&
+            sourceCoordinator->GetEncounterMapId() == map.GetId() &&
+            sourceCoordinator->GetEncounterInstanceId() == map.GetInstanceId();
+
+        bool allPlayersStartedOnSource = sourceShardReady;
+        for (Player* member : players)
+            allPlayersStartedOnSource = allPlayersStartedOnSource && member &&
+                member->IsInWorld() && member->GetMap() == &map;
+
+        if (allPlayersStartedOnSource)
+        {
+            for (Player* member : players)
+                map.Remove(member, false);
+
+            bool const allPlayersDetachedFromSource = std::all_of(
+                players.begin(), players.end(),
+                [](Player const* member) { return member && !member->IsInWorld(); });
+            bool const sourceShardClosed = !sourceCoordinator->HasActiveEncounter() &&
+                sourceCoordinator->TryAdmitEncounterTraceEvent(
+                    sourceEncounterId, EncounterTraceEventClass::Terminal) ==
+                    EncounterTraceAdmission::Suppressed;
+            bool const sourceAisReleasedShard =
+                !partyTraceAI.m_partyCoordinator &&
+                !secondPartyTraceAI.m_partyCoordinator &&
+                partyTraceAI.m_partyCoordinatorMapId == 0 &&
+                secondPartyTraceAI.m_partyCoordinatorMapId == 0;
+
+            bool allPlayersAddedToDestination = allPlayersDetachedFromSource;
+            if (allPlayersDetachedFromSource)
+                for (Player* member : players)
+                    if (!destinationMap->Add(member))
+                        allPlayersAddedToDestination = false;
+
+            bool const allPlayersOnDestination = allPlayersAddedToDestination &&
+                std::all_of(players.begin(), players.end(),
+                    [destinationMap](Player const* member)
+                    {
+                        return member && member->IsInWorld() &&
+                            member->GetMap() == destinationMap &&
+                            member->GetMapId() == destinationMap->GetId() &&
+                            member->GetInstanceId() == destinationMap->GetInstanceId();
+                    });
+
+            std::shared_ptr<PartyCoordinator> destinationCoordinator;
+            bool destinationRosterValid = false;
+            bool destinationEncounterStarted = false;
+            bool destinationShardDistinct = false;
+            std::uint64_t destinationEncounterId = 0;
+            if (allPlayersOnDestination)
+            {
+                // This is the same entry point used by the normal PartyBotAI
+                // map update. No test-only coordinator injection is performed.
+                tank->SetInCombatState();
+                partyTraceAI.m_decisionTrace.BeginTick();
+                secondPartyTraceAI.m_decisionTrace.BeginTick();
+                partyTraceAI.UpdatePartyBotEngineShadow();
+                secondPartyTraceAI.UpdatePartyBotEngineShadow();
+
+                destinationCoordinator = partyTraceAI.m_partyCoordinator;
+                destinationShardDistinct = destinationCoordinator &&
+                    destinationCoordinator != sourceCoordinator &&
+                    destinationCoordinator == secondPartyTraceAI.m_partyCoordinator &&
+                    destinationCoordinator == PartyCoordinatorRegistry::GetOrCreate(
+                        group->GetId(), destinationMap->GetId(),
+                        destinationMap->GetInstanceId()) &&
+                    destinationCoordinator->GetEncounterMapId() == destinationMap->GetId() &&
+                    destinationCoordinator->GetEncounterInstanceId() ==
+                        destinationMap->GetInstanceId();
+
+                PartySnapshot const* destinationSnapshot = destinationCoordinator
+                    ? PartySnapshotBuilder::GetOrBuild(
+                        tank, *destinationCoordinator, WorldTimer::getMSTime(), 250)
+                    : nullptr;
+                destinationRosterValid = destinationSnapshot &&
+                    destinationSnapshot->groupId == group->GetId() &&
+                    destinationSnapshot->mapId == destinationMap->GetId() &&
+                    destinationSnapshot->instanceId == destinationMap->GetInstanceId() &&
+                    destinationSnapshot->members.size() == MAX_GROUP_SIZE;
+                if (destinationRosterValid)
+                {
+                    for (Player* member : players)
+                    {
+                        PartyMemberSnapshot const* row = destinationSnapshot->FindMember(
+                            member->GetObjectGuid().GetRawValue());
+                        destinationRosterValid = destinationRosterValid && row &&
+                            row->online && row->mapId == destinationMap->GetId() &&
+                            row->instanceId == destinationMap->GetInstanceId();
+                    }
+                }
+
+                destinationEncounterId = destinationCoordinator
+                    ? destinationCoordinator->GetEncounterId() : 0;
+                destinationEncounterStarted = destinationCoordinator &&
+                    destinationCoordinator->HasActiveEncounter() &&
+                    destinationEncounterId &&
+                    destinationEncounterId != sourceEncounterId &&
+                    destinationCoordinator->GetEncounterMapId() == destinationMap->GetId() &&
+                    destinationCoordinator->GetEncounterInstanceId() ==
+                        destinationMap->GetInstanceId();
+            }
+
+            // Always move the fixture back, even when one of the assertions
+            // above fails, so the enclosing Group/session cleanup stays valid.
+            bool allPlayersRemovedFromDestination = allPlayersOnDestination;
+            if (allPlayersOnDestination)
+                for (Player* member : players)
+                    destinationMap->Remove(member, false);
+            else
+                for (Player* member : players)
+                    if (member && member->IsInWorld() && member->GetMap() == destinationMap)
+                        destinationMap->Remove(member, false);
+            allPlayersRemovedFromDestination = allPlayersRemovedFromDestination &&
+                std::all_of(players.begin(), players.end(),
+                    [](Player const* member) { return member && !member->IsInWorld(); });
+
+            bool allPlayersRestoredToSource = true;
+            for (Player* member : players)
+            {
+                if (!member)
+                {
+                    allPlayersRestoredToSource = false;
+                    continue;
+                }
+                if (!member->IsInWorld())
+                {
+                    if (!map.Add(member))
+                        allPlayersRestoredToSource = false;
+                }
+                else if (member->GetMap() != &map)
+                    allPlayersRestoredToSource = false;
+            }
+
+            bool const destinationShardClosed = destinationCoordinator &&
+                destinationEncounterStarted && !destinationCoordinator->HasActiveEncounter() &&
+                destinationCoordinator->TryAdmitEncounterTraceEvent(
+                    destinationEncounterId, EncounterTraceEventClass::Terminal) ==
+                    EncounterTraceAdmission::Suppressed;
+            bool const destinationAisReleasedShard =
+                !partyTraceAI.m_partyCoordinator &&
+                !secondPartyTraceAI.m_partyCoordinator;
+            bool const allPlayersBackOnSource = allPlayersRestoredToSource &&
+                std::all_of(players.begin(), players.end(),
+                    [&map](Player const* member)
+                    {
+                        return member && member->IsInWorld() && member->GetMap() == &map &&
+                            member->GetMapId() == map.GetId() &&
+                            member->GetInstanceId() == map.GetInstanceId();
+                    });
+
+            instanceTransferTracePassed = sourceShardReady &&
+                allPlayersDetachedFromSource && sourceShardClosed && sourceAisReleasedShard &&
+                allPlayersOnDestination && destinationShardDistinct &&
+                destinationRosterValid && destinationEncounterStarted &&
+                allPlayersRemovedFromDestination && destinationShardClosed &&
+                destinationAisReleasedShard && allPlayersBackOnSource;
+        }
+    }
+
+    // No Player may remain attached to the temporary destination map.
+    if (destinationMap)
+    {
+        for (Player* member : players)
+            if (member && member->IsInWorld() && member->GetMap() == destinationMap)
+                destinationMap->Remove(member, false);
+        for (Player* member : players)
+            if (member && !member->IsInWorld())
+                map.Add(member);
+
+        bool const destinationMapEmpty = std::all_of(
+            players.begin(), players.end(),
+            [destinationMap](Player const* member)
+            {
+                return !member || !member->IsInWorld() || member->GetMap() != destinationMap;
+            });
+        bool const sourceFixtureRestored = std::all_of(
+            players.begin(), players.end(),
+            [&map](Player const* member)
+            {
+                return member && member->IsInWorld() && member->GetMap() == &map;
+            });
+        if (destinationMapEmpty)
+            sMapMgr.DeleteTestMap(destinationMap);
+        else
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                     "[PartyBotSimulator] Refusing to delete destination instance %u while a Player is still attached.",
+                     destinationMap->GetInstanceId());
+        instanceTransferTracePassed = instanceTransferTracePassed &&
+            destinationMapEmpty && sourceFixtureRestored;
+    }
+
+    if (instanceTransferTracePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: a real five-Player Group left the source Map, closed its last-PartyBot encounter exactly once, reacquired a distinct destination-instance coordinator through PartyBotAI::UpdatePartyBotEngineShadow, started a new encounter from the destination roster, then closed it and restored every Player to the source instance.");
+
     // F17: exercise the Engine's sampled trigger observations and their
     // encounter-correlated log format with the real strategy registry.
     // A healer with one injured party member yields one active healing trigger,
@@ -4300,8 +4520,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     uint32 const triggerTraceNow = WorldTimer::getMSTime();
     EncounterTransition const triggerTraceStarted =
         triggerTraceCoordinator->ObserveEncounter(triggerTraceSnapshot, triggerTraceNow, 30000);
-    RegisterDefaultShadowStrategies(partyTraceAI.m_partyBotEngine);
-    partyTraceAI.m_engineShadowStrategiesRegistered = true;
+    if (!partyTraceAI.m_engineShadowStrategiesRegistered)
+    {
+        RegisterDefaultShadowStrategies(partyTraceAI.m_partyBotEngine);
+        partyTraceAI.m_engineShadowStrategiesRegistered = true;
+    }
 
     std::shared_ptr<Strategy> activeEmptyStrategy(new Strategy("simulator_trace_active_empty"));
     activeEmptyStrategy->AddTrigger(std::make_shared<SimulatorTraceProbeTrigger>(

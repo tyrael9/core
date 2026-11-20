@@ -1068,6 +1068,11 @@ void TestActionDependenciesRequireAllAndPrerequisites()
     DecisionContext retryContext(f.snapshot, f.bot, f.coordinator, 1300);
     assert(engine.QueueActionDependency(retryContext, request, candidate) ==
            ActionContinuationEnqueueResult::DuplicateParent);
+    ActionDependencyRequest reorderedRequest = request;
+    std::reverse(reorderedRequest.prerequisites.begin(),
+                 reorderedRequest.prerequisites.end());
+    assert(engine.QueueActionDependency(retryContext, reorderedRequest, candidate) ==
+           ActionContinuationEnqueueResult::DuplicateParent);
     assert(engine.GetPendingActionCount() == 0);
 }
 

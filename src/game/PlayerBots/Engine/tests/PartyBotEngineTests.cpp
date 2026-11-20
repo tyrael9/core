@@ -1530,6 +1530,76 @@ void TestPendingActionQueueRejectsInvalidAndFullEntries()
     assert(queue.Empty());
 }
 
+void TestReadyContinuationRetriesAfterPendingQueueBackpressure()
+{
+    Fixture f;
+    BeginContinuationTestEncounter(f);
+    PartyBotEngine::PartyBotEngine engine;
+
+    // Occupy every PendingActionQueue slot with distinct, eligible actions.
+    for (std::size_t i = 0; i < PendingActionQueue::Capacity; ++i) {
+        std::string const name = "backpressure_filler_" + std::to_string(i);
+        auto filler = std::make_shared<TestAction>(name);
+        filler->pendingLifetimeMs = 5000;
+        assert(engine.RegisterAction(filler));
+        ActionCandidate candidate = Candidate(
+            name, static_cast<float>(i + 1), ActionChannel::Utility);
+        candidate.finalPriority = static_cast<float>(i + 1);
+        assert(engine.QueuePendingAction(f.context, candidate) ==
+               PendingActionEnqueueResult::Queued);
+    }
+    assert(engine.GetPendingActionCount() == PendingActionQueue::Capacity);
+
+    auto child = std::make_shared<TestAction>("backpressure_child");
+    child->pendingLifetimeMs = 5000;
+    assert(engine.RegisterAction(child));
+
+    std::uint64_t const encounterId = f.coordinator.GetEncounterId();
+    ActionTerminalPrerequisite const parent = MakePrerequisite(
+        2201, encounterId, 22, 2050, CoreSpellTerminalStatus::Succeeded);
+    ActionDependencyRequest request = MakeDependencyRequest(2000, parent);
+    ActionCandidate childCandidate = Candidate(
+        "backpressure_child", 1000.0f, ActionChannel::Utility);
+    childCandidate.finalPriority = 1000.0f;
+
+    // The parent completed before registration. The ready continuation cannot
+    // enter the full pending queue and must remain in the bounded ready backlog.
+    CoreSpellTerminalEvent terminal;
+    terminal.actionId = parent.actionId;
+    terminal.encounterId = parent.encounterId;
+    terminal.targetGuid = parent.targetGuid;
+    terminal.spellId = parent.spellId;
+    terminal.occurredAtMs = 900;
+    terminal.status = CoreSpellTerminalStatus::Succeeded;
+    engine.NotifyCoreSpellTerminal(terminal);
+
+    DecisionContext registrationContext(f.snapshot, f.bot, f.coordinator, 1000);
+    assert(engine.QueueActionDependency(
+        registrationContext, request, childCandidate) ==
+        ActionContinuationEnqueueResult::Queued);
+    assert(engine.GetPendingActionCount() == PendingActionQueue::Capacity);
+    assert(engine.GetPendingContinuationCount() == 1);
+    assert(child->executeCount == 0);
+
+    // One dispatch frees a slot; end-of-dispatch retry transfers the ready
+    // continuation to PendingActionQueue without bypassing its normal checks.
+    DecisionContext firstDispatchContext(f.snapshot, f.bot, f.coordinator, 1001);
+    PendingActionDispatchSummary const firstDispatch =
+        engine.ExecutePendingActions(firstDispatchContext);
+    assert(firstDispatch.executed == 1);
+    assert(engine.GetPendingContinuationCount() == 0);
+    assert(engine.GetPendingActionCount() == PendingActionQueue::Capacity);
+    assert(child->executeCount == 0);
+
+    // The deferred child is now in the ordinary pending queue and wins on its
+    // current priority; no second registration or duplicate parent event is needed.
+    DecisionContext secondDispatchContext(f.snapshot, f.bot, f.coordinator, 1002);
+    PendingActionDispatchSummary const secondDispatch =
+        engine.ExecutePendingActions(secondDispatchContext);
+    assert(secondDispatch.executed == 1);
+    assert(child->executeCount == 1);
+}
+
 void TestEnginePendingQueueRevalidatesCurrentEligibilityAndResetClearsIt()
 {
     Fixture f;
@@ -3909,6 +3979,7 @@ int main() {
     TestPendingActionQueuePriorityFifoExpiryAndClockWrap();
     TestPendingActionQueueAgePromotionPreventsPriorityStarvation();
     TestPendingActionQueueRejectsInvalidAndFullEntries();
+    TestReadyContinuationRetriesAfterPendingQueueBackpressure();
     TestEnginePendingQueueRevalidatesCurrentEligibilityAndResetClearsIt();
     TestEnginePendingQueueDropsForeignGroupMapAndInstanceContext();
     TestEnginePendingQueuePriorityChannelDeferralPreservesOriginalExpiry();

@@ -6919,6 +6919,183 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         bot->GetTargetGuid() == hostile.creature->GetObjectGuid();
 
     Guid const hostileGuid = hostile.creature->GetObjectGuid().GetRawValue();
+
+    // F43: dismount only for a selected, live hostile. Use a DBC-backed display
+    // ID and the real Player::Mount/Unmount Core APIs; the fixture must preserve
+    // selection, victim/combat, resources, target health and threat.
+    uint32 mountDisplayId = 0;
+    for (uint32 displayId = 1;
+         displayId < sCreatureDisplayInfoStore.GetNumRows(); ++displayId)
+    {
+        if (sCreatureDisplayInfoStore.LookupEntry(displayId))
+        {
+            mountDisplayId = displayId;
+            break;
+        }
+    }
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    bool const dismountMountStarted =
+        mountDisplayId != 0 &&
+        bot->Mount(mountDisplayId, 1) == MOUNTRESULT_OK &&
+        bot->IsMounted();
+    PartySnapshot dismountSnapshot = snapshot;
+    dismountSnapshot.epoch++;
+    dismountSnapshot.members[0].selectionGuid = hostileGuid;
+    dismountSnapshot.members[0].mounted = true;
+    dismountSnapshot.members[0].taxiFlying = false;
+    dismountSnapshot.members[0].inCombat = bot->IsInCombat();
+    PartyCoordinator dismountCoordinator;
+    DecisionContext dismountContext(
+        dismountSnapshot, dismountSnapshot.members[0], dismountCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine dismountEngine;
+    std::shared_ptr<DismountForCombatAction> dismountAction(
+        new DismountForCombatAction());
+    bool const dismountRegistered =
+        dismountEngine.RegisterAction(dismountAction);
+    std::shared_ptr<Strategy> dismountStrategy(
+        new Strategy("simulator_dismount_for_combat"));
+    dismountStrategy->AddTrigger(
+        std::make_shared<SimulatorDismountForCombatTrigger>(hostileGuid));
+    dismountEngine.AddStrategy(dismountStrategy);
+
+    Unit* const dismountVictimBefore = bot->GetVictim();
+    bool const dismountCombatBefore = bot->IsInCombat();
+    uint32 const dismountHealthBefore = bot->GetHealth();
+    uint32 const dismountPowerBefore = bot->GetPower(bot->GetPowerType());
+    uint32 const dismountTargetHealthBefore = hostile.creature->GetHealth();
+    float const dismountThreatBefore =
+        hostile.creature->GetThreatManager().getThreat(bot);
+    DecisionReport dismountReport = dismountEngine.Evaluate(dismountContext);
+    bool const dismountSelected = dismountMountStarted && dismountRegistered &&
+        dismountReport.selectedIndices.size() == 1 &&
+        dismountReport.candidates[
+            dismountReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (dismountSelected)
+        dismountEngine.ExecuteSelected(dismountContext, dismountReport);
+    CandidateEvaluation const* dismountEvaluation = dismountSelected
+        ? &dismountReport.candidates[dismountReport.selectedIndices[0]] : nullptr;
+    float const dismountThreatAfter =
+        hostile.creature->GetThreatManager().getThreat(bot);
+    bool const dismountAccepted = dismountEvaluation &&
+        dismountEvaluation->status == CandidateStatus::Executed &&
+        dismountEvaluation->actionResult == ActionResult::Success &&
+        dismountEvaluation->reason ==
+            "dismount_for_combat_unmounted_without_combat_side_effects" &&
+        !bot->IsMounted() && bot->GetMountID() == 0 &&
+        bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetVictim() == dismountVictimBefore &&
+        bot->IsInCombat() == dismountCombatBefore &&
+        bot->GetHealth() == dismountHealthBefore &&
+        bot->GetPower(bot->GetPowerType()) == dismountPowerBefore &&
+        hostile.creature->GetHealth() == dismountTargetHealthBefore &&
+        std::fabs(dismountThreatAfter - dismountThreatBefore) <= 0.001f;
+
+    // Replaying the same stale mounted snapshot must not send a second
+    // dismount request or claim success after the Player is already unmounted.
+    DecisionReport alreadyDismountedReport =
+        dismountEngine.Evaluate(dismountContext);
+    bool const alreadyDismountedSelected =
+        alreadyDismountedReport.selectedIndices.size() == 1 &&
+        alreadyDismountedReport.candidates[
+            alreadyDismountedReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+    if (alreadyDismountedSelected)
+        dismountEngine.ExecuteSelected(dismountContext, alreadyDismountedReport);
+    CandidateEvaluation const* alreadyDismountedEvaluation =
+        alreadyDismountedSelected
+            ? &alreadyDismountedReport.candidates[
+                alreadyDismountedReport.selectedIndices[0]] : nullptr;
+    bool const alreadyDismountedRejected = alreadyDismountedEvaluation &&
+        alreadyDismountedEvaluation->status == CandidateStatus::ExecutionFailed &&
+        alreadyDismountedEvaluation->actionResult == ActionResult::Useless &&
+        alreadyDismountedEvaluation->reason ==
+            "dismount_for_combat_actor_not_mounted_or_on_taxi" &&
+        !bot->IsMounted();
+
+    // A live selection race after evaluation must reject before unmounting.
+    bool const dismountRaceMountStarted =
+        bot->Mount(mountDisplayId, 1) == MOUNTRESULT_OK && bot->IsMounted();
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    PartySnapshot dismountRaceSnapshot = dismountSnapshot;
+    dismountRaceSnapshot.epoch++;
+    PartyCoordinator dismountRaceCoordinator;
+    DecisionContext dismountRaceContext(
+        dismountRaceSnapshot, dismountRaceSnapshot.members[0],
+        dismountRaceCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    DecisionReport dismountRaceReport =
+        dismountEngine.Evaluate(dismountRaceContext);
+    bool const dismountRaceSelected = dismountRaceMountStarted &&
+        dismountRaceReport.selectedIndices.size() == 1 &&
+        dismountRaceReport.candidates[
+            dismountRaceReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    bot->SetSelectionGuid(friendly.creature->GetObjectGuid());
+    if (dismountRaceSelected)
+        dismountEngine.ExecuteSelected(dismountRaceContext, dismountRaceReport);
+    CandidateEvaluation const* dismountRaceEvaluation = dismountRaceSelected
+        ? &dismountRaceReport.candidates[
+            dismountRaceReport.selectedIndices[0]] : nullptr;
+    bool const dismountSelectionDriftRejected = dismountRaceEvaluation &&
+        dismountRaceEvaluation->status == CandidateStatus::ExecutionFailed &&
+        dismountRaceEvaluation->actionResult == ActionResult::Impossible &&
+        dismountRaceEvaluation->reason ==
+            "dismount_for_combat_live_selection_mismatch" &&
+        bot->IsMounted() &&
+        bot->GetSelectionGuid() == friendly.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid();
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    bool const dismountRaceCleanup =
+        bot->Unmount() == DISMOUNTRESULT_OK && !bot->IsMounted();
+
+    // Taxi-flight state is explicitly excluded at snapshot eligibility time.
+    PartySnapshot taxiDismountSnapshot = dismountSnapshot;
+    taxiDismountSnapshot.epoch++;
+    taxiDismountSnapshot.members[0].taxiFlying = true;
+    PartyCoordinator taxiDismountCoordinator;
+    DecisionContext taxiDismountContext(
+        taxiDismountSnapshot, taxiDismountSnapshot.members[0],
+        taxiDismountCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine taxiDismountEngine;
+    std::shared_ptr<DismountForCombatAction> taxiDismountAction(
+        new DismountForCombatAction());
+    bool const taxiDismountRegistered =
+        taxiDismountEngine.RegisterAction(taxiDismountAction);
+    std::shared_ptr<Strategy> taxiDismountStrategy(
+        new Strategy("simulator_dismount_during_taxi"));
+    taxiDismountStrategy->AddTrigger(
+        std::make_shared<SimulatorDismountForCombatTrigger>(hostileGuid));
+    taxiDismountEngine.AddStrategy(taxiDismountStrategy);
+    DecisionReport taxiDismountReport =
+        taxiDismountEngine.Evaluate(taxiDismountContext);
+    bool const taxiDismountNotProposed = taxiDismountRegistered &&
+        taxiDismountReport.selectedIndices.empty() &&
+        taxiDismountReport.candidates.empty() && !bot->IsMounted();
+
+    bool const dismountFixturePassed =
+        dismountMountStarted && dismountRegistered && dismountSelected &&
+        dismountAccepted && alreadyDismountedRejected &&
+        dismountRaceSelected && dismountSelectionDriftRejected &&
+        dismountRaceCleanup && taxiDismountNotProposed;
+    sLog.Out(LOG_BASIC, dismountFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] DismountForCombatAction: display=%u mountStarted=%u registered=%u selected=%u accepted=%u alreadyDismountedRejected=%u selectionDriftRejected=%u raceCleanup=%u taxiNotProposed=%u.",
+        mountDisplayId, dismountMountStarted ? 1u : 0u,
+        dismountRegistered ? 1u : 0u, dismountSelected ? 1u : 0u,
+        dismountAccepted ? 1u : 0u, alreadyDismountedRejected ? 1u : 0u,
+        dismountSelectionDriftRejected ? 1u : 0u,
+        dismountRaceCleanup ? 1u : 0u, taxiDismountNotProposed ? 1u : 0u);
+    if (!dismountFixturePassed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSimulator] DismountForCombatAction accepted/rejected fixture failed.");
+        return false;
+    }
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] PASS: DismountForCombatAction used Player::Unmount only for a selected live hostile, preserved combat/selection/health/threat, rejected stale mount and target facts, and skipped taxi flight.");
+
     // F43: execute a generic CoreAction against an already-selected hostile.
     // The fixture observes the synchronous Core request, stale-snapshot rejection
     // and a live selection race. It does not use PartyBotAI::AttackStart.
@@ -7798,20 +7975,20 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
 
     sLog.Out(LOG_BASIC, (staleSelectionCleared && hostileAccepted &&
                          attackFixturePassed && stopAutoAttackFixturePassed &&
-                         faceFixturePassed && clearStaleFixturePassed &&
+                         faceFixturePassed && clearStaleFixturePassed && dismountFixturePassed &&
                          friendlyRejected && cleaned)
         ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] Core generic target actions: clearRegistered=%u staleSelectionCleared=%u hostileRegistered=%u hostileAccepted=%u faceFixture=%u clearStaleFixture=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
+        "[PartyBotSimulator] Core generic target actions: clearRegistered=%u staleSelectionCleared=%u hostileRegistered=%u hostileAccepted=%u faceFixture=%u clearStaleFixture=%u dismountFixture=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
         clearRegistered ? 1u : 0u, staleSelectionCleared ? 1u : 0u,
         actionRegistered ? 1u : 0u, hostileAccepted ? 1u : 0u,
         faceFixturePassed ? 1u : 0u, clearStaleFixturePassed ? 1u : 0u,
-        friendlyCandidateSelected ? 1u : 0u, friendlyRejected ? 1u : 0u,
+        dismountFixturePassed ? 1u : 0u, friendlyCandidateSelected ? 1u : 0u, friendlyRejected ? 1u : 0u,
         (botSession.GetPlayer() == nullptr && friendlyRejected) ? 1u : 0u,
         cleaned ? 1u : 0u);
 
     if (!clearRegistered || !staleSelectionCleared || !actionRegistered ||
         !hostileAccepted || !attackFixturePassed || !stopAutoAttackFixturePassed ||
-        !faceFixturePassed || !clearStaleFixturePassed ||
+        !faceFixturePassed || !clearStaleFixturePassed || !dismountFixturePassed ||
         !friendlyCandidateSelected || !friendlyRejected ||
         !stopFixturePassed || !cleaned)
     {

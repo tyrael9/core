@@ -6979,6 +6979,16 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         stopAutoAttackAccepted ? 1u : 0u, noVictimNotProposed ? 1u : 0u,
         stopAutoAttackVictimDriftRejected ? 1u : 0u);
 
+    // AttackStop correctly clears TargetGuid while preserving selection.
+    // Re-establish the next fixture's independent selected-target precondition
+    // explicitly instead of inheriting state from StopAutoAttackAction.
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    bot->SetTargetGuid(hostile.creature->GetObjectGuid());
+    bool const faceFixtureSetupReady =
+        bot->GetVictim() == nullptr &&
+        bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid();
+
     // F43: face the selected hostile only when the value snapshot says the
     // target is outside Core's 180-degree front arc. Live Core state still
     // owns hostility, movement/cast/control validation and the final outcome.
@@ -7175,14 +7185,16 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
     bot->GetMotionMaster()->MovementExpired(false);
 
-    bool const faceFixturePassed = faceRegistered && faceSelected && faceAccepted &&
-        alreadyFacingNoOp && staleFaceFriendlyRejected && movingRejectedWithoutMutation;
+    bool const faceFixturePassed = faceFixtureSetupReady &&
+        faceRegistered && faceSelected && faceAccepted && alreadyFacingNoOp &&
+        staleFaceFriendlyRejected && movingRejectedWithoutMutation;
     sLog.Out(LOG_BASIC, faceFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] FaceTargetAction: registered=%u selected=%u requestAccepted=%u facingComplete=%u positionPreserved=%u targetStatePreserved=%u alreadyFacingNoOp=%u staleFriendlyRejected=%u movingRejected=%u.",
-        faceRegistered ? 1u : 0u, faceSelected ? 1u : 0u,
-        faceRequestAccepted ? 1u : 0u, faceFacingComplete ? 1u : 0u,
-        facePositionPreserved ? 1u : 0u, faceTargetStatePreserved ? 1u : 0u,
-        alreadyFacingNoOp ? 1u : 0u, staleFaceFriendlyRejected ? 1u : 0u,
+        "[PartyBotSimulator] FaceTargetAction: setupRestored=%u registered=%u selected=%u requestAccepted=%u facingComplete=%u positionPreserved=%u targetStatePreserved=%u alreadyFacingNoOp=%u staleFriendlyRejected=%u movingRejected=%u.",
+        faceFixtureSetupReady ? 1u : 0u, faceRegistered ? 1u : 0u,
+        faceSelected ? 1u : 0u, faceRequestAccepted ? 1u : 0u,
+        faceFacingComplete ? 1u : 0u, facePositionPreserved ? 1u : 0u,
+        faceTargetStatePreserved ? 1u : 0u, alreadyFacingNoOp ? 1u : 0u,
+        staleFaceFriendlyRejected ? 1u : 0u,
         movingRejectedWithoutMutation ? 1u : 0u);
 
     // Deliberately retain a stale positive HostileSnapshot for the friendly

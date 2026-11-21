@@ -7180,14 +7180,91 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bot->AttackStop();
     friendly.creature->SetFactionTemplateId(partyFaction);
 
+    // A stale snapshot must not let StopAutoAttackAction run while a real
+    // non-melee Player cast is active. Keep currentSpellId=0 in the value
+    // snapshot deliberately so evaluation selects the candidate; the final
+    // CoreAction preflight must observe the live Spell and reject side effects.
+    bool const activeCastAttackStarted = bot->Attack(hostile.creature, true);
+    bot->SetInCombatWith(hostile.creature);
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    bot->SetHealth(bot->GetMaxHealth() / 2);
+    SpellEntry const* const activeStopProbeSpell =
+        sSpellMgr.GetSpellEntry(SIMULATOR_HEAL_SPELL_ID);
+    SpellCastResult const activeStopCastResult = activeStopProbeSpell
+        ? bot->CastSpell(bot, activeStopProbeSpell, false)
+        : SPELL_FAILED_DONT_REPORT;
+    Spell* const activeStopCast = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+
+    PartySnapshot activeCastStopSnapshot = stopAutoAttackSnapshot;
+    activeCastStopSnapshot.epoch++;
+    activeCastStopSnapshot.members[0].currentSpellId = 0;
+    PartyCoordinator activeCastStopCoordinator;
+    DecisionContext activeCastStopContext(
+        activeCastStopSnapshot, activeCastStopSnapshot.members[0],
+        activeCastStopCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine activeCastStopEngine;
+    bool const activeCastStopRegistered =
+        activeCastStopEngine.RegisterAction(std::shared_ptr<StopAutoAttackAction>(
+            new StopAutoAttackAction()));
+    std::shared_ptr<Strategy> activeCastStopStrategy(
+        new Strategy("simulator_stop_auto_attack_active_cast"));
+    activeCastStopStrategy->AddTrigger(
+        std::make_shared<SimulatorStopAutoAttackTrigger>());
+    activeCastStopEngine.AddStrategy(activeCastStopStrategy);
+    DecisionReport activeCastStopReport =
+        activeCastStopEngine.Evaluate(activeCastStopContext);
+    bool const activeCastStopSelected =
+        activeCastStopRegistered &&
+        activeCastStopReport.selectedIndices.size() == 1 &&
+        activeCastStopReport.candidates[
+            activeCastStopReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    bool const activeCastStopCombatBefore = bot->IsInCombat();
+    ObjectGuid const activeCastStopSelectionBefore = bot->GetSelectionGuid();
+    bool const activeCastStopReferenceBefore =
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+        hostile.creature->GetAttackers().end();
+    if (activeCastStopSelected)
+        activeCastStopEngine.ExecuteSelected(activeCastStopContext, activeCastStopReport);
+    CandidateEvaluation const* activeCastStopEvaluation = activeCastStopSelected
+        ? &activeCastStopReport.candidates[
+            activeCastStopReport.selectedIndices[0]] : nullptr;
+    bool const activeCastStopRejected = activeCastAttackStarted &&
+        activeStopCastResult == SPELL_CAST_OK && activeStopCast &&
+        activeStopCast->m_spellInfo &&
+        activeStopCast->m_spellInfo->Id == SIMULATOR_HEAL_SPELL_ID &&
+        activeCastStopReferenceBefore && activeCastStopEvaluation &&
+        activeCastStopEvaluation->status == CandidateStatus::ExecutionFailed &&
+        activeCastStopEvaluation->actionResult == ActionResult::Useless &&
+        activeCastStopEvaluation->reason ==
+            "stop_auto_attack_non_melee_spell_in_progress" &&
+        bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) == activeStopCast &&
+        bot->GetVictim() == hostile.creature &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid() &&
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
+        bot->GetSelectionGuid() == activeCastStopSelectionBefore &&
+        bot->IsInCombat() == activeCastStopCombatBefore &&
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+            hostile.creature->GetAttackers().end();
+    if (activeStopCast)
+        bot->InterruptNonMeleeSpells(true, SIMULATOR_HEAL_SPELL_ID);
+    bool const activeCastCleanup = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+    bot->AttackStop();
+
     bool const stopAutoAttackFixturePassed = stopAutoAttackRegistered &&
         stopAutoAttackSelected && stopAutoAttackAccepted && noVictimNotProposed &&
-        driftStopRegistered && driftStopSelected && stopAutoAttackVictimDriftRejected;
+        driftStopRegistered && driftStopSelected && stopAutoAttackVictimDriftRejected &&
+        activeCastStopRegistered && activeCastStopSelected &&
+        activeCastStopRejected && activeCastCleanup;
     sLog.Out(LOG_BASIC, stopAutoAttackFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] StopAutoAttackAction: registered=%u selected=%u stoppedOnly=%u noVictimNotProposed=%u victimDriftRejected=%u.",
+        "[PartyBotSimulator] StopAutoAttackAction: registered=%u selected=%u stoppedOnly=%u noVictimNotProposed=%u victimDriftRejected=%u activeCastSelected=%u activeCastRejected=%u activeCastCleanup=%u.",
         stopAutoAttackRegistered ? 1u : 0u, stopAutoAttackSelected ? 1u : 0u,
         stopAutoAttackAccepted ? 1u : 0u, noVictimNotProposed ? 1u : 0u,
-        stopAutoAttackVictimDriftRejected ? 1u : 0u);
+        stopAutoAttackVictimDriftRejected ? 1u : 0u,
+        activeCastStopSelected ? 1u : 0u, activeCastStopRejected ? 1u : 0u,
+        activeCastCleanup ? 1u : 0u);
 
     // AttackStop correctly clears TargetGuid while preserving selection.
     // Re-establish the next fixture's independent selected-target precondition

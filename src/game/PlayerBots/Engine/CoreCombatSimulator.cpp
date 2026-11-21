@@ -8178,13 +8178,21 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     bool const alreadyThereNoOp = alreadyTherePossible &&
         !movePointAction->IsUseful(
             movePointContext, alreadyThereCandidate, alreadyThereReason);
+    ActionCandidate outOfBoundsCandidate = movePointCandidate;
+    outOfBoundsCandidate.destinationX = MAP_HALFSIZE + 1.0f;
+    std::string outOfBoundsReason;
+    bool const outOfBoundsDestinationRejected =
+        !movePointAction->IsPossible(
+            movePointContext, outOfBoundsCandidate, outOfBoundsReason);
 
     // A currently active Point generator is unrelated movement and must not
     // be replaced by this action, even when the requested destination differs.
     healer->GetMotionMaster()->MovePoint(
         0xF431u, healer->GetPositionX() + 8.0f, healer->GetPositionY(),
         healer->GetPositionZ(), MOVE_NONE);
-    bool const unrelatedMovementStarted =
+    MovementGenerator const* const unrelatedMovementBefore =
+        healer->GetMotionMaster()->GetCurrent();
+    bool const unrelatedMovementStarted = unrelatedMovementBefore &&
         healer->GetMotionMaster()->GetCurrentMovementGeneratorType() ==
             POINT_MOTION_TYPE;
     CandidateEvaluation unrelatedMoveEvaluation;
@@ -8205,6 +8213,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         unrelatedMoveResult->status == CandidateStatus::ExecutionFailed &&
         unrelatedMoveResult->actionResult == ActionResult::Useless;
     bool const unrelatedMovementPreserved = unrelatedMovementStarted &&
+        healer->GetMotionMaster()->GetCurrent() == unrelatedMovementBefore &&
         healer->GetMotionMaster()->GetCurrentMovementGeneratorType() ==
             POINT_MOTION_TYPE;
     if (unrelatedMovementPreserved)
@@ -8286,6 +8295,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     bool const movePointFixturePassed =
         movePointRegistered && movePointActorOnlyResolved &&
         movePointSnapshotEligible && movePointUseful && alreadyThereNoOp &&
+        outOfBoundsDestinationRejected &&
         unrelatedMovementRejected && unrelatedMovementPreserved &&
         movePointAccepted && movePointReached && movePointStatePreserved;
 
@@ -8295,16 +8305,17 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
 
     sLog.Out(LOG_BASIC, movePointFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] MovePointAction: registered=%u actorOnly=%u snapshotEligible=%u alreadyThereNoOp=%u unrelatedMovementRejected=%u movementPreserved=%u accepted=%u reached=%u statePreserved=%u distance=%.3f.",
+        "[PartyBotSimulator] MovePointAction: registered=%u actorOnly=%u snapshotEligible=%u alreadyThereNoOp=%u outOfBoundsRejected=%u unrelatedMovementRejected=%u sameGeneratorPreserved=%u accepted=%u reached=%u statePreserved=%u distance=%.3f.",
         movePointRegistered ? 1u : 0u, movePointActorOnlyResolved ? 1u : 0u,
         movePointSnapshotEligible ? 1u : 0u, alreadyThereNoOp ? 1u : 0u,
+        outOfBoundsDestinationRejected ? 1u : 0u,
         unrelatedMovementRejected ? 1u : 0u,
         unrelatedMovementPreserved ? 1u : 0u,
         movePointAccepted ? 1u : 0u, movePointReached ? 1u : 0u,
         movePointStatePreserved ? 1u : 0u, movePointDistance);
     if (movePointFixturePassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: MovePointAction used an actor-only Core resolver, refused to replace unrelated movement, and treated Core's matching typed Reached terminal—not request acceptance—as proof of arrival.");
+            "[PartyBotSimulator] PASS: MovePointAction used an actor-only Core resolver, rejected out-of-bounds destinations, preserved the exact unrelated movement generator, and treated its matching typed Reached terminal—not request acceptance—as proof of arrival.");
 
     DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
     std::vector<std::size_t> const candidateDetailIndices =

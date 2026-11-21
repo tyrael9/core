@@ -4,6 +4,7 @@
 #include "CoreAction.h"
 #include "PartySnapshot.h"
 
+#include "Maps/GridDefines.h"
 #include "Movement/MotionMaster.h"
 #include "Player.h"
 #include "Spell.h"
@@ -49,12 +50,10 @@ public:
             context.bot.inCombat || context.bot.victimGuid ||
             context.bot.currentSpellId || candidate.targetGuid ||
             !candidate.hasDestination ||
-            !std::isfinite(context.bot.x) ||
-            !std::isfinite(context.bot.y) ||
-            !std::isfinite(context.bot.z) ||
-            !std::isfinite(candidate.destinationX) ||
-            !std::isfinite(candidate.destinationY) ||
-            !std::isfinite(candidate.destinationZ) ||
+            !MaNGOS::IsValidMapCoord(context.bot.x, context.bot.y, context.bot.z) ||
+            !MaNGOS::IsValidMapCoord(candidate.destinationX,
+                                     candidate.destinationY,
+                                     candidate.destinationZ) ||
             !IsValidConfiguration())
         {
             reason = "move_point_invalid_actor_or_destination_snapshot";
@@ -68,9 +67,9 @@ public:
                   std::string& reason) const override
     {
         if (!candidate.hasDestination ||
-            !std::isfinite(candidate.destinationX) ||
-            !std::isfinite(candidate.destinationY) ||
-            !std::isfinite(candidate.destinationZ) ||
+            !MaNGOS::IsValidMapCoord(candidate.destinationX,
+                                     candidate.destinationY,
+                                     candidate.destinationZ) ||
             !IsValidConfiguration())
         {
             reason = "move_point_destination_unavailable";
@@ -184,9 +183,12 @@ private:
             actor->GetInstanceId() != context.snapshot.instanceId ||
             !actor->IsInWorld() || !actor->IsAlive() ||
             !IsValidConfiguration() ||
-            !std::isfinite(candidate.destinationX) ||
-            !std::isfinite(candidate.destinationY) ||
-            !std::isfinite(candidate.destinationZ))
+            !MaNGOS::IsValidMapCoord(actor->GetPositionX(),
+                                     actor->GetPositionY(),
+                                     actor->GetPositionZ()) ||
+            !MaNGOS::IsValidMapCoord(candidate.destinationX,
+                                     candidate.destinationY,
+                                     candidate.destinationZ))
         {
             result.result = ActionResult::Impossible;
             result.reason = "move_point_live_actor_or_destination_invalid";

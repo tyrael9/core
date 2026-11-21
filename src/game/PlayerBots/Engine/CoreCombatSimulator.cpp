@@ -5291,8 +5291,12 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
             if (!castTimeMs)
                 continue;
 
-            delayedItemUseCandidates.push_back(
-                {&item, spell, slot, castTimeMs});
+            DelayedItemUseCandidate candidate;
+            candidate.item = &item;
+            candidate.spell = spell;
+            candidate.slot = slot;
+            candidate.castTimeMs = castTimeMs;
+            delayedItemUseCandidates.push_back(candidate);
         }
     }
     std::sort(delayedItemUseCandidates.begin(), delayedItemUseCandidates.end(),

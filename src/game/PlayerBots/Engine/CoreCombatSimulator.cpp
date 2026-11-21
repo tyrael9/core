@@ -23,6 +23,7 @@
 #include "PlayerBots/Engine/FaceTargetAction.h"
 #include "PlayerBots/Engine/StopFollowingAction.h"
 #include "PlayerBots/Engine/AttackTargetAction.h"
+#include "PlayerBots/Engine/StopAutoAttackAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
@@ -506,6 +507,29 @@ public:
     }
 private:
     std::string m_name = "simulator_stop_unattackable_target";
+};
+
+class SimulatorStopAutoAttackTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && context.bot.victimGuid != 0 &&
+               context.bot.currentSpellId == 0;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_stop_auto_attack";
+        candidate.basePriority = 38.0f;
+        candidate.channel = ActionChannel::Utility;
+        candidates.push_back(candidate);
+    }
+
+private:
+    std::string m_name = "simulator_stop_auto_attack";
 };
 
 class SimulatorSelectHostileTargetTrigger final : public Trigger
@@ -6797,6 +6821,164 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         attackFriendlyRejected ? 1u : 0u,
         attackSelectionDriftRejected ? 1u : 0u);
 
+    // F43: stop a current melee auto-attack by its captured victim GUID.
+    // This is deliberately narrower than CombatStop: Core AttackStop must leave
+    // selection/combat and non-melee spell state alone.
+    bool const stopAutoAttackStarted = bot->Attack(hostile.creature, true);
+    bot->SetInCombatWith(hostile.creature);
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    PartySnapshot stopAutoAttackSnapshot = snapshot;
+    stopAutoAttackSnapshot.epoch++;
+    stopAutoAttackSnapshot.members[0].selectionGuid = hostileGuid;
+    stopAutoAttackSnapshot.members[0].victimGuid = hostileGuid;
+    stopAutoAttackSnapshot.members[0].inCombat = bot->IsInCombat();
+    stopAutoAttackSnapshot.members[0].currentSpellId = 0;
+
+    PartyCoordinator stopAutoAttackCoordinator;
+    DecisionContext stopAutoAttackContext(
+        stopAutoAttackSnapshot, stopAutoAttackSnapshot.members[0],
+        stopAutoAttackCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine stopAutoAttackEngine;
+    std::shared_ptr<StopAutoAttackAction> stopAutoAttackAction(
+        new StopAutoAttackAction());
+    bool const stopAutoAttackRegistered =
+        stopAutoAttackEngine.RegisterAction(stopAutoAttackAction);
+    std::shared_ptr<Strategy> stopAutoAttackStrategy(
+        new Strategy("simulator_stop_auto_attack"));
+    stopAutoAttackStrategy->AddTrigger(
+        std::make_shared<SimulatorStopAutoAttackTrigger>());
+    stopAutoAttackEngine.AddStrategy(stopAutoAttackStrategy);
+
+    uint32 const stopAutoAttackHealthBefore = hostile.creature->GetHealth();
+    float const stopAutoAttackThreatBefore =
+        hostile.creature->GetThreatManager().getThreat(bot);
+    ObjectGuid const stopAutoAttackSelectionBefore = bot->GetSelectionGuid();
+    bool const stopAutoAttackCombatBefore = bot->IsInCombat();
+    bool const stopAutoAttackReferenceBefore =
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+        hostile.creature->GetAttackers().end();
+    bool const stopAutoAttackMeleeBefore =
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING);
+
+    DecisionReport stopAutoAttackReport =
+        stopAutoAttackEngine.Evaluate(stopAutoAttackContext);
+    bool const stopAutoAttackSelected = stopAutoAttackReport.selectedIndices.size() == 1 &&
+        stopAutoAttackReport.candidates[
+            stopAutoAttackReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (stopAutoAttackSelected)
+        stopAutoAttackEngine.ExecuteSelected(
+            stopAutoAttackContext, stopAutoAttackReport);
+    CandidateEvaluation const* stopAutoAttackEvaluation = stopAutoAttackSelected
+        ? &stopAutoAttackReport.candidates[
+            stopAutoAttackReport.selectedIndices[0]] : nullptr;
+    float const stopAutoAttackThreatAfter =
+        hostile.creature->GetThreatManager().getThreat(bot);
+    bool const stopAutoAttackReferenceAfter =
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+        hostile.creature->GetAttackers().end();
+    bool const stopAutoAttackAccepted = stopAutoAttackStarted &&
+        stopAutoAttackMeleeBefore && stopAutoAttackReferenceBefore &&
+        stopAutoAttackEvaluation &&
+        stopAutoAttackEvaluation->status == CandidateStatus::Executed &&
+        stopAutoAttackEvaluation->actionResult == ActionResult::Success &&
+        stopAutoAttackEvaluation->reason ==
+            "stop_auto_attack_stopped_expected_victim" &&
+        bot->GetVictim() == nullptr && bot->GetTargetGuid().IsEmpty() &&
+        !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
+        bot->GetSelectionGuid() == stopAutoAttackSelectionBefore &&
+        bot->IsInCombat() == stopAutoAttackCombatBefore &&
+        !stopAutoAttackReferenceAfter &&
+        hostile.creature->GetHealth() == stopAutoAttackHealthBefore &&
+        std::fabs(stopAutoAttackThreatAfter - stopAutoAttackThreatBefore) <= 0.001f;
+
+    // With no current victim, the trigger must not propose a stop action.
+    PartySnapshot idleStopSnapshot = stopAutoAttackSnapshot;
+    idleStopSnapshot.epoch++;
+    idleStopSnapshot.members[0].victimGuid = 0;
+    PartyCoordinator idleStopCoordinator;
+    DecisionContext idleStopContext(
+        idleStopSnapshot, idleStopSnapshot.members[0], idleStopCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine idleStopEngine;
+    bool const idleStopRegistered =
+        idleStopEngine.RegisterAction(std::shared_ptr<StopAutoAttackAction>(
+            new StopAutoAttackAction()));
+    std::shared_ptr<Strategy> idleStopStrategy(
+        new Strategy("simulator_stop_auto_attack_idle"));
+    idleStopStrategy->AddTrigger(
+        std::make_shared<SimulatorStopAutoAttackTrigger>());
+    idleStopEngine.AddStrategy(idleStopStrategy);
+    DecisionReport idleStopReport = idleStopEngine.Evaluate(idleStopContext);
+    bool const noVictimNotProposed = idleStopRegistered &&
+        idleStopReport.selectedIndices.empty() &&
+        idleStopReport.candidates.empty() &&
+        bot->GetVictim() == nullptr && bot->IsInCombat() == stopAutoAttackCombatBefore;
+
+    // Re-target to a different live hostile after evaluation. The captured old
+    // victim GUID must not let the action detach the new attack.
+    friendly.creature->SetFactionTemplateId(hostileFaction);
+    bool const driftAttackStarted = bot->Attack(friendly.creature, true);
+    bot->SetInCombatWith(friendly.creature);
+    PartySnapshot driftStopSnapshot = stopAutoAttackSnapshot;
+    driftStopSnapshot.epoch++;
+    PartyCoordinator driftStopCoordinator;
+    DecisionContext driftStopContext(
+        driftStopSnapshot, driftStopSnapshot.members[0], driftStopCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine driftStopEngine;
+    bool const driftStopRegistered =
+        driftStopEngine.RegisterAction(std::shared_ptr<StopAutoAttackAction>(
+            new StopAutoAttackAction()));
+    std::shared_ptr<Strategy> driftStopStrategy(
+        new Strategy("simulator_stop_auto_attack_victim_drift"));
+    driftStopStrategy->AddTrigger(
+        std::make_shared<SimulatorStopAutoAttackTrigger>());
+    driftStopEngine.AddStrategy(driftStopStrategy);
+    DecisionReport driftStopReport = driftStopEngine.Evaluate(driftStopContext);
+    bool const driftStopSelected = driftStopRegistered &&
+        driftStopReport.selectedIndices.size() == 1 &&
+        driftStopReport.candidates[
+            driftStopReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    bool const driftStopCombatBefore = bot->IsInCombat();
+    bool const driftFriendlyReferenceBefore =
+        std::find(friendly.creature->GetAttackers().begin(),
+                  friendly.creature->GetAttackers().end(), bot) !=
+        friendly.creature->GetAttackers().end();
+    if (driftStopSelected)
+        driftStopEngine.ExecuteSelected(driftStopContext, driftStopReport);
+    CandidateEvaluation const* driftStopEvaluation = driftStopSelected
+        ? &driftStopReport.candidates[
+            driftStopReport.selectedIndices[0]] : nullptr;
+    bool const stopAutoAttackVictimDriftRejected = driftAttackStarted &&
+        driftFriendlyReferenceBefore && driftStopEvaluation &&
+        driftStopEvaluation->status == CandidateStatus::ExecutionFailed &&
+        driftStopEvaluation->actionResult == ActionResult::Impossible &&
+        driftStopEvaluation->reason == "stop_auto_attack_live_victim_mismatch" &&
+        bot->GetVictim() == friendly.creature &&
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid() &&
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
+        bot->GetSelectionGuid() == stopAutoAttackSelectionBefore &&
+        bot->IsInCombat() == driftStopCombatBefore &&
+        std::find(friendly.creature->GetAttackers().begin(),
+                  friendly.creature->GetAttackers().end(), bot) !=
+            friendly.creature->GetAttackers().end();
+    bot->AttackStop();
+    friendly.creature->SetFactionTemplateId(partyFaction);
+
+    bool const stopAutoAttackFixturePassed = stopAutoAttackRegistered &&
+        stopAutoAttackSelected && stopAutoAttackAccepted && noVictimNotProposed &&
+        driftStopRegistered && driftStopSelected && stopAutoAttackVictimDriftRejected;
+    sLog.Out(LOG_BASIC, stopAutoAttackFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] StopAutoAttackAction: registered=%u selected=%u stoppedOnly=%u noVictimNotProposed=%u victimDriftRejected=%u.",
+        stopAutoAttackRegistered ? 1u : 0u, stopAutoAttackSelected ? 1u : 0u,
+        stopAutoAttackAccepted ? 1u : 0u, noVictimNotProposed ? 1u : 0u,
+        stopAutoAttackVictimDriftRejected ? 1u : 0u);
+
     // F43: face the selected hostile only when the value snapshot says the
     // target is outside Core's 180-degree front arc. Live Core state still
     // owns hostility, movement/cast/control validation and the final outcome.
@@ -7286,8 +7468,9 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bool const cleaned = playerCleaned && friendlyCleaned && hostileCleaned;
 
     sLog.Out(LOG_BASIC, (staleSelectionCleared && hostileAccepted &&
-                         attackFixturePassed && faceFixturePassed &&
-                         clearStaleFixturePassed && friendlyRejected && cleaned)
+                         attackFixturePassed && stopAutoAttackFixturePassed &&
+                         faceFixturePassed && clearStaleFixturePassed &&
+                         friendlyRejected && cleaned)
         ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
         "[PartyBotSimulator] Core generic target actions: clearRegistered=%u staleSelectionCleared=%u hostileRegistered=%u hostileAccepted=%u faceFixture=%u clearStaleFixture=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
         clearRegistered ? 1u : 0u, staleSelectionCleared ? 1u : 0u,
@@ -7298,8 +7481,8 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         cleaned ? 1u : 0u);
 
     if (!clearRegistered || !staleSelectionCleared || !actionRegistered ||
-        !hostileAccepted || !attackFixturePassed || !faceFixturePassed ||
-        !clearStaleFixturePassed ||
+        !hostileAccepted || !attackFixturePassed || !stopAutoAttackFixturePassed ||
+        !faceFixturePassed || !clearStaleFixturePassed ||
         !friendlyCandidateSelected || !friendlyRejected ||
         !stopFixturePassed || !cleaned)
     {
@@ -7312,6 +7495,8 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
              "[PartyBotSimulator] PASS: generic Core target maintenance cleared an idle stale selection, selected a live hostile and rejected a stale friendly target without disturbing Player combat state.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Core preflight to reject a stale negative snapshot, then AttackStop detached only the invalid victim while preserving combat state.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: StopAutoAttackAction used the snapshot victim GUID and live Core AttackStop, preserved selection/combat/non-melee spell state and health/threat, and rejected a different live victim without calling CombatStop.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: AttackTargetAction used the CoreAction live resolver and CanAttack preflight, accepted only the selected hostile, rejected stale-friendly and selection-drift requests, and created no synchronous damage/threat or Legacy fallback.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,

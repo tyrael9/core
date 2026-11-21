@@ -5288,8 +5288,6 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
                 continue;
 
             uint32 const castTimeMs = spell->GetCastTime(nullptr, nullptr);
-            if (!castTimeMs)
-                continue;
 
             DelayedItemUseCandidate candidate;
             candidate.item = &item;
@@ -5308,7 +5306,7 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
             return lhs.slot < rhs.slot;
         });
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-        "[PartyBotSimulator] F42 delayed ON_USE scan: candidates=%u (real item_template + Spell.dbc; ON_USE, finite charges, non-stackable, castTime>0, speed>0).",
+        "[PartyBotSimulator] F42 delayed ON_USE scan: candidates=%u (real item_template + Spell.dbc; ON_USE, finite charges, non-stackable, speed>0; cast time is reported).",
         static_cast<uint32>(delayedItemUseCandidates.size()));
     for (std::size_t i = 0;
          i < delayedItemUseCandidates.size() && i < 24; ++i)

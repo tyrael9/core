@@ -24,6 +24,7 @@
 #include "PlayerBots/Engine/StopFollowingAction.h"
 #include "PlayerBots/Engine/AttackTargetAction.h"
 #include "PlayerBots/Engine/StopAutoAttackAction.h"
+#include "PlayerBots/Engine/DismountForCombatAction.h"
 #include "PlayerBots/Engine/MovePointAction.h"
 #include "PlayerBots/Engine/StopPointMovementAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
@@ -615,6 +616,35 @@ public:
 private:
     Guid m_targetGuid = 0;
     std::string m_name = "simulator_attack_target";
+};
+
+class SimulatorDismountForCombatTrigger final : public Trigger
+{
+public:
+    explicit SimulatorDismountForCombatTrigger(Guid targetGuid)
+        : m_targetGuid(targetGuid) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && context.bot.mounted &&
+               !context.bot.taxiFlying && m_targetGuid != 0 &&
+               context.bot.selectionGuid == m_targetGuid;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_dismount_for_combat";
+        candidate.targetGuid = m_targetGuid;
+        candidate.basePriority = 38.0f;
+        candidate.channel = ActionChannel::Movement;
+        candidates.push_back(candidate);
+    }
+
+private:
+    Guid m_targetGuid = 0;
+    std::string m_name = "simulator_dismount_for_combat";
 };
 
 class SimulatorFaceTargetTrigger final : public Trigger

@@ -8261,11 +8261,14 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         healer->GetMotionMaster()->GetCurrentMovementGeneratorType() ==
             POINT_MOTION_TYPE;
 
+    // This Player is a local-session fixture actor and is not advanced by
+    // Map::Update. Drive only its public Core Unit::Update path so the movement
+    // terminal is delivered without ticking unrelated actors in the shared Map.
     for (uint32 tick = 0;
          tick < 20 && movementTerminalListener->events.empty(); ++tick)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
-        map.Update(250);
+        healer->Update(250, 250);
     }
 
     float const movePointDistance = std::sqrt(

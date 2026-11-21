@@ -353,6 +353,10 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F42 real Core aggregated single-slot us
     echo "[PartyBotSimulator] The F42 Core item-use aggregate PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
+if ! grep -Fq "[PartyBotSimulator] PASS: generic Core target maintenance cleared an idle stale selection, selected a live hostile and rejected a stale friendly target without disturbing Player combat state." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F43 generic target-maintenance accepted/rejected/cleanup marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
 
 if ! grep -Fq "[PartyBotSimulator] PASS: F41 CoreAction required a fresh map-thread actor/target resolution and rejected missing targets plus stale map/instance snapshots before the real movement adapter ran." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F41 Core action preflight PASS marker was not found." | tee -a "$LOG_FILE"

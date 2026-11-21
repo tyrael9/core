@@ -12,6 +12,7 @@
 #include "PlayerBots/Engine/Action.h"
 #include "PlayerBots/Engine/CoreAction.h"
 #include "PlayerBots/Engine/SelectHostileTargetAction.h"
+#include "PlayerBots/Engine/ClearIdleTargetAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
@@ -500,6 +501,30 @@ public:
 private:
     Guid m_targetGuid = 0;
     std::string m_name = "simulator_select_hostile_target";
+};
+
+class SimulatorClearIdleTargetTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && context.bot.selectionGuid != 0 &&
+               context.bot.victimGuid == 0 && !context.bot.inCombat &&
+               context.bot.currentSpellId == 0;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_clear_idle_target";
+        candidate.basePriority = 35.0f;
+        candidate.channel = ActionChannel::Targeting;
+        candidates.push_back(candidate);
+    }
+
+private:
+    std::string m_name = "simulator_clear_idle_target";
 };
 
 class SimulatorTankAssistTrigger final : public Trigger
@@ -5589,6 +5614,37 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         snapshot, snapshot.members[0], coordinator, WorldTimer::getMSTime(),
         nullptr, nullptr, &actionRuntime, nullptr, &actionRuntime);
 
+    // First clear a deliberately stale, non-resolving selection GUID. The
+    // live action must prove that the Player is truly idle before clearing it.
+    ObjectGuid const staleSelectionGuid(0xF430000000000001ull);
+    bot->SetSelectionGuid(staleSelectionGuid);
+    snapshot.members[0].selectionGuid = staleSelectionGuid.GetRawValue();
+    PartyCoordinator clearCoordinator;
+    DecisionContext clearContext(
+        snapshot, snapshot.members[0], clearCoordinator, WorldTimer::getMSTime(),
+        nullptr, nullptr, &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine clearEngine;
+    std::shared_ptr<ClearIdleTargetAction> clearAction(new ClearIdleTargetAction());
+    bool const clearRegistered = clearEngine.RegisterAction(clearAction);
+    std::shared_ptr<Strategy> clearStrategy(new Strategy("simulator_clear_idle_target"));
+    clearStrategy->AddTrigger(std::make_shared<SimulatorClearIdleTargetTrigger>());
+    clearEngine.AddStrategy(clearStrategy);
+    DecisionReport clearReport = clearEngine.Evaluate(clearContext);
+    bool const clearSelected = clearRegistered &&
+        clearReport.selectedIndices.size() == 1 &&
+        clearReport.candidates[clearReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (clearSelected)
+        clearEngine.ExecuteSelected(clearContext, clearReport);
+    bool const staleSelectionCleared = clearSelected &&
+        clearReport.candidates[clearReport.selectedIndices[0]].status ==
+            CandidateStatus::Executed &&
+        clearReport.candidates[clearReport.selectedIndices[0]].actionResult ==
+            ActionResult::Success &&
+        bot->GetSelectionGuid().IsEmpty() && bot->GetTargetGuid().IsEmpty() &&
+        bot->GetVictim() == nullptr && !bot->IsInCombat();
+    snapshot.members[0].selectionGuid = 0;
+
     PartyBotEngine engine;
     std::shared_ptr<SelectHostileTargetAction> action(
         new SelectHostileTargetAction());
@@ -5668,16 +5724,18 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bool const hostileCleaned = DestroySimulatorActor(map, hostile);
     bool const cleaned = playerCleaned && friendlyCleaned && hostileCleaned;
 
-    sLog.Out(LOG_BASIC, (hostileAccepted && friendlyRejected && cleaned)
+    sLog.Out(LOG_BASIC, (staleSelectionCleared && hostileAccepted &&
+                         friendlyRejected && cleaned)
         ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] Core select-hostile target: registered=%u hostileAccepted=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
+        "[PartyBotSimulator] Core generic target actions: clearRegistered=%u staleSelectionCleared=%u hostileRegistered=%u hostileAccepted=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
+        clearRegistered ? 1u : 0u, staleSelectionCleared ? 1u : 0u,
         actionRegistered ? 1u : 0u, hostileAccepted ? 1u : 0u,
         friendlyCandidateSelected ? 1u : 0u, friendlyRejected ? 1u : 0u,
         (botSession.GetPlayer() == nullptr && friendlyRejected) ? 1u : 0u,
         cleaned ? 1u : 0u);
 
-    if (!actionRegistered || !hostileAccepted || !friendlyCandidateSelected ||
-        !friendlyRejected || !cleaned)
+    if (!clearRegistered || !staleSelectionCleared || !actionRegistered ||
+        !hostileAccepted || !friendlyCandidateSelected || !friendlyRejected || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Core select-hostile target fixture failed.");
@@ -5685,7 +5743,7 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PASS: the generic Core hostile-target selector selected a live hostile and its final preflight rejected a stale friendly target without modifying Player selection/target.");
+             "[PartyBotSimulator] PASS: generic Core target maintenance cleared an idle stale selection, selected a live hostile and rejected a stale friendly target without disturbing Player combat state.");
     return true;
 }
 

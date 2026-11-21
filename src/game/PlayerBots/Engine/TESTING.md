@@ -95,26 +95,24 @@ These tests cover pure decision logic only. They do not validate live PartyBotAI
 - Bounded ActionResult/Core Spell terminal listeners; typed AND/alternative dependencies; late event registration; idempotency tombstones; starvation resistance; ready-backlog preservation under queue pressure.
 - Core-backed spell, movement/follow, range/LOS/resource, Group/death recovery and NewEngine authority fixtures.
 
-## F43 CoreAction executor and generic hostile selector
+## F43 CoreAction executor and two generic target-maintenance actions
 
-The common CoreAction wrapper requires a nonzero action ID, fresh map-thread actor/target/map resolution and a concrete ValidateCoreAction pass before ExecuteCore. ActionExecutionResult and ExecuteDetailed preserve exact validation/execution reasons in candidate state and traces. Pure C++14 regression coverage proves:
-- the action-specific preflight is invoked on immediate and pending dispatch;
-- a preflight veto prevents ExecuteCore from running;
-- the exact veto reason survives into the completed candidate result.
+The common CoreAction wrapper requires a nonzero action ID, fresh map-thread actor/target/map resolution and a concrete ValidateCoreAction pass before ExecuteCore. ActionExecutionResult and ExecuteDetailed preserve exact validation/execution reasons in candidate state and traces. Pure C++14 regression coverage proves immediate and pending dispatch both use the action-specific preflight, a veto prevents ExecuteCore, and the exact veto reason survives into the candidate result.
 
-SelectHostileTargetAction is the first reusable generic Core adapter. Its accepted operation only calls Player::SetSelectionGuid; this changes selection/target GUID fields but does not call Unit::Attack, cast, move, deal damage or generate threat. Its final live preflight uses Unit::CanAttack, plus explicit live Player/Creature GM/evade checks. The bot snapshot carries the selected GUID as a value-only field.
+SelectHostileTargetAction only calls Player::SetSelectionGuid for a live target that passes Core Unit::CanAttack. It does not call Unit::Attack, cast, move, deal damage or generate threat. The fixture proves a real hostile can be selected and a friendly Creature falsely present in a stale positive HostileSnapshot is rejected by the final live check, leaving selection/target/victim unchanged.
 
-The Core simulator creates one real Core Player, one hostile Creature and one friendly Creature:
-- A live hostile candidate is accepted and both Player selection/target GUIDs are updated to that hostile.
-- The fixture then deliberately places the friendly Creature in a stale positive HostileSnapshot. The candidate passes snapshot-time proposal and is rejected by final live CanAttack preflight with select_hostile_target_not_attackable.
-- Rejection leaves Player selection, target and victim unchanged; Player logout and both Creature removals must all succeed.
+ClearIdleTargetAction clears a stale selection only when the Player is genuinely idle:
+- Snapshot eligibility requires alive, nonzero selection GUID, no victim, no combat flag/current spell and no candidate target GUID.
+- The final live preflight verifies the snapshot selection still matches both live Player selection and target GUIDs; it rejects an active victim, combat, melee attack state or any current non-melee Spell slot.
+- The only side effect is Player::SetSelectionGuid(ObjectGuid()). It does not call AttackStop, CombatStop or interrupt casts.
+- The real Core fixture sets a non-resolving selection GUID on a live Player, dispatches the action and proves the stale selection/target becomes empty while victim stays null and combat stays false. It then re-runs hostile acceptance and stale-friendly rejection in the same fixture.
 
 Current-head validation:
-- PR CI [#44845475962](https://github.com/tyrael9/core/actions/runs/44845475962) passed pure tests, report collector, configure, full Linux ARM64 Core build and harness syntax.
-- Trusted push [#44845469020](https://github.com/tyrael9/core/actions/runs/44845469020) passed the same stages, ran the full fixture-backed Core simulator and reached final Runtime PASS. Exact selector log: registered=1 hostileAccepted=1 friendlyCandidate=1 friendlyRejected=1 unchangedOnReject=1 cleanup=1.
-- Artifact [partybot-simulator-ca6f5c5](https://github.com/tyrael9/core/actions/runs/44845469020/artifacts/14683480104) contains the runtime logs.
+- PR CI [#44847028717](https://github.com/tyrael9/core/actions/runs/44847028717) passed pure tests, report collector, configure, full Linux ARM64 Core build and harness syntax.
+- Trusted push [#44847023073](https://github.com/tyrael9/core/actions/runs/44847023073) passed the same stages, full fixture-backed Core simulator and final Runtime PASS. Exact combined marker: clearRegistered=1 staleSelectionCleared=1 hostileRegistered=1 hostileAccepted=1 friendlyCandidate=1 friendlyRejected=1 unchangedOnReject=1 cleanup=1.
+- Artifact [partybot-simulator-83e66ec](https://github.com/tyrael9/core/actions/runs/44847023073/artifacts/14684515060) contains the runtime logs.
 
-The adapter is intentionally not registered in the production NewEngine registry. This fixture proves the reusable Core action's own boundary, not a complete target-selection policy or playable combat AI.
+Both actions remain deliberately unregistered in the production NewEngine registry. They demonstrate two safe generic target-maintenance operations, not a complete target policy or playable combat AI.
 ## Production action readiness — still open
 
 - Register audited production generic/class/role Core adapters with structured outcomes.
@@ -361,4 +359,4 @@ Still open: although the pure tracker covers delayed children and interruption b
 
 ## Production action readiness — still open
 
-The first reusable generic adapter (SelectHostileTargetAction) is implemented and has real-Core hostile/friendly accepted/rejected/cleanup coverage, but is intentionally not registered in NewEngine. No production generic, class or role action is enabled. Every additional adapter still needs its own action-specific target/relation/range/LOS/spell/resource/cooldown/GCD/movement/control checks and Core-backed accepted/rejected/terminal matrix. NewEngine remains an explicit no-fallback mode; Legacy is still the default.
+Two reusable generic target-maintenance adapters are implemented and have real-Core cleanup/hostile/friendly accepted/rejected coverage, but are intentionally not registered in NewEngine. No production generic, class or role action is enabled. Every additional adapter still needs its own action-specific target/relation/range/LOS/spell/resource/cooldown/GCD/movement/control checks and Core-backed accepted/rejected/terminal matrix. NewEngine remains an explicit no-fallback mode; Legacy is still the default.

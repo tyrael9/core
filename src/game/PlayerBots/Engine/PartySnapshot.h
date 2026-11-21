@@ -14,6 +14,7 @@ struct PartyMemberSnapshot {
     Guid currentSpellTargetGuid = 0;
     std::uint8_t shapeshiftForm = 0, currentSpellType = 0xff;
     bool online = false, alive = false, inCombat = false, isMainTank = false;
+    bool victimAttackable = false;
     bool isPlayerBot = false;
 };
 struct PartyCompanionSnapshot {

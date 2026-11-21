@@ -358,6 +358,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: generic Core target maintenance cleared
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Core preflight to reject a stale negative snapshot, then AttackStop detached only the invalid victim while preserving combat state." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F43 unattackable-victim AttackStop PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: F41 CoreAction required a fresh map-thread actor/target resolution and rejected missing targets plus stale map/instance snapshots before the real movement adapter ran." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F41 Core action preflight PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

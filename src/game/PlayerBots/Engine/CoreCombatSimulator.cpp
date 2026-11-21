@@ -13,6 +13,7 @@
 #include "PlayerBots/Engine/CoreAction.h"
 #include "PlayerBots/Engine/SelectHostileTargetAction.h"
 #include "PlayerBots/Engine/ClearIdleTargetAction.h"
+#include "PlayerBots/Engine/StopUnattackableTargetAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
@@ -474,6 +475,28 @@ public:
 private:
     Map& m_map;
     std::string m_name = "core_attack";
+};
+
+class SimulatorStopUnattackableTargetTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && context.bot.victimGuid != 0 &&
+               !context.bot.victimAttackable;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_stop_unattackable_target";
+        candidate.basePriority = 45.0f;
+        candidate.channel = ActionChannel::Targeting;
+        candidates.push_back(candidate);
+    }
+private:
+    std::string m_name = "simulator_stop_unattackable_target";
 };
 
 class SimulatorSelectHostileTargetTrigger final : public Trigger
@@ -5714,6 +5737,92 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         friendlyEvaluation->reason == "select_hostile_target_not_attackable" &&
         bot->GetSelectionGuid().IsEmpty() && bot->GetTargetGuid().IsEmpty() &&
         bot->GetVictim() == nullptr;
+
+    // F43: Stop only an actually unattackable current victim. AttackStop must
+    // preserve the Player's combat flag; a stale negative snapshot against a
+    // still-hostile live victim must be rejected without detaching the attack.
+    bool const attackStarted = bot->Attack(hostile.creature, true);
+    bot->SetInCombatWith(hostile.creature);
+    Guid const currentVictimGuid = hostile.creature->GetObjectGuid().GetRawValue();
+    snapshot.members[0].victimGuid = currentVictimGuid;
+    snapshot.members[0].victimAttackable =
+        attackStarted && bot->CanAttack(hostile.creature);
+    bool const attackableBefore = snapshot.members[0].victimAttackable;
+    bool const attackerReferenceBefore =
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+        hostile.creature->GetAttackers().end();
+    bool const combatBeforeStop = bot->IsInCombat();
+
+    PartyCoordinator stopCoordinator;
+    DecisionContext stopContext(
+        snapshot, snapshot.members[0], stopCoordinator, WorldTimer::getMSTime(),
+        nullptr, nullptr, &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine stopEngine;
+    std::shared_ptr<StopUnattackableTargetAction> stopAction(
+        new StopUnattackableTargetAction());
+    bool const stopRegistered = stopEngine.RegisterAction(stopAction);
+    std::shared_ptr<Strategy> stopStrategy(
+        new Strategy("simulator_stop_unattackable_target"));
+    stopStrategy->AddTrigger(
+        std::make_shared<SimulatorStopUnattackableTargetTrigger>());
+    stopEngine.AddStrategy(stopStrategy);
+
+    DecisionReport attackableReport = stopEngine.Evaluate(stopContext);
+    bool const attackableNotProposed = attackStarted && attackableBefore &&
+        attackableReport.selectedIndices.empty() &&
+        attackableReport.candidates.empty() &&
+        bot->GetVictim() == hostile.creature && attackerReferenceBefore;
+
+    // Deliberately make the snapshot stale in the negative direction. The
+    // action is proposed, but final Core preflight must preserve a live attack.
+    snapshot.members[0].victimAttackable = false;
+    DecisionReport staleVictimReport = stopEngine.Evaluate(stopContext);
+    bool const staleVictimSelected = stopRegistered &&
+        staleVictimReport.selectedIndices.size() == 1 &&
+        staleVictimReport.candidates[staleVictimReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (staleVictimSelected)
+        stopEngine.ExecuteSelected(stopContext, staleVictimReport);
+    CandidateEvaluation const* staleVictimEvaluation = staleVictimSelected
+        ? &staleVictimReport.candidates[staleVictimReport.selectedIndices[0]] : nullptr;
+    bool const staleVictimRejected = staleVictimEvaluation &&
+        staleVictimEvaluation->status == CandidateStatus::ExecutionFailed &&
+        staleVictimEvaluation->actionResult == ActionResult::Useless &&
+        staleVictimEvaluation->reason ==
+            "stop_unattackable_target_live_victim_still_attackable" &&
+        bot->GetVictim() == hostile.creature &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid() &&
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
+        bot->IsInCombat() == combatBeforeStop &&
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+            hostile.creature->GetAttackers().end();
+
+    // Change only the live faction relation. The next snapshot-guided attempt
+    // must now use Core AttackStop, not CombatStop, and detach one back-reference.
+    hostile.creature->SetFactionTemporary(partyFaction);
+    bool const liveVictimUnattackable = !bot->CanAttack(hostile.creature);
+    DecisionReport stopReport = stopEngine.Evaluate(stopContext);
+    bool const stopSelected = stopReport.selectedIndices.size() == 1 &&
+        stopReport.candidates[stopReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (stopSelected)
+        stopEngine.ExecuteSelected(stopContext, stopReport);
+    CandidateEvaluation const* stopEvaluation = stopSelected
+        ? &stopReport.candidates[stopReport.selectedIndices[0]] : nullptr;
+    bool const attackerReferenceAfter =
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+        hostile.creature->GetAttackers().end();
+    bool const attackStoppedWithoutCombatStop = liveVictimUnattackable &&
+        stopEvaluation && stopEvaluation->status == CandidateStatus::Executed &&
+        stopEvaluation->actionResult == ActionResult::Success &&
+        bot->GetVictim() == nullptr && bot->GetTargetGuid().IsEmpty() &&
+        !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
+        !attackerReferenceAfter && bot->IsInCombat() == combatBeforeStop;
+    hostile.creature->SetFactionTemporary(hostileFaction);
+    bot->CombatStop(false);
 
     bot->SetAI(nullptr);
     actionRuntime.Remove();

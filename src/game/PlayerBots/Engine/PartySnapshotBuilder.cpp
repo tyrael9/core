@@ -170,8 +170,17 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         memberData.maxHealth = member->GetMaxHealth();
         memberData.power = member->GetPower(member->GetPowerType());
         memberData.maxPower = member->GetMaxPower(member->GetPowerType());
-        memberData.victimGuid = member->GetVictim()
-            ? member->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+        Unit* currentVictim = member->GetVictim();
+        memberData.victimGuid = currentVictim
+            ? currentVictim->GetObjectGuid().GetRawValue() : 0;
+        memberData.victimAttackable = currentVictim &&
+            currentVictim->IsInWorld() && currentVictim->GetMap() == map &&
+            currentVictim->GetMapId() == snapshot.mapId &&
+            currentVictim->GetInstanceId() == snapshot.instanceId &&
+            currentVictim->IsAlive() &&
+            !(currentVictim->IsPlayer() && currentVictim->ToPlayer()->IsGameMaster()) &&
+            !(currentVictim->ToCreature() && currentVictim->ToCreature()->IsInEvadeMode()) &&
+            member->CanAttack(currentVictim);
         memberData.selectionGuid = member->GetSelectionGuid().GetRawValue();
         memberData.x = member->GetPositionX();
         memberData.y = member->GetPositionY();

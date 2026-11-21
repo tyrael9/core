@@ -1348,7 +1348,9 @@ class Player final: public Unit
         void SendChannelUpdate(uint32 time) const;
         void UpdateChannelStartPosition();
         void CastItemCombatSpell(Unit* Target, WeaponAttackType attType);
-        void CastItemUseSpell(Item* item, SpellCastTargets const& targets);
+        uint64 CastItemUseSpell(Item* item, SpellCastTargets const& targets,
+                              uint8 bagIndex = 0xff, uint8 itemSlot = 0xff,
+                              uint8 requestedSpellSlot = 0xff);
 
         ItemSetEffect* GetItemSetEffect(uint32 setId);
         ItemSetEffect* AddItemSetEffect(uint32 setId);

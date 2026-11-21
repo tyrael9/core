@@ -290,6 +290,20 @@ class Spell
         int32 m_currentBasePoints[MAX_EFFECT_INDEX];        // cache SpellEntry::CalculateSimpleValue and use for set custom base points
         Item* m_CastItem = nullptr;
         SpellCastTargets m_targets;
+        // Optional PartyBot trace correlation copied from the owning PlayerAI.
+        uint64 m_partyBotTraceActionId = 0;
+        uint64 m_partyBotTraceEncounterId = 0;
+        uint64 m_partyBotTraceTargetGuid = 0;
+        bool m_partyBotTraceInterrupted = false;
+        bool m_partyBotTraceEngineAction = false;
+        uint64 m_partyBotItemUseId = 0;
+        uint64 m_partyBotItemUseChildId = 0;
+
+        void SetPartyBotItemUseCorrelation(uint64 itemUseId, uint64 childId)
+        {
+            m_partyBotItemUseId = itemUseId;
+            m_partyBotItemUseChildId = childId;
+        }
 
         void SetCastTime(int32 castTime) { m_casttime = castTime; }
         int32 GetCastTime() const { return m_casttime; }

@@ -124,6 +124,7 @@ public:
 
     SpellCastResult DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry);
     virtual bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
+    virtual void TraceDecision(char const*, Unit const*, SpellEntry const*, char const*, uint32 = 0) const {}
     bool IsWearingShield(Player* pPlayer) const;
     bool IsInDuel() const;
     CombatBotRoles GetRole() const;

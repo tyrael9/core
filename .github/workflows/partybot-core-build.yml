@@ -1,0 +1,225 @@
+name: PartyBot Core build
+
+on:
+  pull_request:
+    branches:
+      - validation/partybot-engine-base-0e3ff01
+  push:
+    branches:
+      - work/partybot-engine-foundation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Classify changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code_changed: ${{ steps.filter.outputs.code_changed }}
+      changed_files: ${{ steps.filter.outputs.changed_files }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect code versus documentation changes
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before || '' }}
+          PR_ACTION: ${{ github.event.action || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+        run: |
+          # Manual dispatch is an explicit request for the complete validation.
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+            echo "changed_files=manual_dispatch" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch: full validation requested."
+            exit 0
+          fi
+
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            base="$PUSH_BEFORE"
+            head="$GITHUB_SHA"
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            head="$PR_HEAD_SHA"
+            if [[ "$PR_ACTION" == "synchronize" && -n "$PUSH_BEFORE" ]]; then
+              # A synchronize event carries the previous PR head in the before field.
+              # Classify only this update range: the push event validates the
+              # complete before-to-after push, while this avoids rerunning the
+              # PR older C++ diff for a documentation-only follow-up commit.
+              base="$PUSH_BEFORE"
+              echo "PR synchronize: classifying the current head update."
+            else
+              # Opening/reopening a PR, or an unavailable update boundary,
+              # must validate the complete base-to-head diff.
+              base="$PR_BASE_SHA"
+            fi
+          else
+            # Unknown event types fail safe and run the full build.
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+            echo "changed_files=unknown_event" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A new branch or unavailable base must never accidentally skip CI.
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+            echo "changed_files=unavailable_base" >> "$GITHUB_OUTPUT"
+            echo "Base commit unavailable; failing safe to full validation."
+            exit 0
+          fi
+
+          if ! changed="$(git diff --name-only "$base" "$head")"; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+            echo "changed_files=diff_error" >> "$GITHUB_OUTPUT"
+            echo "Could not classify diff; failing safe to full validation."
+            exit 0
+          fi
+          if [[ -z "$changed" ]]; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+            echo "changed_files=empty_diff" >> "$GITHUB_OUTPUT"
+            echo "Empty diff; failing safe to full validation."
+            exit 0
+          fi
+
+          code_changed=false
+          count=0
+          while IFS= read -r changed_path; do
+            [[ -z "$changed_path" ]] && continue
+            count=$((count + 1))
+            lower_path="$(printf '%s' "$changed_path" | tr '[:upper:]' '[:lower:]')"
+            case "$lower_path" in
+              *.md|*.mdx|*.rst|*.adoc|*.txt) ;;
+              *) code_changed=true; break ;;
+            esac
+          done <<< "$changed"
+
+          if [[ "$code_changed" == "false" ]]; then
+            git diff --check "$base" "$head"
+            echo "Documentation-only diff: $count file(s)."
+          fi
+          echo "code_changed=$code_changed" >> "$GITHUB_OUTPUT"
+          echo "changed_files=$count" >> "$GITHUB_OUTPUT"
+
+  documentation-only:
+    name: Documentation-only (heavy CI skipped)
+    needs: changes
+    if: needs.changes.outputs.code_changed == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm lightweight validation
+        run: |
+          echo "Documentation-only change: ${{ needs.changes.outputs.changed_files }} file(s)."
+          echo "Markdown/RST/AsciiDoc/TXT whitespace validation passed."
+          echo "ARM64 build and Core combat simulator intentionally skipped."
+
+  linux-arm64:
+    name: Linux ARM64 / Vanilla 5875
+    needs: changes
+    if: needs.changes.outputs.code_changed == 'true'
+    concurrency:
+      group: partybot-core-build-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            cmake \
+            ccache \
+            libmariadb-dev \
+            libssl-dev \
+            zlib1g-dev
+
+      - name: Run pure PartyBotEngine tests
+        run: bash src/game/PlayerBots/Engine/tests/run_tests.sh
+
+      - name: Test read-only encounter report collector
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-${{ runner.arch }}-ccache-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-ccache-${{ github.ref }}-
+            ${{ runner.os }}-${{ runner.arch }}-ccache-
+
+      - name: Configure
+        run: |
+          ccache --zero-stats
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=14 \
+            -DBUILD_FOR_HOST_CPU=OFF \
+            -DBUILD_WARNINGS_AS_ERROR=OFF \
+            -DUSE_PCH=OFF \
+            -DENABLE_CPPTRACE=OFF \
+            -DUSE_SCRIPTS=ON \
+            -DBUILD_EXTRACTORS=OFF \
+            -DBUILD_REALMMERGE=OFF \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build server and realm daemon
+        run: cmake --build build --parallel 2
+
+      - name: Validate simulator runtime harness syntax
+        run: bash -n tools/partybot-simulator/run-ci.sh
+
+      # Report only whether fixture secrets were injected; never print their values.
+      - name: Check simulator fixture secret availability
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          PARTYBOT_SIMULATOR_DATA_URL: ${{ secrets.PARTYBOT_SIMULATOR_DATA_URL }}
+          PARTYBOT_SIMULATOR_DATA_SHA256: ${{ secrets.PARTYBOT_SIMULATOR_DATA_SHA256 }}
+        run: |
+          if [[ -n "$PARTYBOT_SIMULATOR_DATA_URL" ]]; then
+            echo "[PartyBotSimulator] Fixture URL secret: present"
+          else
+            echo "[PartyBotSimulator] Fixture URL secret: MISSING"
+          fi
+          if [[ -n "$PARTYBOT_SIMULATOR_DATA_SHA256" ]]; then
+            echo "[PartyBotSimulator] SHA256 secret: present"
+          else
+            echo "[PartyBotSimulator] SHA256 secret: MISSING"
+          fi
+
+      # Runtime uses only disposable schemas and an extracted-data fixture shared
+      # through Google Drive. It is push-only and remains a no-op until both secrets exist.
+      - name: Run optional Core-backed simulator runtime test
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          PARTYBOT_SIMULATOR_DATA_URL: ${{ secrets.PARTYBOT_SIMULATOR_DATA_URL }}
+          PARTYBOT_SIMULATOR_DATA_SHA256: ${{ secrets.PARTYBOT_SIMULATOR_DATA_SHA256 }}
+        run: bash tools/partybot-simulator/run-ci.sh
+
+      - name: Upload simulator runtime logs
+        if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@v4
+        with:
+          name: partybot-simulator-${{ github.sha }}
+          path: |
+            simulator.log
+            simulator-logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Show compiler cache statistics
+        if: always()
+        run: ccache --show-stats

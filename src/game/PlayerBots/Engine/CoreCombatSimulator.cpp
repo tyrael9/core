@@ -1,0 +1,9797 @@
+#include "CoreCombatSimulator.h"
+
+#include "AI/CreatureAI.h"
+#include "Creature.h"
+#include "GameObject.h"
+#include "Group.h"
+#include "DBCStores.h"
+#include "Log.h"
+#include "Map.h"
+#include "MapManager.h"
+#include "Movement/MotionMaster.h"
+#include "Movement/MovementGenerator.h"
+#include "Movement/TargetedMovementGenerator.h"
+#include "Movement/MovementGenerator.h"
+#include "Movement/TargetedMovementGenerator.h"
+#include "PlayerBots/Engine/Action.h"
+#include "PlayerBots/Engine/CoreAction.h"
+#include "PlayerBots/Engine/SelectHostileTargetAction.h"
+#include "PlayerBots/Engine/ClearIdleTargetAction.h"
+#include "PlayerBots/Engine/ClearStaleTargetAction.h"
+#include "PlayerBots/Engine/StopUnattackableTargetAction.h"
+#include "PlayerBots/Engine/FollowPartyMemberAction.h"
+#include "PlayerBots/Engine/FaceTargetAction.h"
+#include "PlayerBots/Engine/StopFollowingAction.h"
+#include "PlayerBots/Engine/AttackTargetAction.h"
+#include "PlayerBots/Engine/StopAutoAttackAction.h"
+#include "PlayerBots/Engine/PartyBotEngine.h"
+#include "PlayerBots/Engine/ExecutionAuthority.h"
+#include "PlayerBots/Engine/PartySnapshotBuilder.h"
+#include "PlayerBots/Engine/PartyCoordinator.h"
+#include "PlayerBots/Engine/PartySnapshot.h"
+#include "PlayerBots/Engine/CoreThreatImpactEstimator.h"
+#include "PlayerBots/Engine/ThreatBudgetPolicy.h"
+#include "PlayerBots/Engine/Strategy.h"
+#include "PlayerBots/Engine/Trigger.h"
+#include "PlayerBots/Engine/ShadowStrategies.h"
+#include "ObjectAccessor.h"
+#include "ObjectMgr.h"
+#include "Pet.h"
+#include "Player.h"
+#include "AI/PlayerAI.h"
+#include "PlayerBots/PartyBotAI.h"
+#include "Spell.h"
+#include "SpellCastTargetsInfo.h"
+#include "SpellAuras.h"
+#include "SpellMgr.h"
+#include "Timer.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <thread>
+#include <vector>
+
+namespace PartyBotEngine
+{
+namespace
+{
+class SimulatorProbeAI final : public CreatureAI
+{
+public:
+    SimulatorProbeAI(Creature* creature, uint32& updateCount)
+        : CreatureAI(creature), m_updateCount(updateCount)
+    {
+    }
+
+    void UpdateAI(uint32 const /*diff*/) override
+    {
+        ++m_updateCount;
+    }
+
+private:
+    uint32& m_updateCount;
+};
+
+class SimulatorAliveStateObserver final : public PlayerAI
+{
+public:
+    explicit SimulatorAliveStateObserver(Player* player) : PlayerAI(player) {}
+
+    void OnAliveStateChanged(bool wasAlive, bool isAlive) override
+    {
+        ++callbackCount;
+        if (wasAlive == isAlive)
+        {
+            ++sameStateCallbacks;
+            return;
+        }
+
+        ++transitionCount;
+        lastWasAlive = wasAlive;
+        lastIsAlive = isAlive;
+    }
+
+    uint32 callbackCount = 0;
+    uint32 sameStateCallbacks = 0;
+    uint32 transitionCount = 0;
+    bool lastWasAlive = false;
+    bool lastIsAlive = false;
+};
+
+struct SimulatorActor
+{
+    Creature* creature = nullptr;
+    uint32 updateCount = 0;
+};
+
+ThreatImpactEstimate MakeSimulatorNoThreatEstimate(DecisionContext const& context,
+                                                     char const* reason)
+{
+    ThreatImpactEstimate estimate;
+    estimate.completeness = ThreatImpactCompleteness::NoThreat;
+    estimate.snapshotEpoch = context.snapshot.epoch;
+    estimate.reason = reason;
+    return estimate;
+}
+
+ThreatImpactEstimate EstimateSimulatorHealThreat(DecisionContext const& context)
+{
+    // The isolated heal fixtures intentionally contain no hostile snapshot
+    // entries. If any party hostile exists, healing-assist fan-out is not
+    // modelled here and must remain Unknown rather than being treated as free.
+    if (!context.snapshot.hostiles.empty()) {
+        ThreatImpactEstimate estimate;
+        estimate.snapshotEpoch = context.snapshot.epoch;
+        estimate.reason = "simulator_healing_assist_threat_not_modelled";
+        return estimate;
+    }
+    return MakeSimulatorNoThreatEstimate(
+        context, "simulator_fixture_has_no_party_hostile_recipients");
+}
+
+CreatureInfo const* FindSafeCreatureTemplate()
+{
+    std::vector<CreatureInfo const*> candidates;
+    for (auto const& item : sObjectMgr.GetCreatureInfoMap())
+    {
+        CreatureInfo const* info = item.second.get();
+        if (!info || info->entry != item.first || info->rank != CREATURE_ELITE_NORMAL ||
+            !info->display_total_probability || !info->display_id[0] ||
+            info->npc_flags || info->civilian || info->racial_leader || info->pet_family ||
+            info->pet_spell_list_id || info->immunity_flags || info->school_immune_mask ||
+            info->mechanic_immune_mask || info->spawn_spell_id || info->totem_spell_id ||
+            info->spell_list_id || info->auras || info->script_id || !info->ai_name.empty() ||
+            (info->flags_extra & (CREATURE_FLAG_EXTRA_INVISIBLE | CREATURE_FLAG_EXTRA_NO_THREAT_LIST)))
+            continue;
+
+        candidates.push_back(info);
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](CreatureInfo const* lhs, CreatureInfo const* rhs) { return lhs->entry < rhs->entry; });
+    return candidates.empty() ? nullptr : candidates.front();
+}
+
+bool FindMutuallyHostileFactions(uint32& firstId, uint32& secondId)
+{
+    std::vector<FactionTemplateEntry const*> factions;
+    for (auto const& item : sObjectMgr.GetFactionTemplateMap())
+        if (item.second.ID)
+            factions.push_back(&item.second);
+
+    std::sort(factions.begin(), factions.end(),
+              [](FactionTemplateEntry const* lhs, FactionTemplateEntry const* rhs) { return lhs->ID < rhs->ID; });
+
+    for (std::size_t i = 0; i < factions.size(); ++i)
+    {
+        for (std::size_t j = i + 1; j < factions.size(); ++j)
+        {
+            if (factions[i]->IsHostileTo(*factions[j]) && factions[j]->IsHostileTo(*factions[i]))
+            {
+                firstId = factions[i]->ID;
+                secondId = factions[j]->ID;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool CreateSimulatorActor(Map& map, CreatureInfo const& info, uint32 factionId,
+                          float x, float y, SimulatorActor& actor)
+{
+    Creature* creature = new Creature();
+    CreatureCreatePos position(&map, x, y, 0.0f, 0.0f);
+    if (!creature->Create(map.GenerateLocalLowGuid(HIGHGUID_UNIT), position, &info, info.entry))
+    {
+        delete creature;
+        return false;
+    }
+
+    // AIM_Initialize is the Core lifecycle entry point for both the default
+    // MotionMaster generator and the template-selected AI. Do this before
+    // replacing the AI: installing a custom AI before Map::Add makes
+    // Creature::AddToWorld skip AIM_Initialize entirely, leaving MotionMaster
+    // empty and causing UpdateMotion's !empty() assertion.
+    if (!creature->AIM_Initialize())
+    {
+        delete creature;
+        return false;
+    }
+
+    // AIM_Initialize created the normal template AI. Replace it explicitly;
+    // Creature::SetAI is a raw pointer setter and does not delete the old AI.
+    delete creature->AI();
+    creature->SetAI(new SimulatorProbeAI(creature, actor.updateCount));
+
+    creature->SetFactionTemplateId(factionId);
+    creature->SetMaxHealth(100000);
+    creature->SetHealth(100000);
+
+    // A headless map has no player-centered update cells. Active actors are
+    // visited by Map::UpdateCells through the Core's normal active-object path.
+    creature->SetActiveObjectState(true);
+    map.Add(creature);
+
+    actor.creature = creature;
+    ObjectGuid const guid = creature->GetObjectGuid();
+    if (!creature->IsInWorld() || map.GetCreature(guid) != creature)
+    {
+        if (creature->IsInWorld())
+            map.Remove(creature, false);
+
+        // Never destroy an object while the map might still hold its pointer.
+        bool const detached = !creature->IsInWorld() && map.GetCreature(guid) == nullptr;
+        if (detached)
+        {
+            delete creature;
+            actor.creature = nullptr;
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool DestroySimulatorActor(Map& map, SimulatorActor& actor)
+{
+    if (!actor.creature)
+        return true;
+
+    ObjectGuid const guid = actor.creature->GetObjectGuid();
+    actor.creature->CombatStop(true);
+    actor.creature->DeleteThreatList();
+
+    if (actor.creature->IsInWorld())
+        map.Remove(actor.creature, false);
+
+    bool const detached = !actor.creature->IsInWorld() && map.GetCreature(guid) == nullptr;
+    if (!detached)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Refusing to destroy Creature GUID %u because Map::Remove(false) did not detach it.",
+                 actor.creature->GetGUIDLow());
+        return false;
+    }
+
+    delete actor.creature;
+    actor.creature = nullptr;
+    return true;
+}
+
+bool CreateSimulatorPrimaryPet(Map& map, Player& owner, CreatureInfo const& info,
+                               std::unique_ptr<Pet>& pet)
+{
+    std::unique_ptr<Pet> candidate(new Pet(SUMMON_PET));
+    CreatureCreatePos position(
+        &map, owner.GetPositionX() + 1.0f, owner.GetPositionY(),
+        owner.GetPositionZ(), owner.GetOrientation());
+
+    if (!candidate->Create(
+            map.GenerateLocalLowGuid(HIGHGUID_PET), position, &info,
+            sObjectMgr.GeneratePetNumber()))
+        return false;
+
+    candidate->SetOwnerGuid(owner.GetObjectGuid());
+    candidate->SetCreatorGuid(owner.GetObjectGuid());
+    candidate->SetFactionTemplateId(owner.GetFactionTemplateId());
+    if (!candidate->InitStatsForLevel(owner.GetLevel(), &owner) ||
+        !candidate->AIM_Initialize())
+        return false;
+
+    candidate->SetActiveObjectState(true);
+    owner.SetPet(candidate.get());
+    map.Add(static_cast<Creature*>(candidate.get()));
+
+    bool const registered = candidate->IsInWorld() &&
+        map.GetPet(candidate->GetObjectGuid()) == candidate.get() &&
+        owner.GetPet() == candidate.get();
+    if (!registered)
+    {
+        if (owner.GetPetGuid() == candidate->GetObjectGuid())
+            owner.SetPet(nullptr);
+        if (candidate->IsInWorld())
+        {
+            candidate->CleanupsBeforeDelete();
+            map.Remove(static_cast<Creature*>(candidate.get()), false);
+        }
+        return false;
+    }
+
+    pet = std::move(candidate);
+    return true;
+}
+
+bool DestroySimulatorPrimaryPet(Map& map, Player* owner, std::unique_ptr<Pet>& pet)
+{
+    if (!pet)
+        return true;
+
+    Pet* const rawPet = pet.get();
+    ObjectGuid const guid = rawPet->GetObjectGuid();
+    if (owner && owner->GetPetGuid() == guid)
+        owner->SetPet(nullptr);
+
+    if (rawPet->IsInWorld())
+    {
+        // Delete both directions of the real Core HostileReference links before
+        // detaching the Pet. Do not call Unsummon/SavePetToDB in this fixture.
+        rawPet->CleanupsBeforeDelete();
+        map.Remove(static_cast<Creature*>(rawPet), false);
+    }
+
+    bool const detached = !rawPet->IsInWorld() && map.GetPet(guid) == nullptr;
+    if (!detached)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Refusing to destroy Pet GUID %u because Map::Remove(false) did not detach it.",
+                 rawPet->GetGUIDLow());
+        pet.release();
+        return false;
+    }
+
+    pet.reset();
+    return true;
+}
+
+
+class SimulatorThreatBudgetProbeAction final : public Action
+{
+public:
+    explicit SimulatorThreatBudgetProbeAction(Map& map) : m_map(map) {}
+    std::string const& GetName() const override { return m_name; }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        Unit* attacker = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* target = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        Creature* hostile = target ? target->ToCreature() : nullptr;
+        if (!attacker || !hostile || !attacker->IsAlive() || !hostile->IsAlive() ||
+            !attacker->IsHostileTo(hostile) || !hostile->CanHaveThreatList() ||
+            !candidate.spellId)
+        {
+            reason = "threat_budget_probe_actor_or_damage_invalid";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const&, ActionCandidate const&, std::string&) const override
+    {
+        return true;
+    }
+
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                                ActionCandidate const& candidate) const override
+    {
+        Unit* attacker = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* target = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        Creature* hostile = target ? target->ToCreature() : nullptr;
+
+        // This isolated test action has exactly one spell-less direct-damage
+        // effect and no proc, pet, periodic, flat-spell or assist side effects.
+        // Use the pinned Core ThreatCalcHelper for the forecast; the runtime
+        // test applies the same DealDamage input and compares actual threat.
+        ThreatImpactEstimate estimate = EstimateAppliedDirectDamageComponent(
+            attacker, hostile, candidate.spellId, SPELL_SCHOOL_MASK_NORMAL,
+            context.snapshot.epoch, ThreatImpactBound::Exact);
+        if (estimate.impacts.size() != 1)
+            return estimate;
+
+        estimate.completeness = ThreatImpactCompleteness::Complete;
+        estimate.reservationDurationMs = 5000;
+        estimate.reason = "isolated_core_spell_less_direct_damage_action";
+        return estimate;
+    }
+
+    ActionResult Execute(DecisionContext&, ActionCandidate const& candidate) override
+    {
+        // Model an accepted pending action. The fixture then completes it by
+        // calling Core DealDamage and releases this action ID as its completion
+        // callback would. Execute itself must not change Core threat or victim.
+        m_lastThreatActionId = candidate.threatActionId;
+        m_lastDamage = candidate.spellId;
+        ++m_executeCount;
+        return m_lastThreatActionId && m_lastDamage
+            ? ActionResult::Success : ActionResult::Failed;
+    }
+
+    ThreatActionId GetLastThreatActionId() const { return m_lastThreatActionId; }
+    uint32 GetLastDamage() const { return m_lastDamage; }
+    uint32 GetExecuteCount() const { return m_executeCount; }
+
+private:
+    Map& m_map;
+    std::string m_name = "core_threat_budget_probe";
+    ThreatActionId m_lastThreatActionId = 0;
+    uint32 m_lastDamage = 0;
+    uint32 m_executeCount = 0;
+};
+
+class SimulatorThreatBudgetProbeTrigger final : public Trigger
+{
+public:
+    SimulatorThreatBudgetProbeTrigger(Guid hostileGuid, uint32 damage)
+        : m_hostileGuid(hostileGuid), m_damage(damage) {}
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && m_hostileGuid && m_damage;
+    }
+    void CollectCandidates(DecisionContext const&, std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_threat_budget_probe";
+        candidate.targetGuid = m_hostileGuid;
+        candidate.spellId = m_damage; // Test-only: exact spell-less DealDamage input.
+        candidate.basePriority = 100.0f;
+        candidate.channel = ActionChannel::GlobalCooldown;
+        candidates.push_back(candidate);
+    }
+private:
+    Guid m_hostileGuid = 0;
+    uint32 m_damage = 0;
+    std::string m_name = "simulator_core_threat_budget_probe";
+};
+
+class SimulatorCoreAttackAction final : public Action
+{
+public:
+    explicit SimulatorCoreAttackAction(Map& map) : m_map(map) {}
+    std::string const& GetName() const override { return m_name; }
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        // Unit::Attack changes target/motion state only; no damage or threat is generated.
+        return MakeSimulatorNoThreatEstimate(context, "simulator_attack_only_changes_victim");
+    }
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        HostileSnapshot const* hostile = context.snapshot.FindHostile(candidate.targetGuid);
+        Unit* attacker = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* target = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!hostile || !hostile->alive || !attacker || !target ||
+            !attacker->IsAlive() || !target->IsAlive() || !attacker->IsHostileTo(target))
+        {
+            reason = "core_attack_target_unavailable_or_not_hostile";
+            return false;
+        }
+        return true;
+    }
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        Unit* attacker = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* target = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!attacker || !target || attacker->GetVictim() == target)
+        {
+            reason = "core_attack_already_active_or_actor_missing";
+            return false;
+        }
+        return true;
+    }
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    {
+        Unit* attacker = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* target = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!attacker || !target || !attacker->Attack(target, true))
+            return ActionResult::Failed;
+        return attacker->GetVictim() == target ? ActionResult::Success : ActionResult::Failed;
+    }
+private:
+    Map& m_map;
+    std::string m_name = "core_attack";
+};
+
+class SimulatorStopUnattackableTargetTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && context.bot.victimGuid != 0 &&
+               !context.bot.victimAttackable;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_stop_unattackable_target";
+        candidate.basePriority = 45.0f;
+        candidate.channel = ActionChannel::Targeting;
+        candidates.push_back(candidate);
+    }
+private:
+    std::string m_name = "simulator_stop_unattackable_target";
+};
+
+class SimulatorStopAutoAttackTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && context.bot.victimGuid != 0 &&
+               context.bot.currentSpellId == 0;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_stop_auto_attack";
+        candidate.basePriority = 38.0f;
+        candidate.channel = ActionChannel::Utility;
+        candidates.push_back(candidate);
+    }
+
+private:
+    std::string m_name = "simulator_stop_auto_attack";
+};
+
+class SimulatorSelectHostileTargetTrigger final : public Trigger
+{
+public:
+    explicit SimulatorSelectHostileTargetTrigger(Guid targetGuid)
+        : m_targetGuid(targetGuid) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && m_targetGuid != 0;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_select_hostile_target";
+        candidate.targetGuid = m_targetGuid;
+        candidate.basePriority = 40.0f;
+        candidate.channel = ActionChannel::Targeting;
+        candidates.push_back(candidate);
+    }
+
+private:
+    Guid m_targetGuid = 0;
+    std::string m_name = "simulator_select_hostile_target";
+};
+
+class SimulatorAttackTargetTrigger final : public Trigger
+{
+public:
+    explicit SimulatorAttackTargetTrigger(Guid targetGuid)
+        : m_targetGuid(targetGuid) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && m_targetGuid != 0 &&
+               context.bot.selectionGuid == m_targetGuid;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_attack_target";
+        candidate.targetGuid = m_targetGuid;
+        candidate.basePriority = 35.0f;
+        candidate.channel = ActionChannel::Targeting;
+        candidates.push_back(candidate);
+    }
+
+private:
+    Guid m_targetGuid = 0;
+    std::string m_name = "simulator_attack_target";
+};
+
+class SimulatorFaceTargetTrigger final : public Trigger
+{
+public:
+    explicit SimulatorFaceTargetTrigger(Guid targetGuid)
+        : m_targetGuid(targetGuid) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && m_targetGuid != 0 &&
+               context.bot.selectionGuid == m_targetGuid;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_face_target";
+        candidate.targetGuid = m_targetGuid;
+        candidate.basePriority = 30.0f;
+        candidate.channel = ActionChannel::Movement;
+        candidates.push_back(candidate);
+    }
+
+private:
+    Guid m_targetGuid = 0;
+    std::string m_name = "simulator_face_target";
+};
+
+class SimulatorClearIdleTargetTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && context.bot.selectionGuid != 0 &&
+               context.bot.victimGuid == 0 && !context.bot.inCombat &&
+               context.bot.currentSpellId == 0;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_clear_idle_target";
+        candidate.basePriority = 35.0f;
+        candidate.channel = ActionChannel::Targeting;
+        candidates.push_back(candidate);
+    }
+
+private:
+    std::string m_name = "simulator_clear_idle_target";
+};
+
+class SimulatorClearStaleTargetTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && context.bot.selectionGuid != 0 &&
+               context.bot.selectionGuid != context.bot.victimGuid &&
+               (context.bot.inCombat || context.bot.victimGuid != 0);
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_clear_stale_target";
+        candidate.basePriority = 38.0f;
+        candidate.channel = ActionChannel::Targeting;
+        candidates.push_back(candidate);
+    }
+
+private:
+    std::string m_name = "simulator_clear_stale_target";
+};
+
+class SimulatorFollowPartyMemberTrigger final : public Trigger
+{
+public:
+    explicit SimulatorFollowPartyMemberTrigger(Guid targetGuid)
+        : m_targetGuid(targetGuid) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && m_targetGuid != 0;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_follow_party_member";
+        candidate.targetGuid = m_targetGuid;
+        candidate.basePriority = 50.0f;
+        candidate.channel = ActionChannel::Movement;
+        candidates.push_back(candidate);
+    }
+
+private:
+    Guid m_targetGuid = 0;
+    std::string m_name = "simulator_follow_party_member";
+};
+
+class SimulatorStopFollowingTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && context.bot.followTargetGuid != 0;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_stop_following";
+        candidate.basePriority = 30.0f;
+        candidate.channel = ActionChannel::Movement;
+        candidates.push_back(candidate);
+    }
+
+private:
+    std::string m_name = "simulator_stop_following";
+};
+
+class SimulatorTankAssistTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive &&
+               context.bot.roleId == static_cast<std::uint8_t>(PartyRole::Tank);
+    }
+    void CollectCandidates(DecisionContext const& context,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        for (HostileSnapshot const& hostile : context.snapshot.hostiles)
+        {
+            if (!hostile.alive || hostile.crowdControlProtected)
+                continue;
+            ActionCandidate candidate;
+            candidate.actionName = "core_attack";
+            candidate.targetGuid = hostile.guid;
+            candidate.basePriority = 100.0f;
+            candidate.channel = ActionChannel::Targeting;
+            candidates.push_back(candidate);
+        }
+    }
+private:
+    std::string m_name = "simulator_tank_assist";
+};
+
+
+
+static uint32 constexpr SIMULATOR_HEAL_SPELL_ID = 2050; // Lesser Heal (Rank 1), Vanilla 1.12.
+
+class SimulatorCoreHealAction final : public Action
+{
+public:
+    explicit SimulatorCoreHealAction(Map& map) : m_map(map) {}
+    std::string const& GetName() const override { return m_name; }
+
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        return EstimateSimulatorHealThreat(context);
+    }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        PartyMemberSnapshot const* patientSnapshot = context.snapshot.FindMember(candidate.targetGuid);
+        Unit* caster = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(candidate.spellId);
+        bool const isHealingSpell = spell &&
+            (spell->Effect[0] == SPELL_EFFECT_HEAL ||
+             spell->Effect[1] == SPELL_EFFECT_HEAL ||
+             spell->Effect[2] == SPELL_EFFECT_HEAL);
+        if (!patientSnapshot || !patientSnapshot->alive || !caster || !patient ||
+            !caster->IsAlive() || !patient->IsAlive() || !caster->IsFriendlyTo(patient) ||
+            !isHealingSpell || patient->GetHealth() >= patient->GetMaxHealth())
+        {
+            reason = "core_heal_target_or_spell_unavailable";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!patient || patient->GetHealth() >= patient->GetMaxHealth())
+        {
+            reason = "core_heal_target_already_full_or_missing";
+            return false;
+        }
+        return true;
+    }
+
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    {
+        Unit* caster = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(candidate.spellId);
+        if (!caster || !patient || !spell || !caster->IsAlive() || !patient->IsAlive() ||
+            !caster->IsFriendlyTo(patient) || patient->GetHealth() >= patient->GetMaxHealth())
+            return ActionResult::Impossible;
+
+        uint32 const healthBefore = patient->GetHealth();
+        caster->SetFacingToObject(patient);
+
+        // Triggered=true keeps this headless Creature fixture independent of
+        // player spellbook, mana, GCD and cast-time state. The Core still runs
+        // the real Spell/SpellEffects pipeline and returns its authoritative
+        // SpellCastResult; the test separately requires an actual heal effect.
+        SpellCastResult const castResult = caster->CastSpell(patient, spell, true);
+        uint32 const healthAfter = patient->GetHealth();
+        m_lastCastResult = castResult;
+        m_lastHealing = healthAfter > healthBefore ? healthAfter - healthBefore : 0;
+        return castResult == SPELL_CAST_OK && healthAfter > healthBefore
+            ? ActionResult::Success : ActionResult::Failed;
+    }
+
+    SpellCastResult GetLastCastResult() const { return m_lastCastResult; }
+    uint32 GetLastHealing() const { return m_lastHealing; }
+
+private:
+    Map& m_map;
+    std::string m_name = "core_heal";
+    SpellCastResult m_lastCastResult = SPELL_FAILED_DONT_REPORT;
+    uint32 m_lastHealing = 0;
+};
+
+class SimulatorHealerTriageTrigger final : public Trigger
+{
+public:
+    explicit SimulatorHealerTriageTrigger(std::string actionName = "core_heal")
+        : m_actionName(std::move(actionName))
+    {
+    }
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive &&
+               context.bot.roleId == static_cast<std::uint8_t>(PartyRole::Healer);
+    }
+    void CollectCandidates(DecisionContext const& context,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        for (PartyMemberSnapshot const& member : context.snapshot.members)
+        {
+            if (!member.alive || member.guid == context.bot.guid ||
+                !member.maxHealth || member.health >= member.maxHealth)
+                continue;
+            ActionCandidate candidate;
+            candidate.actionName = m_actionName;
+            candidate.targetGuid = member.guid;
+            candidate.spellId = SIMULATOR_HEAL_SPELL_ID;
+            candidate.basePriority = 100.0f *
+                (1.0f - static_cast<float>(member.health) / member.maxHealth);
+            candidate.channel = ActionChannel::GlobalCooldown;
+            candidates.push_back(candidate);
+        }
+    }
+private:
+    std::string m_name = "simulator_healer_triage";
+    std::string m_actionName;
+};
+
+class SimulatorTraceProbeTrigger final : public Trigger
+{
+public:
+    SimulatorTraceProbeTrigger(std::string name, uint32 intervalMs)
+        : m_name(std::move(name)), m_intervalMs(intervalMs) {}
+    std::string const& GetName() const override { return m_name; }
+    uint32 GetCheckIntervalMs() const override { return m_intervalMs; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>&) const override {}
+private:
+    std::string m_name;
+    uint32 m_intervalMs = 0;
+};
+
+bool RunEngineCoreSpellHealSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor healer;
+    SimulatorActor patient;
+    bool created = CreateSimulatorActor(map, *info, partyFaction, 0.0f, 4.0f, healer) &&
+                   CreateSimulatorActor(map, *info, partyFaction, 1.0f, 4.0f, patient);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, patient);
+        cleaned = DestroySimulatorActor(map, healer) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Spell/heal fixture creation failed (cleanup=%u).", cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120 && (!healer.updateCount || !patient.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!healer.updateCount || !patient.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    healer.creature->SetLevel(60);
+    patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
+    uint32 const healthBefore = patient.creature->GetHealth();
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 2;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 2;
+    snapshot.capturedAtMs = 2000;
+
+    PartyMemberSnapshot healerMember;
+    healerMember.guid = healer.creature->GetObjectGuid().GetRawValue();
+    healerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    healerMember.mapId = map.GetId();
+    healerMember.instanceId = map.GetInstanceId();
+    healerMember.health = healer.creature->GetHealth();
+    healerMember.maxHealth = healer.creature->GetMaxHealth();
+    healerMember.online = true;
+    healerMember.alive = healer.creature->IsAlive();
+    snapshot.members.push_back(healerMember);
+
+    PartyMemberSnapshot patientMember;
+    patientMember.guid = patient.creature->GetObjectGuid().GetRawValue();
+    patientMember.roleId = static_cast<std::uint8_t>(PartyRole::Tank);
+    patientMember.mapId = map.GetId();
+    patientMember.instanceId = map.GetInstanceId();
+    patientMember.health = healthBefore;
+    patientMember.maxHealth = patient.creature->GetMaxHealth();
+    patientMember.online = true;
+    patientMember.alive = patient.creature->IsAlive();
+    patientMember.isMainTank = true;
+    snapshot.members.push_back(patientMember);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 2000);
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCoreHealAction> healAction(new SimulatorCoreHealAction(map));
+    bool const registered = engine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_healer_triage"));
+    strategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>());
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
+        report.candidates[report.selectedIndices[0]].candidate.spellId == SIMULATOR_HEAL_SPELL_ID &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(context, report);
+
+    uint32 const healthAfter = patient.creature->GetHealth();
+    bool const executed = !report.selectedIndices.empty() &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Success &&
+        healAction->GetLastCastResult() == SPELL_CAST_OK && healthAfter > healthBefore &&
+        healAction->GetLastHealing() == healthAfter - healthBefore;
+
+    bool cleaned = DestroySimulatorActor(map, patient);
+    cleaned = DestroySimulatorActor(map, healer) && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine spell/heal: aiReady=%u registered=%u candidates=%u selected=%u castResult=%u health=%u>%u healed=%u cleanup=%u.",
+             (healer.updateCount != 0 && patient.updateCount != 0) ? 1u : 0u,
+             registered ? 1u : 0u, static_cast<uint32>(report.candidates.size()),
+             selected ? 1u : 0u, static_cast<uint32>(healAction->GetLastCastResult()),
+             healthBefore, healthAfter, healAction->GetLastHealing(), cleaned ? 1u : 0u);
+
+    if (!registered || !selected || !executed || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine-to-Core spell/heal smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine selected healer triage and the Core Spell pipeline applied a real Lesser Heal effect.");
+    return true;
+}
+
+
+
+// This fixture follows the same Core Player construction sequence as
+// PlayerBotAI::SpawnNewPlayer, but keeps its WorldSession local to the test.
+bool CreateSimulatorPlayer(Map& map, uint32 factionId, WorldSession& session, Player*& player,
+                          float x = 0.0f, float y = 6.0f, float z = 4.0f)
+{
+    player = new Player(&session);
+    uint8 gender = GENDER_MALE;
+    uint8 skin = 0, face = 0, hairStyle = 0, hairColor = 0, facialHair = 0;
+    Player::SelectRandomAppearance(RACE_HUMAN, gender, hairStyle, hairColor, face, facialHair, skin);
+    uint32 const guidLow = sObjectMgr.GeneratePlayerLowGuid();
+    std::string const name = sObjectMgr.GenerateFreePlayerName();
+    if (!player->Create(guidLow, name, RACE_HUMAN, CLASS_PRIEST, gender,
+                        skin, face, hairStyle, hairColor, facialHair))
+    {
+        delete player;
+        player = nullptr;
+        return false;
+    }
+
+    player->SetLocationMapId(map.GetId());
+    player->SetLocationInstanceId(map.GetInstanceId());
+    player->SetAutoInstanceSwitch(false);
+    player->GetMotionMaster()->Initialize();
+    player->Relocate(x, y, z, 0.0f);
+    player->SetMap(&map);
+    player->SaveRecallPosition();
+    player->CreatePacketBroadcaster();
+    player->SetFactionTemplateId(factionId);
+    player->GiveLevel(60);
+
+    if (!map.Add(player))
+    {
+        delete player;
+        player = nullptr;
+        return false;
+    }
+
+    sObjectMgr.InsertPlayerInCache(player);
+    session.SetPlayer(player);
+    sObjectAccessor.AddObject(player);
+    player->SetCanModifyStats(true);
+    player->UpdateAllStats();
+    player->SetPower(POWER_MANA, player->GetMaxPower(POWER_MANA));
+    return player->IsInWorld() && player->HasSpell(SIMULATOR_HEAL_SPELL_ID);
+}
+
+class CaptureCoreSpellTerminalListener final : public CoreSpellTerminalListener
+{
+public:
+    void OnCoreSpellTerminal(CoreSpellTerminalEvent const& event) override
+    {
+        events.push_back(event);
+    }
+    std::vector<CoreSpellTerminalEvent> events;
+};
+class CapturePointMovementTerminalListener final : public PointMovementTerminalListener
+{
+public:
+    void OnPointMovementTerminal(PointMovementTerminalEvent const& event) override
+    {
+        events.push_back(event);
+    }
+    std::vector<PointMovementTerminalEvent> events;
+};
+
+class SimulatorCoreSpellContinuationAction final : public Action
+{
+public:
+    explicit SimulatorCoreSpellContinuationAction(
+        uint32& executeCount, std::string name = "core_spell_terminal_followup")
+        : m_executeCount(executeCount), m_name(std::move(name)) {}
+    std::string const& GetName() const override { return m_name; }
+    std::uint32_t GetPendingLifetimeMs() const override { return 5000; }
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        return MakeSimulatorNoThreatEstimate(
+            context, "simulator_spell_continuation_has_no_threat");
+    }
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        PartyMemberSnapshot const* target = context.snapshot.FindMember(candidate.targetGuid);
+        if (!target || !target->alive || !context.bot.alive)
+        {
+            reason = "continuation_target_or_owner_unavailable";
+            return false;
+        }
+        return true;
+    }
+    bool IsUseful(DecisionContext const&, ActionCandidate const&, std::string&) const override
+    {
+        return true;
+    }
+    ActionResult Execute(DecisionContext&, ActionCandidate const&) override
+    {
+        ++m_executeCount;
+        return ActionResult::Success;
+    }
+private:
+    uint32& m_executeCount;
+    std::string m_name;
+};
+
+class SimulatorCorePlayerPointMoveAction final : public CoreAction
+{
+public:
+    SimulatorCorePlayerPointMoveAction(
+        uint32 pointId, float arrivalTolerance,
+        ActionCandidate continuationCandidate)
+        : m_pointId(pointId), m_arrivalTolerance(arrivalTolerance),
+          m_continuationCandidate(std::move(continuationCandidate)) {}
+
+    std::string const& GetName() const override { return m_name; }
+
+    ThreatImpactEstimate EstimateThreatImpact(
+        DecisionContext const& context, ActionCandidate const&) const override
+    {
+        return MakeSimulatorNoThreatEstimate(
+            context, "simulator_player_point_movement_has_no_combat_effect");
+    }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        CoreActionResolution const resolved = context.coreActionRuntime
+            ? context.coreActionRuntime->ResolveUnitContext(context, candidate.targetGuid)
+            : CoreActionResolution();
+        Player* mover = resolved.actor;
+        if (!resolved.IsResolved())
+        {
+            reason = resolved.reason;
+            return false;
+        }
+        if (!mover || resolved.target != mover || !mover->IsAlive() ||
+            candidate.targetGuid != context.bot.guid || !candidate.hasDestination ||
+            !std::isfinite(candidate.destinationX) ||
+            !std::isfinite(candidate.destinationY) ||
+            !std::isfinite(candidate.destinationZ) ||
+            !context.coordinator.HasActiveEncounter() ||
+            mover->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE |
+                                UNIT_STATE_POSSESSED))
+        {
+            reason = "simulator_player_point_move_actor_or_destination_invalid";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        CoreActionResolution const resolved = context.coreActionRuntime
+            ? context.coreActionRuntime->ResolveUnitContext(context, candidate.targetGuid)
+            : CoreActionResolution();
+        Player* mover = resolved.actor;
+        if (!resolved.IsResolved())
+        {
+            reason = resolved.reason;
+            return false;
+        }
+        if (!mover || resolved.target != mover)
+        {
+            reason = "simulator_player_point_move_actor_missing";
+            return false;
+        }
+        float const dx = mover->GetPositionX() - candidate.destinationX;
+        float const dy = mover->GetPositionY() - candidate.destinationY;
+        float const dz = mover->GetPositionZ() - candidate.destinationZ;
+        if (mover->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE ||
+            dx * dx + dy * dy + dz * dz <= m_arrivalTolerance * m_arrivalTolerance)
+        {
+            reason = "simulator_player_point_move_already_moving_or_at_destination";
+            return false;
+        }
+        return true;
+    }
+
+    ActionExecutionResult ValidateCoreAction(
+        DecisionContext const& context, ActionCandidate const& candidate,
+        CoreActionResolution const& resolved) const override
+    {
+        ActionExecutionResult result;
+        Player* mover = resolved.actor;
+        uint64 const encounterId = context.coordinator.GetEncounterId();
+        if (!mover || resolved.target != mover || !candidate.actionId || !encounterId ||
+            !context.continuationSink || !candidate.hasDestination ||
+            !std::isfinite(m_arrivalTolerance) || m_arrivalTolerance <= 0.0f ||
+            !mover->IsAlive() ||
+            mover->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE |
+                                UNIT_STATE_POSSESSED) ||
+            mover->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE ||
+            !std::isfinite(candidate.destinationX) ||
+            !std::isfinite(candidate.destinationY) ||
+            !std::isfinite(candidate.destinationZ)) {
+            result.result = ActionResult::Impossible;
+            result.reason = "simulator_player_point_move_live_preflight_rejected";
+            return result;
+        }
+
+        float const dx = mover->GetPositionX() - candidate.destinationX;
+        float const dy = mover->GetPositionY() - candidate.destinationY;
+        float const dz = mover->GetPositionZ() - candidate.destinationZ;
+        if (dx * dx + dy * dy + dz * dz <= m_arrivalTolerance * m_arrivalTolerance) {
+            result.result = ActionResult::Useless;
+            result.reason = "simulator_player_point_move_destination_already_reached";
+            return result;
+        }
+
+        result.result = ActionResult::Success;
+        result.reason = "simulator_player_point_move_live_preflight_passed";
+        return result;
+    }
+
+    ActionExecutionResult ExecuteCore(DecisionContext& context, ActionCandidate const& candidate,
+                                      CoreActionResolution const& resolved) override
+    {
+        Player* mover = resolved.actor;
+        uint64 const encounterId = context.coordinator.GetEncounterId();
+        ActionExecutionResult result;
+
+        ActionDependencyRequest request;
+        request.lifetimeMs = 4000;
+        ActionDependencyPrerequisite movement;
+        movement.source = ActionDependencyEventSource::PointMovementTerminal;
+        movement.actionId = candidate.actionId;
+        movement.encounterId = encounterId;
+        movement.targetGuid = context.bot.guid;
+        movement.pointId = m_pointId;
+        movement.requiredMovementStatus = PointMovementTerminalStatus::Reached;
+        request.prerequisites.push_back(movement);
+
+        ActionContinuationEnqueueResult const queued =
+            context.continuationSink->QueueActionDependency(
+                context, request, m_continuationCandidate);
+        if (queued != ActionContinuationEnqueueResult::Queued) {
+            result.result = ActionResult::Failed;
+            result.reason = "simulator_player_point_move_continuation_rejected";
+            return result;
+        }
+
+        m_started = mover->GetMotionMaster()->MovePointForEngine(
+            m_pointId, candidate.destinationX, candidate.destinationY,
+            candidate.destinationZ, MOVE_NONE, candidate.actionId, encounterId,
+            m_arrivalTolerance);
+        result.result = m_started ? ActionResult::Success : ActionResult::Failed;
+        result.reason = m_started ? "simulator_player_point_move_started"
+                                  : "simulator_player_point_move_start_rejected";
+        return result;
+    }
+
+    bool DidStartMovement() const { return m_started; }
+
+private:
+    uint32 m_pointId;
+    float m_arrivalTolerance;
+    ActionCandidate m_continuationCandidate;
+    std::string m_name = "core_player_point_move_engine";
+    bool m_started = false;
+};
+
+
+class SimulatorCorePlayerHealAction final : public Action
+{
+public:
+    explicit SimulatorCorePlayerHealAction(Map& map) : m_map(map) {}
+    std::string const& GetName() const override { return m_name; }
+    void SetContinuationCandidate(ActionCandidate const& candidate)
+    {
+        m_continuationCandidate = candidate;
+        m_registerContinuation = true;
+    }
+    void DisableContinuationRegistration() { m_registerContinuation = false; }
+    void SetActionResultAndSpellDependencyCandidate(ActionCandidate const& candidate)
+    {
+        m_actionResultAndSpellCandidate = candidate;
+        m_registerActionResultAndSpellDependency = true;
+    }
+    ActionContinuationEnqueueResult GetContinuationResult() const
+    {
+        return m_continuationResult;
+    }
+    ActionContinuationEnqueueResult GetActionResultAndSpellDependencyResult() const
+    {
+        return m_actionResultAndSpellDependencyResult;
+    }
+
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        return EstimateSimulatorHealThreat(context);
+    }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        Unit* casterUnit = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Player* caster = casterUnit ? casterUnit->ToPlayer() : nullptr;
+        PartyMemberSnapshot const* patientSnapshot = context.snapshot.FindMember(candidate.targetGuid);
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(candidate.spellId);
+        bool const isHealingSpell = spell &&
+            (spell->Effect[0] == SPELL_EFFECT_HEAL ||
+             spell->Effect[1] == SPELL_EFFECT_HEAL ||
+             spell->Effect[2] == SPELL_EFFECT_HEAL);
+        if (!caster || !spell || !caster->IsAlive() || !caster->HasSpell(candidate.spellId) ||
+            !caster->IsSpellReady(spell) || caster->HasGCD(spell) ||
+            caster->IsNonMeleeSpellCasted(false) || !patientSnapshot ||
+            !patientSnapshot->alive || !patient || !patient->IsAlive() ||
+            !caster->IsFriendlyTo(patient) || !isHealingSpell ||
+            patient->GetHealth() >= patient->GetMaxHealth())
+        {
+            reason = "player_spell_not_known_ready_or_target_invalid";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Player* caster = unit ? unit->ToPlayer() : nullptr;
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!caster || !patient || !caster->IsAlive() || !patient->IsAlive() ||
+            patient->GetHealth() >= patient->GetMaxHealth() ||
+            caster->IsNonMeleeSpellCasted(false))
+        {
+            reason = "player_heal_no_longer_useful";
+            return false;
+        }
+        return true;
+    }
+
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    {
+        if (m_registerContinuation)
+        {
+            if (!context.continuationSink)
+                return ActionResult::Failed;
+            m_continuationResult = context.continuationSink->QueueActionContinuation(
+                context, candidate, m_continuationCandidate, 4000);
+            if (m_continuationResult != ActionContinuationEnqueueResult::Queued &&
+                m_continuationResult != ActionContinuationEnqueueResult::ReleasedImmediately)
+                return ActionResult::Failed;
+        }
+        if (m_registerActionResultAndSpellDependency)
+        {
+            if (!context.continuationSink)
+                return ActionResult::Failed;
+            ActionDependencyRequest request;
+            request.lifetimeMs = 4000;
+
+            ActionDependencyPrerequisite actionResult;
+            actionResult.source = ActionDependencyEventSource::ActionResult;
+            actionResult.actionId = candidate.actionId;
+            actionResult.encounterId = context.coordinator.GetEncounterId();
+            actionResult.targetGuid = candidate.targetGuid;
+            actionResult.spellId = candidate.spellId;
+            actionResult.expectedActionName = candidate.actionName;
+            actionResult.requiredActionResult = ActionResult::Success;
+            actionResult.requiredAttempted = true;
+            request.prerequisites.push_back(actionResult);
+
+            ActionDependencyPrerequisite spellTerminal;
+            spellTerminal.source = ActionDependencyEventSource::CoreSpellTerminal;
+            spellTerminal.actionId = candidate.actionId;
+            spellTerminal.encounterId = context.coordinator.GetEncounterId();
+            spellTerminal.targetGuid = candidate.targetGuid;
+            spellTerminal.spellId = candidate.spellId;
+            spellTerminal.requiredStatus = CoreSpellTerminalStatus::Succeeded;
+            request.prerequisites.push_back(spellTerminal);
+
+            m_actionResultAndSpellDependencyResult =
+                context.continuationSink->QueueActionDependency(
+                    context, request, m_actionResultAndSpellCandidate);
+            if (m_actionResultAndSpellDependencyResult !=
+                ActionContinuationEnqueueResult::Queued)
+                return ActionResult::Failed;
+        }
+
+        Unit* unit = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Player* caster = unit ? unit->ToPlayer() : nullptr;
+        Unit* patient = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(candidate.spellId);
+        if (!caster || !patient || !spell || !caster->IsAlive() || !patient->IsAlive() ||
+            !caster->HasSpell(candidate.spellId) || !caster->IsSpellReady(spell) ||
+            caster->HasGCD(spell) || caster->IsNonMeleeSpellCasted(false) ||
+            !caster->IsFriendlyTo(patient) || patient->GetHealth() >= patient->GetMaxHealth())
+            return ActionResult::Impossible;
+
+        caster->SetFacingToObject(patient);
+        caster->SetTargetGuid(patient->GetObjectGuid());
+        m_manaBefore = caster->GetPower(POWER_MANA);
+        m_lastCastResult = caster->CastSpell(patient, spell, false);
+        m_manaAfterAccept = caster->GetPower(POWER_MANA);
+        m_castPendingAfterAccept = caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr;
+        m_gcdAfterAccept = caster->HasGCD(spell);
+        return m_lastCastResult == SPELL_CAST_OK ? ActionResult::Success : ActionResult::Failed;
+    }
+
+    SpellCastResult GetLastCastResult() const { return m_lastCastResult; }
+    uint32 GetManaBefore() const { return m_manaBefore; }
+    uint32 GetManaAfterAccept() const { return m_manaAfterAccept; }
+    bool WasCastPendingAfterAccept() const { return m_castPendingAfterAccept; }
+    bool HadGcdAfterAccept() const { return m_gcdAfterAccept; }
+
+private:
+    Map& m_map;
+    std::string m_name = "core_player_heal";
+    SpellCastResult m_lastCastResult = SPELL_FAILED_DONT_REPORT;
+    uint32 m_manaBefore = 0;
+    uint32 m_manaAfterAccept = 0;
+    bool m_castPendingAfterAccept = false;
+    bool m_gcdAfterAccept = false;
+    ActionCandidate m_continuationCandidate;
+    bool m_registerContinuation = false;
+    ActionContinuationEnqueueResult m_continuationResult = ActionContinuationEnqueueResult::Invalid;
+    ActionCandidate m_actionResultAndSpellCandidate;
+    bool m_registerActionResultAndSpellDependency = false;
+    ActionContinuationEnqueueResult m_actionResultAndSpellDependencyResult =
+        ActionContinuationEnqueueResult::Invalid;
+};
+
+
+
+class SimulatorFormationTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive &&
+            context.bot.roleId != static_cast<std::uint8_t>(PartyRole::Tank) &&
+            context.bot.roleId != static_cast<std::uint8_t>(PartyRole::MainTank);
+    }
+
+    void CollectCandidates(DecisionContext const& context,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        for (PartyMemberSnapshot const& leader : context.snapshot.members)
+        {
+            if (!leader.alive || !leader.isMainTank || leader.guid == context.bot.guid ||
+                leader.mapId != context.bot.mapId || leader.instanceId != context.bot.instanceId)
+                continue;
+
+            float const dx = context.bot.x - leader.x;
+            float const dy = context.bot.y - leader.y;
+            float const dz = context.bot.z - leader.z;
+            float const distanceSquared = dx * dx + dy * dy + dz * dz;
+            if (distanceSquared <= 36.0f)
+                continue;
+
+            float const distance = std::sqrt(distanceSquared);
+            if (distance <= 0.1f)
+                continue;
+
+            constexpr float FORMATION_DISTANCE = 2.5f;
+            ActionCandidate candidate;
+            candidate.actionName = "core_move_point";
+            candidate.targetGuid = leader.guid;
+            candidate.destinationX = leader.x + dx / distance * FORMATION_DISTANCE;
+            candidate.destinationY = leader.y + dy / distance * FORMATION_DISTANCE;
+            candidate.destinationZ = leader.z;
+            candidate.hasDestination = true;
+            candidate.basePriority = 70.0f;
+            candidate.channel = ActionChannel::Movement;
+            candidates.push_back(candidate);
+            break;
+        }
+    }
+private:
+    std::string m_name = "simulator_formation";
+};
+
+
+class SimulatorFollowTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive &&
+            context.bot.roleId != static_cast<std::uint8_t>(PartyRole::Tank) &&
+            context.bot.roleId != static_cast<std::uint8_t>(PartyRole::MainTank);
+    }
+
+    void CollectCandidates(DecisionContext const& context,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        for (PartyMemberSnapshot const& leader : context.snapshot.members)
+        {
+            if (!leader.alive || !leader.isMainTank || leader.guid == context.bot.guid ||
+                leader.mapId != context.bot.mapId || leader.instanceId != context.bot.instanceId)
+                continue;
+
+            float const dx = context.bot.x - leader.x;
+            float const dy = context.bot.y - leader.y;
+            float const dz = context.bot.z - leader.z;
+            if (dx * dx + dy * dy + dz * dz <= 36.0f)
+                continue;
+
+            ActionCandidate candidate;
+            candidate.actionName = "core_follow";
+            candidate.targetGuid = leader.guid;
+            candidate.basePriority = 72.0f;
+            candidate.channel = ActionChannel::Movement;
+            candidates.push_back(candidate);
+            break;
+        }
+    }
+
+private:
+    std::string m_name = "simulator_follow";
+};
+
+class SimulatorCoreFollowAction final : public Action
+{
+public:
+    explicit SimulatorCoreFollowAction(Map& map) : m_map(map) {}
+    std::string const& GetName() const override { return m_name; }
+
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        return MakeSimulatorNoThreatEstimate(context, "simulator_follow_has_no_combat_effect");
+    }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        Unit* follower = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* leader = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        PartyMemberSnapshot const* leaderSnapshot = context.snapshot.FindMember(candidate.targetGuid);
+        if (!follower || !leader || !leaderSnapshot || !leaderSnapshot->alive ||
+            !follower->IsInWorld() || !leader->IsInWorld() ||
+            !follower->IsAlive() || !leader->IsAlive() ||
+            !follower->IsFriendlyTo(leader) ||
+            follower->GetMapId() != leader->GetMapId() ||
+            follower->GetInstanceId() != leader->GetInstanceId() ||
+            follower->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE | UNIT_STATE_POSSESSED))
+        {
+            reason = "core_follow_target_or_actor_invalid";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        Unit* follower = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* leader = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!follower || !leader)
+        {
+            reason = "core_follow_actor_missing";
+            return false;
+        }
+
+        bool const followAlreadyActive =
+            follower->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
+            follower->HasUnitState(UNIT_STATE_FOLLOW);
+        if (followAlreadyActive && m_lastTargetGuid == candidate.targetGuid)
+        {
+            reason = "core_follow_same_target_already_active";
+            return false;
+        }
+
+        // A different Main Tank is a meaningful retarget even when the
+        // follower happens to be close to the new leader. Reissuing MoveFollow
+        // lets the Core replace the old FollowMovementGenerator target.
+        if (!followAlreadyActive)
+        {
+            float const dx = follower->GetPositionX() - leader->GetPositionX();
+            float const dy = follower->GetPositionY() - leader->GetPositionY();
+            float const dz = follower->GetPositionZ() - leader->GetPositionZ();
+            if (dx * dx + dy * dy + dz * dz <= 25.0f)
+            {
+                reason = "core_follow_within_formation_range";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    {
+        m_started = false;
+        Unit* follower = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* leader = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!follower || !leader || !follower->IsAlive() || !leader->IsAlive() ||
+            !follower->IsFriendlyTo(leader) ||
+            follower->GetMapId() != leader->GetMapId() ||
+            follower->GetInstanceId() != leader->GetInstanceId() ||
+            follower->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE | UNIT_STATE_POSSESSED))
+            return ActionResult::Impossible;
+
+        // Delegate continuous target tracking, path generation and movement
+        // updates to the pinned Core FollowMovementGenerator. The simulator
+        // does not synthesize movement steps or mutate actor positions.
+        static float constexpr FORMATION_OFFSET = 2.5f;
+        static float constexpr FOLLOW_ANGLE_BEHIND = 3.14159265358979323846f;
+        follower->GetMotionMaster()->MoveFollow(leader, FORMATION_OFFSET, FOLLOW_ANGLE_BEHIND);
+        m_started = follower->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
+                    follower->HasUnitState(UNIT_STATE_FOLLOW);
+        if (m_started)
+            m_lastTargetGuid = candidate.targetGuid;
+        return m_started ? ActionResult::Success : ActionResult::Failed;
+    }
+
+    bool DidStartFollow() const { return m_started; }
+    uint64 GetLastTargetGuid() const { return m_lastTargetGuid; }
+
+private:
+    Map& m_map;
+    std::string m_name = "core_follow";
+    bool m_started = false;
+    uint64 m_lastTargetGuid = 0;
+};
+
+
+class SimulatorCoreMovePointAction final : public Action
+{
+public:
+    explicit SimulatorCoreMovePointAction(Map& map, bool simulateClientRelocation = false)
+        : m_map(map), m_simulateClientRelocation(simulateClientRelocation) {}
+    std::string const& GetName() const override { return m_name; }
+
+    ThreatImpactEstimate EstimateThreatImpact(DecisionContext const& context,
+                                               ActionCandidate const&) const override
+    {
+        return MakeSimulatorNoThreatEstimate(context, "simulator_movement_has_no_combat_effect");
+    }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        Unit* mover = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* leader = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        PartyMemberSnapshot const* leaderSnapshot = context.snapshot.FindMember(candidate.targetGuid);
+        if (!candidate.hasDestination || !std::isfinite(candidate.destinationX) ||
+            !std::isfinite(candidate.destinationY) || !std::isfinite(candidate.destinationZ) ||
+            !mover || !leader || !leaderSnapshot || !leaderSnapshot->alive ||
+            !mover->IsInWorld() || !leader->IsInWorld() || !mover->IsAlive() ||
+            !leader->IsAlive() || !mover->IsFriendlyTo(leader) ||
+            mover->GetMapId() != leader->GetMapId() ||
+            mover->GetInstanceId() != leader->GetInstanceId() ||
+            mover->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE | UNIT_STATE_POSSESSED))
+        {
+            reason = "core_move_point_destination_or_actor_invalid";
+            return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        Unit* mover = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        if (!mover)
+        {
+            reason = "core_move_point_mover_missing";
+            return false;
+        }
+        float const dx = mover->GetPositionX() - candidate.destinationX;
+        float const dy = mover->GetPositionY() - candidate.destinationY;
+        float const dz = mover->GetPositionZ() - candidate.destinationZ;
+        if (dx * dx + dy * dy + dz * dz <= 1.0f ||
+            mover->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        {
+            reason = "core_move_point_already_at_destination_or_moving";
+            return false;
+        }
+        return true;
+    }
+
+    ActionResult Execute(DecisionContext& context, ActionCandidate const& candidate) override
+    {
+        Unit* mover = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Unit* leader = m_map.GetUnit(ObjectGuid(candidate.targetGuid));
+        if (!mover || !leader || !candidate.hasDestination ||
+            !mover->IsAlive() || !leader->IsAlive() ||
+            !mover->IsFriendlyTo(leader) ||
+            mover->GetMapId() != leader->GetMapId() ||
+            mover->GetInstanceId() != leader->GetInstanceId() ||
+            mover->HasUnitState(UNIT_STATE_LOST_CONTROL | UNIT_STATE_CAN_NOT_MOVE | UNIT_STATE_POSSESSED))
+            return ActionResult::Impossible;
+
+        if (m_simulateClientRelocation)
+        {
+            // Model the inbound mover-relocation operation handled by
+            // WorldSession::HandleMoverRelocation. Player::SetPosition is the
+            // Core entry point and owns HandleInterruptsOnMovement; the
+            // simulator must not duplicate spell-interruption policy.
+            Player* player = mover->ToPlayer();
+            if (!player)
+                return ActionResult::Impossible;
+
+            float const oldX = player->GetPositionX();
+            float const oldY = player->GetPositionY();
+            float const oldZ = player->GetPositionZ();
+            if (!player->SetPosition(candidate.destinationX, candidate.destinationY,
+                                     candidate.destinationZ, player->GetOrientation()))
+                return ActionResult::Failed;
+
+            float const dx = player->GetPositionX() - oldX;
+            float const dy = player->GetPositionY() - oldY;
+            float const dz = player->GetPositionZ() - oldZ;
+            m_started = dx * dx + dy * dy + dz * dz > 0.01f;
+        }
+        else
+        {
+            // Server-driven point movement remains a Core MotionMaster action.
+            // MOVE_NONE avoids a pathfinder dependency; the spline and
+            // relocation remain Core-owned.
+            mover->GetMotionMaster()->MovePoint(1, candidate.destinationX,
+                                                 candidate.destinationY,
+                                                 candidate.destinationZ, MOVE_NONE);
+            m_started = mover->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+        }
+        return m_started ? ActionResult::Success : ActionResult::Failed;
+    }
+
+    bool DidStartMovement() const { return m_started; }
+
+private:
+    Map& m_map;
+    std::string m_name = "core_move_point";
+    bool m_simulateClientRelocation = false;
+    bool m_started = false;
+};
+
+
+
+class SimulatorSpellLifecycleProbeAI final : public PlayerAI
+{
+public:
+    explicit SimulatorSpellLifecycleProbeAI(Player* player) : PlayerAI(player) {}
+
+    uint64 OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
+                                uint64 coreTargetGuid, uint64& encounterId,
+                                uint64& traceTargetGuid, bool& engineAction) override
+    {
+        encounterId = 0;
+        traceTargetGuid = 0;
+        engineAction = false;
+        // Only the first Spell created by the observed Player::CastSpell call
+        // receives the test action ID. Triggered child spells must not inherit it.
+        if (m_bound)
+            return 0;
+
+        m_bound = true;
+        ++prepareCalls;
+        preparedSpellId = spellId;
+        coreTargetGuidAtPrepare = coreTargetGuid;
+        encounterId = expectedEncounterId;
+        traceTargetGuid = coreTargetGuid;
+        return expectedActionId;
+    }
+
+    void OnSpellCastFinished(Spell const* /*spell*/, uint64 actionId,
+                             uint64 encounterId, uint32 spellId,
+                             uint64 targetGuid, bool success,
+                             bool interrupted, bool /*engineAction*/) override
+    {
+        ++finishCalls;
+        finishedActionId = actionId;
+        finishedEncounterId = encounterId;
+        finishedSpellId = spellId;
+        finishedTargetGuid = targetGuid;
+        finishedSuccessfully = success;
+        finishedInterrupted = interrupted;
+    }
+
+    static uint32 const expectedActionId = 0x51a7u;
+    static uint64 const expectedEncounterId = 0x50424f54ull;
+
+    uint32 prepareCalls = 0;
+    uint32 finishCalls = 0;
+    uint32 preparedSpellId = 0;
+    uint64 coreTargetGuidAtPrepare = 0;
+    uint64 finishedActionId = 0;
+    uint64 finishedEncounterId = 0;
+    uint32 finishedSpellId = 0;
+    uint64 finishedTargetGuid = 0;
+    bool finishedSuccessfully = false;
+    bool finishedInterrupted = false;
+
+private:
+    bool m_bound = false;
+};
+
+
+bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor patient;
+    bool const patientCreated = CreateSimulatorActor(map, *info, partyFaction, 0.0f, 6.0f, patient);
+    if (!patientCreated)
+    {
+        DestroySimulatorActor(map, patient);
+        return false;
+    }
+
+    WorldSession healerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* healer = nullptr;
+    bool const healerCreated = CreateSimulatorPlayer(map, partyFaction, healerSession, healer,
+                                                       10.0f, 6.0f, 0.0f);
+    if (!healerCreated)
+    {
+        if (healerSession.GetPlayer())
+            healerSession.LogoutPlayer(false);
+        else if (healer)
+            delete healer;
+        DestroySimulatorActor(map, patient);
+        return false;
+    }
+
+    SimulatorSpellLifecycleProbeAI* lifecycleProbe =
+        new SimulatorSpellLifecycleProbeAI(healer);
+    healer->SetAI(lifecycleProbe);
+
+    patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
+    uint32 const healthBefore = patient.creature->GetHealth();
+
+    SpellEntry const* const interruptProbeSpell = sSpellMgr.GetSpellEntry(SIMULATOR_HEAL_SPELL_ID);
+    if (interruptProbeSpell)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] Player interrupt probe: spell=%u castTime=%u interruptFlags=%u movementFlag=%u auraFlags=%u channelFlags=%u.",
+                 SIMULATOR_HEAL_SPELL_ID, interruptProbeSpell->GetCastTime(healer),
+                 interruptProbeSpell->InterruptFlags,
+                 interruptProbeSpell->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT) ? 1u : 0u,
+                 interruptProbeSpell->AuraInterruptFlags,
+                 interruptProbeSpell->ChannelInterruptFlags);
+
+    // Prime the real wall-clock Player update cadence before starting the
+    // cast. Otherwise a stale m_lastPlayersUpdate can make the first update
+    // after MovePoint carry a large diff and complete the spell before the
+    // next tick observes the changed position.
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    map.Update(250);
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 5;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 5;
+    snapshot.capturedAtMs = 5000;
+
+    PartyMemberSnapshot healerMember;
+    healerMember.guid = healer->GetObjectGuid().GetRawValue();
+    healerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    healerMember.mapId = map.GetId();
+    healerMember.instanceId = map.GetInstanceId();
+    healerMember.health = healer->GetHealth();
+    healerMember.maxHealth = healer->GetMaxHealth();
+    healerMember.online = true;
+    healerMember.alive = healer->IsAlive();
+    healerMember.x = healer->GetPositionX();
+    healerMember.y = healer->GetPositionY();
+    healerMember.z = healer->GetPositionZ();
+    snapshot.members.push_back(healerMember);
+
+    PartyMemberSnapshot patientMember;
+    patientMember.guid = patient.creature->GetObjectGuid().GetRawValue();
+    patientMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    patientMember.mapId = map.GetId();
+    patientMember.instanceId = map.GetInstanceId();
+    patientMember.health = healthBefore;
+    patientMember.maxHealth = patient.creature->GetMaxHealth();
+    patientMember.online = true;
+    patientMember.alive = patient.creature->IsAlive();
+    patientMember.isMainTank = true;
+    patientMember.x = patient.creature->GetPositionX();
+    patientMember.y = patient.creature->GetPositionY();
+    patientMember.z = patient.creature->GetPositionZ();
+    snapshot.members.push_back(patientMember);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 5000);
+
+    PartyBotEngine healEngine;
+    std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
+    bool const healRegistered = healEngine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> healStrategy(new Strategy("simulator_healer_triage"));
+    healStrategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
+    healEngine.AddStrategy(healStrategy);
+    DecisionReport healReport = healEngine.Evaluate(context);
+    bool const healSelected = healReport.selectedIndices.size() == 1 &&
+        healReport.candidates[healReport.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
+        healReport.candidates[healReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    healEngine.ExecuteSelected(context, healReport);
+    bool const castAccepted = !healReport.selectedIndices.empty() &&
+        healReport.candidates[healReport.selectedIndices[0]].status == CandidateStatus::Executed &&
+        healReport.candidates[healReport.selectedIndices[0]].actionResult == ActionResult::Success &&
+        healAction->GetLastCastResult() == SPELL_CAST_OK &&
+        healAction->WasCastPendingAfterAccept() && healAction->HadGcdAfterAccept();
+
+    PartyBotEngine moveEngine;
+    std::shared_ptr<SimulatorCoreMovePointAction> moveAction(new SimulatorCoreMovePointAction(map, true));
+    bool const moveRegistered = moveEngine.RegisterAction(moveAction);
+    std::shared_ptr<Strategy> moveStrategy(new Strategy("simulator_formation"));
+    moveStrategy->AddTrigger(std::make_shared<SimulatorFormationTrigger>());
+    moveEngine.AddStrategy(moveStrategy);
+    DecisionReport moveReport = moveEngine.Evaluate(context);
+    bool const moveSelected = moveReport.selectedIndices.size() == 1 &&
+        moveReport.candidates[moveReport.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
+        moveReport.candidates[moveReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    moveEngine.ExecuteSelected(context, moveReport);
+    bool const moveExecuted = !moveReport.selectedIndices.empty() &&
+        moveReport.candidates[moveReport.selectedIndices[0]].status == CandidateStatus::Executed &&
+        moveReport.candidates[moveReport.selectedIndices[0]].actionResult == ActionResult::Success &&
+        moveAction->DidStartMovement();
+
+    float const destinationX = moveReport.selectedIndices.empty() ? healerMember.x :
+        moveReport.candidates[moveReport.selectedIndices[0]].candidate.destinationX;
+    float const destinationY = moveReport.selectedIndices.empty() ? healerMember.y :
+        moveReport.candidates[moveReport.selectedIndices[0]].candidate.destinationY;
+    float const destinationZ = moveReport.selectedIndices.empty() ? healerMember.z :
+        moveReport.candidates[moveReport.selectedIndices[0]].candidate.destinationZ;
+
+    for (uint32 tick = 0; tick < 20; ++tick)
+    {
+        float const dx = healer->GetPositionX() - destinationX;
+        float const dy = healer->GetPositionY() - destinationY;
+        float const dz = healer->GetPositionZ() - destinationZ;
+        bool const atDestination = dx * dx + dy * dy + dz * dz <= 1.0f;
+        bool const castEnded = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+        if (atDestination && castEnded)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+        if (tick == 0)
+        {
+            Spell* const pendingSpell = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[PartyBotSimulator] First Core movement update: genericSpellPresent=%u spellId=%u state=%u patientHealth=%u.",
+                     pendingSpell ? 1u : 0u,
+                     pendingSpell && pendingSpell->m_spellInfo ? pendingSpell->m_spellInfo->Id : 0u,
+                     pendingSpell ? static_cast<uint32>(pendingSpell->getState()) : 0u,
+                     patient.creature->GetHealth());
+        }
+    }
+
+    uint32 const healthAfter = patient.creature->GetHealth();
+    bool const castCancelled = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+                               healthAfter == healthBefore;
+    bool const lifecycleInterrupted =
+        lifecycleProbe->prepareCalls == 1 && lifecycleProbe->finishCalls == 1 &&
+        lifecycleProbe->preparedSpellId == SIMULATOR_HEAL_SPELL_ID &&
+        lifecycleProbe->coreTargetGuidAtPrepare == patient.creature->GetObjectGuid().GetRawValue() &&
+        lifecycleProbe->finishedActionId == SimulatorSpellLifecycleProbeAI::expectedActionId &&
+        lifecycleProbe->finishedEncounterId == SimulatorSpellLifecycleProbeAI::expectedEncounterId &&
+        lifecycleProbe->finishedSpellId == SIMULATOR_HEAL_SPELL_ID &&
+        lifecycleProbe->finishedTargetGuid == patient.creature->GetObjectGuid().GetRawValue() &&
+        !lifecycleProbe->finishedSuccessfully && lifecycleProbe->finishedInterrupted;
+    uint32 const lifecyclePrepareCalls = lifecycleProbe->prepareCalls;
+    uint32 const lifecycleFinishCalls = lifecycleProbe->finishCalls;
+    float const finalDx = healer->GetPositionX() - destinationX;
+    float const finalDy = healer->GetPositionY() - destinationY;
+    float const finalDz = healer->GetPositionZ() - destinationZ;
+    bool const movementCompleted = finalDx * finalDx + finalDy * finalDy +
+                                   finalDz * finalDz <= 1.0f;
+
+    healerSession.LogoutPlayer(false);
+    bool const playerCleaned = healerSession.GetPlayer() == nullptr;
+    healer = nullptr;
+    bool const patientCleaned = DestroySimulatorActor(map, patient);
+    bool const cleaned = playerCleaned && patientCleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Movement interrupts Player cast: healRegistered=%u healSelected=%u castAccepted=%u moveRegistered=%u moveSelected=%u moveExecuted=%u castCancelled=%u lifecycle=%u prepare=%u finish=%u health=%u>%u movementCompleted=%u cleanup=%u.",
+             healRegistered ? 1u : 0u, healSelected ? 1u : 0u, castAccepted ? 1u : 0u,
+             moveRegistered ? 1u : 0u, moveSelected ? 1u : 0u, moveExecuted ? 1u : 0u,
+             castCancelled ? 1u : 0u, lifecycleInterrupted ? 1u : 0u,
+             lifecyclePrepareCalls, lifecycleFinishCalls, healthBefore, healthAfter,
+             movementCompleted ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!healRegistered || !healSelected || !castAccepted ||
+        !moveRegistered || !moveSelected || !moveExecuted ||
+        !castCancelled || !lifecycleInterrupted || !movementCompleted || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine movement/cast-interrupt smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Engine-selected Player movement interrupted a pending Core Lesser Heal cast without applying the heal.");
+    return true;
+}
+
+bool RunEngineCoreMovementSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor leader;
+    SimulatorActor mover;
+    bool created = CreateSimulatorActor(map, *info, partyFaction, 0.0f, 6.0f, leader) &&
+                   CreateSimulatorActor(map, *info, partyFaction, 10.0f, 6.0f, mover);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, mover);
+        cleaned = DestroySimulatorActor(map, leader) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Movement fixture creation failed (cleanup=%u).", cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120 && (!leader.updateCount || !mover.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!leader.updateCount || !mover.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 4;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 4;
+    snapshot.capturedAtMs = 4000;
+
+    PartyMemberSnapshot moverMember;
+    moverMember.guid = mover.creature->GetObjectGuid().GetRawValue();
+    moverMember.roleId = static_cast<std::uint8_t>(PartyRole::MeleeDamage);
+    moverMember.mapId = map.GetId();
+    moverMember.instanceId = map.GetInstanceId();
+    moverMember.health = mover.creature->GetHealth();
+    moverMember.maxHealth = mover.creature->GetMaxHealth();
+    moverMember.online = true;
+    moverMember.alive = mover.creature->IsAlive();
+    moverMember.x = mover.creature->GetPositionX();
+    moverMember.y = mover.creature->GetPositionY();
+    moverMember.z = mover.creature->GetPositionZ();
+    snapshot.members.push_back(moverMember);
+
+    PartyMemberSnapshot leaderMember;
+    leaderMember.guid = leader.creature->GetObjectGuid().GetRawValue();
+    leaderMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    leaderMember.mapId = map.GetId();
+    leaderMember.instanceId = map.GetInstanceId();
+    leaderMember.health = leader.creature->GetHealth();
+    leaderMember.maxHealth = leader.creature->GetMaxHealth();
+    leaderMember.online = true;
+    leaderMember.alive = leader.creature->IsAlive();
+    leaderMember.isMainTank = true;
+    leaderMember.x = leader.creature->GetPositionX();
+    leaderMember.y = leader.creature->GetPositionY();
+    leaderMember.z = leader.creature->GetPositionZ();
+    snapshot.members.push_back(leaderMember);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 4000);
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCoreMovePointAction> moveAction(new SimulatorCoreMovePointAction(map));
+    bool const registered = engine.RegisterAction(moveAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_formation"));
+    strategy->AddTrigger(std::make_shared<SimulatorFormationTrigger>());
+    engine.AddStrategy(strategy);
+
+    float const distanceBefore = mover.creature->GetDistance(leader.creature);
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == leaderMember.guid &&
+        report.candidates[report.selectedIndices[0]].candidate.hasDestination &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(context, report);
+    bool const executed = !report.selectedIndices.empty() &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Success &&
+        moveAction->DidStartMovement();
+    MovementGeneratorType const movementTypeAfterExecute =
+        mover.creature->GetMotionMaster()->GetCurrentMovementGeneratorType();
+
+    float const destinationX = report.selectedIndices.empty() ? moverMember.x :
+        report.candidates[report.selectedIndices[0]].candidate.destinationX;
+    float const destinationY = report.selectedIndices.empty() ? moverMember.y :
+        report.candidates[report.selectedIndices[0]].candidate.destinationY;
+    float const destinationZ = report.selectedIndices.empty() ? moverMember.z :
+        report.candidates[report.selectedIndices[0]].candidate.destinationZ;
+    for (uint32 tick = 0; tick < 20; ++tick)
+    {
+        float const dx = mover.creature->GetPositionX() - destinationX;
+        float const dy = mover.creature->GetPositionY() - destinationY;
+        float const dz = mover.creature->GetPositionZ() - destinationZ;
+        if (dx * dx + dy * dy + dz * dz <= 1.0f)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    float const distanceAfter = mover.creature->GetDistance(leader.creature);
+    float const destinationDx = mover.creature->GetPositionX() - destinationX;
+    float const destinationDy = mover.creature->GetPositionY() - destinationY;
+    float const destinationDz = mover.creature->GetPositionZ() - destinationZ;
+    bool const moved = distanceAfter + 1.0f < distanceBefore &&
+        destinationDx * destinationDx + destinationDy * destinationDy +
+        destinationDz * destinationDz <= 1.0f;
+
+    bool cleaned = DestroySimulatorActor(map, mover);
+    cleaned = DestroySimulatorActor(map, leader) && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine movement: aiReady=%u registered=%u selected=%u executed=%u motion=%u distance=%.2f>%.2f reached=%u cleanup=%u.",
+             (leader.updateCount && mover.updateCount) ? 1u : 0u,
+             registered ? 1u : 0u, selected ? 1u : 0u, executed ? 1u : 0u,
+             static_cast<uint32>(movementTypeAfterExecute),
+             distanceBefore, distanceAfter, moved ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!registered || !selected || !executed || !moved || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine-to-Core movement smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine selected a formation destination and the Core PointMovementGenerator moved the actor to it.");
+    return true;
+}
+
+
+bool RunEngineCoreFollowSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor leader;
+    SimulatorActor follower;
+    bool const created = CreateSimulatorActor(map, *info, partyFaction, 0.0f, 6.0f, leader) &&
+                         CreateSimulatorActor(map, *info, partyFaction, 10.0f, 6.0f, follower);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, follower);
+        cleaned = DestroySimulatorActor(map, leader) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Follow fixture creation failed (cleanup=%u).", cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120 && (!leader.updateCount || !follower.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!leader.updateCount || !follower.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 6;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 6;
+    snapshot.capturedAtMs = 6000;
+
+    PartyMemberSnapshot followerMember;
+    followerMember.guid = follower.creature->GetObjectGuid().GetRawValue();
+    followerMember.roleId = static_cast<std::uint8_t>(PartyRole::MeleeDamage);
+    followerMember.mapId = map.GetId();
+    followerMember.instanceId = map.GetInstanceId();
+    followerMember.health = follower.creature->GetHealth();
+    followerMember.maxHealth = follower.creature->GetMaxHealth();
+    followerMember.online = true;
+    followerMember.alive = follower.creature->IsAlive();
+    followerMember.x = follower.creature->GetPositionX();
+    followerMember.y = follower.creature->GetPositionY();
+    followerMember.z = follower.creature->GetPositionZ();
+    snapshot.members.push_back(followerMember);
+
+    PartyMemberSnapshot leaderMember;
+    leaderMember.guid = leader.creature->GetObjectGuid().GetRawValue();
+    leaderMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    leaderMember.mapId = map.GetId();
+    leaderMember.instanceId = map.GetInstanceId();
+    leaderMember.health = leader.creature->GetHealth();
+    leaderMember.maxHealth = leader.creature->GetMaxHealth();
+    leaderMember.online = true;
+    leaderMember.alive = leader.creature->IsAlive();
+    leaderMember.isMainTank = true;
+    leaderMember.x = leader.creature->GetPositionX();
+    leaderMember.y = leader.creature->GetPositionY();
+    leaderMember.z = leader.creature->GetPositionZ();
+    snapshot.members.push_back(leaderMember);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 6000);
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCoreFollowAction> followAction(new SimulatorCoreFollowAction(map));
+    bool const registered = engine.RegisterAction(followAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_continuous_follow"));
+    strategy->AddTrigger(std::make_shared<SimulatorFollowTrigger>());
+    engine.AddStrategy(strategy);
+
+    float const initialDistance = std::sqrt(
+        (follower.creature->GetPositionX() - leader.creature->GetPositionX()) *
+        (follower.creature->GetPositionX() - leader.creature->GetPositionX()) +
+        (follower.creature->GetPositionY() - leader.creature->GetPositionY()) *
+        (follower.creature->GetPositionY() - leader.creature->GetPositionY()) +
+        (follower.creature->GetPositionZ() - leader.creature->GetPositionZ()) *
+        (follower.creature->GetPositionZ() - leader.creature->GetPositionZ()));
+
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.actionName == "core_follow" &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == leaderMember.guid &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(context, report);
+    bool const executed = !report.selectedIndices.empty() &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Success &&
+        followAction->DidStartFollow();
+
+    bool initialCaughtUp = false;
+    for (uint32 tick = 0; tick < 24; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+        float const dx = follower.creature->GetPositionX() - leader.creature->GetPositionX();
+        float const dy = follower.creature->GetPositionY() - leader.creature->GetPositionY();
+        float const dz = follower.creature->GetPositionZ() - leader.creature->GetPositionZ();
+        float const distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (distance <= 5.0f)
+        {
+            initialCaughtUp = true;
+            break;
+        }
+    }
+
+    float const followerXBeforeLeaderMove = follower.creature->GetPositionX();
+    leader.creature->GetMotionMaster()->MovePoint(2, -10.0f, 6.0f, 0.0f, MOVE_NONE);
+    bool const leaderMovementStarted =
+        leader.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+
+    bool followedLeaderRelocation = false;
+    for (uint32 tick = 0; tick < 48; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+
+        float const leaderDx = leader.creature->GetPositionX() + 10.0f;
+        float const leaderDy = leader.creature->GetPositionY() - 6.0f;
+        float const leaderDz = leader.creature->GetPositionZ();
+        bool const leaderAtDestination =
+            leaderDx * leaderDx + leaderDy * leaderDy + leaderDz * leaderDz <= 1.0f;
+
+        float const dx = follower.creature->GetPositionX() - leader.creature->GetPositionX();
+        float const dy = follower.creature->GetPositionY() - leader.creature->GetPositionY();
+        float const dz = follower.creature->GetPositionZ() - leader.creature->GetPositionZ();
+        float const distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (leaderAtDestination && distance <= 5.0f &&
+            follower.creature->GetPositionX() < followerXBeforeLeaderMove - 5.0f)
+        {
+            followedLeaderRelocation = true;
+            break;
+        }
+    }
+
+    float const finalDx = follower.creature->GetPositionX() - leader.creature->GetPositionX();
+    float const finalDy = follower.creature->GetPositionY() - leader.creature->GetPositionY();
+    float const finalDz = follower.creature->GetPositionZ() - leader.creature->GetPositionZ();
+    float const finalDistance = std::sqrt(finalDx * finalDx + finalDy * finalDy + finalDz * finalDz);
+    bool const followGeneratorRetained =
+        follower.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
+        follower.creature->HasUnitState(UNIT_STATE_FOLLOW);
+    bool const leaderReachedDestination =
+        std::fabs(leader.creature->GetPositionX() + 10.0f) <= 1.0f &&
+        std::fabs(leader.creature->GetPositionY() - 6.0f) <= 1.0f;
+
+    bool cleaned = DestroySimulatorActor(map, follower);
+    cleaned = DestroySimulatorActor(map, leader) && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine Core follow: aiReady=%u registered=%u selected=%u executed=%u initialDistance=%.2f initialCaughtUp=%u leaderMove=%u leaderReached=%u followerTracked=%u finalDistance=%.2f followGenerator=%u cleanup=%u.",
+             (leader.updateCount && follower.updateCount) ? 1u : 0u,
+             registered ? 1u : 0u, selected ? 1u : 0u, executed ? 1u : 0u,
+             initialDistance, initialCaughtUp ? 1u : 0u,
+             leaderMovementStarted ? 1u : 0u, leaderReachedDestination ? 1u : 0u,
+             followedLeaderRelocation ? 1u : 0u, finalDistance,
+             followGeneratorRetained ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!leader.updateCount || !follower.updateCount || !registered || !selected || !executed ||
+        !initialCaughtUp || !leaderMovementStarted || !leaderReachedDestination ||
+        !followedLeaderRelocation || !followGeneratorRetained || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine Core continuous-follow smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine selected Core MoveFollow and the native FollowMovementGenerator tracked the Main Tank after it relocated.");
+    return true;
+}
+
+
+
+bool RunEngineCoreFollowRetargetSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor leaderA;
+    SimulatorActor leaderB;
+    SimulatorActor follower;
+    bool const actorsCreated =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 6.0f, leaderA) &&
+        CreateSimulatorActor(map, *info, partyFaction, 15.0f, 6.0f, leaderB) &&
+        CreateSimulatorActor(map, *info, partyFaction, 10.0f, 6.0f, follower);
+    if (!actorsCreated)
+    {
+        bool cleaned = DestroySimulatorActor(map, follower);
+        cleaned = DestroySimulatorActor(map, leaderB) && cleaned;
+        cleaned = DestroySimulatorActor(map, leaderA) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Follow retarget fixture creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120 &&
+         (!leaderA.updateCount || !leaderB.updateCount || !follower.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!leaderA.updateCount || !leaderB.updateCount || !follower.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    bool const actorsReady = leaderA.updateCount && leaderB.updateCount && follower.updateCount;
+
+    auto makeSnapshot = [&](uint64 epoch, bool aIsMainTank, bool bIsMainTank, bool includeB)
+    {
+        PartySnapshot snapshot;
+        snapshot.groupId = 9;
+        snapshot.mapId = map.GetId();
+        snapshot.instanceId = map.GetInstanceId();
+        snapshot.epoch = epoch;
+        snapshot.capturedAtMs = epoch * 1000;
+
+        auto appendMember = [&](Unit* unit, PartyRole role, bool isMainTank)
+        {
+            PartyMemberSnapshot member;
+            member.guid = unit->GetObjectGuid().GetRawValue();
+            member.roleId = static_cast<std::uint8_t>(role);
+            member.mapId = unit->GetMapId();
+            member.instanceId = unit->GetInstanceId();
+            member.health = unit->GetHealth();
+            member.maxHealth = unit->GetMaxHealth();
+            member.online = true;
+            member.alive = unit->IsAlive();
+            member.isMainTank = isMainTank;
+            member.x = unit->GetPositionX();
+            member.y = unit->GetPositionY();
+            member.z = unit->GetPositionZ();
+            snapshot.members.push_back(member);
+        };
+
+        appendMember(follower.creature, PartyRole::MeleeDamage, false);
+        appendMember(leaderA.creature, PartyRole::MainTank, aIsMainTank);
+        if (includeB)
+            appendMember(leaderB.creature, PartyRole::MainTank, bIsMainTank);
+        return snapshot;
+    };
+
+    PartyCoordinator coordinator;
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCoreFollowAction> followAction(new SimulatorCoreFollowAction(map));
+    bool const registered = engine.RegisterAction(followAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_follow_retarget_recovery"));
+    strategy->AddTrigger(std::make_shared<SimulatorFollowTrigger>());
+    engine.AddStrategy(strategy);
+
+    PartySnapshot initialSnapshot = makeSnapshot(9, true, false, true);
+    DecisionContext initialContext(initialSnapshot, initialSnapshot.members[0], coordinator, 9000);
+    DecisionReport initialReport = engine.Evaluate(initialContext);
+    bool const initialSelected = initialReport.selectedIndices.size() == 1 &&
+        initialReport.candidates[initialReport.selectedIndices[0]].candidate.targetGuid ==
+            initialSnapshot.members[1].guid &&
+        initialReport.candidates[initialReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(initialContext, initialReport);
+    bool const initialFollowStarted = !initialReport.selectedIndices.empty() &&
+        initialReport.candidates[initialReport.selectedIndices[0]].status == CandidateStatus::Executed &&
+        initialReport.candidates[initialReport.selectedIndices[0]].actionResult == ActionResult::Success &&
+        followAction->DidStartFollow() &&
+        followAction->GetLastTargetGuid() == initialSnapshot.members[1].guid;
+
+    bool initialCaughtUp = false;
+    for (uint32 tick = 0; tick < 32 && !initialCaughtUp; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+        float const dx = follower.creature->GetPositionX() - leaderA.creature->GetPositionX();
+        float const dy = follower.creature->GetPositionY() - leaderA.creature->GetPositionY();
+        float const dz = follower.creature->GetPositionZ() - leaderA.creature->GetPositionZ();
+        initialCaughtUp = dx * dx + dy * dy + dz * dz <= 25.0f;
+    }
+
+    PartySnapshot handoffSnapshot = makeSnapshot(10, false, true, true);
+    DecisionContext handoffContext(handoffSnapshot, handoffSnapshot.members[0], coordinator, 10000);
+    DecisionReport handoffReport = engine.Evaluate(handoffContext);
+    bool const handoffSelected = handoffReport.selectedIndices.size() == 1 &&
+        handoffReport.candidates[handoffReport.selectedIndices[0]].candidate.targetGuid ==
+            handoffSnapshot.members[2].guid &&
+        handoffReport.candidates[handoffReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(handoffContext, handoffReport);
+    bool const handoffExecuted = !handoffReport.selectedIndices.empty() &&
+        handoffReport.candidates[handoffReport.selectedIndices[0]].status == CandidateStatus::Executed &&
+        handoffReport.candidates[handoffReport.selectedIndices[0]].actionResult == ActionResult::Success &&
+        followAction->DidStartFollow() &&
+        followAction->GetLastTargetGuid() == handoffSnapshot.members[2].guid;
+    bool const handoffTargetChanged = followAction->GetLastTargetGuid() == handoffSnapshot.members[2].guid;
+
+    float const followerXBeforeLeaderMoves = follower.creature->GetPositionX();
+    leaderA.creature->GetMotionMaster()->MovePoint(11, -10.0f, 6.0f, 0.0f, MOVE_NONE);
+    leaderB.creature->GetMotionMaster()->MovePoint(12, 25.0f, 6.0f, 0.0f, MOVE_NONE);
+    bool const leaderAMovementStarted =
+        leaderA.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+    bool const leaderBMovementStarted =
+        leaderB.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+
+    bool leaderAReached = false;
+    bool leaderBReached = false;
+    bool followerTrackedNewLeader = false;
+    for (uint32 tick = 0; tick < 64; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+        float const ax = leaderA.creature->GetPositionX() + 10.0f;
+        float const ay = leaderA.creature->GetPositionY() - 6.0f;
+        float const az = leaderA.creature->GetPositionZ();
+        float const bx = leaderB.creature->GetPositionX() - 25.0f;
+        float const by = leaderB.creature->GetPositionY() - 6.0f;
+        float const bz = leaderB.creature->GetPositionZ();
+        leaderAReached = ax * ax + ay * ay + az * az <= 1.0f;
+        leaderBReached = bx * bx + by * by + bz * bz <= 1.0f;
+
+        float const toLeaderB = follower.creature->GetDistance(leaderB.creature);
+        float const toOldLeaderA = follower.creature->GetDistance(leaderA.creature);
+        bool const movedTowardNewLeader =
+            follower.creature->GetPositionX() > followerXBeforeLeaderMoves + 5.0f;
+        if (leaderBReached && toLeaderB <= 5.0f && toOldLeaderA >= 15.0f &&
+            movedTowardNewLeader)
+        {
+            followerTrackedNewLeader = true;
+            break;
+        }
+    }
+
+    bool const retargetFollowGeneratorRetained =
+        follower.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
+        follower.creature->HasUnitState(UNIT_STATE_FOLLOW);
+
+    bool const removedNewLeader = DestroySimulatorActor(map, leaderB);
+    for (uint32 tick = 0; tick < 2; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    PartySnapshot recoverySnapshot = makeSnapshot(11, true, false, false);
+    DecisionContext recoveryContext(recoverySnapshot, recoverySnapshot.members[0], coordinator, 11000);
+    DecisionReport recoveryReport = engine.Evaluate(recoveryContext);
+    bool const recoverySelected = recoveryReport.selectedIndices.size() == 1 &&
+        recoveryReport.candidates[recoveryReport.selectedIndices[0]].candidate.targetGuid ==
+            recoverySnapshot.members[1].guid &&
+        recoveryReport.candidates[recoveryReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(recoveryContext, recoveryReport);
+    bool const recoveryExecuted = !recoveryReport.selectedIndices.empty() &&
+        recoveryReport.candidates[recoveryReport.selectedIndices[0]].status == CandidateStatus::Executed &&
+        recoveryReport.candidates[recoveryReport.selectedIndices[0]].actionResult == ActionResult::Success &&
+        followAction->DidStartFollow() &&
+        followAction->GetLastTargetGuid() == recoverySnapshot.members[1].guid;
+    bool const recoveryTargetRestored = followAction->GetLastTargetGuid() == recoverySnapshot.members[1].guid;
+
+    float const followerXBeforeRecoveryMove = follower.creature->GetPositionX();
+    leaderA.creature->GetMotionMaster()->MovePoint(13, -20.0f, 6.0f, 0.0f, MOVE_NONE);
+    bool const recoveryLeaderMovementStarted =
+        leaderA.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+
+    bool recoveryLeaderReached = false;
+    bool recoveredToAvailableLeader = false;
+    for (uint32 tick = 0; tick < 80; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+        float const dx = leaderA.creature->GetPositionX() + 20.0f;
+        float const dy = leaderA.creature->GetPositionY() - 6.0f;
+        float const dz = leaderA.creature->GetPositionZ();
+        recoveryLeaderReached = dx * dx + dy * dy + dz * dz <= 1.0f;
+        float const distance = follower.creature->GetDistance(leaderA.creature);
+        if (recoveryLeaderReached && distance <= 5.0f &&
+            follower.creature->GetPositionX() < followerXBeforeRecoveryMove - 5.0f)
+        {
+            recoveredToAvailableLeader = true;
+            break;
+        }
+    }
+
+    float const finalDistance = follower.creature->GetDistance(leaderA.creature);
+    bool const followGeneratorRetained =
+        follower.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
+        follower.creature->HasUnitState(UNIT_STATE_FOLLOW);
+
+    bool cleaned = DestroySimulatorActor(map, follower);
+    cleaned = DestroySimulatorActor(map, leaderA) && cleaned;
+    cleaned = removedNewLeader && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine Core follow retarget/recovery: aiReady=%u registered=%u initialSelected=%u initialFollow=%u initialCaughtUp=%u handoffSelected=%u handoffExecuted=%u handoffTargetChanged=%u leaderAMove=%u leaderBMove=%u leaderAReached=%u leaderBReached=%u followerTrackedNewLeader=%u oldLeaderRemoved=%u recoverySelected=%u recoveryExecuted=%u recoveryTargetRestored=%u recoveryLeaderMove=%u recoveryLeaderReached=%u recoveredToAvailableLeader=%u finalDistance=%.2f followGenerator=%u cleanup=%u.",
+             actorsReady ? 1u : 0u, registered ? 1u : 0u,
+             initialSelected ? 1u : 0u, initialFollowStarted ? 1u : 0u,
+             initialCaughtUp ? 1u : 0u, handoffSelected ? 1u : 0u,
+             handoffExecuted ? 1u : 0u, handoffTargetChanged ? 1u : 0u,
+             leaderAMovementStarted ? 1u : 0u, leaderBMovementStarted ? 1u : 0u,
+             leaderAReached ? 1u : 0u, leaderBReached ? 1u : 0u,
+             followerTrackedNewLeader ? 1u : 0u, removedNewLeader ? 1u : 0u,
+             recoverySelected ? 1u : 0u, recoveryExecuted ? 1u : 0u,
+             recoveryTargetRestored ? 1u : 0u, recoveryLeaderMovementStarted ? 1u : 0u,
+             recoveryLeaderReached ? 1u : 0u, recoveredToAvailableLeader ? 1u : 0u,
+             finalDistance, followGeneratorRetained ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!actorsReady || !registered || !initialSelected || !initialFollowStarted || !initialCaughtUp ||
+        !handoffSelected || !handoffExecuted || !handoffTargetChanged ||
+        !leaderAMovementStarted || !leaderBMovementStarted || !leaderAReached || !leaderBReached ||
+        !followerTrackedNewLeader || !retargetFollowGeneratorRetained || !removedNewLeader ||
+        !recoverySelected || !recoveryExecuted || !recoveryTargetRestored ||
+        !recoveryLeaderMovementStarted || !recoveryLeaderReached ||
+        !recoveredToAvailableLeader || !followGeneratorRetained || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core follow retarget/recovery smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine retargeted native Core FollowMovementGenerator to the new Main Tank and recovered after that target disappeared.");
+    return true;
+}
+
+bool RunEngineCorePlayerFollowCastSafetySmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor leader;
+    bool const leaderCreated = CreateSimulatorActor(map, *info, partyFaction, 0.0f, 6.0f, leader);
+    if (!leaderCreated)
+    {
+        DestroySimulatorActor(map, leader);
+        return false;
+    }
+
+    WorldSession followerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* follower = nullptr;
+    bool const followerCreated = CreateSimulatorPlayer(map, partyFaction, followerSession,
+                                                          follower, 10.0f, 6.0f, 0.0f);
+    if (!followerCreated)
+    {
+        if (followerSession.GetPlayer())
+            followerSession.LogoutPlayer(false);
+        else if (follower)
+            delete follower;
+        bool const cleaned = DestroySimulatorActor(map, leader);
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Player follow/cast fixture creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    PartySnapshot followSnapshot;
+    followSnapshot.groupId = 7;
+    followSnapshot.mapId = map.GetId();
+    followSnapshot.instanceId = map.GetInstanceId();
+    followSnapshot.epoch = 7;
+    followSnapshot.capturedAtMs = 7000;
+
+    PartyMemberSnapshot followerMember;
+    followerMember.guid = follower->GetObjectGuid().GetRawValue();
+    followerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    followerMember.mapId = map.GetId();
+    followerMember.instanceId = map.GetInstanceId();
+    followerMember.health = follower->GetHealth();
+    followerMember.maxHealth = follower->GetMaxHealth();
+    followerMember.online = true;
+    followerMember.alive = follower->IsAlive();
+    followerMember.x = follower->GetPositionX();
+    followerMember.y = follower->GetPositionY();
+    followerMember.z = follower->GetPositionZ();
+    followSnapshot.members.push_back(followerMember);
+
+    PartyMemberSnapshot leaderMember;
+    leaderMember.guid = leader.creature->GetObjectGuid().GetRawValue();
+    leaderMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    leaderMember.mapId = map.GetId();
+    leaderMember.instanceId = map.GetInstanceId();
+    leaderMember.health = leader.creature->GetHealth();
+    leaderMember.maxHealth = leader.creature->GetMaxHealth();
+    leaderMember.online = true;
+    leaderMember.alive = leader.creature->IsAlive();
+    leaderMember.isMainTank = true;
+    leaderMember.x = leader.creature->GetPositionX();
+    leaderMember.y = leader.creature->GetPositionY();
+    leaderMember.z = leader.creature->GetPositionZ();
+    followSnapshot.members.push_back(leaderMember);
+
+    PartyCoordinator coordinator;
+    DecisionContext followContext(followSnapshot, followSnapshot.members[0], coordinator, 7000);
+    PartyBotEngine followEngine;
+    std::shared_ptr<SimulatorCoreFollowAction> followAction(new SimulatorCoreFollowAction(map));
+    bool const followRegistered = followEngine.RegisterAction(followAction);
+    std::shared_ptr<Strategy> followStrategy(new Strategy("simulator_player_follow_during_cast"));
+    followStrategy->AddTrigger(std::make_shared<SimulatorFollowTrigger>());
+    followEngine.AddStrategy(followStrategy);
+
+    DecisionReport followReport = followEngine.Evaluate(followContext);
+    bool const followSelected = followReport.selectedIndices.size() == 1 &&
+        followReport.candidates[followReport.selectedIndices[0]].candidate.actionName == "core_follow" &&
+        followReport.candidates[followReport.selectedIndices[0]].candidate.targetGuid == leaderMember.guid &&
+        followReport.candidates[followReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    followEngine.ExecuteSelected(followContext, followReport);
+    bool const followStarted = !followReport.selectedIndices.empty() &&
+        followReport.candidates[followReport.selectedIndices[0]].status == CandidateStatus::Executed &&
+        followReport.candidates[followReport.selectedIndices[0]].actionResult == ActionResult::Success &&
+        followAction->DidStartFollow();
+
+    bool initialCaughtUpAndStable = false;
+    uint32 stationarySamples = 0;
+    float previousFollowerX = follower->GetPositionX();
+    float previousFollowerY = follower->GetPositionY();
+    float previousFollowerZ = follower->GetPositionZ();
+    for (uint32 tick = 0; tick < 48; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+
+        float const dx = follower->GetPositionX() - leader.creature->GetPositionX();
+        float const dy = follower->GetPositionY() - leader.creature->GetPositionY();
+        float const dz = follower->GetPositionZ() - leader.creature->GetPositionZ();
+        float const distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        float const stepX = follower->GetPositionX() - previousFollowerX;
+        float const stepY = follower->GetPositionY() - previousFollowerY;
+        float const stepZ = follower->GetPositionZ() - previousFollowerZ;
+        float const stepDistance = std::sqrt(stepX * stepX + stepY * stepY + stepZ * stepZ);
+        if (distance <= 5.0f && stepDistance <= 0.05f)
+            ++stationarySamples;
+        else
+            stationarySamples = 0;
+
+        previousFollowerX = follower->GetPositionX();
+        previousFollowerY = follower->GetPositionY();
+        previousFollowerZ = follower->GetPositionZ();
+        if (stationarySamples >= 2)
+        {
+            initialCaughtUpAndStable = true;
+            break;
+        }
+    }
+
+    // Re-prime the real Player update cadence before starting the cast. The
+    // cast/follow interaction below is advanced only through normal Core map
+    // updates; no spell timer or player position is changed by the fixture.
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    map.Update(250);
+
+    // The follower may spend several seconds reaching formation range. Reset
+    // the fixture target after that wait so passive Creature regeneration
+    // cannot remove the injury before the Engine evaluates healer triage.
+    leader.creature->SetHealth(leader.creature->GetMaxHealth() / 2);
+    uint32 const patientHealthBefore = leader.creature->GetHealth();
+    uint32 const healerManaBefore = follower->GetPower(POWER_MANA);
+
+    PartySnapshot healSnapshot;
+    healSnapshot.groupId = 8;
+    healSnapshot.mapId = map.GetId();
+    healSnapshot.instanceId = map.GetInstanceId();
+    healSnapshot.epoch = 8;
+    healSnapshot.capturedAtMs = 8000;
+
+    followerMember.x = follower->GetPositionX();
+    followerMember.y = follower->GetPositionY();
+    followerMember.z = follower->GetPositionZ();
+    healSnapshot.members.push_back(followerMember);
+    leaderMember.health = leader.creature->GetHealth();
+    leaderMember.x = leader.creature->GetPositionX();
+    leaderMember.y = leader.creature->GetPositionY();
+    leaderMember.z = leader.creature->GetPositionZ();
+    healSnapshot.members.push_back(leaderMember);
+
+    DecisionContext healContext(healSnapshot, healSnapshot.members[0], coordinator, 8000);
+    PartyBotEngine healEngine;
+    std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
+    bool const healRegistered = healEngine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> healStrategy(new Strategy("simulator_follow_cast_safety_heal"));
+    healStrategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
+    healEngine.AddStrategy(healStrategy);
+
+    DecisionReport healReport = healEngine.Evaluate(healContext);
+    bool const healSelected = healReport.selectedIndices.size() == 1 &&
+        healReport.candidates[healReport.selectedIndices[0]].candidate.targetGuid == leaderMember.guid &&
+        healReport.candidates[healReport.selectedIndices[0]].candidate.spellId == SIMULATOR_HEAL_SPELL_ID &&
+        healReport.candidates[healReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    healEngine.ExecuteSelected(healContext, healReport);
+    bool const castAccepted = !healReport.selectedIndices.empty() &&
+        healReport.candidates[healReport.selectedIndices[0]].status == CandidateStatus::Executed &&
+        healReport.candidates[healReport.selectedIndices[0]].actionResult == ActionResult::Success &&
+        healAction->GetLastCastResult() == SPELL_CAST_OK &&
+        healAction->WasCastPendingAfterAccept() && healAction->HadGcdAfterAccept();
+
+    float const followerXBeforeLeaderMove = follower->GetPositionX();
+    float const followerYBeforeLeaderMove = follower->GetPositionY();
+    float const followerZBeforeLeaderMove = follower->GetPositionZ();
+    leader.creature->GetMotionMaster()->MovePoint(3, -20.0f, 6.0f, 0.0f, MOVE_NONE);
+    bool const leaderMovementStarted =
+        leader.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+
+    uint32 pendingCastTicks = 0;
+    uint32 coreNoMovementGateTicks = 0;
+    float maxFollowerDisplacementWhileCasting = 0.0f;
+    bool leaderReachedDestination = false;
+    for (uint32 tick = 0; tick < 32; ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+
+        if (follower->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        {
+            ++pendingCastTicks;
+            if (follower->IsNoMovementSpellCasted())
+            {
+                ++coreNoMovementGateTicks;
+                float const dx = follower->GetPositionX() - followerXBeforeLeaderMove;
+                float const dy = follower->GetPositionY() - followerYBeforeLeaderMove;
+                float const dz = follower->GetPositionZ() - followerZBeforeLeaderMove;
+                maxFollowerDisplacementWhileCasting = std::max(
+                    maxFollowerDisplacementWhileCasting, std::sqrt(dx * dx + dy * dy + dz * dz));
+            }
+        }
+
+        float const leaderDx = leader.creature->GetPositionX() + 20.0f;
+        float const leaderDy = leader.creature->GetPositionY() - 6.0f;
+        float const leaderDz = leader.creature->GetPositionZ();
+        leaderReachedDestination =
+            leaderDx * leaderDx + leaderDy * leaderDy + leaderDz * leaderDz <= 1.0f;
+
+        if (!follower->GetCurrentSpell(CURRENT_GENERIC_SPELL) && leaderReachedDestination)
+            break;
+    }
+
+    uint32 const patientHealthAfterCast = leader.creature->GetHealth();
+    uint32 const healerManaAfterCast = follower->GetPower(POWER_MANA);
+    bool const castCompleted = !follower->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
+        patientHealthAfterCast > patientHealthBefore && healerManaAfterCast < healerManaBefore;
+    bool const followPausedDuringCast = coreNoMovementGateTicks >= 2 &&
+        maxFollowerDisplacementWhileCasting <= 0.25f;
+
+    bool followedAfterCast = false;
+    for (uint32 tick = 0; tick < 48; ++tick)
+    {
+        float const dx = follower->GetPositionX() - leader.creature->GetPositionX();
+        float const dy = follower->GetPositionY() - leader.creature->GetPositionY();
+        float const dz = follower->GetPositionZ() - leader.creature->GetPositionZ();
+        float const distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (leaderReachedDestination && distance <= 5.0f &&
+            follower->GetPositionX() < followerXBeforeLeaderMove - 5.0f)
+        {
+            followedAfterCast = true;
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    float const finalDx = follower->GetPositionX() - leader.creature->GetPositionX();
+    float const finalDy = follower->GetPositionY() - leader.creature->GetPositionY();
+    float const finalDz = follower->GetPositionZ() - leader.creature->GetPositionZ();
+    float const finalDistance = std::sqrt(finalDx * finalDx + finalDy * finalDy + finalDz * finalDz);
+    bool const followRetained =
+        follower->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
+        follower->HasUnitState(UNIT_STATE_FOLLOW);
+
+    followerSession.LogoutPlayer(false);
+    bool const playerCleaned = followerSession.GetPlayer() == nullptr;
+    follower = nullptr;
+    bool const leaderCleaned = DestroySimulatorActor(map, leader);
+    bool const cleaned = playerCleaned && leaderCleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine Player follow/cast safety: followRegistered=%u followSelected=%u followStarted=%u initialCaughtUpStable=%u stationarySamples=%u healRegistered=%u healSelected=%u castAccepted=%u pendingTicks=%u coreNoMovementTicks=%u maxCastMove=%.2f castCompleted=%u leaderMove=%u leaderReached=%u followPaused=%u followedAfterCast=%u finalDistance=%.2f followRetained=%u cleanup=%u.",
+             followRegistered ? 1u : 0u, followSelected ? 1u : 0u, followStarted ? 1u : 0u,
+             initialCaughtUpAndStable ? 1u : 0u, stationarySamples,
+             healRegistered ? 1u : 0u, healSelected ? 1u : 0u,
+             castAccepted ? 1u : 0u, pendingCastTicks, coreNoMovementGateTicks,
+             maxFollowerDisplacementWhileCasting, castCompleted ? 1u : 0u,
+             leaderMovementStarted ? 1u : 0u, leaderReachedDestination ? 1u : 0u,
+             followPausedDuringCast ? 1u : 0u, followedAfterCast ? 1u : 0u,
+             finalDistance, followRetained ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!followRegistered || !followSelected || !followStarted || !initialCaughtUpAndStable ||
+        !healRegistered || !healSelected || !castAccepted || !castCompleted ||
+        !leaderMovementStarted || !leaderReachedDestination || !followPausedDuringCast ||
+        !followedAfterCast || !followRetained || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine Player follow/cast safety smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Core Player FollowMovementGenerator paused while its non-triggered Lesser Heal cast was pending and resumed tracking the Main Tank after the cast completed.");
+    return true;
+}
+
+
+
+bool RunEngineCorePlayerHealRevalidationSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor outOfRangePatient;
+    SimulatorActor noPowerPatient;
+    bool const patientsCreated =
+        CreateSimulatorActor(map, *info, partyFaction, 60.0f, 6.0f, outOfRangePatient) &&
+        CreateSimulatorActor(map, *info, partyFaction, 8.0f, 6.0f, noPowerPatient);
+    if (!patientsCreated)
+    {
+        bool cleaned = DestroySimulatorActor(map, noPowerPatient);
+        cleaned = DestroySimulatorActor(map, outOfRangePatient) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Heal revalidation patient creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    WorldSession healerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* healer = nullptr;
+    bool const healerCreated = CreateSimulatorPlayer(map, partyFaction, healerSession,
+                                                       healer, 0.0f, 6.0f, 0.0f);
+    if (!healerCreated)
+    {
+        if (healerSession.GetPlayer())
+            healerSession.LogoutPlayer(false);
+        else if (healer)
+            delete healer;
+        bool cleaned = DestroySimulatorActor(map, noPowerPatient);
+        cleaned = DestroySimulatorActor(map, outOfRangePatient) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Heal revalidation Player creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    outOfRangePatient.creature->SetHealth(outOfRangePatient.creature->GetMaxHealth() / 2);
+    noPowerPatient.creature->SetHealth(noPowerPatient.creature->GetMaxHealth() / 2);
+
+    PartyCoordinator coordinator;
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
+    bool const registered = engine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_player_heal_execution_revalidation"));
+    strategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
+    engine.AddStrategy(strategy);
+
+    auto makeSnapshot = [&](uint64 epoch, Creature* patient, bool staleNearPosition)
+    {
+        PartySnapshot snapshot;
+        snapshot.groupId = 10;
+        snapshot.mapId = map.GetId();
+        snapshot.instanceId = map.GetInstanceId();
+        snapshot.epoch = epoch;
+        snapshot.capturedAtMs = epoch * 1000;
+
+        PartyMemberSnapshot healerMember;
+        healerMember.guid = healer->GetObjectGuid().GetRawValue();
+        healerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+        healerMember.mapId = map.GetId();
+        healerMember.instanceId = map.GetInstanceId();
+        healerMember.health = healer->GetHealth();
+        healerMember.maxHealth = healer->GetMaxHealth();
+        healerMember.online = true;
+        healerMember.alive = healer->IsAlive();
+        healerMember.x = healer->GetPositionX();
+        healerMember.y = healer->GetPositionY();
+        healerMember.z = healer->GetPositionZ();
+        snapshot.members.push_back(healerMember);
+
+        PartyMemberSnapshot patientMember;
+        patientMember.guid = patient->GetObjectGuid().GetRawValue();
+        patientMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+        patientMember.mapId = map.GetId();
+        patientMember.instanceId = map.GetInstanceId();
+        patientMember.health = patient->GetHealth();
+        patientMember.maxHealth = patient->GetMaxHealth();
+        patientMember.online = true;
+        patientMember.alive = patient->IsAlive();
+        patientMember.isMainTank = true;
+        patientMember.x = staleNearPosition ? healer->GetPositionX() + 5.0f : patient->GetPositionX();
+        patientMember.y = healer->GetPositionY();
+        patientMember.z = healer->GetPositionZ();
+        snapshot.members.push_back(patientMember);
+        return snapshot;
+    };
+
+    // The value snapshot intentionally says the first injured target was
+    // nearby, but the authoritative Core Unit is 60 yards away. The action
+    // must not trust stale snapshot coordinates: normal CastSpell/CheckCast
+    // owns the final range decision.
+    uint32 const rangeHealthBefore = outOfRangePatient.creature->GetHealth();
+    PartySnapshot rangeSnapshot = makeSnapshot(10, outOfRangePatient.creature, true);
+    DecisionContext rangeContext(rangeSnapshot, rangeSnapshot.members[0], coordinator, 10000);
+    DecisionReport rangeReport = engine.Evaluate(rangeContext);
+    bool const rangeSelected = rangeReport.selectedIndices.size() == 1 &&
+        rangeReport.candidates[rangeReport.selectedIndices[0]].candidate.targetGuid ==
+            outOfRangePatient.creature->GetObjectGuid().GetRawValue() &&
+        rangeReport.candidates[rangeReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (rangeSelected)
+        engine.ExecuteSelected(rangeContext, rangeReport);
+    bool const rangeExecutionFailed = rangeSelected &&
+        rangeReport.candidates[rangeReport.selectedIndices[0]].status == CandidateStatus::ExecutionFailed &&
+        rangeReport.candidates[rangeReport.selectedIndices[0]].actionResult == ActionResult::Failed;
+    SpellCastResult const rangeCastResult = healAction->GetLastCastResult();
+    uint32 const rangeHealthAfter = outOfRangePatient.creature->GetHealth();
+    uint32 const rangeManaBefore = healAction->GetManaBefore();
+    uint32 const rangeManaAfter = healAction->GetManaAfterAccept();
+    bool const rangeNoPending = !healAction->WasCastPendingAfterAccept();
+    bool const rangeNoGcd = !healAction->HadGcdAfterAccept();
+    bool const rangeRejected = rangeExecutionFailed &&
+        rangeCastResult == SPELL_FAILED_OUT_OF_RANGE &&
+        rangeHealthAfter == rangeHealthBefore &&
+        rangeManaAfter == rangeManaBefore &&
+        healer->GetPower(POWER_MANA) == rangeManaBefore &&
+        rangeNoPending && rangeNoGcd;
+
+    // Evaluate against a fresh healthy-resource snapshot, then exhaust the
+    // real Player's mana before the selected action is executed. The adapter
+    // must surface the Core Spell::CheckPower failure without claiming success.
+    uint32 const noPowerHealthBefore = noPowerPatient.creature->GetHealth();
+    PartySnapshot noPowerSnapshot = makeSnapshot(11, noPowerPatient.creature, false);
+    DecisionContext noPowerContext(noPowerSnapshot, noPowerSnapshot.members[0], coordinator, 11000);
+    DecisionReport noPowerReport = engine.Evaluate(noPowerContext);
+    bool const noPowerSelected = noPowerReport.selectedIndices.size() == 1 &&
+        noPowerReport.candidates[noPowerReport.selectedIndices[0]].candidate.targetGuid ==
+            noPowerPatient.creature->GetObjectGuid().GetRawValue() &&
+        noPowerReport.candidates[noPowerReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    healer->SetPower(POWER_MANA, 0);
+    if (noPowerSelected)
+        engine.ExecuteSelected(noPowerContext, noPowerReport);
+    bool const noPowerExecutionFailed = noPowerSelected &&
+        noPowerReport.candidates[noPowerReport.selectedIndices[0]].status == CandidateStatus::ExecutionFailed &&
+        noPowerReport.candidates[noPowerReport.selectedIndices[0]].actionResult == ActionResult::Failed;
+    SpellCastResult const noPowerCastResult = healAction->GetLastCastResult();
+    uint32 const noPowerHealthAfter = noPowerPatient.creature->GetHealth();
+    uint32 const noPowerManaAfter = healer->GetPower(POWER_MANA);
+    bool const noPowerNoPending = !healAction->WasCastPendingAfterAccept();
+    bool const noPowerNoGcd = !healAction->HadGcdAfterAccept();
+    bool const noPowerRejected = noPowerExecutionFailed &&
+        noPowerCastResult == SPELL_FAILED_NO_POWER &&
+        noPowerHealthAfter == noPowerHealthBefore &&
+        noPowerManaAfter == 0 &&
+        healAction->GetManaBefore() == 0 && healAction->GetManaAfterAccept() == 0 &&
+        noPowerNoPending && noPowerNoGcd;
+
+    healerSession.LogoutPlayer(false);
+    bool const playerCleaned = healerSession.GetPlayer() == nullptr;
+    healer = nullptr;
+    bool cleaned = DestroySimulatorActor(map, noPowerPatient);
+    cleaned = DestroySimulatorActor(map, outOfRangePatient) && cleaned;
+    cleaned = playerCleaned && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Player heal execution revalidation: registered=%u rangeSelected=%u rangeExecutionFailed=%u rangeResult=%u rangeHealth=%u>%u rangeMana=%u>%u rangeNoPending=%u rangeNoGcd=%u noPowerSelected=%u noPowerExecutionFailed=%u noPowerResult=%u noPowerHealth=%u>%u noPowerMana=%u noPowerNoPending=%u noPowerNoGcd=%u cleanup=%u.",
+             registered ? 1u : 0u, rangeSelected ? 1u : 0u,
+             rangeExecutionFailed ? 1u : 0u, static_cast<uint32>(rangeCastResult),
+             rangeHealthBefore, rangeHealthAfter, rangeManaBefore, rangeManaAfter,
+             rangeNoPending ? 1u : 0u, rangeNoGcd ? 1u : 0u,
+             noPowerSelected ? 1u : 0u, noPowerExecutionFailed ? 1u : 0u,
+             static_cast<uint32>(noPowerCastResult),
+             noPowerHealthBefore, noPowerHealthAfter, noPowerManaAfter,
+             noPowerNoPending ? 1u : 0u, noPowerNoGcd ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!registered || !rangeRejected || !noPowerRejected || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Player heal execution-time range/resource revalidation failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Core Player CastSpell rejected a stale out-of-range heal and a late no-mana heal without applying effects, consuming mana, starting a cast or setting GCD.");
+    return true;
+}
+
+
+bool RunEngineCorePlayerHealLosSmokeTest(Map& map)
+{
+    CreatureInfo const* creatureInfo = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!creatureInfo || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor patient;
+    if (!CreateSimulatorActor(map, *creatureInfo, partyFaction, 20.0f, 6.0f, patient))
+    {
+        DestroySimulatorActor(map, patient);
+        return false;
+    }
+    patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
+
+    WorldSession healerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* healer = nullptr;
+    bool const healerCreated = CreateSimulatorPlayer(map, partyFaction, healerSession,
+                                                       healer, 0.0f, 6.0f, 0.0f);
+    if (!healerCreated)
+    {
+        if (healerSession.GetPlayer())
+            healerSession.LogoutPlayer(false);
+        else if (healer)
+            delete healer;
+        bool const cleaned = DestroySimulatorActor(map, patient);
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] LOS Player fixture creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    bool const baseLineOfSight = healer->IsWithinLOSInMap(patient.creature);
+    if (!baseLineOfSight)
+    {
+        healerSession.LogoutPlayer(false);
+        healer = nullptr;
+        bool const cleaned = DestroySimulatorActor(map, patient);
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] LOS fixture has no clear baseline ray before obstacle placement (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 12;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 12;
+    snapshot.capturedAtMs = 12000;
+
+    PartyMemberSnapshot healerMember;
+    healerMember.guid = healer->GetObjectGuid().GetRawValue();
+    healerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    healerMember.mapId = map.GetId();
+    healerMember.instanceId = map.GetInstanceId();
+    healerMember.health = healer->GetHealth();
+    healerMember.maxHealth = healer->GetMaxHealth();
+    healerMember.online = true;
+    healerMember.alive = healer->IsAlive();
+    healerMember.x = healer->GetPositionX();
+    healerMember.y = healer->GetPositionY();
+    healerMember.z = healer->GetPositionZ();
+    snapshot.members.push_back(healerMember);
+
+    PartyMemberSnapshot patientMember;
+    patientMember.guid = patient.creature->GetObjectGuid().GetRawValue();
+    patientMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    patientMember.mapId = map.GetId();
+    patientMember.instanceId = map.GetInstanceId();
+    patientMember.health = patient.creature->GetHealth();
+    patientMember.maxHealth = patient.creature->GetMaxHealth();
+    patientMember.online = true;
+    patientMember.alive = patient.creature->IsAlive();
+    patientMember.isMainTank = true;
+    patientMember.x = patient.creature->GetPositionX();
+    patientMember.y = patient.creature->GetPositionY();
+    patientMember.z = patient.creature->GetPositionZ();
+    snapshot.members.push_back(patientMember);
+
+    PartyCoordinator coordinator;
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
+    bool const registered = engine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_player_heal_los_rejection"));
+    strategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
+    engine.AddStrategy(strategy);
+
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 12000);
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+
+    // Discover a real collision model from the loaded Vanilla gameobject
+    // templates. Closed doors and solid generic models are inserted into the
+    // Core dynamic collision tree; the fixture never substitutes a LOS flag.
+    std::vector<GameObjectInfo const*> blockerTemplates;
+    for (auto const& item : sObjectMgr.GetGameObjectInfoMap())
+    {
+        GameObjectInfo const* info = item.second.get();
+        if (!info || !info->displayId || info->id != item.first)
+            continue;
+
+        bool const isDoor = info->type == GAMEOBJECT_TYPE_DOOR;
+        bool const isNamedSolidGeneric = info->type == GAMEOBJECT_TYPE_GENERIC &&
+            (info->name.find("wall") != std::string::npos ||
+             info->name.find("Wall") != std::string::npos ||
+             info->name.find("barrier") != std::string::npos ||
+             info->name.find("Barrier") != std::string::npos ||
+             info->name.find("gate") != std::string::npos ||
+             info->name.find("Gate") != std::string::npos ||
+             info->name.find("fence") != std::string::npos ||
+             info->name.find("Fence") != std::string::npos);
+        if (isDoor || isNamedSolidGeneric)
+            blockerTemplates.push_back(info);
+    }
+    std::sort(blockerTemplates.begin(), blockerTemplates.end(),
+        [](GameObjectInfo const* left, GameObjectInfo const* right)
+        {
+            return left->id < right->id;
+        });
+
+    GameObject* blocker = nullptr;
+    uint32 blockerEntry = 0;
+    uint32 testedModels = 0;
+    float const blockerAngles[] = {0.0f, 1.57079632679f, 0.78539816339f, 2.35619449019f};
+    bool blockerCleanupFailure = false;
+    for (GameObjectInfo const* info : blockerTemplates)
+    {
+        if (testedModels >= 48 || blocker)
+            break;
+
+        for (float angle : blockerAngles)
+        {
+            if (testedModels >= 48)
+                break;
+            ++testedModels;
+            GameObject* candidate = new GameObject();
+            bool const created = candidate->Create(
+                map.GenerateLocalLowGuid(HIGHGUID_GAMEOBJECT), info->id, &map,
+                10.0f, 6.0f, 0.0f, angle, 0.0f, 0.0f, 0.0f, 1.0f,
+                GO_ANIMPROGRESS_DEFAULT, GO_STATE_READY);
+            if (!created)
+            {
+                delete candidate;
+                continue;
+            }
+
+            map.Add(candidate);
+            ObjectGuid const candidateGuid = candidate->GetObjectGuid();
+            bool const added = candidate->IsInWorld() &&
+                map.GetGameObject(candidateGuid) == candidate;
+            if (!added)
+            {
+                if (candidate->IsInWorld())
+                    map.Remove(candidate, false);
+                bool const detached = !candidate->IsInWorld() &&
+                    map.GetGameObject(candidateGuid) == nullptr;
+                if (detached)
+                    delete candidate;
+                else
+                    blockerCleanupFailure = true;
+                if (blockerCleanupFailure)
+                    break;
+                continue;
+            }
+
+            if (!healer->IsWithinLOSInMap(patient.creature))
+            {
+                blocker = candidate;
+                blockerEntry = info->id;
+                break;
+            }
+
+            map.Remove(candidate, false);
+            bool const detached = !candidate->IsInWorld() &&
+                map.GetGameObject(candidateGuid) == nullptr;
+            if (detached)
+                delete candidate;
+            else
+            {
+                blockerCleanupFailure = true;
+                break;
+            }
+        }
+
+        if (blocker || blockerCleanupFailure)
+            break;
+    }
+
+    bool const blockerFound = blocker != nullptr;
+    bool const blockedLineOfSight = blockerFound &&
+        !healer->IsWithinLOSInMap(patient.creature);
+    uint32 const healthBefore = patient.creature->GetHealth();
+    uint32 const manaBefore = healer->GetPower(POWER_MANA);
+    if (selected && blockedLineOfSight)
+        engine.ExecuteSelected(context, report);
+
+    bool const executionFailed = selected &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::ExecutionFailed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Failed;
+    SpellCastResult const castResult = healAction->GetLastCastResult();
+    uint32 const healthAfter = patient.creature->GetHealth();
+    uint32 const manaAfter = healer->GetPower(POWER_MANA);
+    bool const noPending = !healAction->WasCastPendingAfterAccept();
+    bool const noGcd = !healAction->HadGcdAfterAccept();
+
+    if (blocker && blocker->IsInWorld())
+        map.Remove(blocker, false);
+    ObjectGuid const blockerGuid = blocker ? blocker->GetObjectGuid() : ObjectGuid();
+    bool const blockerDetached = blocker &&
+        !blocker->IsInWorld() && map.GetGameObject(blockerGuid) == nullptr;
+    if (blockerDetached)
+        delete blocker;
+    else if (blocker)
+        blockerCleanupFailure = true;
+
+    bool const lineOfSightRestored = blockerDetached &&
+        healer->IsWithinLOSInMap(patient.creature);
+    healerSession.LogoutPlayer(false);
+    bool const playerCleaned = healerSession.GetPlayer() == nullptr;
+    healer = nullptr;
+    bool const patientCleaned = DestroySimulatorActor(map, patient);
+    bool const cleaned = blockerFound && !blockerCleanupFailure && blockerDetached &&
+        playerCleaned && patientCleaned;
+
+    bool const rejected = registered && selected && blockerFound && blockedLineOfSight &&
+        executionFailed && castResult == SPELL_FAILED_LINE_OF_SIGHT &&
+        healthAfter == healthBefore && manaAfter == manaBefore &&
+        noPending && noGcd && lineOfSightRestored && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Player heal LOS revalidation: registered=%u selected=%u baseLOS=%u blockerTemplates=%u testedModels=%u blockerFound=%u blockerEntry=%u blockedLOS=%u executionFailed=%u castResult=%u health=%u>%u mana=%u>%u noPending=%u noGcd=%u losRestored=%u cleanup=%u.",
+             registered ? 1u : 0u, selected ? 1u : 0u, baseLineOfSight ? 1u : 0u,
+             static_cast<uint32>(blockerTemplates.size()), testedModels,
+             blockerFound ? 1u : 0u, blockerEntry, blockedLineOfSight ? 1u : 0u,
+             executionFailed ? 1u : 0u, static_cast<uint32>(castResult),
+             healthBefore, healthAfter, manaBefore, manaAfter,
+             noPending ? 1u : 0u, noGcd ? 1u : 0u,
+             lineOfSightRestored ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!rejected)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Player heal Core LOS rejection smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Core Player Spell::CheckCast rejected a heal through a real closed GameObject collision model without applying healing, spending mana or starting a cast.");
+    return true;
+}
+
+
+bool RunEngineCoreMovePointControlSafetySmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor leader;
+    SimulatorActor mover;
+    bool const created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 6.0f, leader) &&
+        CreateSimulatorActor(map, *info, partyFaction, 10.0f, 6.0f, mover);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, mover);
+        cleaned = DestroySimulatorActor(map, leader) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] MovePoint control-safety fixture creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    PartySnapshot initialSnapshot;
+    initialSnapshot.groupId = 13;
+    initialSnapshot.mapId = map.GetId();
+    initialSnapshot.instanceId = map.GetInstanceId();
+    initialSnapshot.epoch = 13;
+    initialSnapshot.capturedAtMs = 13000;
+
+    PartyMemberSnapshot moverMember;
+    moverMember.guid = mover.creature->GetObjectGuid().GetRawValue();
+    moverMember.roleId = static_cast<std::uint8_t>(PartyRole::MeleeDamage);
+    moverMember.mapId = map.GetId();
+    moverMember.instanceId = map.GetInstanceId();
+    moverMember.health = mover.creature->GetHealth();
+    moverMember.maxHealth = mover.creature->GetMaxHealth();
+    moverMember.online = true;
+    moverMember.alive = mover.creature->IsAlive();
+    moverMember.x = mover.creature->GetPositionX();
+    moverMember.y = mover.creature->GetPositionY();
+    moverMember.z = mover.creature->GetPositionZ();
+    initialSnapshot.members.push_back(moverMember);
+
+    PartyMemberSnapshot leaderMember;
+    leaderMember.guid = leader.creature->GetObjectGuid().GetRawValue();
+    leaderMember.roleId = static_cast<std::uint8_t>(PartyRole::MainTank);
+    leaderMember.mapId = map.GetId();
+    leaderMember.instanceId = map.GetInstanceId();
+    leaderMember.health = leader.creature->GetHealth();
+    leaderMember.maxHealth = leader.creature->GetMaxHealth();
+    leaderMember.online = true;
+    leaderMember.alive = leader.creature->IsAlive();
+    leaderMember.isMainTank = true;
+    leaderMember.x = leader.creature->GetPositionX();
+    leaderMember.y = leader.creature->GetPositionY();
+    leaderMember.z = leader.creature->GetPositionZ();
+    initialSnapshot.members.push_back(leaderMember);
+
+    PartyCoordinator coordinator;
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCoreMovePointAction> moveAction(new SimulatorCoreMovePointAction(map));
+    bool const registered = engine.RegisterAction(moveAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_move_control_safety"));
+    strategy->AddTrigger(std::make_shared<SimulatorFormationTrigger>());
+    engine.AddStrategy(strategy);
+
+    float const initialX = mover.creature->GetPositionX();
+    float const initialY = mover.creature->GetPositionY();
+    float const initialZ = mover.creature->GetPositionZ();
+
+    mover.creature->AddUnitState(UNIT_STATE_CAN_NOT_MOVE);
+    PartySnapshot rootedSnapshot = initialSnapshot;
+    rootedSnapshot.epoch = 13;
+    rootedSnapshot.capturedAtMs = 13000;
+    DecisionContext rootedContext(rootedSnapshot, rootedSnapshot.members[0], coordinator, 13000);
+    DecisionReport rootedReport = engine.Evaluate(rootedContext);
+    bool const rootedRejected = rootedReport.selectedIndices.empty() &&
+        rootedReport.candidates.size() == 1 &&
+        rootedReport.candidates[0].candidate.actionName == "core_move_point" &&
+        rootedReport.candidates[0].status == CandidateStatus::RejectedImpossible;
+
+    mover.creature->ClearUnitState(UNIT_STATE_CAN_NOT_MOVE);
+    mover.creature->AddUnitState(UNIT_STATE_POSSESSED);
+    PartySnapshot possessedSnapshot = initialSnapshot;
+    possessedSnapshot.epoch = 14;
+    possessedSnapshot.capturedAtMs = 14000;
+    DecisionContext possessedContext(possessedSnapshot, possessedSnapshot.members[0], coordinator, 14000);
+    DecisionReport possessedReport = engine.Evaluate(possessedContext);
+    bool const possessedRejected = possessedReport.selectedIndices.empty() &&
+        possessedReport.candidates.size() == 1 &&
+        possessedReport.candidates[0].candidate.actionName == "core_move_point" &&
+        possessedReport.candidates[0].status == CandidateStatus::RejectedImpossible;
+
+    mover.creature->ClearUnitState(UNIT_STATE_POSSESSED);
+    bool const noMovementStarted =
+        mover.creature->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE;
+    bool const positionUnchanged =
+        mover.creature->GetPositionX() == initialX &&
+        mover.creature->GetPositionY() == initialY &&
+        mover.creature->GetPositionZ() == initialZ;
+
+    bool cleaned = DestroySimulatorActor(map, mover);
+    cleaned = DestroySimulatorActor(map, leader) && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] MovePoint control safety: registered=%u rootedRejected=%u possessedRejected=%u noMovementStarted=%u positionUnchanged=%u cleanup=%u.",
+             registered ? 1u : 0u, rootedRejected ? 1u : 0u,
+             possessedRejected ? 1u : 0u, noMovementStarted ? 1u : 0u,
+             positionUnchanged ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!registered || !rootedRejected || !possessedRejected ||
+        !noMovementStarted || !positionUnchanged || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] MovePoint control-safety smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine refused Core MovePoint while the mover had CAN_NOT_MOVE or POSSESSED state.");
+    return true;
+}
+
+
+bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    std::vector<std::unique_ptr<WorldSession>> sessions;
+    std::vector<Player*> players;
+    std::vector<ObjectGuid> playerGuids;
+    SimulatorActor hostiles[2];
+    SimulatorActor outsideGroupVictim;
+    std::unique_ptr<Pet> primaryPet;
+    Guid primaryPetGuid = 0;
+    bool primaryPetCreated = false;
+    bool petCleanupPassed = true;
+    std::unique_ptr<Group> group(new Group());
+    bool groupRegistered = false;
+
+    auto cleanup = [&]() -> bool
+    {
+        Player* const petOwner = players.size() > 1 ? players[1] : nullptr;
+        petCleanupPassed = DestroySimulatorPrimaryPet(map, petOwner, primaryPet) &&
+            petCleanupPassed;
+        bool actorsCleaned = DestroySimulatorActor(map, hostiles[0]);
+        actorsCleaned = DestroySimulatorActor(map, hostiles[1]) && actorsCleaned;
+        actorsCleaned = DestroySimulatorActor(map, outsideGroupVictim) && actorsCleaned;
+
+        bool ungrouped = true;
+        if (group && group->GetId())
+        {
+            ObjectGuid initiator = players.empty()
+                ? ObjectGuid() : players.back()->GetObjectGuid();
+            group->Disband(true, initiator);
+            for (Player* player : players)
+                if (player && player->GetGroup())
+                    ungrouped = false;
+
+            if (groupRegistered)
+            {
+                sObjectMgr.RemoveGroup(group.get());
+                groupRegistered = false;
+            }
+            group.reset();
+        }
+
+        bool sessionsCleaned = true;
+        for (std::unique_ptr<WorldSession>& session : sessions)
+        {
+            if (session && session->GetPlayer())
+                session->LogoutPlayer(false);
+            if (session && session->GetPlayer())
+                sessionsCleaned = false;
+        }
+
+        bool playersDetachedFromMap = true;
+        for (ObjectGuid const& guid : playerGuids)
+            if (map.GetUnit(guid))
+                playersDetachedFromMap = false;
+
+        players.clear();
+        sessions.clear();
+        return petCleanupPassed && actorsCleaned && ungrouped &&
+            sessionsCleaned && playersDetachedFromMap;
+    };
+
+    // Five real Core Players, all on the same test Map. The first is assigned
+    // Main Tank through the actual Group API; the second is the healer.
+    for (uint32 index = 0; index < MAX_GROUP_SIZE; ++index)
+    {
+        std::unique_ptr<WorldSession> session(
+            new WorldSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS));
+        Player* player = nullptr;
+        bool const created = CreateSimulatorPlayer(
+            map, partyFaction, *session, player,
+            static_cast<float>(index) * 2.0f, 6.0f, 0.0f);
+        sessions.push_back(std::move(session));
+        if (player)
+        {
+            players.push_back(player);
+            playerGuids.push_back(player->GetObjectGuid());
+        }
+        if (!created || !player || !player->IsInWorld())
+        {
+            bool const cleaned = cleanup();
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                     "[PartyBotSimulator] Group threat Player creation failed at member %u (cleanup=%u).",
+                     index, cleaned ? 1u : 0u);
+            return false;
+        }
+    }
+
+    bool const groupCreated = group->Create(
+        players[0]->GetObjectGuid(), players[0]->GetName());
+    if (!groupCreated)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Group threat Group::Create failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+    sObjectMgr.AddGroup(group.get());
+    groupRegistered = true;
+
+    bool membersAdded = group->GetMembersCount() == 1 &&
+        players[0]->GetGroup() == group.get();
+    for (std::size_t index = 1; index < players.size(); ++index)
+    {
+        bool const added = group->AddMember(
+            players[index]->GetObjectGuid(), players[index]->GetName());
+        membersAdded = membersAdded && added &&
+            players[index]->GetGroup() == group.get();
+        if (!added)
+            break;
+    }
+
+    if (membersAdded)
+    {
+        group->ConvertToRaid();
+        group->SetMainTank(players[0]->GetObjectGuid());
+    }
+    bool const mainTankAssigned = membersAdded &&
+        group->GetMainTankGuid() == players[0]->GetObjectGuid();
+
+    bool const allPlayersOnSameMap = std::all_of(
+        players.begin(), players.end(),
+        [&map](Player const* player)
+        {
+            return player && player->IsInWorld() && player->GetMap() == &map &&
+                player->GetMapId() == map.GetId() &&
+                player->GetInstanceId() == map.GetInstanceId();
+        });
+
+    // F8's roster/value/cache checks are part of this same Group fixture.
+    // Do not create and tear down a second five-Player Group on this test Map.
+    PartyCoordinator coordinator;
+    PartySnapshot const* initialSnapshot = nullptr;
+    bool const formProbeApplied = membersAdded && players[0];
+    if (formProbeApplied)
+        players[0]->SetShapeshiftForm(FORM_CAT);
+    if (membersAdded && mainTankAssigned && allPlayersOnSameMap)
+        initialSnapshot = PartySnapshotBuilder::GetOrBuild(players[0], coordinator, 15000, 250);
+    PartyMemberSnapshot const* initialTankState = initialSnapshot
+        ? initialSnapshot->FindMember(players[0]->GetObjectGuid().GetRawValue()) : nullptr;
+    bool const initialFormCopied = initialTankState &&
+        initialTankState->shapeshiftForm == static_cast<std::uint8_t>(FORM_CAT);
+    if (formProbeApplied)
+        players[0]->SetShapeshiftForm(FORM_NONE);
+
+    bool const initialSnapshotValid = initialSnapshot &&
+        initialSnapshot->groupId == group->GetId() &&
+        initialSnapshot->mapId == map.GetId() &&
+        initialSnapshot->instanceId == map.GetInstanceId() &&
+        initialSnapshot->members.size() == MAX_GROUP_SIZE;
+    bool initialRosterResolved = initialSnapshotValid;
+    bool initialValuesCopied = initialSnapshotValid;
+    bool initialRolesUnknown = initialSnapshotValid;
+    for (Player* player : players)
+    {
+        PartyMemberSnapshot const* member = initialSnapshot
+            ? initialSnapshot->FindMember(player->GetObjectGuid().GetRawValue()) : nullptr;
+        bool const memberValid = member && member->online && member->alive &&
+            member->mapId == map.GetId() && member->instanceId == map.GetInstanceId() &&
+            member->classId == CLASS_PRIEST && member->level == player->GetLevel() &&
+            member->health == player->GetHealth() &&
+            member->maxHealth == player->GetMaxHealth();
+        initialRosterResolved = initialRosterResolved && memberValid;
+        if (member)
+        {
+            initialValuesCopied = initialValuesCopied &&
+                member->power == player->GetPower(player->GetPowerType()) &&
+                member->maxPower == player->GetMaxPower(player->GetPowerType()) &&
+                member->x == player->GetPositionX() &&
+                member->y == player->GetPositionY() &&
+                member->z == player->GetPositionZ() &&
+                member->orientation == player->GetOrientation();
+            initialRolesUnknown = initialRolesUnknown &&
+                member->roleId == static_cast<std::uint8_t>(PartyRole::Unknown);
+        }
+        else
+            initialValuesCopied = false;
+    }
+
+    PartySnapshot const* cachedSnapshot =
+        PartySnapshotBuilder::GetOrBuild(players[0], coordinator, 15100, 250);
+    bool const initialCacheRetained = cachedSnapshot == initialSnapshot &&
+        cachedSnapshot && cachedSnapshot->epoch == initialSnapshot->epoch &&
+        cachedSnapshot->capturedAtMs == 15000;
+
+    bool actorsCreated = false;
+    if (membersAdded && mainTankAssigned && allPlayersOnSameMap &&
+        initialSnapshotValid && initialRosterResolved && initialValuesCopied &&
+        initialRolesUnknown && initialCacheRetained)
+        // Keep the first hostile within Core melee reach of Tank and Healer,
+        // while the second remains outside reach of both. The same four
+        // references therefore exercise both true and false snapshot values.
+        actorsCreated =
+            CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 10.0f, hostiles[0]) &&
+            CreateSimulatorActor(map, *info, hostileFaction, 16.0f, 6.0f, hostiles[1]) &&
+            CreateSimulatorActor(map, *info, partyFaction, 40.0f, 6.0f, outsideGroupVictim);
+
+    if (!actorsCreated)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Group threat hostile creation failed (members=%u mainTank=%u cleanup=%u).",
+                 membersAdded ? 1u : 0u, mainTankAssigned ? 1u : 0u,
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120 &&
+         (!hostiles[0].updateCount || !hostiles[1].updateCount ||
+          !outsideGroupVictim.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!hostiles[0].updateCount || !hostiles[1].updateCount ||
+            !outsideGroupVictim.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    bool const hostileAIReady = hostiles[0].updateCount && hostiles[1].updateCount &&
+        outsideGroupVictim.updateCount;
+
+    Player* tank = players[0];
+    Player* healer = players[1];
+    ObjectGuid const tankGuid = tank->GetObjectGuid();
+    ObjectGuid const healerGuid = healer->GetObjectGuid();
+
+    // Start both hostiles on the real Main Tank and create their threat through
+    // actual Core damage. No threat list or victim pointer is written here.
+    if (hostileAIReady)
+    {
+        hostiles[0].creature->AI()->AttackStart(tank);
+        hostiles[1].creature->AI()->AttackStart(tank);
+    }
+    uint32 const tankDamage0 = hostileAIReady
+        ? tank->DealDamage(hostiles[0].creature, 100, nullptr, DIRECT_DAMAGE,
+                           SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    uint32 const tankDamage1 = hostileAIReady
+        ? tank->DealDamage(hostiles[1].creature, 100, nullptr, DIRECT_DAMAGE,
+                           SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+
+    float const tankThreat0 = hostiles[0].creature->GetThreatManager().getThreat(tank);
+    float const tankThreat1 = hostiles[1].creature->GetThreatManager().getThreat(tank);
+    Unit* const initialVictim0 = hostiles[0].creature->GetThreatManager().getHostileTarget();
+    Unit* const initialVictim1 = hostiles[1].creature->GetThreatManager().getHostileTarget();
+    bool const bothHostilesInitiallyTargetTank =
+        tankDamage0 > 0 && tankDamage1 > 0 &&
+        initialVictim0 == tank && initialVictim1 == tank &&
+        tankThreat0 > 0.0f && tankThreat1 > 0.0f;
+
+    // Create a real Core Pet owned by the Healer. The hostile gets threat on
+    // the Pet GUID itself; Core may also create the owner's zero-threat link.
+    // The Tank remains current victim because the Pet starts far below 110%.
+    bool const primaryPetEligible = bothHostilesInitiallyTargetTank &&
+        players.size() > 1 && players[1] == healer;
+    primaryPetCreated = primaryPetEligible &&
+        CreateSimulatorPrimaryPet(map, *healer, *info, primaryPet);
+    float primaryPetThreat = 0.0f;
+    if (primaryPetCreated)
+    {
+        primaryPetGuid = primaryPet->GetObjectGuid().GetRawValue();
+        hostiles[0].creature->AddThreat(
+            primaryPet.get(), 30.0f, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
+        primaryPetThreat =
+            hostiles[0].creature->GetThreatManager().getThreat(primaryPet.get());
+    }
+
+    // Give the Healer a real, deliberately tiny assist-threat reference on
+    // each add. The resulting snapshot has a current victim plus a non-victim
+    // threat owner, so the Engine can assess both 110%/130% Core headrooms.
+    float healerThreatBeforeBudget0 = 0.0f;
+    float healerThreatBeforeBudget1 = 0.0f;
+    bool threatBudgetSnapshotValid = false;
+    bool overBudgetRejected = false;
+    bool safeBudgetSelectedAndReserved = false;
+    bool executionReservationRaceRejected = false;
+    bool enginePreservedCoreThreatState = false;
+    bool enginePreservedCoreVictims = false;
+    bool reservationReleased = false;
+    bool companionSnapshotValid = false;
+    bool companionBudgetValid = false;
+    float primaryPetHeadroom = 0.0f;
+    bool primaryPetCoreMeleeReachable = false;
+
+    if (bothHostilesInitiallyTargetTank)
+    {
+        tank->GetHostileRefManager().threatAssist(healer, 1.0f);
+        healerThreatBeforeBudget0 = hostiles[0].creature->GetThreatManager().getThreat(healer);
+        healerThreatBeforeBudget1 = hostiles[1].creature->GetThreatManager().getThreat(healer);
+
+        coordinator.InvalidateSnapshot();
+        PartySnapshot const* budgetSnapshot =
+            PartySnapshotBuilder::GetOrBuild(tank, coordinator, 15500, 250);
+        PartyMemberSnapshot const* healerForBudget = budgetSnapshot
+            ? budgetSnapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
+        HostileSnapshot const* firstForBudget = budgetSnapshot
+            ? budgetSnapshot->FindHostile(hostiles[0].creature->GetObjectGuid().GetRawValue()) : nullptr;
+        HostileSnapshot const* secondForBudget = budgetSnapshot
+            ? budgetSnapshot->FindHostile(hostiles[1].creature->GetObjectGuid().GetRawValue()) : nullptr;
+        PartyCompanionSnapshot const* petForBudget = budgetSnapshot && primaryPetGuid
+            ? budgetSnapshot->FindCompanion(primaryPetGuid) : nullptr;
+        ThreatEntrySnapshot const* petThreatForBudget = nullptr;
+        uint32 petThreatRows = 0;
+        if (firstForBudget) {
+            for (ThreatEntrySnapshot const& entry : firstForBudget->threat) {
+                if (entry.unitGuid == primaryPetGuid) {
+                    ++petThreatRows;
+                    petThreatForBudget = &entry;
+                }
+            }
+        }
+        primaryPetCoreMeleeReachable = primaryPetCreated &&
+            hostiles[0].creature->CanReachWithMeleeAutoAttack(primaryPet.get());
+
+        ThreatBudgetAssessment const petAssessment =
+            budgetSnapshot && primaryPetGuid
+                ? AssessThreatBudget(*budgetSnapshot,
+                    hostiles[0].creature->GetObjectGuid().GetRawValue(),
+                    primaryPetGuid, 15500, 250)
+                : ThreatBudgetAssessment();
+        primaryPetHeadroom = petAssessment.rawHeadroom;
+        companionSnapshotValid = primaryPetCreated && budgetSnapshot &&
+            budgetSnapshot->companions.size() == 1 && petForBudget &&
+            petForBudget->guid == primaryPetGuid &&
+            petForBudget->ownerGuid == healerGuid.GetRawValue() &&
+            petForBudget->online && petForBudget->alive &&
+            petForBudget->mapId == map.GetId() &&
+            petForBudget->instanceId == map.GetInstanceId() &&
+            primaryPet->GetOwnerGuid().GetRawValue() == healerGuid.GetRawValue() &&
+            petThreatForBudget && petThreatRows == 1 &&
+            std::fabs(petThreatForBudget->threat - primaryPetThreat) < 0.01f &&
+            petThreatForBudget->online && petThreatForBudget->accessible &&
+            petThreatForBudget->meleeReachable == primaryPetCoreMeleeReachable &&
+            primaryPet->GetHostileRefManager().getFirst() != nullptr;
+        companionBudgetValid = companionSnapshotValid &&
+            petAssessment.status == ThreatBudgetStatus::BudgetAvailable &&
+            petAssessment.currentVictimGuid == tankGuid &&
+            std::fabs(petAssessment.memberThreat - primaryPetThreat) < 0.01f &&
+            petAssessment.usesMeleeThreshold == primaryPetCoreMeleeReachable &&
+            std::fabs(petAssessment.thresholdMultiplier -
+                (primaryPetCoreMeleeReachable ? 1.1f : 1.3f)) < 0.0001f &&
+            petAssessment.rawHeadroom > 0.0f &&
+            hostiles[0].creature->GetThreatManager().getHostileTarget() == tank;
+
+        ThreatBudgetAssessment const firstAssessment = budgetSnapshot && healerForBudget
+            ? AssessThreatBudget(*budgetSnapshot, hostiles[0].creature->GetObjectGuid().GetRawValue(),
+                                 healerGuid.GetRawValue(), 15500, 250)
+            : ThreatBudgetAssessment();
+        ThreatBudgetAssessment const secondAssessment = budgetSnapshot && healerForBudget
+            ? AssessThreatBudget(*budgetSnapshot, hostiles[1].creature->GetObjectGuid().GetRawValue(),
+                                 healerGuid.GetRawValue(), 15500, 250)
+            : ThreatBudgetAssessment();
+
+        threatBudgetSnapshotValid = budgetSnapshot && budgetSnapshot->epoch &&
+            budgetSnapshot->members.size() == MAX_GROUP_SIZE &&
+            budgetSnapshot->hostiles.size() == 2 && healerForBudget &&
+            healerForBudget->online && healerForBudget->alive &&
+            firstForBudget && secondForBudget &&
+            firstAssessment.status == ThreatBudgetStatus::BudgetAvailable &&
+            secondAssessment.status == ThreatBudgetStatus::BudgetAvailable &&
+            std::fabs(firstAssessment.memberThreat - healerThreatBeforeBudget0) < 0.01f &&
+            std::fabs(secondAssessment.memberThreat - healerThreatBeforeBudget1) < 0.01f &&
+            std::fabs(firstAssessment.currentVictimThreat - tankThreat0) < 0.01f &&
+            std::fabs(secondAssessment.currentVictimThreat - tankThreat1) < 0.01f;
+
+        if (threatBudgetSnapshotValid)
+        {
+            DecisionContext budgetContext(*budgetSnapshot, *healerForBudget, coordinator, 15500);
+
+            // Estimate the amount through the same pinned-Core ThreatCalcHelper
+            // used by ThreatManager, not a hand-coded damage == threat assumption.
+            auto estimateThreatForDamage = [&](Guid hostileGuid, uint32 damage) -> float
+            {
+                SimulatorThreatBudgetProbeAction estimator(map);
+                ActionCandidate candidate;
+                candidate.actionName = "core_threat_budget_probe";
+                candidate.targetGuid = hostileGuid;
+                candidate.spellId = damage;
+                ThreatImpactEstimate const estimate =
+                    estimator.EstimateThreatImpact(budgetContext, candidate);
+                return estimate.impacts.size() == 1
+                    ? estimate.impacts[0].threatPoints : -1.0f;
+            };
+
+            // Probe the ranged 130% threshold with an estimate that must exceed
+            // available headroom. The evaluator must reject before Execute.
+            uint32 overDamage = 1;
+            float overEstimatedThreat = estimateThreatForDamage(
+                hostiles[1].creature->GetObjectGuid().GetRawValue(), overDamage);
+            while (overEstimatedThreat >= 0.0f &&
+                   overEstimatedThreat <= secondAssessment.rawHeadroom &&
+                   overDamage < 100000u)
+            {
+                overDamage *= 2;
+                overEstimatedThreat = estimateThreatForDamage(
+                    hostiles[1].creature->GetObjectGuid().GetRawValue(), overDamage);
+            }
+
+            PartyBotEngine overBudgetEngine;
+            std::shared_ptr<SimulatorThreatBudgetProbeAction> overBudgetAction(
+                new SimulatorThreatBudgetProbeAction(map));
+            bool const overRegistered = overBudgetEngine.RegisterAction(overBudgetAction);
+            std::shared_ptr<Strategy> overStrategy(new Strategy("simulator_over_budget_probe"));
+            overStrategy->AddTrigger(std::make_shared<SimulatorThreatBudgetProbeTrigger>(
+                hostiles[1].creature->GetObjectGuid().GetRawValue(), overDamage));
+            overBudgetEngine.AddStrategy(overStrategy);
+            DecisionReport overReport = overBudgetEngine.Evaluate(budgetContext);
+            overBudgetRejected = overRegistered && overEstimatedThreat > secondAssessment.rawHeadroom &&
+                overReport.selectedIndices.empty() && overReport.candidates.size() == 1 &&
+                overReport.candidates[0].status == CandidateStatus::RejectedThreatBudget &&
+                overBudgetAction->GetExecuteCount() == 0;
+
+            // The melee 110% case uses a small direct-damage estimate. Execute
+            // only reserves the declared impact; the test applies the actual
+            // Core DealDamage immediately afterward and compares real threat.
+            uint32 const safeDamage = 50;
+            float const safeEstimatedThreat = estimateThreatForDamage(
+                hostiles[0].creature->GetObjectGuid().GetRawValue(), safeDamage);
+
+            // Evaluate first, then inject a competing reservation for the same
+            // actual threat recipient before dispatch. ExecuteSelected must
+            // re-check the live coordinator and refuse the now-unsafe action.
+            std::shared_ptr<SimulatorThreatBudgetProbeAction> racedAction(
+                new SimulatorThreatBudgetProbeAction(map));
+            PartyBotEngine racedEngine;
+            bool const racedRegistered = racedEngine.RegisterAction(racedAction);
+            std::shared_ptr<Strategy> racedStrategy(new Strategy("simulator_threat_budget_race"));
+            racedStrategy->AddTrigger(std::make_shared<SimulatorThreatBudgetProbeTrigger>(
+                hostiles[0].creature->GetObjectGuid().GetRawValue(), safeDamage));
+            racedEngine.AddStrategy(racedStrategy);
+            DecisionReport racedReport = racedEngine.Evaluate(budgetContext);
+            bool const racedCandidateSelected = racedRegistered &&
+                racedReport.selectedIndices.size() == 1 &&
+                racedReport.candidates.size() == 1 &&
+                racedReport.candidates[0].status == CandidateStatus::Selected;
+
+            ThreatActionId const competingActionId = coordinator.NextThreatActionId();
+            float const competingThreat = firstAssessment.rawHeadroom -
+                safeEstimatedThreat + 1.0f;
+            ThreatReservation competingReservation;
+            competingReservation.ownerGuid = healerGuid.GetRawValue();
+            competingReservation.threatOwnerGuid = healerGuid.GetRawValue();
+            competingReservation.hostileGuid =
+                hostiles[0].creature->GetObjectGuid().GetRawValue();
+            competingReservation.actionId = competingActionId;
+            competingReservation.threatPoints = competingThreat;
+            competingReservation.expiresAtMs = 15500 + 5000;
+            bool const competingReservationAccepted = racedCandidateSelected &&
+                competingActionId && std::isfinite(competingThreat) && competingThreat > 0.0f &&
+                coordinator.TryReserveThreatImpact(competingReservation, 15500);
+
+            float const healerThreatBeforeRace =
+                hostiles[0].creature->GetThreatManager().getThreat(healer);
+            float const tankThreatBeforeRace =
+                hostiles[0].creature->GetThreatManager().getThreat(tank);
+            Unit* const victimBeforeRace =
+                hostiles[0].creature->GetThreatManager().getHostileTarget();
+            if (competingReservationAccepted)
+                racedEngine.ExecuteSelected(budgetContext, racedReport);
+
+            CandidateEvaluation const* racedEvaluation = racedReport.candidates.empty()
+                ? nullptr : &racedReport.candidates[0];
+            bool const executionRejectedAfterRace = competingReservationAccepted &&
+                racedEvaluation && racedEvaluation->status == CandidateStatus::ExecutionFailed &&
+                racedEvaluation->actionResult == ActionResult::Failed &&
+                racedAction->GetExecuteCount() == 0 &&
+                racedEvaluation->threatActionId == 0 &&
+                racedEvaluation->candidate.threatActionId == 0 &&
+                std::fabs(hostiles[0].creature->GetThreatManager().getThreat(healer) -
+                          healerThreatBeforeRace) < 0.01f &&
+                std::fabs(hostiles[0].creature->GetThreatManager().getThreat(tank) -
+                          tankThreatBeforeRace) < 0.01f &&
+                hostiles[0].creature->GetThreatManager().getHostileTarget() == victimBeforeRace &&
+                hostiles[0].creature->GetThreatManager().getHostileTarget() == tank &&
+                std::fabs(coordinator.GetReservedThreatImpact(
+                    competingReservation.hostileGuid,
+                    healerGuid.GetRawValue(), 0, 15500) - competingThreat) < 0.01f;
+
+            if (competingActionId)
+                coordinator.ReleaseThreatAction(competingActionId);
+            bool const competingReservationReleased = competingActionId &&
+                coordinator.GetReservedThreatImpact(
+                    competingReservation.hostileGuid,
+                    healerGuid.GetRawValue(), 0, 15500) == 0.0f;
+            executionReservationRaceRejected =
+                executionRejectedAfterRace && competingReservationReleased;
+
+            std::shared_ptr<SimulatorThreatBudgetProbeAction> safeBudgetAction(
+                new SimulatorThreatBudgetProbeAction(map));
+            PartyBotEngine safeEngine;
+            bool const safeRegistered = safeEngine.RegisterAction(safeBudgetAction);
+            std::shared_ptr<Strategy> safeStrategy(new Strategy("simulator_safe_budget_probe"));
+            safeStrategy->AddTrigger(std::make_shared<SimulatorThreatBudgetProbeTrigger>(
+                hostiles[0].creature->GetObjectGuid().GetRawValue(), safeDamage));
+            safeEngine.AddStrategy(safeStrategy);
+            DecisionReport safeReport = safeEngine.Evaluate(budgetContext);
+            bool const safeSelected = safeRegistered && safeEstimatedThreat > 0.0f &&
+                safeEstimatedThreat < firstAssessment.rawHeadroom &&
+                safeReport.selectedIndices.size() == 1 &&
+                safeReport.candidates[safeReport.selectedIndices[0]].status == CandidateStatus::Selected;
+
+            float const healerThreatBeforeExecute =
+                hostiles[0].creature->GetThreatManager().getThreat(healer);
+            safeEngine.ExecuteSelected(budgetContext, safeReport);
+            CandidateEvaluation const* safeEvaluation = safeReport.candidates.empty()
+                ? nullptr : &safeReport.candidates[0];
+            bool const actionAccepted = safeSelected && safeEvaluation &&
+                safeEvaluation->status == CandidateStatus::Executed &&
+                safeBudgetAction->GetExecuteCount() == 1 &&
+                safeBudgetAction->GetLastThreatActionId() != 0 &&
+                safeEvaluation->threatActionId == safeBudgetAction->GetLastThreatActionId() &&
+                safeEvaluation->candidate.threatActionId == safeEvaluation->threatActionId &&
+                std::fabs(coordinator.GetReservedThreatImpact(
+                    hostiles[0].creature->GetObjectGuid().GetRawValue(),
+                    healerGuid.GetRawValue(), 0, 15500) - safeEstimatedThreat) < 0.01f;
+
+            // The Engine itself must not alter Core threat/victim state. Now
+            // run the real Core damage operation and compare the exact delta.
+            float const healerThreatImmediatelyAfterExecute =
+                hostiles[0].creature->GetThreatManager().getThreat(healer);
+            bool const noThreatMutationBeforeCoreDamage =
+                std::fabs(healerThreatImmediatelyAfterExecute - healerThreatBeforeExecute) < 0.01f &&
+                std::fabs(hostiles[0].creature->GetThreatManager().getThreat(tank) - tankThreat0) < 0.01f &&
+                std::fabs(hostiles[1].creature->GetThreatManager().getThreat(tank) - tankThreat1) < 0.01f &&
+                hostiles[0].creature->GetThreatManager().getHostileTarget() == tank &&
+                hostiles[1].creature->GetThreatManager().getHostileTarget() == tank;
+
+            uint32 const actualDamage = healer->DealDamage(
+                hostiles[0].creature, safeDamage, nullptr, DIRECT_DAMAGE,
+                SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+            float const healerThreatAfterCoreDamage =
+                hostiles[0].creature->GetThreatManager().getThreat(healer);
+            float const actualThreatDelta =
+                healerThreatAfterCoreDamage - healerThreatImmediatelyAfterExecute;
+            bool const estimatorMatchesCore = actualDamage == safeDamage &&
+                std::fabs(actualThreatDelta - safeEstimatedThreat) < 0.01f &&
+                hostiles[0].creature->GetThreatManager().getHostileTarget() == tank;
+
+            safeBudgetSelectedAndReserved = actionAccepted && estimatorMatchesCore;
+            enginePreservedCoreThreatState = noThreatMutationBeforeCoreDamage;
+            enginePreservedCoreVictims = noThreatMutationBeforeCoreDamage &&
+                hostiles[0].creature->GetThreatManager().getHostileTarget() == tank &&
+                hostiles[1].creature->GetThreatManager().getHostileTarget() == tank;
+
+            if (safeEvaluation && safeEvaluation->threatActionId)
+            {
+                coordinator.ReleaseThreatAction(safeEvaluation->threatActionId);
+                reservationReleased = coordinator.GetReservedThreatImpact(
+                    hostiles[0].creature->GetObjectGuid().GetRawValue(),
+                    healerGuid.GetRawValue(), 0, 15500) == 0.0f;
+            }
+        }
+    }
+
+    // The healer performs a normal non-triggered Lesser Heal. Before the cast,
+    // estimate only its direct healing-assist component from the real Core
+    // HostileRefManager fan-out and ThreatCalcHelper. The maximum possible
+    // health gain is bounded by the target's currently missing health; this intentionally
+    // conservative component does not claim to cover flat spell threat/procs.
+    uint32 const patientHealthBeforeDamage = tank->GetHealth();
+    uint32 const scriptedTankDamage = std::max<uint32>(1u, tank->GetMaxHealth() / 5u);
+    hostiles[0].creature->DealDamage(
+        tank, scriptedTankDamage, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    uint32 const patientHealthBeforeHeal = tank->GetHealth();
+    bool const tankAliveAndInjured = tank->IsAlive() && patientHealthBeforeHeal > 0 &&
+        patientHealthBeforeHeal < patientHealthBeforeDamage;
+    uint32 const healerManaBefore = healer->GetPower(POWER_MANA);
+    SpellEntry const* const healSpell = sSpellMgr.GetSpellEntry(SIMULATOR_HEAL_SPELL_ID);
+    coordinator.InvalidateSnapshot();
+    PartySnapshot const* healAssistSnapshot =
+        PartySnapshotBuilder::GetOrBuild(tank, coordinator, 15600, 250);
+    ThreatImpactEstimate const healAssistComponent =
+        healAssistSnapshot && healSpell
+            ? EstimateDirectHealingAssistComponent(
+                  healer, tank,
+                  static_cast<float>(tank->GetMaxHealth() - patientHealthBeforeHeal),
+                  healSpell, *healAssistSnapshot)
+            : ThreatImpactEstimate();
+    auto findHealAssistBound = [&](Guid hostileGuid) -> float
+    {
+        for (ThreatImpactEntry const& impact : healAssistComponent.impacts)
+            if (impact.threatOwnerGuid == healerGuid.GetRawValue() &&
+                impact.hostileGuid == hostileGuid &&
+                impact.source == ThreatImpactSource::DirectHealAssist &&
+                impact.bound == ThreatImpactBound::UpperBound)
+                return impact.threatPoints;
+        return -1.0f;
+    };
+    float const healAssistUpperBound0 =
+        findHealAssistBound(hostiles[0].creature->GetObjectGuid().GetRawValue());
+    float const healAssistUpperBound1 =
+        findHealAssistBound(hostiles[1].creature->GetObjectGuid().GetRawValue());
+    float const healerThreatBeforeHeal0 =
+        hostiles[0].creature->GetThreatManager().getThreat(healer);
+    float const healerThreatBeforeHeal1 =
+        hostiles[1].creature->GetThreatManager().getThreat(healer);
+    healer->SetFacingToObject(tank);
+    SpellCastResult const healCastResult = healSpell && tankAliveAndInjured
+        ? healer->CastSpell(tank, healSpell, false) : SPELL_FAILED_UNKNOWN;
+
+    // Capture the real pending Core cast before Player::Update finishes it.
+    PartySnapshot f21CastStateTraceSnapshot;
+    bool currentCastSnapshotValid = false;
+    if (healCastResult == SPELL_CAST_OK)
+    {
+        // Use an isolated coordinator: the F9 heal-assist estimate retains the
+        // original coordinator snapshot epoch until its own validation ends.
+        PartyCoordinator f21Coordinator;
+        // Keep the tank in Cat Form only for this immutable snapshot sample;
+        // restore the live Player immediately before normal Core updates.
+        tank->SetShapeshiftForm(FORM_CAT);
+        PartySnapshot const* castStateSnapshot =
+            PartySnapshotBuilder::GetOrBuild(healer, f21Coordinator, 15601, 0);
+        PartyMemberSnapshot const* healerCastState = castStateSnapshot
+            ? castStateSnapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
+        PartyMemberSnapshot const* tankCastState = castStateSnapshot
+            ? castStateSnapshot->FindMember(tankGuid.GetRawValue()) : nullptr;
+        currentCastSnapshotValid = healerCastState && tankCastState &&
+            healerCastState->currentSpellId == healSpell->Id &&
+            healerCastState->currentSpellType == CURRENT_GENERIC_SPELL &&
+            healerCastState->currentSpellState != 0 &&
+            healerCastState->currentSpellTargetGuid == tankGuid.GetRawValue() &&
+            tankCastState->shapeshiftForm == static_cast<std::uint8_t>(FORM_CAT);
+        if (castStateSnapshot)
+            f21CastStateTraceSnapshot = *castStateSnapshot;
+        tank->SetShapeshiftForm(FORM_NONE);
+    }
+
+    for (uint32 tick = 0; tick < 20 &&
+         healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+    uint32 const patientHealthAfterHeal = tank->GetHealth();
+    uint32 const healerManaAfter = healer->GetPower(POWER_MANA);
+    bool const healCompleted = tankAliveAndInjured && healCastResult == SPELL_CAST_OK &&
+        tank->IsAlive() && !healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
+        patientHealthAfterHeal > patientHealthBeforeHeal &&
+        healerManaAfter < healerManaBefore;
+    float const healThreatDelta0 =
+        hostiles[0].creature->GetThreatManager().getThreat(healer) - healerThreatBeforeHeal0;
+    float const healThreatDelta1 =
+        hostiles[1].creature->GetThreatManager().getThreat(healer) - healerThreatBeforeHeal1;
+    SpellThreatEntry const* const healThreatEntry =
+        healSpell ? sSpellMgr.GetSpellThreatEntry(healSpell->Id) : nullptr;
+    bool const noFlatSpellThreat = !healThreatEntry || healThreatEntry->threat == 0.0f;
+    bool const healAssistBoundValid = healCompleted && noFlatSpellThreat &&
+        healAssistSnapshot && healAssistComponent.completeness == ThreatImpactCompleteness::Unknown &&
+        IsThreatImpactEstimateForSnapshot(healAssistComponent, healAssistSnapshot->epoch) &&
+        healAssistComponent.impacts.size() == 2 &&
+        healAssistUpperBound0 >= 0.0f && healAssistUpperBound1 >= 0.0f &&
+        patientHealthAfterHeal - patientHealthBeforeHeal <= tank->GetMaxHealth() &&
+        healThreatDelta0 >= -0.01f && healThreatDelta1 >= -0.01f &&
+        healThreatDelta0 <= healAssistUpperBound0 + 0.01f &&
+        healThreatDelta1 <= healAssistUpperBound1 + 0.01f;
+
+    uint32 hostileRefsOnTank = 0;
+    for (HostileReference* reference = tank->GetHostileRefManager().getFirst();
+         reference; reference = reference->next())
+        ++hostileRefsOnTank;
+    float constexpr kScriptedAssistThreat = 400.0f;
+    if (healCompleted && hostileRefsOnTank == 2)
+        tank->GetHostileRefManager().threatAssist(healer, kScriptedAssistThreat);
+
+    float const healerThreat0 = hostiles[0].creature->GetThreatManager().getThreat(healer);
+    float const healerThreat1 = hostiles[1].creature->GetThreatManager().getThreat(healer);
+    Unit* const selectedAfterAssist0 =
+        hostiles[0].creature->GetThreatManager().getHostileTarget();
+    Unit* const selectedAfterAssist1 =
+        hostiles[1].creature->GetThreatManager().getHostileTarget();
+    bool const healerPulledBothAdds = healCompleted && hostileRefsOnTank == 2 &&
+        healerThreat0 > tankThreat0 * 1.3f &&
+        healerThreat1 > tankThreat1 * 1.3f &&
+        selectedAfterAssist0 == healer && selectedAfterAssist1 == healer;
+
+    // Let the Creature AI consume the Core-selected target so the production
+    // snapshot builder observes the actual current victim and attacker refs.
+    if (healerPulledBothAdds)
+    {
+        hostiles[0].creature->AI()->AttackStart(healer);
+        hostiles[1].creature->AI()->AttackStart(healer);
+    }
+
+    PartySnapshot const* snapshot = nullptr;
+    if (healerPulledBothAdds)
+        snapshot = PartySnapshotBuilder::GetOrBuild(tank, coordinator, 24000, 250);
+
+    bool const snapshotValid = snapshot &&
+        snapshot->groupId == group->GetId() &&
+        snapshot->mapId == map.GetId() &&
+        snapshot->instanceId == map.GetInstanceId() &&
+        snapshot->members.size() == MAX_GROUP_SIZE &&
+        snapshot->hostiles.size() == 2;
+    PartyMemberSnapshot const* tankSnapshot = snapshot
+        ? snapshot->FindMember(tankGuid.GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* healerSnapshot = snapshot
+        ? snapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
+    bool const rosterRoleStateValid = tankSnapshot && healerSnapshot &&
+        tankSnapshot->isMainTank && tankSnapshot->alive &&
+        healerSnapshot->alive && tankSnapshot->classId == CLASS_PRIEST &&
+        healerSnapshot->classId == CLASS_PRIEST;
+
+    auto containsThreat = [](HostileSnapshot const* hostile, Guid guid, float expected)
+    {
+        if (!hostile)
+            return false;
+        for (ThreatEntrySnapshot const& threat : hostile->threat)
+            if (threat.unitGuid == guid)
+                return threat.online && threat.accessible &&
+                    std::fabs(threat.threat - expected) < 0.01f;
+        return false;
+    };
+
+    HostileSnapshot const* bossSnapshot = snapshot
+        ? snapshot->FindHostile(hostiles[0].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    HostileSnapshot const* addSnapshot = snapshot
+        ? snapshot->FindHostile(hostiles[1].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    bool const bothAddsResolved = bossSnapshot && addSnapshot &&
+        bossSnapshot->alive && addSnapshot->alive &&
+        bossSnapshot->victimGuid == healerGuid.GetRawValue() &&
+        addSnapshot->victimGuid == healerGuid.GetRawValue();
+    bool const hostileIdentityCopied = bossSnapshot && addSnapshot &&
+        bossSnapshot->entry == hostiles[0].creature->GetCreatureInfo()->entry &&
+        bossSnapshot->rank == hostiles[0].creature->GetCreatureInfo()->rank &&
+        bossSnapshot->worldBoss == hostiles[0].creature->IsWorldBoss() &&
+        addSnapshot->entry == hostiles[1].creature->GetCreatureInfo()->entry &&
+        addSnapshot->rank == hostiles[1].creature->GetCreatureInfo()->rank &&
+        addSnapshot->worldBoss == hostiles[1].creature->IsWorldBoss();
+    bool const threatValuesCopied = containsThreat(
+            bossSnapshot, tankGuid.GetRawValue(), tankThreat0) &&
+        containsThreat(bossSnapshot, healerGuid.GetRawValue(), healerThreat0) &&
+        containsThreat(addSnapshot, tankGuid.GetRawValue(), tankThreat1) &&
+        containsThreat(addSnapshot, healerGuid.GetRawValue(), healerThreat1);
+
+    uint32 const groupId = group->GetId();
+    bool const registeredBeforeCleanup = groupRegistered &&
+        sObjectMgr.GetGroupById(groupId) == group.get();
+    uint32 meleeReachabilityChecks = 0;
+    uint32 meleeReachableChecks = 0;
+    uint32 meleeUnreachableChecks = 0;
+    auto snapshotMeleeReachabilityMatchesCore = [&meleeReachabilityChecks,
+        &meleeReachableChecks, &meleeUnreachableChecks](
+        HostileSnapshot const* hostileSnapshot, Unit* hostileUnit, ObjectGuid memberGuid)
+    {
+        if (!hostileSnapshot || !hostileUnit)
+            return false;
+        for (ThreatEntrySnapshot const& entry : hostileSnapshot->threat)
+        {
+            if (entry.unitGuid != memberGuid.GetRawValue())
+                continue;
+            Unit* member = hostileUnit->GetMap()->GetUnit(memberGuid);
+            bool const matches = member && entry.meleeReachable ==
+                hostileUnit->CanReachWithMeleeAutoAttack(member);
+            if (matches)
+            {
+                ++meleeReachabilityChecks;
+                if (entry.meleeReachable)
+                    ++meleeReachableChecks;
+                else
+                    ++meleeUnreachableChecks;
+            }
+            return matches;
+        }
+        return false;
+    };
+    bool const coreReachabilityCopied =
+        snapshotMeleeReachabilityMatchesCore(bossSnapshot, hostiles[0].creature, tankGuid) &&
+        snapshotMeleeReachabilityMatchesCore(bossSnapshot, hostiles[0].creature, healerGuid) &&
+        snapshotMeleeReachabilityMatchesCore(addSnapshot, hostiles[1].creature, tankGuid) &&
+        snapshotMeleeReachabilityMatchesCore(addSnapshot, hostiles[1].creature, healerGuid) &&
+        meleeReachabilityChecks == 4 && meleeReachableChecks == 2 &&
+        meleeUnreachableChecks == 2;
+
+    bool const f9ChecksPassed = hostileAIReady && membersAdded && mainTankAssigned &&
+        allPlayersOnSameMap && initialSnapshotValid && initialRosterResolved &&
+        initialValuesCopied && initialFormCopied && initialRolesUnknown && initialCacheRetained &&
+        registeredBeforeCleanup && bothHostilesInitiallyTargetTank &&
+        threatBudgetSnapshotValid && overBudgetRejected && executionReservationRaceRejected &&
+        safeBudgetSelectedAndReserved && enginePreservedCoreThreatState &&
+        enginePreservedCoreVictims && reservationReleased &&
+        tankAliveAndInjured && healCompleted && healAssistBoundValid && healerPulledBothAdds &&
+        snapshotValid && rosterRoleStateValid && bothAddsResolved && hostileIdentityCopied &&
+        currentCastSnapshotValid && threatValuesCopied && coreReachabilityCopied &&
+        companionSnapshotValid && companionBudgetValid;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Real Group multi-add healer threat: aiReady=%u members=%u mainTank=%u sameMap=%u initialSnapshot=%u initialRoster=%u initialValues=%u rolesUnknown=%u cache=%u registered=%u tankDamage=%u/%u tankHP=%u-%u/%u tankThreat=%.1f/%.1f initialTankVictim=%u/%u petCreated=%u petSnapshot=%u petBudget=%u petThreat=%.1f petHeadroom=%.1f petMelee=%u budgetSnapshot=%u overBudgetRejected=%u executionRaceRejected=%u safeSelectedReserved=%u threatUnchanged=%u victimUnchanged=%u reservationReleased=%u hostileRefsOnTank=%u healResult=%u heal=%u>%u mana=%u>%u healAssistBound=%u upper=%.1f/%.1f delta=%.1f/%.1f assistInput=%.1f healerThreat=%.1f/%.1f selectedHealer=%u/%u finalSnapshot=%u finalRoster=%u adds=%u threatCopied=%u meleeReachability=%u/4 reachable=%u unreachable=%u.",
+             hostileAIReady ? 1u : 0u, membersAdded ? 1u : 0u,
+             mainTankAssigned ? 1u : 0u, allPlayersOnSameMap ? 1u : 0u,
+             initialSnapshotValid ? 1u : 0u, initialRosterResolved ? 1u : 0u,
+             initialValuesCopied ? 1u : 0u, initialRolesUnknown ? 1u : 0u,
+             initialCacheRetained ? 1u : 0u, registeredBeforeCleanup ? 1u : 0u,
+             tankDamage0, tankDamage1, patientHealthBeforeDamage,
+             scriptedTankDamage, patientHealthBeforeHeal, tankThreat0, tankThreat1,
+             initialVictim0 == tank ? 1u : 0u, initialVictim1 == tank ? 1u : 0u,
+             primaryPetCreated ? 1u : 0u, companionSnapshotValid ? 1u : 0u,
+             companionBudgetValid ? 1u : 0u, primaryPetThreat, primaryPetHeadroom,
+             primaryPetCoreMeleeReachable ? 1u : 0u,
+             threatBudgetSnapshotValid ? 1u : 0u, overBudgetRejected ? 1u : 0u,
+             executionReservationRaceRejected ? 1u : 0u,
+             safeBudgetSelectedAndReserved ? 1u : 0u,
+             enginePreservedCoreThreatState ? 1u : 0u,
+             enginePreservedCoreVictims ? 1u : 0u, reservationReleased ? 1u : 0u,
+             hostileRefsOnTank, static_cast<uint32>(healCastResult),
+             patientHealthBeforeHeal, patientHealthAfterHeal,
+             healerManaBefore, healerManaAfter,
+             healAssistBoundValid ? 1u : 0u,
+             healAssistUpperBound0, healAssistUpperBound1,
+             healThreatDelta0, healThreatDelta1, kScriptedAssistThreat,
+             healerThreat0, healerThreat1,
+             selectedAfterAssist0 == healer ? 1u : 0u,
+             selectedAfterAssist1 == healer ? 1u : 0u,
+             snapshotValid ? 1u : 0u, rosterRoleStateValid ? 1u : 0u,
+             bothAddsResolved ? 1u : 0u, threatValuesCopied ? 1u : 0u,
+             meleeReachabilityChecks, meleeReachableChecks, meleeUnreachableChecks);
+
+    if (f9ChecksPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat values and both reachable/unreachable per-reference melee states matched Core, and all Group/session cleanup succeeded.");
+
+    // Remove the test Pet before later Tank/Healer death-retarget scenarios.
+    // This checks Core reference cleanup without letting a living Pet become
+    // a third surviving threat owner in the subsequent death test.
+    petCleanupPassed = DestroySimulatorPrimaryPet(map, healer, primaryPet) &&
+        petCleanupPassed;
+    bool primaryPetThreatReferenceRemoved = true;
+    for (HostileReference* reference :
+         hostiles[0].creature->GetThreatManager().getThreatList())
+        if (reference && reference->getUnitGuid().GetRawValue() == primaryPetGuid)
+            primaryPetThreatReferenceRemoved = false;
+    petCleanupPassed = petCleanupPassed && primaryPetThreatReferenceRemoved &&
+        (!primaryPetGuid || map.GetPet(ObjectGuid(primaryPetGuid)) == nullptr);
+
+    // F12: a hostile can still hold threat references to a party member
+    // without currently attacking any group member. It must be discovered
+    // through that member's HostileRefManager, including offline references.
+    bool const f12CanProbe = f9ChecksPassed && petCleanupPassed &&
+        outsideGroupVictim.creature && outsideGroupVictim.creature->IsInWorld();
+    bool hostileVictimOutsideGroup = false;
+    bool noPartyMemberCurrentlyAttacked = false;
+    bool tankReferenceFound = false;
+    bool offlineReferenceCopied = false;
+    bool nonVictimHostileDiscovered = false;
+    bool victimRestored = false;
+    float healerThreat1AfterReferenceProbe = healerThreat1;
+
+    if (f12CanProbe)
+    {
+        hostiles[1].creature->AI()->AttackStart(outsideGroupVictim.creature);
+        hostileVictimOutsideGroup =
+            hostiles[1].creature->GetVictim() == outsideGroupVictim.creature;
+
+        noPartyMemberCurrentlyAttacked = true;
+        for (Player* member : players)
+            for (Unit* attacker : member->GetAttackers())
+                if (attacker == hostiles[1].creature)
+                    noPartyMemberCurrentlyAttacked = false;
+
+        HostileReference* tankThreatReference = nullptr;
+        for (HostileReference* reference = tank->GetHostileRefManager().getFirst();
+             reference; reference = reference->next())
+        {
+            if (reference->getSource() &&
+                reference->getSource()->getOwner() == hostiles[1].creature)
+            {
+                tankThreatReference = reference;
+                tankReferenceFound = true;
+                break;
+            }
+        }
+
+        if (tankThreatReference)
+            tankThreatReference->setOnlineOfflineState(false);
+
+        PartySnapshot const* referenceSnapshot =
+            PartySnapshotBuilder::GetOrBuild(tank, coordinator, 25000, 250);
+        HostileSnapshot const* nonVictimHostileSnapshot = referenceSnapshot
+            ? referenceSnapshot->FindHostile(hostiles[1].creature->GetObjectGuid().GetRawValue())
+            : nullptr;
+        bool offlineEntryMatches = false;
+        if (nonVictimHostileSnapshot)
+        {
+            for (ThreatEntrySnapshot const& entry : nonVictimHostileSnapshot->threat)
+            {
+                if (entry.unitGuid != tankGuid.GetRawValue())
+                    continue;
+                offlineEntryMatches = !entry.online && !entry.accessible &&
+                    std::fabs(entry.threat - tankThreat1) < 0.01f;
+                break;
+            }
+        }
+
+        bool const tankThreatInOfflineContainer =
+            hostiles[1].creature->GetThreatManager().getThreat(tank, false) == 0.0f &&
+            std::fabs(hostiles[1].creature->GetThreatManager().getThreat(tank, true) -
+                      tankThreat1) < 0.01f;
+        offlineReferenceCopied = tankThreatReference && !tankThreatReference->isOnline() &&
+            offlineEntryMatches && tankThreatInOfflineContainer;
+
+        nonVictimHostileDiscovered = hostileVictimOutsideGroup &&
+            noPartyMemberCurrentlyAttacked && tankReferenceFound &&
+            referenceSnapshot && referenceSnapshot->hostiles.size() == 2 &&
+            nonVictimHostileSnapshot &&
+            nonVictimHostileSnapshot->victimGuid ==
+                outsideGroupVictim.creature->GetObjectGuid().GetRawValue() &&
+            offlineReferenceCopied;
+
+        // Restore Core reference state and the previous hostile target before
+        // F10 death/recovery checks continue.
+        if (tankThreatReference)
+        {
+            tankThreatReference->setOnlineOfflineState(true);
+            tankThreatReference->setAccessibleState(true);
+        }
+        hostiles[1].creature->AI()->AttackStart(healer);
+        healerThreat1AfterReferenceProbe =
+            hostiles[1].creature->GetThreatManager().getThreat(healer);
+        victimRestored = hostiles[1].creature->GetVictim() == healer;
+    }
+
+    bool const f12ChecksPassed = f12CanProbe && hostileVictimOutsideGroup &&
+        noPartyMemberCurrentlyAttacked && tankReferenceFound &&
+        offlineReferenceCopied && nonVictimHostileDiscovered && victimRestored;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] HostileRefManager discovery: outsideVictim=%u noPartyAttacker=%u tankRef=%u offlineSnapshot=%u nonVictimHostile=%u restored=%u cleanupPending=1.",
+             hostileVictimOutsideGroup ? 1u : 0u,
+             noPartyMemberCurrentlyAttacked ? 1u : 0u,
+             tankReferenceFound ? 1u : 0u,
+             offlineReferenceCopied ? 1u : 0u,
+             nonVictimHostileDiscovered ? 1u : 0u,
+             victimRestored ? 1u : 0u);
+    if (f12ChecksPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: PartySnapshotBuilder discovered a non-current-victim hostile through a party member HostileRefManager and copied its offline threat reference state.");
+
+    // F10: the living DPS establishes lower real damage-threat on both adds.
+    // It must not steal aggro from the healer (212+) while it is alive.
+    Player* dps = players[2];
+    ObjectGuid const dpsGuid = dps->GetObjectGuid();
+    uint32 const dpsDamage0 = f9ChecksPassed
+        ? dps->DealDamage(hostiles[0].creature, 100, nullptr, DIRECT_DAMAGE,
+                          SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    uint32 const dpsDamage1 = f9ChecksPassed
+        ? dps->DealDamage(hostiles[1].creature, 100, nullptr, DIRECT_DAMAGE,
+                          SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    float const dpsThreat0 = hostiles[0].creature->GetThreatManager().getThreat(dps);
+    float const dpsThreat1 = hostiles[1].creature->GetThreatManager().getThreat(dps);
+    Unit* const victimBeforeTankDeath0 =
+        hostiles[0].creature->GetThreatManager().getHostileTarget();
+    Unit* const victimBeforeTankDeath1 =
+        hostiles[1].creature->GetThreatManager().getHostileTarget();
+    bool const healerHoldsAggroOverDps = dpsDamage0 > 0 && dpsDamage1 > 0 &&
+        dpsThreat0 > 0.0f && dpsThreat1 > 0.0f &&
+        victimBeforeTankDeath0 == healer && victimBeforeTankDeath1 == healer;
+
+    // Kill the Main Tank through normal Core damage. Unit::DealDamage and
+    // Unit::SetDeathState must remove its HostileRefManager links from both
+    // hostile ThreatManagers; native selection then retains the living healer.
+    SimulatorAliveStateObserver tankAliveObserver(tank);
+    PlayerAI* const previousTankAI = tank->AI();
+    tank->SetAI(&tankAliveObserver);
+
+    uint32 const tankHealthAtDeath = tank->GetHealth();
+    uint32 const tankDeathDamage = f9ChecksPassed && healerHoldsAggroOverDps
+        ? hostiles[0].creature->DealDamage(
+            tank, tankHealthAtDeath, nullptr, DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    bool const tankDied = tankDeathDamage > 0 && !tank->IsAlive() && tank->GetHealth() == 0;
+    bool const tankDeathObserverValid = tankAliveObserver.transitionCount == 1 &&
+        tankAliveObserver.lastWasAlive && !tankAliveObserver.lastIsAlive;
+
+    // Core advances JUST_DIED to CORPSE without another alive/dead transition.
+    // Verify the observer does not emit a duplicate death record for that step.
+    if (tankDied)
+        tank->SetDeathState(CORPSE);
+    bool const tankCorpseTransitionSuppressed =
+        tankAliveObserver.callbackCount == 2 &&
+        tankAliveObserver.sameStateCallbacks == 1 &&
+        tankAliveObserver.transitionCount == 1;
+    tank->SetAI(previousTankAI);
+    bool const tankThreatReferencesRemoved =
+        hostiles[0].creature->GetThreatManager().getThreat(tank) == 0.0f &&
+        hostiles[1].creature->GetThreatManager().getThreat(tank) == 0.0f;
+    bool const tankDeathSelected0 = tankDied && hostiles[0].creature->SelectHostileTarget();
+    bool const tankDeathSelected1 = tankDied && hostiles[1].creature->SelectHostileTarget();
+    bool const healerRetargetedAfterTankDeath =
+        tankDeathSelected0 && tankDeathSelected1 &&
+        hostiles[0].creature->GetVictim() == healer &&
+        hostiles[1].creature->GetVictim() == healer;
+
+    PartySnapshot const* tankDeathSnapshot = nullptr;
+    if (healerRetargetedAfterTankDeath)
+        tankDeathSnapshot = PartySnapshotBuilder::GetOrBuild(healer, coordinator, 26000, 250);
+    bool const tankDeathSnapshotValid = tankDeathSnapshot &&
+        tankDeathSnapshot->groupId == groupId &&
+        tankDeathSnapshot->members.size() == MAX_GROUP_SIZE &&
+        tankDeathSnapshot->hostiles.size() == 2;
+    PartyMemberSnapshot const* tankAfterDeath = tankDeathSnapshot
+        ? tankDeathSnapshot->FindMember(tankGuid.GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* healerAfterTankDeath = tankDeathSnapshot
+        ? tankDeathSnapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
+    bool const tankDeathRosterValid = tankAfterDeath && healerAfterTankDeath &&
+        tankAfterDeath->isMainTank && !tankAfterDeath->alive && healerAfterTankDeath->alive;
+    HostileSnapshot const* tankDeathBossSnapshot = tankDeathSnapshot
+        ? tankDeathSnapshot->FindHostile(hostiles[0].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    HostileSnapshot const* tankDeathAddSnapshot = tankDeathSnapshot
+        ? tankDeathSnapshot->FindHostile(hostiles[1].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    bool const tankDeathThreatSnapshotValid =
+        tankDeathBossSnapshot && tankDeathAddSnapshot &&
+        tankDeathBossSnapshot->victimGuid == healerGuid.GetRawValue() &&
+        tankDeathAddSnapshot->victimGuid == healerGuid.GetRawValue() &&
+        containsThreat(tankDeathBossSnapshot, healerGuid.GetRawValue(), healerThreat0) &&
+        containsThreat(tankDeathAddSnapshot, healerGuid.GetRawValue(), healerThreat1AfterReferenceProbe) &&
+        !containsThreat(tankDeathBossSnapshot, tankGuid.GetRawValue(), tankThreat0) &&
+        !containsThreat(tankDeathAddSnapshot, tankGuid.GetRawValue(), tankThreat1);
+
+    // Kill the active healer through Core damage. Its hostile references must
+    // be removed; both adds then select the remaining DPS with real threat.
+    uint32 const healerHealthAtDeath = healer->GetHealth();
+    uint32 const healerDeathDamage = tankDeathThreatSnapshotValid
+        ? hostiles[0].creature->DealDamage(
+            healer, healerHealthAtDeath, nullptr, DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    bool const healerDied = healerDeathDamage > 0 && !healer->IsAlive() &&
+        healer->GetHealth() == 0;
+    bool const healerThreatReferencesRemoved =
+        hostiles[0].creature->GetThreatManager().getThreat(healer) == 0.0f &&
+        hostiles[1].creature->GetThreatManager().getThreat(healer) == 0.0f;
+    bool const healerDeathSelected0 = healerDied && hostiles[0].creature->SelectHostileTarget();
+    bool const healerDeathSelected1 = healerDied && hostiles[1].creature->SelectHostileTarget();
+    bool const dpsRetargetedAfterHealerDeath =
+        healerDeathSelected0 && healerDeathSelected1 &&
+        hostiles[0].creature->GetVictim() == dps &&
+        hostiles[1].creature->GetVictim() == dps;
+
+    PartySnapshot const* healerDeathSnapshot = nullptr;
+    if (dpsRetargetedAfterHealerDeath)
+        healerDeathSnapshot = PartySnapshotBuilder::GetOrBuild(dps, coordinator, 28000, 250);
+    bool const healerDeathSnapshotValid = healerDeathSnapshot &&
+        healerDeathSnapshot->groupId == groupId &&
+        healerDeathSnapshot->members.size() == MAX_GROUP_SIZE &&
+        healerDeathSnapshot->hostiles.size() == 2;
+    PartyMemberSnapshot const* tankAfterBothDeaths = healerDeathSnapshot
+        ? healerDeathSnapshot->FindMember(tankGuid.GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* healerAfterDeath = healerDeathSnapshot
+        ? healerDeathSnapshot->FindMember(healerGuid.GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* dpsAfterDeaths = healerDeathSnapshot
+        ? healerDeathSnapshot->FindMember(dpsGuid.GetRawValue()) : nullptr;
+    bool const healerDeathRosterValid = tankAfterBothDeaths && healerAfterDeath &&
+        dpsAfterDeaths && !tankAfterBothDeaths->alive && !healerAfterDeath->alive &&
+        dpsAfterDeaths->alive;
+    HostileSnapshot const* healerDeathBossSnapshot = healerDeathSnapshot
+        ? healerDeathSnapshot->FindHostile(hostiles[0].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    HostileSnapshot const* healerDeathAddSnapshot = healerDeathSnapshot
+        ? healerDeathSnapshot->FindHostile(hostiles[1].creature->GetObjectGuid().GetRawValue()) : nullptr;
+    bool const healerDeathThreatSnapshotValid =
+        healerDeathBossSnapshot && healerDeathAddSnapshot &&
+        healerDeathBossSnapshot->victimGuid == dpsGuid.GetRawValue() &&
+        healerDeathAddSnapshot->victimGuid == dpsGuid.GetRawValue() &&
+        containsThreat(healerDeathBossSnapshot, dpsGuid.GetRawValue(), dpsThreat0) &&
+        containsThreat(healerDeathAddSnapshot, dpsGuid.GetRawValue(), dpsThreat1) &&
+        !containsThreat(healerDeathBossSnapshot, tankGuid.GetRawValue(), tankThreat0) &&
+        !containsThreat(healerDeathAddSnapshot, tankGuid.GetRawValue(), tankThreat1) &&
+        !containsThreat(healerDeathBossSnapshot, healerGuid.GetRawValue(), healerThreat0) &&
+        !containsThreat(healerDeathAddSnapshot, healerGuid.GetRawValue(), healerThreat1);
+
+    SimulatorAliveStateObserver tankResurrectionObserver(tank);
+    PlayerAI* const previousTankAIForResurrection = tank->AI();
+    tank->SetAI(&tankResurrectionObserver);
+    if (tankDied && healerDied)
+        tank->ResurrectPlayer(1.0f, false);
+    bool const tankResurrectionObserved = tankDied && healerDied &&
+        tank->IsAlive() && tankResurrectionObserver.callbackCount == 1 &&
+        tankResurrectionObserver.transitionCount == 1 &&
+        !tankResurrectionObserver.lastWasAlive && tankResurrectionObserver.lastIsAlive;
+    tank->SetAI(previousTankAIForResurrection);
+
+    // Exercise the actual PartyBotAI callback and formatted encounter trace,
+    // not only the Core PlayerAI observer boundary. Use a fresh active
+    // coordinator so both emitted events have a deterministic shared identity.
+    std::shared_ptr<PartyCoordinator> partyTraceCoordinator =
+        PartyCoordinatorRegistry::GetOrCreate(group->GetId(), map.GetId(), map.GetInstanceId());
+    PartySnapshot partyTraceSnapshot;
+    partyTraceSnapshot.groupId = group->GetId();
+    partyTraceSnapshot.mapId = map.GetId();
+    partyTraceSnapshot.instanceId = map.GetInstanceId();
+    partyTraceSnapshot.epoch = 1;
+    PartyMemberSnapshot partyTraceTank;
+    partyTraceTank.guid = tankGuid.GetRawValue();
+    partyTraceTank.mapId = map.GetId();
+    partyTraceTank.instanceId = map.GetInstanceId();
+    partyTraceTank.online = true;
+    partyTraceTank.alive = true;
+    partyTraceTank.inCombat = true;
+    partyTraceSnapshot.members.push_back(partyTraceTank);
+    uint32 const partyTraceNow = WorldTimer::getMSTime();
+    EncounterTransition const partyTraceStarted =
+        partyTraceCoordinator->ObserveEncounter(partyTraceSnapshot, partyTraceNow, 30000);
+
+    PartyBotAI partyTraceAI(
+        dps, map.GetId(), map.GetInstanceId(),
+        tank->GetPositionX(), tank->GetPositionY(),
+        tank->GetPositionZ(), tank->GetOrientation());
+    partyTraceAI.SetPlayer(tank);
+    partyTraceAI.m_partyCoordinator = partyTraceCoordinator;
+    partyTraceAI.m_partyCoordinatorMapId = map.GetId();
+    partyTraceAI.m_partyCoordinatorInstanceId = map.GetInstanceId();
+    partyTraceAI.m_decisionTrace.BeginTick();
+    PlayerAI* const previousTankAIForPartyTrace = tank->AI();
+    tank->SetAI(&partyTraceAI);
+
+    uint32 const partyTraceSequenceBefore = partyTraceCoordinator->NextEncounterSequence();
+    tank->SetHealth(tank->GetMaxHealth());
+    uint32 const partyTraceDeathDamage = partyTraceStarted.kind == EncounterTransitionKind::Started
+        ? hostiles[0].creature->DealDamage(
+            tank, tank->GetHealth(), nullptr, DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    bool const partyTraceDied = partyTraceDeathDamage > 0 &&
+        !tank->IsAlive() && tank->GetHealth() == 0;
+    if (partyTraceDied)
+    {
+        // Core's JUST_DIED -> CORPSE callback must not consume another sequence.
+        tank->SetDeathState(CORPSE);
+        tank->ResurrectPlayer(1.0f, false);
+    }
+    uint32 const partyTraceSequenceAfter = partyTraceCoordinator->NextEncounterSequence();
+    bool const partyBotDamageTracePassed =
+        partyTraceStarted.kind == EncounterTransitionKind::Started &&
+        partyTraceDeathDamage > 0 &&
+        partyTraceSequenceAfter == partyTraceSequenceBefore + 4;
+    bool const partyBotEncounterLifecycleTraced =
+        partyTraceStarted.kind == EncounterTransitionKind::Started &&
+        partyTraceDied && tank->IsAlive() && partyBotDamageTracePassed;
+
+    EncounterHeartbeat f21Heartbeat;
+    bool const f21HeartbeatReady = partyTraceCoordinator->TryBeginEncounterHeartbeat(
+        partyTraceNow, 2000, f21Heartbeat);
+    if (f21HeartbeatReady)
+        partyTraceAI.m_decisionTrace.RecordPartyHeartbeat(
+            tank, f21CastStateTraceSnapshot, f21Heartbeat);
+    bool const f21BotStateTracePassed = f21HeartbeatReady &&
+        partyTraceAI.m_decisionTrace.IsEnabled() && initialFormCopied &&
+        currentCastSnapshotValid && hostileIdentityCopied &&
+        f21CastStateTraceSnapshot.members.size() == MAX_GROUP_SIZE;
+
+    // Exercise the actual PartyBotAI target-change callback across two distinct
+    // bots sharing the same map/instance PartyCoordinator. The first 1,024
+    // structured detail events are admitted; the next one must emit the one
+    // shared trace_limit marker, and every later event must be suppressed.
+    PartyBotAI secondPartyTraceAI(
+        tank, map.GetId(), map.GetInstanceId(),
+        dps->GetPositionX(), dps->GetPositionY(),
+        dps->GetPositionZ(), dps->GetOrientation());
+    secondPartyTraceAI.SetPlayer(dps);
+    secondPartyTraceAI.m_partyCoordinator = partyTraceCoordinator;
+    secondPartyTraceAI.m_partyCoordinatorMapId = map.GetId();
+    secondPartyTraceAI.m_partyCoordinatorInstanceId = map.GetInstanceId();
+    secondPartyTraceAI.m_decisionTrace.BeginTick();
+    PlayerAI* const previousDpsAIForPartyTrace = dps->AI();
+    dps->SetAI(&secondPartyTraceAI);
+
+    // Use a fresh coordinator for the exact F13 1,024-detail budget test;
+    // F22's damage event remains part of the separate F10/F21 encounter.
+    std::shared_ptr<PartyCoordinator> traceBudgetCoordinator(new PartyCoordinator());
+    traceBudgetCoordinator->ConfigureEncounterTraceBudget(
+        PartyCoordinator::MaxDetailTraceEvents, PartyCoordinator::MaxImportantTraceEvents);
+    PartySnapshot traceBudgetSnapshot = partyTraceSnapshot;
+    traceBudgetSnapshot.epoch = 3;
+    uint32 const traceBudgetNow = WorldTimer::getMSTime();
+    EncounterTransition const traceBudgetStarted =
+        traceBudgetCoordinator->ObserveEncounter(traceBudgetSnapshot, traceBudgetNow, 30000);
+    partyTraceAI.m_partyCoordinator = traceBudgetCoordinator;
+    secondPartyTraceAI.m_partyCoordinator = traceBudgetCoordinator;
+    if (traceBudgetStarted.kind == EncounterTransitionKind::Started)
+        partyTraceAI.m_decisionTrace.RecordEncounterBoundary(
+            tank, "encounter_start", traceBudgetStarted.groupId,
+            traceBudgetStarted.mapId, traceBudgetStarted.instanceId,
+            traceBudgetStarted.encounterId, traceBudgetStarted.sequence,
+            traceBudgetStarted.elapsedMs, traceBudgetStarted.reason);
+
+    auto switchPartyBotTargets = [&](PartyBotAI& ai, Player* actor, uint32 count)
+    {
+        Unit* const hostileA = hostiles[0].creature;
+        Unit* const hostileB = hostiles[1].creature;
+        Unit* const firstTarget = actor->GetVictim() == hostileA ? hostileB : hostileA;
+        Unit* const secondTarget = firstTarget == hostileA ? hostileB : hostileA;
+        uint32 switches = 0;
+        for (uint32 i = 0; i < count; ++i)
+        {
+            uint64 const oldVictim = actor->GetVictim()
+                ? actor->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+            Unit* const nextTarget = (i & 1u) ? secondTarget : firstTarget;
+            if (!ai.AttackStart(nextTarget))
+                break;
+            uint64 const newVictim = actor->GetVictim()
+                ? actor->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+            if (oldVictim == newVictim)
+                break;
+            ++switches;
+        }
+        return switches;
+    };
+
+    uint32 const firstBotSwitches = switchPartyBotTargets(
+        partyTraceAI, tank, PartyCoordinator::MaxDetailTraceEvents / 2);
+    uint32 const secondBotSwitches = switchPartyBotTargets(
+        secondPartyTraceAI, dps,
+        PartyCoordinator::MaxDetailTraceEvents / 2 + 1);
+    uint32 const sharedTraceSwitches = firstBotSwitches + secondBotSwitches;
+    bool const traceBudgetSuppressedAfterOverflow =
+        traceBudgetStarted.kind == EncounterTransitionKind::Started &&
+        sharedTraceSwitches == PartyCoordinator::MaxDetailTraceEvents + 1 &&
+        traceBudgetCoordinator->TryAdmitEncounterTraceEvent(
+            traceBudgetStarted.encounterId, EncounterTraceEventClass::Detail) ==
+            EncounterTraceAdmission::Suppressed;
+    bool const partyBotTraceBudgetPassed = partyBotEncounterLifecycleTraced &&
+        traceBudgetSuppressedAfterOverflow;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PartyBotAI shared trace budget: firstBot=%u secondBot=%u total=%u expected=%u suppressedAfterOverflow=%u.",
+             firstBotSwitches, secondBotSwitches, sharedTraceSwitches,
+             PartyCoordinator::MaxDetailTraceEvents + 1,
+             traceBudgetSuppressedAfterOverflow ? 1u : 0u);
+    if (partyBotTraceBudgetPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: two real PartyBotAI instances shared one coordinator detail budget, admitted 1,024 target-change events, emitted one trace_limit on overflow and suppressed subsequent detail events.");
+
+    EncounterTransition const traceBudgetEnded =
+        traceBudgetCoordinator->CloseEncounter(WorldTimer::getMSTime(), "trace_budget_fixture_complete");
+    if (traceBudgetEnded.kind == EncounterTransitionKind::Ended &&
+        traceBudgetCoordinator->TryAdmitEncounterTraceEvent(
+            traceBudgetEnded.encounterId, EncounterTraceEventClass::Terminal) ==
+            EncounterTraceAdmission::Accepted)
+        partyTraceAI.m_decisionTrace.RecordEncounterBoundary(
+            tank, "encounter_end", traceBudgetEnded.groupId, traceBudgetEnded.mapId,
+            traceBudgetEnded.instanceId, traceBudgetEnded.encounterId,
+            traceBudgetEnded.sequence, traceBudgetEnded.elapsedMs, traceBudgetEnded.reason);
+    partyTraceAI.m_partyCoordinator = partyTraceCoordinator;
+    secondPartyTraceAI.m_partyCoordinator = partyTraceCoordinator;
+
+    // F14: observe an ordinary Player (no CombatBotBaseAI) through fresh
+    // map-thread snapshots. Damage and resurrection are real Core operations.
+    Player* const unmanagedMember = players.size() > 4 ? players[4] : nullptr;
+    PartyCoordinator unmanagedCoordinator;
+    unmanagedCoordinator.ConfigureEncounterTraceBudget(32, 16);
+    EncounterTransition const unmanagedStarted =
+        unmanagedMember ? unmanagedCoordinator.ObserveEncounter(
+            partyTraceSnapshot, WorldTimer::getMSTime(), 30000) : EncounterTransition();
+    auto captureUnmanagedSnapshot = [&](PartySnapshot& snapshot) -> bool
+    {
+        unmanagedCoordinator.InvalidateSnapshot();
+        PartySnapshot const* fresh = PartySnapshotBuilder::GetOrBuild(
+            tank, unmanagedCoordinator, WorldTimer::getMSTime(), 0);
+        if (!fresh)
+            return false;
+        snapshot = *fresh;
+        return true;
+    };
+    auto recordUnmanagedChanges = [&](std::vector<PartyMemberStateChange> const& changes)
+    {
+        uint32 recorded = 0;
+        for (PartyMemberStateChange const& change : changes)
+            if (partyTraceAI.m_decisionTrace.RecordEncounterPartyMemberState(
+                    tank, unmanagedCoordinator, group->GetId(), map.GetId(),
+                    map.GetInstanceId(), unmanagedStarted.encounterId,
+                    unmanagedCoordinator.GetEncounterElapsedMs(WorldTimer::getMSTime()),
+                    change))
+                ++recorded;
+        return recorded;
+    };
+
+    PartySnapshot unmanagedBaselineSnapshot;
+    bool const unmanagedBaselineBuilt = unmanagedMember &&
+        unmanagedStarted.kind == EncounterTransitionKind::Started &&
+        captureUnmanagedSnapshot(unmanagedBaselineSnapshot);
+    PartyMemberSnapshot const* unmanagedBaselineMember = unmanagedBaselineBuilt
+        ? unmanagedBaselineSnapshot.FindMember(
+            unmanagedMember->GetObjectGuid().GetRawValue()) : nullptr;
+    std::vector<PartyMemberStateChange> const unmanagedBaselineChanges =
+        unmanagedBaselineBuilt
+        ? unmanagedCoordinator.ObserveNonBotPartyMemberStateChanges(
+            unmanagedBaselineSnapshot) : std::vector<PartyMemberStateChange>();
+    bool const unmanagedBaselineValid = unmanagedBaselineMember &&
+        !unmanagedBaselineMember->isPlayerBot && unmanagedBaselineMember->online &&
+        unmanagedBaselineMember->alive && unmanagedBaselineChanges.empty();
+
+    uint32 const unmanagedHealthBefore = unmanagedMember
+        ? unmanagedMember->GetHealth() : 0;
+    uint32 const unmanagedHealthDamage = unmanagedBaselineValid
+        ? hostiles[0].creature->DealDamage(
+            unmanagedMember, 100, nullptr, DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    PartySnapshot unmanagedHealthSnapshot;
+    bool const unmanagedHealthSnapshotBuilt = unmanagedHealthDamage > 0 &&
+        unmanagedMember->GetHealth() < unmanagedHealthBefore &&
+        captureUnmanagedSnapshot(unmanagedHealthSnapshot);
+    std::vector<PartyMemberStateChange> const unmanagedHealthChanges =
+        unmanagedHealthSnapshotBuilt
+        ? unmanagedCoordinator.ObserveNonBotPartyMemberStateChanges(
+            unmanagedHealthSnapshot) : std::vector<PartyMemberStateChange>();
+    uint32 const unmanagedHealthRecords =
+        unmanagedHealthChanges.size() == 1 &&
+        unmanagedHealthChanges[0].memberGuid ==
+            unmanagedMember->GetObjectGuid().GetRawValue() &&
+        unmanagedHealthChanges[0].wasAlive && unmanagedHealthChanges[0].isAlive
+        ? recordUnmanagedChanges(unmanagedHealthChanges) : 0;
+
+    uint32 const unmanagedHealthAtDeath = unmanagedMember
+        ? unmanagedMember->GetHealth() : 0;
+    uint32 const unmanagedDeathDamage = unmanagedHealthRecords == 1
+        ? hostiles[0].creature->DealDamage(
+            unmanagedMember, unmanagedHealthAtDeath + 10000u, nullptr,
+            DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false) : 0;
+    PartySnapshot unmanagedDeathSnapshot;
+    bool const unmanagedDeathSnapshotBuilt = unmanagedDeathDamage > 0 &&
+        !unmanagedMember->IsAlive() && unmanagedMember->GetHealth() == 0 &&
+        captureUnmanagedSnapshot(unmanagedDeathSnapshot);
+    std::vector<PartyMemberStateChange> const unmanagedDeathChanges =
+        unmanagedDeathSnapshotBuilt
+        ? unmanagedCoordinator.ObserveNonBotPartyMemberStateChanges(
+            unmanagedDeathSnapshot) : std::vector<PartyMemberStateChange>();
+    uint32 const unmanagedDeathRecords =
+        unmanagedDeathChanges.size() == 1 &&
+        unmanagedDeathChanges[0].wasAlive && !unmanagedDeathChanges[0].isAlive
+        ? recordUnmanagedChanges(unmanagedDeathChanges) : 0;
+
+    if (unmanagedDeathRecords == 1)
+        unmanagedMember->ResurrectPlayer(1.0f, false);
+    PartySnapshot unmanagedResurrectionSnapshot;
+    bool const unmanagedResurrectionSnapshotBuilt = unmanagedDeathRecords == 1 &&
+        unmanagedMember->IsAlive() && unmanagedMember->GetHealth() > 0 &&
+        captureUnmanagedSnapshot(unmanagedResurrectionSnapshot);
+    std::vector<PartyMemberStateChange> const unmanagedResurrectionChanges =
+        unmanagedResurrectionSnapshotBuilt
+        ? unmanagedCoordinator.ObserveNonBotPartyMemberStateChanges(
+            unmanagedResurrectionSnapshot) : std::vector<PartyMemberStateChange>();
+    uint32 const unmanagedResurrectionRecords =
+        unmanagedResurrectionChanges.size() == 1 &&
+        !unmanagedResurrectionChanges[0].wasAlive &&
+        unmanagedResurrectionChanges[0].isAlive
+        ? recordUnmanagedChanges(unmanagedResurrectionChanges) : 0;
+
+    bool const unmanagedMemberStateTracePassed =
+        unmanagedBaselineValid && unmanagedHealthDamage > 0 &&
+        unmanagedHealthRecords == 1 && unmanagedDeathDamage > 0 &&
+        unmanagedDeathRecords == 1 && unmanagedResurrectionRecords == 1;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Unmanaged member state trace: baseline=%u healthDamage=%u healthRecord=%u deathDamage=%u deathRecord=%u resurrectionRecord=%u member_guid=%llu.",
+             unmanagedBaselineValid ? 1u : 0u, unmanagedHealthDamage,
+             unmanagedHealthRecords, unmanagedDeathDamage, unmanagedDeathRecords,
+             unmanagedResurrectionRecords,
+             static_cast<unsigned long long>(unmanagedMember
+                 ? unmanagedMember->GetObjectGuid().GetRawValue() : 0));
+    if (unmanagedMemberStateTracePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: real Core DealDamage and Player::ResurrectPlayer produced one sampled health, death and resurrection trace for a non-PlayerBots Group member; member_guid=%llu.",
+                 static_cast<unsigned long long>(
+                     unmanagedMember->GetObjectGuid().GetRawValue()));
+    if (unmanagedCoordinator.HasActiveEncounter())
+    {
+        EncounterTransition const unmanagedEnded =
+            unmanagedCoordinator.CloseEncounter(WorldTimer::getMSTime(),
+                                                  "simulator_member_state_complete");
+        if (unmanagedEnded.kind == EncounterTransitionKind::Ended &&
+            unmanagedCoordinator.TryAdmitEncounterTraceEvent(
+                unmanagedEnded.encounterId, EncounterTraceEventClass::Terminal) ==
+                EncounterTraceAdmission::Accepted)
+            partyTraceAI.m_decisionTrace.RecordEncounterBoundary(
+                tank, "encounter_end", unmanagedEnded.groupId, unmanagedEnded.mapId,
+                unmanagedEnded.instanceId, unmanagedEnded.encounterId,
+                unmanagedEnded.sequence, unmanagedEnded.elapsedMs,
+                unmanagedEnded.reason);
+    }
+
+    // F15: the explicit server-shutdown hook closes the shared encounter once.
+    // The second bot observes the already-closed coordinator and cannot emit a
+    // duplicate terminal record. The reserved terminal admission must be consumed
+    // even though the ordinary detail budget was exhausted by F13.
+    uint64 const shutdownEncounterId = partyTraceCoordinator->GetEncounterId();
+    partyTraceAI.OnServerShutdown();
+    bool const shutdownFlushClosedEncounter = shutdownEncounterId != 0 &&
+        !partyTraceCoordinator->HasActiveEncounter() &&
+        partyTraceCoordinator->TryAdmitEncounterTraceEvent(
+            shutdownEncounterId, EncounterTraceEventClass::Terminal) ==
+            EncounterTraceAdmission::Suppressed;
+    secondPartyTraceAI.OnServerShutdown();
+    bool const shutdownFlushNoDuplicate = shutdownFlushClosedEncounter &&
+        partyTraceCoordinator->TryAdmitEncounterTraceEvent(
+            shutdownEncounterId, EncounterTraceEventClass::Terminal) ==
+            EncounterTraceAdmission::Suppressed;
+    if (shutdownFlushNoDuplicate)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: server-shutdown hook closed an active shared encounter and consumed exactly one reserved terminal admission across two PartyBotAI instances.");
+
+    // F16: exercise the actual source-Map Remove path. The first bot leaving
+    // must not close while its party bot partner remains; the final bot leaving
+    // must close on the old map thread and consume one terminal admission.
+    uint32 const mapLeaveNow = WorldTimer::getMSTime();
+    PartySnapshot mapLeaveSnapshot = partyTraceSnapshot;
+    mapLeaveSnapshot.epoch = 2;
+    EncounterTransition const mapLeaveStarted =
+        partyTraceCoordinator->ObserveEncounter(mapLeaveSnapshot, mapLeaveNow, 30000);
+    if (mapLeaveStarted.kind == EncounterTransitionKind::Started)
+    {
+        map.Remove(tank, false);
+        bool const firstLeaveKeptEncounter = partyTraceCoordinator->HasActiveEncounter();
+        map.Remove(dps, false);
+        bool const lastLeaveClosedEncounter = !partyTraceCoordinator->HasActiveEncounter() &&
+            partyTraceCoordinator->TryAdmitEncounterTraceEvent(
+                mapLeaveStarted.encounterId, EncounterTraceEventClass::Terminal) ==
+                EncounterTraceAdmission::Suppressed;
+        bool const restoredTank = map.Add(tank);
+        bool const restoredDps = map.Add(dps);
+        if (firstLeaveKeptEncounter && lastLeaveClosedEncounter && restoredTank && restoredDps)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[PartyBotSimulator] PASS: source Map::Remove retained an encounter while another PartyBotAI remained, then the last bot closed the old map shard exactly once before both Players were re-added.");
+    }
+
+    // F27: move the full real Group through Map::Remove/Map::Add into a
+    // different Vanilla dungeon Map. A Group can bind only one instance per
+    // dungeon map ID, so a second instance of the same Map is invalid Core
+    // behavior for this fixture. The source shard must close on its Map thread;
+    // the ordinary PartyBotAI Shadow update must then acquire a different
+    // registry entry and start an encounter from the destination's real roster.
+    // The temporary destination GroupBind is explicitly removed on return.
+    static uint32 constexpr F27_DESTINATION_MAP_ID = 34; // Stockades, a separate Vanilla dungeon.
+    MapEntry const* destinationEntry =
+        sMapStorage.LookupEntry<MapEntry>(F27_DESTINATION_MAP_ID);
+    bool const destinationMapAvailable = destinationEntry && destinationEntry->IsDungeon() &&
+        group->GetBoundInstance(F27_DESTINATION_MAP_ID) == nullptr;
+    Map* destinationMap = destinationMapAvailable
+        ? sMapMgr.CreateTestMap(F27_DESTINATION_MAP_ID, true, 0.0f, 0.0f)
+        : nullptr;
+    bool instanceTransferTracePassed = false;
+    if (destinationMap && destinationMap->GetId() != map.GetId() &&
+        destinationMap->GetId() == F27_DESTINATION_MAP_ID &&
+        destinationMap->GetInstanceId() &&
+        destinationMap->GetInstanceId() != map.GetInstanceId())
+    {
+        partyTraceAI.m_decisionTrace.BeginTick();
+        secondPartyTraceAI.m_decisionTrace.BeginTick();
+        tank->SetInCombatState();
+        partyTraceAI.UpdatePartyBotEngineShadow();
+        secondPartyTraceAI.UpdatePartyBotEngineShadow();
+
+        std::shared_ptr<PartyCoordinator> sourceCoordinator = partyTraceAI.m_partyCoordinator;
+        std::uint64_t const sourceEncounterId = sourceCoordinator
+            ? sourceCoordinator->GetEncounterId() : 0;
+        bool const sourceShardReady = sourceCoordinator &&
+            sourceCoordinator == partyTraceCoordinator &&
+            secondPartyTraceAI.m_partyCoordinator == sourceCoordinator &&
+            sourceCoordinator->HasActiveEncounter() && sourceEncounterId &&
+            sourceCoordinator->GetEncounterMapId() == map.GetId() &&
+            sourceCoordinator->GetEncounterInstanceId() == map.GetInstanceId();
+
+        bool allPlayersStartedOnSource = sourceShardReady;
+        for (Player* member : players)
+            allPlayersStartedOnSource = allPlayersStartedOnSource && member &&
+                member->IsInWorld() && member->GetMap() == &map;
+
+        if (allPlayersStartedOnSource)
+        {
+            for (Player* member : players)
+                map.Remove(member, false);
+
+            bool const allPlayersDetachedFromSource = std::all_of(
+                players.begin(), players.end(),
+                [](Player const* member) { return member && !member->IsInWorld(); });
+            bool const sourceShardClosed = !sourceCoordinator->HasActiveEncounter() &&
+                sourceCoordinator->TryAdmitEncounterTraceEvent(
+                    sourceEncounterId, EncounterTraceEventClass::Terminal) ==
+                    EncounterTraceAdmission::Suppressed;
+            bool const sourceAisReleasedShard =
+                !partyTraceAI.m_partyCoordinator &&
+                !secondPartyTraceAI.m_partyCoordinator &&
+                partyTraceAI.m_partyCoordinatorMapId == 0 &&
+                secondPartyTraceAI.m_partyCoordinatorMapId == 0;
+
+            bool allPlayersAddedToDestination = allPlayersDetachedFromSource;
+            if (allPlayersDetachedFromSource)
+                for (Player* member : players)
+                    if (!destinationMap->Add(member))
+                        allPlayersAddedToDestination = false;
+
+            bool const allPlayersOnDestination = allPlayersAddedToDestination &&
+                std::all_of(players.begin(), players.end(),
+                    [destinationMap](Player const* member)
+                    {
+                        return member && member->IsInWorld() &&
+                            member->GetMap() == destinationMap &&
+                            member->GetMapId() == destinationMap->GetId() &&
+                            member->GetInstanceId() == destinationMap->GetInstanceId();
+                    });
+
+            std::shared_ptr<PartyCoordinator> destinationCoordinator;
+            bool destinationRosterValid = false;
+            bool destinationEncounterStarted = false;
+            bool destinationShardDistinct = false;
+            std::uint64_t destinationEncounterId = 0;
+            if (allPlayersOnDestination)
+            {
+                // This is the same entry point used by the normal PartyBotAI
+                // map update. No test-only coordinator injection is performed.
+                tank->SetInCombatState();
+                partyTraceAI.m_decisionTrace.BeginTick();
+                secondPartyTraceAI.m_decisionTrace.BeginTick();
+                partyTraceAI.UpdatePartyBotEngineShadow();
+                secondPartyTraceAI.UpdatePartyBotEngineShadow();
+
+                destinationCoordinator = partyTraceAI.m_partyCoordinator;
+                destinationShardDistinct = destinationCoordinator &&
+                    destinationCoordinator != sourceCoordinator &&
+                    destinationCoordinator == secondPartyTraceAI.m_partyCoordinator &&
+                    destinationCoordinator == PartyCoordinatorRegistry::GetOrCreate(
+                        group->GetId(), destinationMap->GetId(),
+                        destinationMap->GetInstanceId()) &&
+                    destinationMap->GetId() != sourceCoordinator->GetEncounterMapId() &&
+                    destinationCoordinator->GetEncounterMapId() == destinationMap->GetId() &&
+                    destinationCoordinator->GetEncounterInstanceId() ==
+                        destinationMap->GetInstanceId() &&
+                    group->GetBoundInstance(destinationMap->GetId()) != nullptr;
+
+                PartySnapshot const* destinationSnapshot = destinationCoordinator
+                    ? PartySnapshotBuilder::GetOrBuild(
+                        tank, *destinationCoordinator, WorldTimer::getMSTime(), 250)
+                    : nullptr;
+                destinationRosterValid = destinationSnapshot &&
+                    destinationSnapshot->groupId == group->GetId() &&
+                    destinationSnapshot->mapId == destinationMap->GetId() &&
+                    destinationSnapshot->instanceId == destinationMap->GetInstanceId() &&
+                    destinationSnapshot->members.size() == MAX_GROUP_SIZE;
+                if (destinationRosterValid)
+                {
+                    for (Player* member : players)
+                    {
+                        PartyMemberSnapshot const* row = destinationSnapshot->FindMember(
+                            member->GetObjectGuid().GetRawValue());
+                        destinationRosterValid = destinationRosterValid && row &&
+                            row->online && row->mapId == destinationMap->GetId() &&
+                            row->instanceId == destinationMap->GetInstanceId();
+                    }
+                }
+
+                destinationEncounterId = destinationCoordinator
+                    ? destinationCoordinator->GetEncounterId() : 0;
+                destinationEncounterStarted = destinationCoordinator &&
+                    destinationCoordinator->HasActiveEncounter() &&
+                    destinationEncounterId &&
+                    destinationEncounterId != sourceEncounterId &&
+                    destinationCoordinator->GetEncounterMapId() == destinationMap->GetId() &&
+                    destinationCoordinator->GetEncounterInstanceId() ==
+                        destinationMap->GetInstanceId();
+            }
+
+            // Always move the fixture back, even when one of the assertions
+            // above fails, so the enclosing Group/session cleanup stays valid.
+            bool allPlayersRemovedFromDestination = allPlayersOnDestination;
+            if (allPlayersOnDestination)
+                for (Player* member : players)
+                    destinationMap->Remove(member, false);
+            else
+                for (Player* member : players)
+                    if (member && member->IsInWorld() && member->GetMap() == destinationMap)
+                        destinationMap->Remove(member, false);
+            allPlayersRemovedFromDestination = allPlayersRemovedFromDestination &&
+                std::all_of(players.begin(), players.end(),
+                    [](Player const* member) { return member && !member->IsInWorld(); });
+
+            bool allPlayersRestoredToSource = true;
+            for (Player* member : players)
+            {
+                if (!member)
+                {
+                    allPlayersRestoredToSource = false;
+                    continue;
+                }
+                if (!member->IsInWorld())
+                {
+                    if (!map.Add(member))
+                        allPlayersRestoredToSource = false;
+                }
+                else if (member->GetMap() != &map)
+                    allPlayersRestoredToSource = false;
+            }
+
+            bool const destinationShardClosed = destinationCoordinator &&
+                destinationEncounterStarted && !destinationCoordinator->HasActiveEncounter() &&
+                destinationCoordinator->TryAdmitEncounterTraceEvent(
+                    destinationEncounterId, EncounterTraceEventClass::Terminal) ==
+                    EncounterTraceAdmission::Suppressed;
+
+            // DungeonMap::Add binds the Group to the destination map ID. This
+            // fixture is intentionally not a persistent dungeon run, so remove
+            // only the new test binding after all Players have left that Map.
+            if (allPlayersRemovedFromDestination &&
+                group->GetBoundInstance(destinationMap->GetId()))
+                group->UnbindInstance(destinationMap->GetId());
+            bool const destinationGroupBindReleased =
+                group->GetBoundInstance(destinationMap->GetId()) == nullptr;
+            bool const destinationAisReleasedShard =
+                !partyTraceAI.m_partyCoordinator &&
+                !secondPartyTraceAI.m_partyCoordinator;
+            bool const allPlayersBackOnSource = allPlayersRestoredToSource &&
+                std::all_of(players.begin(), players.end(),
+                    [&map](Player const* member)
+                    {
+                        return member && member->IsInWorld() && member->GetMap() == &map &&
+                            member->GetMapId() == map.GetId() &&
+                            member->GetInstanceId() == map.GetInstanceId();
+                    });
+
+            instanceTransferTracePassed = sourceShardReady &&
+                allPlayersDetachedFromSource && sourceShardClosed && sourceAisReleasedShard &&
+                allPlayersOnDestination && destinationShardDistinct &&
+                destinationRosterValid && destinationEncounterStarted &&
+                allPlayersRemovedFromDestination && destinationShardClosed &&
+                destinationGroupBindReleased && destinationAisReleasedShard &&
+                allPlayersBackOnSource;
+        }
+    }
+
+    // No Player may remain attached to the temporary destination map.
+    if (destinationMap)
+    {
+        for (Player* member : players)
+            if (member && member->IsInWorld() && member->GetMap() == destinationMap)
+                destinationMap->Remove(member, false);
+        for (Player* member : players)
+            if (member && !member->IsInWorld())
+                map.Add(member);
+
+        bool const destinationMapEmpty = std::all_of(
+            players.begin(), players.end(),
+            [destinationMap](Player const* member)
+            {
+                return !member || !member->IsInWorld() || member->GetMap() != destinationMap;
+            });
+        bool const sourceFixtureRestored = std::all_of(
+            players.begin(), players.end(),
+            [&map](Player const* member)
+            {
+                return member && member->IsInWorld() && member->GetMap() == &map;
+            });
+        if (destinationMapEmpty &&
+            group->GetBoundInstance(destinationMap->GetId()))
+            group->UnbindInstance(destinationMap->GetId());
+        bool const destinationBindCleaned =
+            group->GetBoundInstance(destinationMap->GetId()) == nullptr;
+        if (destinationMapEmpty && destinationBindCleaned)
+            sMapMgr.DeleteTestMap(destinationMap);
+        else
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                     "[PartyBotSimulator] Refusing to delete destination map %u instance %u (playersDetached=%u groupBindReleased=%u).",
+                     destinationMap->GetId(), destinationMap->GetInstanceId(),
+                     destinationMapEmpty ? 1u : 0u, destinationBindCleaned ? 1u : 0u);
+        instanceTransferTracePassed = instanceTransferTracePassed &&
+            destinationMapEmpty && destinationBindCleaned && sourceFixtureRestored;
+    }
+
+    if (instanceTransferTracePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: a real five-Player Group left the source Map, closed its last-PartyBot encounter exactly once, reacquired a distinct destination-map coordinator through PartyBotAI::UpdatePartyBotEngineShadow, started a new encounter from the destination roster, then closed it, removed its temporary GroupBind and restored every Player to the source instance.");
+
+    // F17: exercise the Engine's sampled trigger observations and their
+    // encounter-correlated log format with the real strategy registry.
+    // A healer with one injured party member yields one active healing trigger,
+    // two inactive role triggers and one candidate attributed to healing_triage.
+    std::shared_ptr<PartyCoordinator> triggerTraceCoordinator(new PartyCoordinator());
+    triggerTraceCoordinator->ConfigureEncounterTraceBudget(32, 16);
+    PartySnapshot triggerTraceSnapshot;
+    triggerTraceSnapshot.groupId = group->GetId();
+    triggerTraceSnapshot.mapId = map.GetId();
+    triggerTraceSnapshot.instanceId = map.GetInstanceId();
+    triggerTraceSnapshot.epoch = 17;
+    PartyMemberSnapshot triggerTraceBot;
+    triggerTraceBot.guid = tankGuid.GetRawValue();
+    triggerTraceBot.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    triggerTraceBot.mapId = map.GetId();
+    triggerTraceBot.instanceId = map.GetInstanceId();
+    triggerTraceBot.health = tank->GetMaxHealth();
+    triggerTraceBot.maxHealth = tank->GetMaxHealth();
+    triggerTraceBot.online = true;
+    triggerTraceBot.alive = true;
+    triggerTraceBot.inCombat = true;
+    triggerTraceSnapshot.members.push_back(triggerTraceBot);
+    PartyMemberSnapshot triggerTracePatient;
+    triggerTracePatient.guid = dps->GetObjectGuid().GetRawValue();
+    triggerTracePatient.roleId = static_cast<std::uint8_t>(PartyRole::MeleeDamage);
+    triggerTracePatient.mapId = map.GetId();
+    triggerTracePatient.instanceId = map.GetInstanceId();
+    triggerTracePatient.health = 250;
+    triggerTracePatient.maxHealth = 1000;
+    triggerTracePatient.online = true;
+    triggerTracePatient.alive = true;
+    triggerTracePatient.inCombat = true;
+    triggerTraceSnapshot.members.push_back(triggerTracePatient);
+
+    uint32 const triggerTraceNow = WorldTimer::getMSTime();
+    EncounterTransition const triggerTraceStarted =
+        triggerTraceCoordinator->ObserveEncounter(triggerTraceSnapshot, triggerTraceNow, 30000);
+    if (!partyTraceAI.m_engineShadowStrategiesRegistered)
+    {
+        RegisterDefaultShadowStrategies(partyTraceAI.m_partyBotEngine);
+        partyTraceAI.m_engineShadowStrategiesRegistered = true;
+    }
+
+    std::shared_ptr<Strategy> activeEmptyStrategy(new Strategy("simulator_trace_active_empty"));
+    activeEmptyStrategy->AddTrigger(std::make_shared<SimulatorTraceProbeTrigger>(
+        "simulator_trace_active_empty", 0));
+    partyTraceAI.m_partyBotEngine.AddStrategy(activeEmptyStrategy);
+    for (uint32 i = 0; i < 3; ++i)
+    {
+        std::string const strategyName = "simulator_trace_cadence_strategy_" + std::to_string(i);
+        std::string const triggerName = "simulator_trace_cadence_" + std::to_string(i);
+        std::shared_ptr<Strategy> cadenceStrategy(new Strategy(strategyName));
+        cadenceStrategy->AddTrigger(std::make_shared<SimulatorTraceProbeTrigger>(
+            triggerName, 1000));
+        partyTraceAI.m_partyBotEngine.AddStrategy(cadenceStrategy);
+    }
+    partyTraceAI.m_decisionTrace.BeginTick();
+
+    PartyMemberSnapshot const* triggerBotSnapshot =
+        triggerTraceSnapshot.FindMember(triggerTraceBot.guid);
+    DecisionReport triggerReport;
+    if (triggerTraceStarted.kind == EncounterTransitionKind::Started &&
+        triggerBotSnapshot)
+    {
+        DecisionContext initialTriggerContext(
+            triggerTraceSnapshot, *triggerBotSnapshot,
+            *triggerTraceCoordinator, triggerTraceNow);
+        DecisionReport const initialTriggerReport =
+            partyTraceAI.m_partyBotEngine.Evaluate(initialTriggerContext);
+        DecisionContext cadenceTriggerContext(
+            triggerTraceSnapshot, *triggerBotSnapshot,
+            *triggerTraceCoordinator, triggerTraceNow + 1);
+        triggerReport = partyTraceAI.m_partyBotEngine.Evaluate(cadenceTriggerContext);
+        (void)initialTriggerReport;
+    }
+
+    uint32 triggerActiveCount = 0;
+    uint32 triggerInactiveCount = 0;
+    uint32 triggerSkippedCount = 0;
+    for (TriggerEvaluation const& observation : triggerReport.triggerEvaluations)
+    {
+        if (observation.status == TriggerEvaluationStatus::Active)
+            ++triggerActiveCount;
+        else if (observation.status == TriggerEvaluationStatus::Inactive)
+            ++triggerInactiveCount;
+        else
+            ++triggerSkippedCount;
+    }
+    bool const hasAttributedHealingCandidate = triggerReport.candidates.size() == 1 &&
+        triggerReport.candidates[0].candidate.strategyName == "healing_triage" &&
+        triggerReport.candidates[0].candidate.triggerName == "healing_triage" &&
+        triggerReport.candidates[0].candidate.actionName == "shadow_heal_triage";
+    std::vector<std::size_t> const prioritizedTriggerIndices =
+        SelectPriorityTriggerEvaluationIndices(triggerReport, 4);
+    auto triggerAt = [&triggerReport](std::size_t index) -> TriggerEvaluation const& {
+        return triggerReport.triggerEvaluations.at(index);
+    };
+    bool const triggerPriorityOrderPassed = prioritizedTriggerIndices.size() == 4 &&
+        triggerAt(prioritizedTriggerIndices[0]).triggerName == "healing_triage" &&
+        triggerAt(prioritizedTriggerIndices[0]).status == TriggerEvaluationStatus::Active &&
+        triggerAt(prioritizedTriggerIndices[0]).candidateCount == 1 &&
+        triggerAt(prioritizedTriggerIndices[1]).triggerName == "simulator_trace_active_empty" &&
+        triggerAt(prioritizedTriggerIndices[1]).status == TriggerEvaluationStatus::Active &&
+        triggerAt(prioritizedTriggerIndices[1]).candidateCount == 0 &&
+        triggerAt(prioritizedTriggerIndices[2]).triggerName == "tank_target" &&
+        triggerAt(prioritizedTriggerIndices[2]).status == TriggerEvaluationStatus::Inactive &&
+        triggerAt(prioritizedTriggerIndices[3]).triggerName == "dps_target" &&
+        triggerAt(prioritizedTriggerIndices[3]).status == TriggerEvaluationStatus::Inactive;
+    bool const triggerReportValid =
+        triggerTraceStarted.kind == EncounterTransitionKind::Started &&
+        triggerBotSnapshot && triggerReport.triggerEvaluations.size() == 7 &&
+        triggerReport.omittedTriggerEvaluations == 0 &&
+        triggerActiveCount == 2 && triggerInactiveCount == 2 &&
+        triggerSkippedCount == 3 && hasAttributedHealingCandidate &&
+        triggerPriorityOrderPassed;
+
+    bool triggerSummaryRecorded = false;
+    uint32 triggerRowsRecorded = 0;
+    bool triggerCandidateRecorded = false;
+    if (triggerReportValid && partyTraceAI.m_decisionTrace.IsEnabled())
+    {
+        uint64 const encounterId = triggerTraceCoordinator->GetEncounterId();
+        uint32 const elapsed = triggerTraceCoordinator->GetEncounterElapsedMs(triggerTraceNow);
+        if (triggerTraceCoordinator->TryAdmitEncounterTraceEvent(
+                encounterId, EncounterTraceEventClass::Detail) ==
+            EncounterTraceAdmission::Accepted)
+        {
+            uint32 const sequence = triggerTraceCoordinator->NextEncounterSequence();
+            partyTraceAI.m_decisionTrace.RecordEncounterTriggerSummary(
+                tank, triggerTraceSnapshot.groupId, triggerTraceSnapshot.mapId,
+                triggerTraceSnapshot.instanceId, encounterId, sequence, elapsed,
+                static_cast<uint32>(triggerReport.triggerEvaluations.size()),
+                triggerActiveCount + triggerInactiveCount,
+                triggerActiveCount, triggerInactiveCount, triggerSkippedCount,
+                triggerReport.omittedTriggerEvaluations, 4,
+                static_cast<uint32>(triggerReport.triggerEvaluations.size() -
+                    prioritizedTriggerIndices.size()));
+            triggerSummaryRecorded = sequence != 0;
+        }
+
+        for (std::size_t triggerIndex : prioritizedTriggerIndices)
+        {
+            TriggerEvaluation const& observation =
+                triggerReport.triggerEvaluations[triggerIndex];
+            if (triggerTraceCoordinator->TryAdmitEncounterTraceEvent(
+                    encounterId, EncounterTraceEventClass::Detail) !=
+                EncounterTraceAdmission::Accepted)
+                continue;
+            uint32 const sequence = triggerTraceCoordinator->NextEncounterSequence();
+            char const* status = observation.status == TriggerEvaluationStatus::Active
+                ? "active" : (observation.status == TriggerEvaluationStatus::Inactive
+                    ? "inactive" : "cadence_skipped");
+            partyTraceAI.m_decisionTrace.RecordEncounterTrigger(
+                tank, triggerTraceSnapshot.groupId, triggerTraceSnapshot.mapId,
+                triggerTraceSnapshot.instanceId, encounterId, sequence, elapsed,
+                "healer", observation.strategyName.c_str(),
+                observation.triggerName.c_str(), observation.intervalMs,
+                status, observation.candidateCount);
+            if (sequence)
+                ++triggerRowsRecorded;
+        }
+
+        CandidateEvaluation const& evaluation = triggerReport.candidates[0];
+        ActionCandidate const& candidate = evaluation.candidate;
+        if (triggerTraceCoordinator->TryAdmitEncounterTraceEvent(
+                encounterId, EncounterTraceEventClass::Detail) ==
+            EncounterTraceAdmission::Accepted)
+        {
+            uint32 const sequence = triggerTraceCoordinator->NextEncounterSequence();
+            char const* status = evaluation.status == CandidateStatus::RejectedThreatUnknown
+                ? "rejected_threat_unknown" : "candidate";
+            partyTraceAI.m_decisionTrace.RecordEncounterCandidate(
+                tank, triggerTraceSnapshot.groupId, triggerTraceSnapshot.mapId,
+                triggerTraceSnapshot.instanceId, triggerTraceSnapshot.epoch,
+                encounterId, sequence, elapsed, "healer",
+                candidate.strategyName.c_str(), candidate.triggerName.c_str(),
+                candidate.actionName.c_str(), candidate.targetGuid,
+                candidate.spellId, static_cast<uint32>(candidate.channel),
+                candidate.finalPriority, status,
+                evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
+            triggerCandidateRecorded = sequence != 0;
+        }
+    }
+
+    bool const f17TriggerTelemetryPassed =
+        triggerReportValid && partyTraceAI.m_decisionTrace.IsEnabled() &&
+        triggerSummaryRecorded && triggerRowsRecorded == 4 &&
+        triggerCandidateRecorded && triggerPriorityOrderPassed;
+    if (f17TriggerTelemetryPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: Core-backed PartyBotEngine prioritised trigger telemetry by actionable active state, then active-empty, then inactive; cadence-skipped rows were deprioritised by the four-row cap, while healer-candidate attribution remained intact.");
+
+    // F29: drive the real PartyBotAI::UpdateAI entry with an explicit per-instance
+    // NewEngine override. The process config remains Shadow-enabled for the
+    // surrounding F17/F27 fixtures; this bot must nevertheless run an empty
+    // authoritative Engine cycle and return before entering any Legacy policy.
+    PartyBotAI newEngineAuthorityAI(
+        dps, map.GetId(), map.GetInstanceId(),
+        tank->GetPositionX(), tank->GetPositionY(),
+        tank->GetPositionZ(), tank->GetOrientation());
+    newEngineAuthorityAI.SetPlayer(tank);
+    newEngineAuthorityAI.m_initialized = true;
+    newEngineAuthorityAI.m_simulatorExecutionAuthorityOverride =
+        static_cast<int32>(ExecutionAuthorityMode::NewEngine);
+    newEngineAuthorityAI.m_updateTimer.Reset(1000);
+    PlayerAI* const previousTankAIForNewEngineAuthority = tank->AI();
+    tank->SetAI(&newEngineAuthorityAI);
+    newEngineAuthorityAI.UpdateAI(1000);
+    bool const f29NewEngineAuthorityPassed =
+        newEngineAuthorityAI.m_simulatorNewEngineTickCount == 1 &&
+        newEngineAuthorityAI.m_simulatorLegacyPolicyEntryCount == 0 &&
+        newEngineAuthorityAI.m_simulatorLegacyPolicyDispatchCount == 0 &&
+        newEngineAuthorityAI.m_simulatorEngineDecisionCycleCount == 1 &&
+        newEngineAuthorityAI.m_simulatorEngineCandidateCount == 0 &&
+        !newEngineAuthorityAI.m_engineShadowStrategiesRegistered &&
+        newEngineAuthorityAI.m_partyCoordinator &&
+        newEngineAuthorityAI.m_partyCoordinatorMapId == map.GetId() &&
+        newEngineAuthorityAI.m_partyCoordinatorInstanceId == map.GetInstanceId();
+    tank->SetAI(previousTankAIForNewEngineAuthority);
+    sLog.Out(LOG_BASIC, f29NewEngineAuthorityPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] NewEngine authority tick: newEngineTicks=%u legacyEntries=%u legacyDispatches=%u decisionCycles=%u candidates=%u shadowPoliciesRegistered=%u coordinator=%u.",
+             newEngineAuthorityAI.m_simulatorNewEngineTickCount,
+             newEngineAuthorityAI.m_simulatorLegacyPolicyEntryCount,
+             newEngineAuthorityAI.m_simulatorLegacyPolicyDispatchCount,
+             newEngineAuthorityAI.m_simulatorEngineDecisionCycleCount,
+             newEngineAuthorityAI.m_simulatorEngineCandidateCount,
+             newEngineAuthorityAI.m_engineShadowStrategiesRegistered ? 1u : 0u,
+             newEngineAuthorityAI.m_partyCoordinator ? 1u : 0u);
+    if (f29NewEngineAuthorityPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F29 real PartyBotAI::UpdateAI ran one empty exclusive NewEngine decision cycle and returned before Legacy policy entry/dispatch, with no Shadow probe strategies registered.");
+
+    dps->SetAI(previousDpsAIForPartyTrace);
+    secondPartyTraceAI.Remove();
+    tank->SetAI(previousTankAIForPartyTrace);
+    partyTraceAI.Remove(); // The simulator logs out/deletes Players before this stack frame ends.
+
+    bool const f10ChecksPassed = f9ChecksPassed && petCleanupPassed &&
+        f12ChecksPassed && healerHoldsAggroOverDps &&
+        tankDied && tankDeathObserverValid && tankCorpseTransitionSuppressed &&
+        tankResurrectionObserved && partyBotEncounterLifecycleTraced &&
+        partyBotTraceBudgetPassed && unmanagedMemberStateTracePassed &&
+        shutdownFlushNoDuplicate && instanceTransferTracePassed &&
+        f17TriggerTelemetryPassed && f29NewEngineAuthorityPassed &&
+        tankThreatReferencesRemoved && healerRetargetedAfterTankDeath &&
+        tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
+        healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&
+        healerDeathSnapshotValid && healerDeathRosterValid && healerDeathThreatSnapshotValid;
+
+    uint32 const groupIdAfterEvents = group->GetId();
+    bool const groupStillRegistered = registeredBeforeCleanup &&
+        sObjectMgr.GetGroupById(groupIdAfterEvents) == group.get();
+    bool const cleaned = cleanup();
+    bool const groupRemoved = sObjectMgr.GetGroupById(groupIdAfterEvents) == nullptr;
+    bool const cleanupPassed = cleaned && groupRemoved;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Player resurrection observer: observed=%u callbacks=%u transitions=%u alive=%u cleanup=1.",
+             tankResurrectionObserved ? 1u : 0u,
+             tankResurrectionObserver.callbackCount,
+             tankResurrectionObserver.transitionCount,
+             tank->IsAlive() ? 1u : 0u);
+    if (tankResurrectionObserved)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: Core Player::ResurrectPlayer emitted exactly one dead-to-alive observer transition after tank death recovery snapshots were captured.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Player alive-state observer: death=%u sameStateFiltered=%u callbacks=%u sameStateCallbacks=%u transitions=%u cleanup=1.",
+             tankDeathObserverValid ? 1u : 0u,
+             tankCorpseTransitionSuppressed ? 1u : 0u,
+             tankAliveObserver.callbackCount,
+             tankAliveObserver.sameStateCallbacks,
+             tankAliveObserver.transitionCount);
+    if (tankDeathObserverValid && tankCorpseTransitionSuppressed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: Core Player::SetDeathState invoked the observer for JUST_DIED and CORPSE, while the alive-state transition filter emitted exactly one alive-to-dead event.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PartyBotAI encounter lifecycle: started=%u death=%u resurrection=%u sequenceDelta=%u alive=%u.",
+             partyTraceStarted.kind == EncounterTransitionKind::Started ? 1u : 0u,
+             partyTraceDied ? 1u : 0u,
+             partyBotEncounterLifecycleTraced ? 1u : 0u,
+             partyTraceSequenceAfter - partyTraceSequenceBefore - 1u,
+             tank->IsAlive() ? 1u : 0u);
+    if (partyBotEncounterLifecycleTraced)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: PartyBotAI emitted encounter-correlated death and resurrection trace records through Core PlayerAI callbacks, while the repeated CORPSE state was suppressed.");
+    if (partyBotDamageTracePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F22 recorded the real Core Unit::DealDamage health delta through PlayerAI/PartyBotAI with attacker, spell and damage-type attribution.");
+    if (f21BotStateTracePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F21 copied real Core shapeshift form, pending spell ID/state/target and member position, plus hostile creature entry/rank/world-boss identity into the bounded party heartbeat.");
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Group death recovery: dpsDamage=%u/%u dpsThreat=%.1f/%.1f healerHoldsAggro=%u tankDeath=%u tankRefsRemoved=%u healerRetargetAfterTankDeath=%u/%u tankSnapshot=%u tankRoster=%u tankThreatSnapshot=%u healerDeath=%u healerRefsRemoved=%u dpsRetargetAfterHealerDeath=%u/%u healerSnapshot=%u healerRoster=%u healerThreatSnapshot=%u registered=%u groupRemoved=%u cleanup=%u.",
+             dpsDamage0, dpsDamage1, dpsThreat0, dpsThreat1,
+             healerHoldsAggroOverDps ? 1u : 0u,
+             tankDied ? 1u : 0u, tankThreatReferencesRemoved ? 1u : 0u,
+             tankDeathSelected0 ? 1u : 0u, tankDeathSelected1 ? 1u : 0u,
+             tankDeathSnapshotValid ? 1u : 0u, tankDeathRosterValid ? 1u : 0u,
+             tankDeathThreatSnapshotValid ? 1u : 0u,
+             healerDied ? 1u : 0u, healerThreatReferencesRemoved ? 1u : 0u,
+             healerDeathSelected0 ? 1u : 0u, healerDeathSelected1 ? 1u : 0u,
+             healerDeathSnapshotValid ? 1u : 0u, healerDeathRosterValid ? 1u : 0u,
+             healerDeathThreatSnapshotValid ? 1u : 0u,
+             registeredBeforeCleanup ? 1u : 0u, groupRemoved ? 1u : 0u,
+             cleanupPassed ? 1u : 0u);
+
+    if (!f9ChecksPassed || !petCleanupPassed || !f12ChecksPassed || !groupStillRegistered)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Combined Group F8/F9/F12 threat-reference scenario failed before death recovery.");
+        return false;
+    }
+
+    if (!f10ChecksPassed || !cleanupPassed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core Tank/Healer death-reference cleanup and multi-add recovery failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states.");
+    return true;
+}
+
+
+
+
+class SimulatorCandidateTraceOverflowTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive &&
+            context.bot.roleId == static_cast<std::uint8_t>(PartyRole::Healer);
+    }
+    void CollectCandidates(DecisionContext const& context,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        for (uint32 i = 0; i < 4; ++i)
+        {
+            ActionCandidate candidate;
+            candidate.actionName = "missing_candidate_trace_probe";
+            candidate.targetGuid = context.snapshot.members.size() > 1
+                ? context.snapshot.members[1].guid : context.bot.guid;
+            candidate.basePriority = 200.0f - static_cast<float>(i) * 10.0f;
+            candidate.channel = ActionChannel::Utility;
+            candidates.push_back(candidate);
+        }
+    }
+private:
+    std::string m_name = "simulator_candidate_trace_overflow";
+};
+
+bool RunEngineCoreItemUseSmokeTest(Map& map)
+{
+    static uint32 const MinorHealingPotionItemId = 118;
+    ItemPrototype const* potionPrototype =
+        sObjectMgr.GetItemPrototype(MinorHealingPotionItemId);
+    uint32 spellSlot = MAX_ITEM_PROTO_SPELLS;
+    if (potionPrototype)
+    {
+        for (uint32 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+            if (potionPrototype->Spells[i].SpellId &&
+                potionPrototype->Spells[i].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+            {
+                spellSlot = i;
+                break;
+            }
+    }
+
+    bool const prototypeValid = potionPrototype &&
+        spellSlot < MAX_ITEM_PROTO_SPELLS &&
+        potionPrototype->Spells[spellSlot].SpellCharges < 0 &&
+        sSpellMgr.GetSpellEntry(potionPrototype->Spells[spellSlot].SpellId);
+    if (!prototypeValid)
+        return false;
+
+    // Inventory-backed diagnostic for a deterministic F42 cancellation
+    // fixture. Search the exact item_template rows loaded by this simulator
+    // together with its pinned Spell.dbc records; do not assume a retail item
+    // ID or synthesize timing/effect fields.
+    struct DelayedItemUseCandidate
+    {
+        ItemPrototype const* item = nullptr;
+        SpellEntry const* spell = nullptr;
+        uint8 slot = 0xff;
+        uint32 castTimeMs = 0;
+    };
+    std::vector<DelayedItemUseCandidate> delayedItemUseCandidates;
+    for (auto const& itemPair : sObjectMgr.GetItemPrototypeMap())
+    {
+        ItemPrototype const& item = itemPair.second;
+        if (item.ItemId != itemPair.first || item.Stackable >= 2)
+            continue;
+
+        for (uint8 slot = 0; slot < MAX_ITEM_PROTO_SPELLS; ++slot)
+        {
+            _ItemSpell const& itemSpell = item.Spells[slot];
+            if (!itemSpell.SpellId ||
+                itemSpell.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE ||
+                !itemSpell.SpellCharges)
+                continue;
+
+            SpellEntry const* spell = sSpellMgr.GetSpellEntry(itemSpell.SpellId);
+            if (!spell || spell->speed <= 0.0f)
+                continue;
+
+            uint32 const castTimeMs = spell->GetCastTime(nullptr, nullptr);
+
+            DelayedItemUseCandidate candidate;
+            candidate.item = &item;
+            candidate.spell = spell;
+            candidate.slot = slot;
+            candidate.castTimeMs = castTimeMs;
+            delayedItemUseCandidates.push_back(candidate);
+        }
+    }
+    std::sort(delayedItemUseCandidates.begin(), delayedItemUseCandidates.end(),
+        [](DelayedItemUseCandidate const& lhs,
+           DelayedItemUseCandidate const& rhs)
+        {
+            if (lhs.item->ItemId != rhs.item->ItemId)
+                return lhs.item->ItemId < rhs.item->ItemId;
+            return lhs.slot < rhs.slot;
+        });
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] F42 delayed ON_USE scan: candidates=%u (real item_template + Spell.dbc; ON_USE, finite charges, non-stackable, speed>0; cast time is reported).",
+        static_cast<uint32>(delayedItemUseCandidates.size()));
+    for (std::size_t i = 0;
+         i < delayedItemUseCandidates.size() && i < 24; ++i)
+    {
+        DelayedItemUseCandidate const& candidate = delayedItemUseCandidates[i];
+        ItemPrototype const& item = *candidate.item;
+        SpellEntry const& spell = *candidate.spell;
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] F42 delayed ON_USE candidate: item=%u name=%s slot=%u charges=%d stackable=%u requiredLevel=%u spell=%u spellName=%s castTimeMs=%u speed=%.2f effect0=%u targetA0=%u targetB0=%u effect1=%u targetA1=%u targetB1=%u.",
+            item.ItemId, item.Name1 ? item.Name1 : "<unnamed>",
+            candidate.slot, item.Spells[candidate.slot].SpellCharges,
+            item.Stackable, item.RequiredLevel, spell.Id,
+            spell.SpellName[0].c_str(), candidate.castTimeMs, spell.speed,
+            spell.Effect[0], spell.EffectImplicitTargetA[0],
+            spell.EffectImplicitTargetB[0], spell.Effect[1],
+            spell.EffectImplicitTargetA[1], spell.EffectImplicitTargetB[1]);
+    }
+
+    class SimulatorItemUseCapture final : public ItemUseTerminalListener
+    {
+    public:
+        void OnItemUseTerminal(ItemUseTerminalEvent const& event) override
+        {
+            events.push_back(event);
+        }
+        std::vector<ItemUseTerminalEvent> events;
+    };
+
+    // First Player proves the successful ON_USE path using the same implicit
+    // self-target semantics as HandleUseItemOpcode (no explicit unit target).
+    WorldSession successSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* successPlayer = nullptr;
+    if (!CreateSimulatorPlayer(map, 1, successSession, successPlayer, 0.0f, 9.0f, 4.0f))
+    {
+        if (successSession.GetPlayer())
+            successSession.LogoutPlayer(false);
+        else if (successPlayer)
+            delete successPlayer;
+        return false;
+    }
+
+    PartyBotAI successAI(successPlayer, map.GetId(), map.GetInstanceId(),
+                         successPlayer->GetPositionX(), successPlayer->GetPositionY(),
+                         successPlayer->GetPositionZ(), successPlayer->GetOrientation());
+    successAI.SetPlayer(successPlayer);
+    successPlayer->SetAI(&successAI);
+    std::shared_ptr<SimulatorItemUseCapture> successItemUseCapture(
+        new SimulatorItemUseCapture());
+    bool const successListenerAdded =
+        successAI.m_partyBotEngine.AddItemUseTerminalListener(successItemUseCapture);
+
+    Item* potion = successPlayer->StoreNewItemInInventorySlot(MinorHealingPotionItemId, 1);
+    ObjectGuid const potionGuid = potion ? potion->GetObjectGuid() : ObjectGuid();
+    int32 const initialCharges = potion ? potion->GetSpellCharges(spellSlot) : 0;
+    uint32 const potionHealthBefore = successPlayer->GetMaxHealth() / 2;
+    successPlayer->SetHealth(potionHealthBefore);
+
+    SpellCastTargets validTargets;
+    validTargets.PrepareForSpellSystem(successPlayer);
+    uint64 const successItemUseId = potion
+        ? successPlayer->CastItemUseSpell(potion, validTargets) : 0;
+
+    for (uint32 tick = 0; tick < 8 &&
+         successPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    uint32 const potionHealthAfter = successPlayer->GetHealth();
+    bool const potionConsumed = potionGuid &&
+        successPlayer->GetItemByGuid(potionGuid) == nullptr;
+    bool const successfulUse = potionGuid && initialCharges < 0 &&
+        potionHealthAfter > potionHealthBefore && potionConsumed &&
+        successPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+
+    std::uint32_t successMutationCount = 0;
+    ItemUseMutationEvent successMutation;
+    while (successAI.m_partyBotEngine.PopItemUseMutationEvent(successMutation))
+        ++successMutationCount;
+    bool const successfulAggregate = successListenerAdded &&
+        successItemUseId != 0 &&
+        successItemUseCapture->events.size() == 1 &&
+        successItemUseCapture->events[0].itemUseId == successItemUseId &&
+        successItemUseCapture->events[0].status ==
+            ItemUseAggregateStatus::AllSucceeded &&
+        successItemUseCapture->events[0].childCount == 1 &&
+        successItemUseCapture->events[0].completedChildCount == 1 &&
+        successItemUseCapture->events[0].observedMutationCount == successMutationCount &&
+        successMutationCount >= 1 &&
+        successAI.m_partyBotEngine.GetPendingItemUseCount() == 0;
+    successPlayer->SetAI(nullptr);
+    successSession.LogoutPlayer(false);
+    bool const successPlayerCleaned = successSession.GetPlayer() == nullptr;
+
+    // A separate fresh Player avoids the previous potion's item cooldown/GCD;
+    // the only deliberate rejection cause is the zero-charge item state.
+    WorldSession rejectedSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* rejectedPlayer = nullptr;
+    if (!CreateSimulatorPlayer(map, 1, rejectedSession, rejectedPlayer,
+                               0.0f, 9.0f, 4.0f))
+    {
+        if (rejectedSession.GetPlayer())
+            rejectedSession.LogoutPlayer(false);
+        else if (rejectedPlayer)
+            delete rejectedPlayer;
+        return false;
+    }
+
+    Item* noChargePotion =
+        rejectedPlayer->StoreNewItemInInventorySlot(MinorHealingPotionItemId, 1);
+    ObjectGuid const noChargeGuid = noChargePotion
+        ? noChargePotion->GetObjectGuid() : ObjectGuid();
+    if (noChargePotion)
+        noChargePotion->SetSpellCharges(spellSlot, 0);
+    PartyBotAI rejectedAI(rejectedPlayer, map.GetId(), map.GetInstanceId(),
+                          rejectedPlayer->GetPositionX(), rejectedPlayer->GetPositionY(),
+                          rejectedPlayer->GetPositionZ(), rejectedPlayer->GetOrientation());
+    rejectedAI.SetPlayer(rejectedPlayer);
+    rejectedPlayer->SetAI(&rejectedAI);
+    std::shared_ptr<SimulatorItemUseCapture> rejectedItemUseCapture(
+        new SimulatorItemUseCapture());
+    bool const rejectedListenerAdded =
+        rejectedAI.m_partyBotEngine.AddItemUseTerminalListener(rejectedItemUseCapture);
+
+    uint32 const rejectedHealthBefore = rejectedPlayer->GetMaxHealth() / 2;
+    rejectedPlayer->SetHealth(rejectedHealthBefore);
+
+    SpellCastTargets rejectedTargets;
+    rejectedTargets.PrepareForSpellSystem(rejectedPlayer);
+    uint64 const rejectedItemUseId = noChargePotion
+        ? rejectedPlayer->CastItemUseSpell(noChargePotion, rejectedTargets) : 0;
+
+    for (uint32 tick = 0; tick < 4 &&
+         rejectedPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    Item* rejectedStillOwned = noChargeGuid
+        ? rejectedPlayer->GetItemByGuid(noChargeGuid) : nullptr;
+    bool const rejectedWithoutConsumption = noChargeGuid && rejectedStillOwned &&
+        rejectedStillOwned->GetCount() == 1 &&
+        rejectedStillOwned->GetSpellCharges(spellSlot) == 0 &&
+        rejectedPlayer->GetHealth() == rejectedHealthBefore &&
+        rejectedPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+    bool const rejectedAggregate = rejectedListenerAdded &&
+        rejectedItemUseId != 0 &&
+        rejectedItemUseCapture->events.size() == 1 &&
+        rejectedItemUseCapture->events[0].itemUseId == rejectedItemUseId &&
+        rejectedItemUseCapture->events[0].status ==
+            ItemUseAggregateStatus::AllFailed &&
+        rejectedItemUseCapture->events[0].childCount == 1 &&
+        rejectedItemUseCapture->events[0].completedChildCount == 1 &&
+        rejectedItemUseCapture->events[0].observedMutationCount == 0 &&
+        rejectedAI.m_partyBotEngine.GetPendingItemUseCount() == 0;
+    rejectedPlayer->SetAI(nullptr);
+    rejectedSession.LogoutPlayer(false);
+    bool const rejectedPlayerCleaned = rejectedSession.GetPlayer() == nullptr;
+
+    // Temporarily duplicate the potion's ON_USE spell into one empty prototype
+    // slot. This override exists only in the disposable simulator process and is
+    // restored before returning; the Core still creates/prepares both real Spells.
+    uint8 multiSpellSlot = MAX_ITEM_PROTO_SPELLS;
+    for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+        if (i != spellSlot && !potionPrototype->Spells[i].SpellId) {
+            multiSpellSlot = i;
+            break;
+        }
+    ItemPrototype* mutablePotionPrototype =
+        const_cast<ItemPrototype*>(potionPrototype);
+    auto const savedFirstSpell = mutablePotionPrototype->Spells[spellSlot];
+    auto const savedSecondSpell = mutablePotionPrototype->Spells[
+        multiSpellSlot < MAX_ITEM_PROTO_SPELLS ? multiSpellSlot : spellSlot];
+    uint32 const savedPotionStackable = mutablePotionPrototype->Stackable;
+
+    bool multiSlotFixturePassed = false;
+    std::uint64_t multiRootId = 0;
+    std::uint8_t multiChildCount = 0;
+    std::uint8_t multiMutationCount = 0;
+    bool multiFirstTriggered = true;
+    bool multiSecondTriggered = false;
+    bool multiChargesConsumed = false;
+    bool multiPlayerCleaned = false;
+
+    if (multiSpellSlot < MAX_ITEM_PROTO_SPELLS)
+    {
+        // Core persists finite spell charges on non-stackable items. Make this
+        // disposable one-count fixture exercise that real mutation path.
+        mutablePotionPrototype->Stackable = 1;
+        mutablePotionPrototype->Spells[spellSlot].SpellCharges = 2;
+        mutablePotionPrototype->Spells[multiSpellSlot] =
+            mutablePotionPrototype->Spells[spellSlot];
+        mutablePotionPrototype->Spells[multiSpellSlot].SpellCharges = 2;
+
+        WorldSession multiSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+        Player* multiPlayer = nullptr;
+        if (CreateSimulatorPlayer(map, 1, multiSession, multiPlayer,
+                                  0.0f, 9.0f, 4.0f))
+        {
+            PartyBotAI multiAI(multiPlayer, map.GetId(), map.GetInstanceId(),
+                               multiPlayer->GetPositionX(), multiPlayer->GetPositionY(),
+                               multiPlayer->GetPositionZ(), multiPlayer->GetOrientation());
+            multiAI.SetPlayer(multiPlayer);
+            multiPlayer->SetAI(&multiAI);
+            std::shared_ptr<SimulatorItemUseCapture> multiCapture(
+                new SimulatorItemUseCapture());
+            bool const listenerAdded =
+                multiAI.m_partyBotEngine.AddItemUseTerminalListener(multiCapture);
+
+            Item* multiPotion =
+                multiPlayer->StoreNewItemInInventorySlot(MinorHealingPotionItemId, 1);
+            ObjectGuid const multiPotionGuid = multiPotion
+                ? multiPotion->GetObjectGuid() : ObjectGuid();
+            if (multiPotion)
+            {
+                multiPotion->SetSpellCharges(spellSlot, 2);
+                multiPotion->SetSpellCharges(multiSpellSlot, 2);
+            }
+
+            uint32 const multiHealthBefore = multiPlayer->GetMaxHealth() / 2;
+            multiPlayer->SetHealth(multiHealthBefore);
+            SpellCastTargets multiTargets;
+            multiTargets.PrepareForSpellSystem(multiPlayer);
+            multiRootId = multiPotion
+                ? multiPlayer->CastItemUseSpell(multiPotion, multiTargets) : 0;
+
+            for (uint32 tick = 0; tick < 8 &&
+                 (multiAI.m_partyBotEngine.GetPendingItemUseCount() != 0 ||
+                  multiPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL)); ++tick)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                map.Update(250);
+            }
+
+            Item* multiStillOwned = multiPotionGuid
+                ? multiPlayer->GetItemByGuid(multiPotionGuid) : nullptr;
+            multiChargesConsumed = multiStillOwned &&
+                multiStillOwned->GetCount() == 1 &&
+                multiStillOwned->GetSpellCharges(spellSlot) == 1 &&
+                multiStillOwned->GetSpellCharges(multiSpellSlot) == 1;
+
+            multiChildCount = multiCapture->events.size() == 1
+                ? multiCapture->events[0].childCount : 0;
+            if (multiCapture->events.size() == 1 && multiChildCount == 2)
+            {
+                ItemUseTerminalEvent const& event = multiCapture->events[0];
+                multiFirstTriggered = event.children[0].triggered;
+                multiSecondTriggered = event.children[1].triggered;
+                multiSlotFixturePassed = listenerAdded && multiRootId &&
+                    event.itemUseId == multiRootId &&
+                    event.status == ItemUseAggregateStatus::AllSucceeded &&
+                    event.completedChildCount == 2 &&
+                    event.children[0].slotIndex == spellSlot &&
+                    event.children[0].spellId == savedFirstSpell.SpellId &&
+                    event.children[0].status == ItemUseChildStatus::Succeeded &&
+                    !event.children[0].triggered &&
+                    event.children[1].slotIndex == multiSpellSlot &&
+                    event.children[1].spellId == savedFirstSpell.SpellId &&
+                    event.children[1].status == ItemUseChildStatus::Succeeded &&
+                    event.children[1].triggered &&
+                    event.observedMutationCount == 2 &&
+                    multiChargesConsumed &&
+                    multiPlayer->GetHealth() > multiHealthBefore &&
+                    multiAI.m_partyBotEngine.GetPendingItemUseCount() == 0;
+
+                ItemUseMutationEvent mutation;
+                std::uint8_t mutationCount = 0;
+                bool sawFirstCharge = false, sawSecondCharge = false;
+                while (multiAI.m_partyBotEngine.PopItemUseMutationEvent(mutation))
+                {
+                    ++mutationCount;
+                    if (mutation.kind != ItemUseMutationKind::ChargeChanged ||
+                        mutation.childId != event.children[0].childId ||
+                        mutation.itemGuid != multiPotionGuid.GetRawValue() ||
+                        mutation.beforeCharges != 2 || mutation.afterCharges != 1)
+                        multiSlotFixturePassed = false;
+                    if (mutation.slotIndex == spellSlot)
+                        sawFirstCharge = true;
+                    if (mutation.slotIndex == multiSpellSlot)
+                        sawSecondCharge = true;
+                }
+                multiMutationCount = mutationCount;
+                multiSlotFixturePassed = multiSlotFixturePassed &&
+                    mutationCount == 2 && sawFirstCharge && sawSecondCharge;
+            }
+            multiPlayer->SetAI(nullptr);
+            multiSession.LogoutPlayer(false);
+            multiPlayerCleaned = multiSession.GetPlayer() == nullptr;
+        }
+    }
+
+    mutablePotionPrototype->Spells[spellSlot] = savedFirstSpell;
+    if (multiSpellSlot < MAX_ITEM_PROTO_SPELLS) {
+        mutablePotionPrototype->Spells[multiSpellSlot] = savedSecondSpell;
+        mutablePotionPrototype->Stackable = savedPotionStackable;
+    }
+
+    // A pinned Vanilla 5875 item_template row with a real missile spell
+    // exercises both sides of Core's TakeCastItem timing. Brimstone casts
+    // Fireball (2s cast, 24 yd/s); the first Player cancels while PREPARING,
+    // the second is interrupted after launch/mutation while DELAYED.
+    static uint32 const DelayedItemId = 1402; // Brimstone
+    static uint32 const DelayedSpellId = 143; // Fireball
+    ItemPrototype const* delayedPrototype =
+        sObjectMgr.GetItemPrototype(DelayedItemId);
+    SpellEntry const* delayedSpell = sSpellMgr.GetSpellEntry(DelayedSpellId);
+    uint8 delayedSpellSlot = 0xff;
+    if (delayedPrototype)
+    {
+        for (uint8 slot = 0; slot < MAX_ITEM_PROTO_SPELLS; ++slot)
+        {
+            _ItemSpell const& itemSpell = delayedPrototype->Spells[slot];
+            if (itemSpell.SpellId == DelayedSpellId &&
+                itemSpell.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+            {
+                delayedSpellSlot = slot;
+                break;
+            }
+        }
+    }
+    bool const delayedDataValid = delayedPrototype && delayedSpell &&
+        delayedSpellSlot < MAX_ITEM_PROTO_SPELLS &&
+        delayedPrototype->Spells[delayedSpellSlot].SpellCharges == -5 &&
+        delayedPrototype->Stackable < 2 &&
+        delayedSpell->GetCastTime(nullptr, nullptr) == 2000 &&
+        delayedSpell->speed == 24.0f &&
+        delayedSpell->Effect[EFFECT_INDEX_0] == SPELL_EFFECT_SCHOOL_DAMAGE &&
+        delayedSpell->EffectImplicitTargetA[EFFECT_INDEX_0] == 6;
+
+    CreatureInfo const* delayedTargetInfo = FindSafeCreatureTemplate();
+    uint32 delayedPartyFaction = 0, delayedHostileFaction = 0;
+    bool const delayedFactionsValid =
+        FindMutuallyHostileFactions(delayedPartyFaction, delayedHostileFaction);
+    SimulatorActor delayedTarget;
+    bool const delayedTargetCreated = delayedDataValid &&
+        delayedTargetInfo && delayedFactionsValid &&
+        CreateSimulatorActor(map, *delayedTargetInfo, delayedHostileFaction,
+                             20.0f, 9.0f, delayedTarget);
+    bool preCancelPlayerCleaned = false;
+    bool postCancelPlayerCleaned = false;
+    bool preCancelPrepared = false;
+    bool preCancelInterrupted = false;
+    bool preCancelUnmutated = false;
+    bool postCancelDelayed = false;
+    bool postCancelInterrupted = false;
+    bool postCancelMutation = false;
+    bool postCancelNoImpact = false;
+    uint32 delayedTargetHealthBefore = delayedTarget.creature
+        ? delayedTarget.creature->GetHealth() : 0;
+    uint32 delayedTargetHealthAfter = delayedTargetHealthBefore;
+    int32 preCancelChargesBefore = 0;
+    int32 preCancelChargesAfter = 0;
+    int32 postCancelChargesBefore = 0;
+    int32 postCancelChargesAfter = 0;
+    bool delayedPreListenerAdded = false;
+    bool delayedPostListenerAdded = false;
+    uint8 preCancelTerminalCount = 0;
+    uint8 postCancelTerminalCount = 0;
+    uint8 postCancelMutationCount = 0;
+    bool postCancelMutationPhaseBeforeEffects = false;
+    bool postCancelMutationIdentityValid = false;
+
+    if (delayedTargetCreated)
+    {
+        WorldSession preCancelSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+        Player* preCancelPlayer = nullptr;
+        if (CreateSimulatorPlayer(map, delayedPartyFaction, preCancelSession,
+                                  preCancelPlayer, 0.0f, 9.0f, 4.0f))
+        {
+            PartyBotAI preCancelAI(
+                preCancelPlayer, map.GetId(), map.GetInstanceId(),
+                preCancelPlayer->GetPositionX(), preCancelPlayer->GetPositionY(),
+                preCancelPlayer->GetPositionZ(), preCancelPlayer->GetOrientation());
+            preCancelAI.SetPlayer(preCancelPlayer);
+            preCancelPlayer->SetAI(&preCancelAI);
+            std::shared_ptr<SimulatorItemUseCapture> capture(
+                new SimulatorItemUseCapture());
+            delayedPreListenerAdded =
+                preCancelAI.m_partyBotEngine.AddItemUseTerminalListener(capture);
+
+            Item* item = preCancelPlayer->StoreNewItemInInventorySlot(
+                DelayedItemId, 1);
+            ObjectGuid const itemGuid = item ? item->GetObjectGuid() : ObjectGuid();
+            preCancelChargesBefore = item && delayedSpellSlot < MAX_ITEM_PROTO_SPELLS
+                ? item->GetSpellCharges(delayedSpellSlot) : 0;
+            SpellCastTargets targets;
+            targets.PrepareForSpellSystem(preCancelPlayer);
+            if (delayedTarget.creature)
+                targets.setUnitTarget(delayedTarget.creature);
+            uint64 const itemUseId = item
+                ? preCancelPlayer->CastItemUseSpell(item, targets) : 0;
+            Spell* const preparingSpell =
+                preCancelPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            preCancelPrepared = delayedPreListenerAdded && itemUseId &&
+                itemGuid && item->GetCount() == 1 &&
+                preCancelChargesBefore == -5 &&
+                preCancelPlayer->CanUseItem(item) == EQUIP_ERR_OK &&
+                delayedTarget.creature &&
+                preCancelPlayer->CanAttack(delayedTarget.creature) &&
+                preparingSpell && preparingSpell->m_spellInfo->Id == DelayedSpellId &&
+                preparingSpell->getState() == SPELL_STATE_PREPARING;
+
+            if (preCancelPrepared)
+            {
+                // The cast-time SpellEvent has not fired, so Core has not called
+                // TakeCastItem. The regular non-delayed interrupt must preserve
+                // the real item and its charge.
+                preCancelPlayer->InterruptNonMeleeSpells(
+                    false, DelayedSpellId);
+                preCancelInterrupted =
+                    preCancelPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+                    capture->events.size() == 1 &&
+                    capture->events[0].itemUseId == itemUseId &&
+                    capture->events[0].status == ItemUseAggregateStatus::AllInterrupted &&
+                    capture->events[0].childCount == 1 &&
+                    capture->events[0].interruptedChildCount == 1 &&
+                    capture->events[0].observedMutationCount == 0;
+                Item* const itemAfter = preCancelPlayer->GetItemByGuid(itemGuid);
+                preCancelChargesAfter = itemAfter && delayedSpellSlot < MAX_ITEM_PROTO_SPELLS
+                    ? itemAfter->GetSpellCharges(delayedSpellSlot) : 0;
+                preCancelUnmutated = itemAfter == item &&
+                    itemAfter->GetCount() == 1 &&
+                    preCancelChargesAfter == preCancelChargesBefore &&
+                    preCancelAI.m_partyBotEngine.GetPendingItemUseCount() == 0;
+                preCancelTerminalCount =
+                    capture->events.empty() ? 0 : capture->events[0].completedChildCount;
+            }
+            preCancelPlayer->SetAI(nullptr);
+            preCancelSession.LogoutPlayer(false);
+            preCancelPlayerCleaned = preCancelSession.GetPlayer() == nullptr;
+        }
+        else
+        {
+            if (preCancelSession.GetPlayer())
+                preCancelSession.LogoutPlayer(false);
+            else if (preCancelPlayer)
+                delete preCancelPlayer;
+        }
+
+        // The second Player has a clean cooldown/GCD and a fresh real item.
+        WorldSession postCancelSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+        Player* postCancelPlayer = nullptr;
+        if (CreateSimulatorPlayer(map, delayedPartyFaction, postCancelSession,
+                                  postCancelPlayer, 0.0f, 9.0f, 4.0f))
+        {
+            PartyBotAI postCancelAI(
+                postCancelPlayer, map.GetId(), map.GetInstanceId(),
+                postCancelPlayer->GetPositionX(), postCancelPlayer->GetPositionY(),
+                postCancelPlayer->GetPositionZ(), postCancelPlayer->GetOrientation());
+            postCancelAI.SetPlayer(postCancelPlayer);
+            postCancelPlayer->SetAI(&postCancelAI);
+            std::shared_ptr<SimulatorItemUseCapture> capture(
+                new SimulatorItemUseCapture());
+            delayedPostListenerAdded =
+                postCancelAI.m_partyBotEngine.AddItemUseTerminalListener(capture);
+
+            Item* item = postCancelPlayer->StoreNewItemInInventorySlot(
+                DelayedItemId, 1);
+            ObjectGuid const itemGuid = item ? item->GetObjectGuid() : ObjectGuid();
+            postCancelChargesBefore = item && delayedSpellSlot < MAX_ITEM_PROTO_SPELLS
+                ? item->GetSpellCharges(delayedSpellSlot) : 0;
+            SpellCastTargets targets;
+            targets.PrepareForSpellSystem(postCancelPlayer);
+            if (delayedTarget.creature)
+                targets.setUnitTarget(delayedTarget.creature);
+            uint64 const itemUseId = item
+                ? postCancelPlayer->CastItemUseSpell(item, targets) : 0;
+            Spell* const initialSpell =
+                postCancelPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            bool const initialPreparing = delayedPostListenerAdded && itemUseId &&
+                itemGuid && item->GetCount() == 1 &&
+                postCancelChargesBefore == -5 &&
+                postCancelPlayer->CanUseItem(item) == EQUIP_ERR_OK &&
+                delayedTarget.creature &&
+                postCancelPlayer->CanAttack(delayedTarget.creature) &&
+                initialSpell && initialSpell->m_spellInfo->Id == DelayedSpellId &&
+                initialSpell->getState() == SPELL_STATE_PREPARING;
+
+            ItemUseMutationEvent mutation;
+            bool haveLaunchMutation = false;
+            // Advance the real EventProcessor in small bounded increments.
+            // Stop on the exact update where Core has launched the projectile
+            // and TakeCastItem has emitted its BeforeEffects mutation.
+            for (uint32 tick = 0; initialPreparing && tick < 350; ++tick)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                map.Update(10);
+                while (postCancelAI.m_partyBotEngine.PopItemUseMutationEvent(mutation))
+                {
+                    ++postCancelMutationCount;
+                    haveLaunchMutation = haveLaunchMutation ||
+                        (mutation.itemUseId == itemUseId && mutation.childId != 0);
+                }
+                Spell* const current =
+                    postCancelPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                if (current && current->m_spellInfo->Id == DelayedSpellId &&
+                    current->getState() == SPELL_STATE_DELAYED &&
+                    haveLaunchMutation)
+                {
+                    postCancelDelayed = true;
+                    break;
+                }
+                if (!capture->events.empty())
+                    break;
+            }
+
+            if (postCancelDelayed && postCancelMutationCount == 1)
+            {
+                Item* const itemAtLaunch = postCancelPlayer->GetItemByGuid(itemGuid);
+                postCancelChargesAfter = itemAtLaunch &&
+                    delayedSpellSlot < MAX_ITEM_PROTO_SPELLS
+                    ? itemAtLaunch->GetSpellCharges(delayedSpellSlot) : 0;
+                // Core deliberately ignores delayed generic spells unless
+                // withDelayed=true. Cancel on the same map-thread turn as the
+                // charge mutation, before the projectile's future impact event.
+                postCancelPlayer->InterruptNonMeleeSpells(
+                    true, DelayedSpellId);
+                postCancelInterrupted =
+                    postCancelPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+                    capture->events.size() == 1 &&
+                    capture->events[0].itemUseId == itemUseId &&
+                    capture->events[0].status == ItemUseAggregateStatus::AllInterrupted &&
+                    capture->events[0].childCount == 1 &&
+                    capture->events[0].interruptedChildCount == 1 &&
+                    capture->events[0].observedMutationCount == 1;
+                postCancelMutation =
+                    mutation.kind == ItemUseMutationKind::ChargeChanged &&
+                    mutation.phase == ItemUseMutationPhase::BeforeEffects &&
+                    mutation.slotIndex == delayedSpellSlot &&
+                    mutation.itemGuid == itemGuid.GetRawValue() &&
+                    mutation.itemEntry == DelayedItemId &&
+                    mutation.beforeCharges == -5 && mutation.afterCharges == -4 &&
+                    mutation.itemExistsAfter &&
+                    postCancelChargesAfter == -4;
+                postCancelMutationPhaseBeforeEffects =
+                    mutation.phase == ItemUseMutationPhase::BeforeEffects;
+                postCancelMutationIdentityValid =
+                    capture->events.size() == 1 &&
+                    mutation.itemUseId == itemUseId &&
+                    mutation.childId == capture->events[0].children[0].childId;
+                postCancelTerminalCount = capture->events.empty()
+                    ? 0 : capture->events[0].completedChildCount;
+                // Let the already-scheduled projectile event mature. A
+                // cancelled Spell must be deleted without applying Fireball.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                map.Update(1000);
+                delayedTargetHealthAfter = delayedTarget.creature->GetHealth();
+                Item* const itemAfter = postCancelPlayer->GetItemByGuid(itemGuid);
+                postCancelNoImpact = delayedTargetHealthAfter ==
+                    delayedTargetHealthBefore &&
+                    itemAfter == item && itemAfter->GetCount() == 1 &&
+                    itemAfter->GetSpellCharges(delayedSpellSlot) == -4 &&
+                    postCancelAI.m_partyBotEngine.GetPendingItemUseCount() == 0;
+            }
+
+            postCancelPlayer->SetAI(nullptr);
+            postCancelSession.LogoutPlayer(false);
+            postCancelPlayerCleaned = postCancelSession.GetPlayer() == nullptr;
+        }
+        else
+        {
+            if (postCancelSession.GetPlayer())
+                postCancelSession.LogoutPlayer(false);
+            else if (postCancelPlayer)
+                delete postCancelPlayer;
+        }
+    }
+
+    bool const delayedTargetCleaned = DestroySimulatorActor(map, delayedTarget);
+    bool const delayedCancellationFixturePassed = delayedDataValid &&
+        delayedTargetCreated && delayedPreListenerAdded && delayedPostListenerAdded &&
+        preCancelPrepared && preCancelInterrupted && preCancelUnmutated &&
+        postCancelDelayed && postCancelInterrupted && postCancelMutation &&
+        postCancelMutationPhaseBeforeEffects && postCancelMutationIdentityValid &&
+        postCancelNoImpact && preCancelPlayerCleaned && postCancelPlayerCleaned &&
+        delayedTargetCleaned;
+    sLog.Out(LOG_BASIC, delayedCancellationFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F42 delayed ON_USE cancellation: data=%u target=%u prePrepared=%u preInterrupted=%u preUnmutated=%u preCharge=%d>%d preTerminals=%u postDelayed=%u postInterrupted=%u postMutation=%u mutationBeforeEffects=%u mutationIdentity=%u mutationCount=%u postCharge=%d>%d postNoImpact=%u postTerminals=%u cleanup=%u/%u/%u.",
+        delayedDataValid ? 1u : 0u, delayedTargetCreated ? 1u : 0u,
+        preCancelPrepared ? 1u : 0u, preCancelInterrupted ? 1u : 0u,
+        preCancelUnmutated ? 1u : 0u, preCancelChargesBefore,
+        preCancelChargesAfter, preCancelTerminalCount,
+        postCancelDelayed ? 1u : 0u, postCancelInterrupted ? 1u : 0u,
+        postCancelMutation ? 1u : 0u,
+        postCancelMutationPhaseBeforeEffects ? 1u : 0u,
+        postCancelMutationIdentityValid ? 1u : 0u, postCancelMutationCount,
+        postCancelChargesBefore, postCancelChargesAfter,
+        postCancelNoImpact ? 1u : 0u, postCancelTerminalCount,
+        preCancelPlayerCleaned ? 1u : 0u,
+        postCancelPlayerCleaned ? 1u : 0u,
+        delayedTargetCleaned ? 1u : 0u);
+
+    bool const passed = successfulUse && rejectedWithoutConsumption &&
+        successfulAggregate && rejectedAggregate &&
+        multiSlotFixturePassed && multiPlayerCleaned &&
+        successPlayerCleaned && rejectedPlayerCleaned &&
+        delayedCancellationFixturePassed;
+    sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] F42 Core item-use aggregate: prototype=%u spellSlot=%u spellId=%u healed=%u>%u consumed=%u successRoot=%u successChildren=%u successMutations=%u rejectedRoot=%u rejectedChildren=%u rejectedMutations=%u multiSlot=%u multiRoot=%u multiChildren=%u firstTriggered=%u secondTriggered=%u multiMutations=%u multiChargesConsumed=%u cleanup=%u/%u/%u.",
+             prototypeValid ? 1u : 0u, spellSlot,
+             potionPrototype->Spells[spellSlot].SpellId,
+             potionHealthBefore, potionHealthAfter, potionConsumed ? 1u : 0u,
+             successfulAggregate ? 1u : 0u,
+             successfulAggregate ? successItemUseCapture->events[0].childCount : 0u,
+             successMutationCount,
+             rejectedAggregate ? 1u : 0u,
+             rejectedAggregate ? rejectedItemUseCapture->events[0].childCount : 0u,
+             rejectedAggregate ? rejectedItemUseCapture->events[0].observedMutationCount : 0u,
+             multiSlotFixturePassed ? 1u : 0u, multiRootId ? 1u : 0u,
+             multiChildCount, multiFirstTriggered ? 1u : 0u,
+             multiSecondTriggered ? 1u : 0u, multiMutationCount,
+             multiChargesConsumed ? 1u : 0u,
+             successPlayerCleaned ? 1u : 0u, rejectedPlayerCleaned ? 1u : 0u,
+             multiPlayerCleaned ? 1u : 0u);
+    if (passed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F42 real Core aggregated single-slot use/rejection, a synthetic two-ON_USE-slot prototype, and a real delayed Brimstone/Fireball ON_USE cancellation before and after its Core charge mutation.");
+    return passed;
+}
+
+
+
+bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
+{
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    WorldSession followerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    WorldSession firstLeaderSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    WorldSession nextLeaderSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* follower = nullptr;
+    Player* firstLeader = nullptr;
+    Player* nextLeader = nullptr;
+
+    bool const playersCreated =
+        CreateSimulatorPlayer(map, partyFaction, followerSession, follower,
+                              0.0f, 30.0f, 0.0f) &&
+        CreateSimulatorPlayer(map, partyFaction, firstLeaderSession, firstLeader,
+                              8.0f, 30.0f, 0.0f) &&
+        CreateSimulatorPlayer(map, partyFaction, nextLeaderSession, nextLeader,
+                              14.0f, 30.0f, 0.0f);
+
+    ObjectGuid const followerGuid = follower
+        ? follower->GetObjectGuid() : ObjectGuid();
+    ObjectGuid const firstLeaderGuid = firstLeader
+        ? firstLeader->GetObjectGuid() : ObjectGuid();
+    ObjectGuid const nextLeaderGuid = nextLeader
+        ? nextLeader->GetObjectGuid() : ObjectGuid();
+
+    std::unique_ptr<Group> group(new Group());
+    bool groupRegistered = false;
+    std::unique_ptr<PartyBotAI> actionRuntime;
+
+    auto cleanup = [&]() -> bool
+    {
+        if (follower)
+        {
+            follower->GetMotionMaster()->MoveIdle();
+            follower->SetAI(nullptr);
+        }
+        actionRuntime.reset();
+
+        bool ungrouped = true;
+        if (group && group->GetId())
+        {
+            // Group::Create converts the follower's temporary solo instance bind
+            // into a group bind. Remove only that synthetic bind before Disband:
+            // Group::Disband otherwise resets the shared test map, preventing
+            // later Core Player fixtures from being created on the same instance.
+            group->UnbindInstance(map.GetId(), false);
+            group->Disband(true, followerGuid);
+            for (Player* player : {follower, firstLeader, nextLeader})
+                if (player && player->GetGroup())
+                    ungrouped = false;
+            if (groupRegistered)
+            {
+                sObjectMgr.RemoveGroup(group.get());
+                groupRegistered = false;
+            }
+            group.reset();
+        }
+
+        if (followerSession.GetPlayer())
+            followerSession.LogoutPlayer(false);
+        if (firstLeaderSession.GetPlayer())
+            firstLeaderSession.LogoutPlayer(false);
+        if (nextLeaderSession.GetPlayer())
+            nextLeaderSession.LogoutPlayer(false);
+
+        bool const sessionsCleaned =
+            !followerSession.GetPlayer() &&
+            !firstLeaderSession.GetPlayer() &&
+            !nextLeaderSession.GetPlayer();
+        bool const playersDetached =
+            (!followerGuid || !map.GetUnit(followerGuid)) &&
+            (!firstLeaderGuid || !map.GetUnit(firstLeaderGuid)) &&
+            (!nextLeaderGuid || !map.GetUnit(nextLeaderGuid));
+
+        follower = nullptr;
+        firstLeader = nullptr;
+        nextLeader = nullptr;
+        return ungrouped && sessionsCleaned && playersDetached;
+    };
+
+    if (!playersCreated || !follower || !firstLeader || !nextLeader)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] FollowPartyMember Player creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    bool const groupCreated = group->Create(
+        follower->GetObjectGuid(), follower->GetName());
+    if (groupCreated)
+    {
+        sObjectMgr.AddGroup(group.get());
+        groupRegistered = true;
+    }
+    bool const membersAdded = groupCreated &&
+        group->AddMember(firstLeader->GetObjectGuid(), firstLeader->GetName()) &&
+        group->AddMember(nextLeader->GetObjectGuid(), nextLeader->GetName());
+    if (!membersAdded)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] FollowPartyMember Group setup failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    actionRuntime.reset(new PartyBotAI(
+        follower, map.GetId(), map.GetInstanceId(),
+        follower->GetPositionX(), follower->GetPositionY(),
+        follower->GetPositionZ(), follower->GetOrientation()));
+    actionRuntime->SetPlayer(follower);
+    actionRuntime->m_initialized = true;
+    actionRuntime->m_updateTimer.Reset(600000);
+    follower->SetAI(actionRuntime.get());
+
+    PartyCoordinator initialCoordinator;
+    PartySnapshot const* initialSnapshot = PartySnapshotBuilder::GetOrBuild(
+        follower, initialCoordinator, WorldTimer::getMSTime(), 1000);
+    PartyMemberSnapshot const* initialBot =
+        initialSnapshot ? initialSnapshot->FindMember(followerGuid.GetRawValue()) : nullptr;
+    bool const rosterValid = initialSnapshot &&
+        initialSnapshot->members.size() == 3 && initialBot &&
+        initialSnapshot->FindMember(firstLeaderGuid.GetRawValue()) &&
+        initialSnapshot->FindMember(nextLeaderGuid.GetRawValue());
+    if (!rosterValid)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] FollowPartyMember initial roster snapshot failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+    PartySnapshot const beforeFollow = *initialSnapshot;
+    Guid const firstGuid = firstLeaderGuid.GetRawValue();
+    Guid const nextGuid = nextLeaderGuid.GetRawValue();
+    Guid const botGuid = followerGuid.GetRawValue();
+
+    PartyBotEngine engine;
+    std::shared_ptr<FollowPartyMemberAction> action(
+        new FollowPartyMemberAction());
+    bool const registered = engine.RegisterAction(action);
+    std::shared_ptr<Strategy> firstStrategy(
+        new Strategy("simulator_follow_party_member_first"));
+    firstStrategy->AddTrigger(
+        std::make_shared<SimulatorFollowPartyMemberTrigger>(firstGuid));
+    engine.AddStrategy(firstStrategy);
+
+    PartyMemberSnapshot const* botSnapshot = beforeFollow.FindMember(botGuid);
+    DecisionContext firstContext(
+        beforeFollow, *botSnapshot, initialCoordinator, WorldTimer::getMSTime(),
+        nullptr, nullptr, nullptr, nullptr, actionRuntime.get());
+    DecisionReport firstReport = engine.Evaluate(firstContext);
+    bool const firstSelected = registered &&
+        firstReport.selectedIndices.size() == 1 &&
+        firstReport.candidates[firstReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (firstSelected)
+        engine.ExecuteSelected(firstContext, firstReport);
+
+    MovementGenerator const* firstMovement = follower->GetMotionMaster()->GetCurrent();
+    FollowMovementGenerator<Player> const* firstFollow =
+        firstMovement &&
+        firstMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+            ? static_cast<FollowMovementGenerator<Player> const*>(firstMovement)
+            : nullptr;
+    bool const firstStarted = firstSelected &&
+        firstReport.candidates[firstReport.selectedIndices[0]].status ==
+            CandidateStatus::Executed &&
+        firstReport.candidates[firstReport.selectedIndices[0]].actionResult ==
+            ActionResult::Success &&
+        firstFollow && firstFollow->GetTarget() == firstLeader &&
+        follower->HasUnitState(UNIT_STATE_FOLLOW);
+
+    PartyCoordinator observedCoordinator;
+    PartySnapshot const* observedSnapshot = PartySnapshotBuilder::GetOrBuild(
+        follower, observedCoordinator, WorldTimer::getMSTime(), 1000);
+    PartyMemberSnapshot const* observedBot = observedSnapshot
+        ? observedSnapshot->FindMember(botGuid) : nullptr;
+    bool const followTargetCaptured = observedBot &&
+        observedBot->followTargetGuid == firstGuid;
+
+    bool sameTargetNotRestarted = false;
+    bool retargeted = false;
+    bool staleGroupRejected = false;
+    bool retargetRegistered = false;
+    bool staleSelected = false;
+    bool firstLeaderRemoved = false;
+    bool stopFollowingSnapshotCaptured = false;
+    bool stopFollowingRegistered = false;
+    bool staleStopTargetRejected = false;
+    bool stoppedFollowing = false;
+    bool pointMovementPreserved = false;
+
+    if (observedSnapshot && observedBot)
+    {
+        DecisionContext sameTargetContext(
+            *observedSnapshot, *observedBot, observedCoordinator,
+            WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+            actionRuntime.get());
+        DecisionReport sameTargetReport = engine.Evaluate(sameTargetContext);
+        sameTargetNotRestarted = sameTargetReport.selectedIndices.empty() &&
+            !sameTargetReport.candidates.empty() &&
+            sameTargetReport.candidates[0].status == CandidateStatus::RejectedUseless;
+
+        PartyBotEngine retargetEngine;
+        std::shared_ptr<FollowPartyMemberAction> retargetAction(
+            new FollowPartyMemberAction());
+        retargetRegistered = retargetEngine.RegisterAction(retargetAction);
+        std::shared_ptr<Strategy> retargetStrategy(
+            new Strategy("simulator_follow_party_member_retarget"));
+        retargetStrategy->AddTrigger(
+            std::make_shared<SimulatorFollowPartyMemberTrigger>(nextGuid));
+        retargetEngine.AddStrategy(retargetStrategy);
+        DecisionContext retargetContext(
+            *observedSnapshot, *observedBot, observedCoordinator,
+            WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+            actionRuntime.get());
+        DecisionReport retargetReport = retargetEngine.Evaluate(retargetContext);
+        bool const retargetSelected = retargetRegistered &&
+            retargetReport.selectedIndices.size() == 1 &&
+            retargetReport.candidates[retargetReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+        if (retargetSelected)
+            retargetEngine.ExecuteSelected(retargetContext, retargetReport);
+        MovementGenerator const* retargetMovement =
+            follower->GetMotionMaster()->GetCurrent();
+        FollowMovementGenerator<Player> const* retargetFollow =
+            retargetMovement &&
+            retargetMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                ? static_cast<FollowMovementGenerator<Player> const*>(retargetMovement)
+                : nullptr;
+        retargeted = retargetSelected &&
+            retargetReport.candidates[retargetReport.selectedIndices[0]].status ==
+                CandidateStatus::Executed &&
+            retargetReport.candidates[retargetReport.selectedIndices[0]].actionResult ==
+                ActionResult::Success &&
+            retargetFollow && retargetFollow->GetTarget() == nextLeader;
+
+        // The old snapshot still includes firstLeader, but the live Group no longer does.
+        firstLeaderRemoved =
+            group->RemoveMember(firstLeaderGuid, 0) == 2 &&
+            firstLeader->GetGroup() == nullptr;
+        PartyCoordinator staleCoordinator;
+        PartyMemberSnapshot const* staleBot = beforeFollow.FindMember(botGuid);
+        DecisionContext staleContext(
+            beforeFollow, *staleBot, staleCoordinator, WorldTimer::getMSTime(),
+            nullptr, nullptr, nullptr, nullptr, actionRuntime.get());
+        PartyBotEngine staleEngine;
+        std::shared_ptr<FollowPartyMemberAction> staleAction(
+            new FollowPartyMemberAction());
+        bool const staleRegistered = staleEngine.RegisterAction(staleAction);
+        std::shared_ptr<Strategy> staleStrategy(
+            new Strategy("simulator_follow_party_member_stale_group"));
+        staleStrategy->AddTrigger(
+            std::make_shared<SimulatorFollowPartyMemberTrigger>(firstGuid));
+        staleEngine.AddStrategy(staleStrategy);
+        DecisionReport staleReport = staleEngine.Evaluate(staleContext);
+        staleSelected = staleRegistered &&
+            staleReport.selectedIndices.size() == 1 &&
+            staleReport.candidates[staleReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+        if (staleSelected)
+            staleEngine.ExecuteSelected(staleContext, staleReport);
+        CandidateEvaluation const* staleEvaluation = staleSelected
+            ? &staleReport.candidates[staleReport.selectedIndices[0]] : nullptr;
+        MovementGenerator const* afterStaleMovement =
+            follower->GetMotionMaster()->GetCurrent();
+        FollowMovementGenerator<Player> const* afterStaleFollow =
+            afterStaleMovement &&
+            afterStaleMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                ? static_cast<FollowMovementGenerator<Player> const*>(afterStaleMovement)
+                : nullptr;
+        staleGroupRejected = firstLeaderRemoved && staleEvaluation &&
+            staleEvaluation->status == CandidateStatus::ExecutionFailed &&
+            staleEvaluation->actionResult == ActionResult::Impossible &&
+            staleEvaluation->reason ==
+                "follow_party_member_live_group_or_target_invalid" &&
+            afterStaleFollow && afterStaleFollow->GetTarget() == nextLeader;
+    }
+
+    // F43: stop only the currently active native FollowMovementGenerator.
+    // A changed live target must reject a stale snapshot; a matching snapshot
+    // may clear FOLLOW, and a later Point move must remain untouched.
+    PartyCoordinator stopSnapshotCoordinator;
+    PartySnapshot const* stopSnapshotSource = PartySnapshotBuilder::GetOrBuild(
+        follower, stopSnapshotCoordinator, WorldTimer::getMSTime(), 1000);
+    PartyMemberSnapshot const* stopSnapshotBot = stopSnapshotSource
+        ? stopSnapshotSource->FindMember(botGuid) : nullptr;
+    PartySnapshot stopSnapshot;
+    PartyMemberSnapshot stopBotSnapshot;
+    if (stopSnapshotSource && stopSnapshotBot)
+    {
+        stopSnapshot = *stopSnapshotSource;
+        stopBotSnapshot = *stopSnapshotBot;
+        stopFollowingSnapshotCaptured =
+            stopBotSnapshot.followTargetGuid == nextGuid;
+    }
+
+    PartyBotEngine stopEngine;
+    std::shared_ptr<StopFollowingAction> stopAction(
+        new StopFollowingAction());
+    stopFollowingRegistered = stopEngine.RegisterAction(stopAction);
+    std::shared_ptr<Strategy> stopStrategy(
+        new Strategy("simulator_stop_following"));
+    stopStrategy->AddTrigger(std::make_shared<SimulatorStopFollowingTrigger>());
+    stopEngine.AddStrategy(stopStrategy);
+
+    if (stopFollowingSnapshotCaptured && stopFollowingRegistered)
+    {
+        // Change the live target after the value snapshot was captured.
+        follower->GetMotionMaster()->MoveFollow(
+            firstLeader, 2.5f, 3.14159265358979323846f);
+        DecisionContext staleStopContext(
+            stopSnapshot, stopBotSnapshot, stopSnapshotCoordinator,
+            WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+            actionRuntime.get());
+        DecisionReport staleStopReport = stopEngine.Evaluate(staleStopContext);
+        bool const staleStopSelected = staleStopReport.selectedIndices.size() == 1 &&
+            staleStopReport.candidates[staleStopReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+        if (staleStopSelected)
+            stopEngine.ExecuteSelected(staleStopContext, staleStopReport);
+        CandidateEvaluation const* staleStopEvaluation = staleStopSelected
+            ? &staleStopReport.candidates[staleStopReport.selectedIndices[0]] : nullptr;
+        MovementGenerator const* changedFollowMovement =
+            follower->GetMotionMaster()->GetCurrent();
+        FollowMovementGenerator<Player> const* changedFollow =
+            changedFollowMovement &&
+            changedFollowMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                ? static_cast<FollowMovementGenerator<Player> const*>(changedFollowMovement)
+                : nullptr;
+        staleStopTargetRejected = staleStopEvaluation &&
+            staleStopEvaluation->status == CandidateStatus::ExecutionFailed &&
+            staleStopEvaluation->actionResult == ActionResult::Impossible &&
+            staleStopEvaluation->reason == "stop_following_live_target_mismatch" &&
+            changedFollow && changedFollow->GetTarget() == firstLeader &&
+            follower->HasUnitState(UNIT_STATE_FOLLOW);
+
+        // Restore the target, capture a fresh value snapshot, and stop that follow.
+        follower->GetMotionMaster()->MoveFollow(
+            nextLeader, 2.5f, 3.14159265358979323846f);
+        PartyCoordinator freshStopCoordinator;
+        PartySnapshot const* freshStopSource = PartySnapshotBuilder::GetOrBuild(
+            follower, freshStopCoordinator, WorldTimer::getMSTime(), 1000);
+        PartyMemberSnapshot const* freshStopBot = freshStopSource
+            ? freshStopSource->FindMember(botGuid) : nullptr;
+        if (freshStopSource && freshStopBot &&
+            freshStopBot->followTargetGuid == nextGuid)
+        {
+            PartySnapshot freshStopSnapshot = *freshStopSource;
+            PartyMemberSnapshot freshStopBotSnapshot = *freshStopBot;
+            DecisionContext stopContext(
+                freshStopSnapshot, freshStopBotSnapshot, freshStopCoordinator,
+                WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+                actionRuntime.get());
+            DecisionReport stopReport = stopEngine.Evaluate(stopContext);
+            bool const stopSelected = stopReport.selectedIndices.size() == 1 &&
+                stopReport.candidates[stopReport.selectedIndices[0]].status ==
+                    CandidateStatus::Selected;
+            if (stopSelected)
+                stopEngine.ExecuteSelected(stopContext, stopReport);
+            CandidateEvaluation const* stopEvaluation = stopSelected
+                ? &stopReport.candidates[stopReport.selectedIndices[0]] : nullptr;
+
+            MotionMaster* motion = follower->GetMotionMaster();
+            bool followGeneratorRemains = false;
+            for (MotionMaster::const_iterator it = motion->begin();
+                 it != motion->end(); ++it)
+            {
+                if ((*it)->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE)
+                {
+                    followGeneratorRemains = true;
+                    break;
+                }
+            }
+            stoppedFollowing = stopEvaluation &&
+                stopEvaluation->status == CandidateStatus::Executed &&
+                stopEvaluation->actionResult == ActionResult::Success &&
+                !followGeneratorRemains &&
+                !follower->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
+
+            // A stale positive follow snapshot must not replace a new Point move.
+            motion->MovePoint(77, follower->GetPositionX() + 5.0f,
+                              follower->GetPositionY(), follower->GetPositionZ());
+            DecisionContext staleAfterStopContext(
+                freshStopSnapshot, freshStopBotSnapshot, freshStopCoordinator,
+                WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+                actionRuntime.get());
+            DecisionReport staleAfterStopReport =
+                stopEngine.Evaluate(staleAfterStopContext);
+            bool const staleAfterStopSelected =
+                staleAfterStopReport.selectedIndices.size() == 1 &&
+                staleAfterStopReport.candidates[staleAfterStopReport.selectedIndices[0]].status ==
+                    CandidateStatus::Selected;
+            if (staleAfterStopSelected)
+                stopEngine.ExecuteSelected(staleAfterStopContext, staleAfterStopReport);
+            CandidateEvaluation const* staleAfterStopEvaluation = staleAfterStopSelected
+                ? &staleAfterStopReport.candidates[
+                    staleAfterStopReport.selectedIndices[0]] : nullptr;
+            pointMovementPreserved = staleAfterStopEvaluation &&
+                staleAfterStopEvaluation->status == CandidateStatus::ExecutionFailed &&
+                staleAfterStopEvaluation->actionResult == ActionResult::Useless &&
+                staleAfterStopEvaluation->reason ==
+                    "stop_following_not_currently_following" &&
+                motion->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE &&
+                !follower->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
+            motion->MovementExpired(false);
+        }
+    }
+
+    bool const stopFollowingPassed = stopFollowingSnapshotCaptured &&
+        stopFollowingRegistered && staleStopTargetRejected &&
+        stoppedFollowing && pointMovementPreserved;
+    sLog.Out(LOG_BASIC, stopFollowingPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] StopFollowingAction: registered=%u snapshot=%u staleTargetRejected=%u stopped=%u pointMovementPreserved=%u.",
+        stopFollowingRegistered ? 1u : 0u, stopFollowingSnapshotCaptured ? 1u : 0u,
+        staleStopTargetRejected ? 1u : 0u, stoppedFollowing ? 1u : 0u,
+        pointMovementPreserved ? 1u : 0u);
+
+    bool const passed = registered && firstStarted && followTargetCaptured &&
+        sameTargetNotRestarted && retargetRegistered && retargeted &&
+        firstLeaderRemoved && staleSelected && staleGroupRejected &&
+        stopFollowingPassed;
+    sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] Core FollowPartyMember action: registered=%u firstStarted=%u followTargetCaptured=%u sameTargetNotRestarted=%u retargetRegistered=%u retargeted=%u firstLeaderRemoved=%u staleSelected=%u staleGroupRejected=%u.",
+        registered ? 1u : 0u, firstStarted ? 1u : 0u,
+        followTargetCaptured ? 1u : 0u, sameTargetNotRestarted ? 1u : 0u,
+        retargetRegistered ? 1u : 0u, retargeted ? 1u : 0u,
+        firstLeaderRemoved ? 1u : 0u, staleSelected ? 1u : 0u,
+        staleGroupRejected ? 1u : 0u);
+
+    bool const cleaned = cleanup();
+    if (!passed || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] FollowPartyMember Core fixture failed (passed=%u cleanup=%u).",
+                 passed ? 1u : 0u, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-only current-follow snapshot to avoid restarting the same target, retargeted the native Player FollowMovementGenerator to a new group member, and rejected stale live-Group membership without disturbing movement.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator.");
+    return true;
+}
+
+bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor hostile;
+    SimulatorActor friendly;
+    bool const actorsCreated =
+        CreateSimulatorActor(map, *info, hostileFaction, 10.0f, 6.0f, hostile) &&
+        CreateSimulatorActor(map, *info, partyFaction, 3.0f, 6.0f, friendly);
+
+    WorldSession botSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* bot = nullptr;
+    bool const botCreated = actorsCreated &&
+        CreateSimulatorPlayer(map, partyFaction, botSession, bot, 0.0f, 6.0f, 4.0f);
+    if (!botCreated)
+    {
+        bool cleaned = true;
+        if (botSession.GetPlayer())
+            botSession.LogoutPlayer(false);
+        else if (bot)
+            delete bot;
+        cleaned = DestroySimulatorActor(map, friendly) && cleaned;
+        cleaned = DestroySimulatorActor(map, hostile) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Select-hostile target fixture creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    PartyBotAI actionRuntime(
+        bot, map.GetId(), map.GetInstanceId(),
+        bot->GetPositionX(), bot->GetPositionY(),
+        bot->GetPositionZ(), bot->GetOrientation());
+    actionRuntime.SetPlayer(bot);
+    actionRuntime.m_initialized = true;
+    actionRuntime.m_updateTimer.Reset(600000);
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 93;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 93;
+    snapshot.capturedAtMs = WorldTimer::getMSTime();
+
+    PartyMemberSnapshot member;
+    member.guid = bot->GetObjectGuid().GetRawValue();
+    member.mapId = map.GetId();
+    member.instanceId = map.GetInstanceId();
+    member.health = bot->GetHealth();
+    member.maxHealth = bot->GetMaxHealth();
+    member.selectionGuid = bot->GetSelectionGuid().GetRawValue();
+    member.online = bot->IsInWorld();
+    member.alive = bot->IsAlive();
+    snapshot.members.push_back(member);
+
+    HostileSnapshot hostileSnapshot;
+    hostileSnapshot.guid = hostile.creature->GetObjectGuid().GetRawValue();
+    hostileSnapshot.health = hostile.creature->GetHealth();
+    hostileSnapshot.maxHealth = hostile.creature->GetMaxHealth();
+    hostileSnapshot.x = hostile.creature->GetPositionX();
+    hostileSnapshot.y = hostile.creature->GetPositionY();
+    hostileSnapshot.z = hostile.creature->GetPositionZ();
+    hostileSnapshot.positionValid = true;
+    hostileSnapshot.alive = hostile.creature->IsAlive();
+    member.x = bot->GetPositionX();
+    member.y = bot->GetPositionY();
+    member.z = bot->GetPositionZ();
+    member.orientation = bot->GetOrientation();
+    snapshot.hostiles.push_back(hostileSnapshot);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(
+        snapshot, snapshot.members[0], coordinator, WorldTimer::getMSTime(),
+        nullptr, nullptr, &actionRuntime, nullptr, &actionRuntime);
+
+    // First clear a deliberately stale, non-resolving selection GUID. The
+    // live action must prove that the Player is truly idle before clearing it.
+    ObjectGuid const staleSelectionGuid(static_cast<uint64>(0xF430000000000001ull));
+    bot->SetSelectionGuid(staleSelectionGuid);
+    snapshot.members[0].selectionGuid = staleSelectionGuid.GetRawValue();
+    PartyCoordinator clearCoordinator;
+    DecisionContext clearContext(
+        snapshot, snapshot.members[0], clearCoordinator, WorldTimer::getMSTime(),
+        nullptr, nullptr, &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine clearEngine;
+    std::shared_ptr<ClearIdleTargetAction> clearAction(new ClearIdleTargetAction());
+    bool const clearRegistered = clearEngine.RegisterAction(clearAction);
+    std::shared_ptr<Strategy> clearStrategy(new Strategy("simulator_clear_idle_target"));
+    clearStrategy->AddTrigger(std::make_shared<SimulatorClearIdleTargetTrigger>());
+    clearEngine.AddStrategy(clearStrategy);
+    DecisionReport clearReport = clearEngine.Evaluate(clearContext);
+    bool const clearSelected = clearRegistered &&
+        clearReport.selectedIndices.size() == 1 &&
+        clearReport.candidates[clearReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (clearSelected)
+        clearEngine.ExecuteSelected(clearContext, clearReport);
+    bool const staleSelectionCleared = clearSelected &&
+        clearReport.candidates[clearReport.selectedIndices[0]].status ==
+            CandidateStatus::Executed &&
+        clearReport.candidates[clearReport.selectedIndices[0]].actionResult ==
+            ActionResult::Success &&
+        bot->GetSelectionGuid().IsEmpty() && bot->GetTargetGuid().IsEmpty() &&
+        bot->GetVictim() == nullptr && !bot->IsInCombat();
+    snapshot.members[0].selectionGuid = 0;
+
+    PartyBotEngine engine;
+    std::shared_ptr<SelectHostileTargetAction> action(
+        new SelectHostileTargetAction());
+    bool const actionRegistered = engine.RegisterAction(action);
+    std::shared_ptr<Strategy> hostileStrategy(new Strategy("simulator_select_hostile_target"));
+    hostileStrategy->AddTrigger(std::make_shared<SimulatorSelectHostileTargetTrigger>(
+        hostileSnapshot.guid));
+    engine.AddStrategy(hostileStrategy);
+
+    DecisionReport hostileReport = engine.Evaluate(context);
+    bool const hostileSelected = actionRegistered &&
+        hostileReport.selectedIndices.size() == 1 &&
+        hostileReport.candidates[hostileReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (hostileSelected)
+        engine.ExecuteSelected(context, hostileReport);
+    bool const hostileAccepted = hostileSelected &&
+        hostileReport.candidates[hostileReport.selectedIndices[0]].status ==
+            CandidateStatus::Executed &&
+        hostileReport.candidates[hostileReport.selectedIndices[0]].actionResult ==
+            ActionResult::Success &&
+        bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid();
+
+    Guid const hostileGuid = hostile.creature->GetObjectGuid().GetRawValue();
+    // F43: execute a generic CoreAction against an already-selected hostile.
+    // The fixture observes the synchronous Core request, stale-snapshot rejection
+    // and a live selection race. It does not use PartyBotAI::AttackStart.
+    PartySnapshot attackSnapshot = snapshot;
+    attackSnapshot.epoch++;
+    attackSnapshot.members[0].selectionGuid = hostileGuid;
+    attackSnapshot.members[0].victimGuid = 0;
+    attackSnapshot.members[0].inCombat = bot->IsInCombat();
+    PartyCoordinator attackCoordinator;
+    DecisionContext attackContext(
+        attackSnapshot, attackSnapshot.members[0], attackCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine attackEngine;
+    std::shared_ptr<AttackTargetAction> attackAction(new AttackTargetAction());
+    bool const attackRegistered = attackEngine.RegisterAction(attackAction);
+    std::shared_ptr<Strategy> attackStrategy(new Strategy("simulator_attack_target"));
+    attackStrategy->AddTrigger(
+        std::make_shared<SimulatorAttackTargetTrigger>(hostileGuid));
+    attackEngine.AddStrategy(attackStrategy);
+
+    uint32 const attackTargetHealthBefore = hostile.creature->GetHealth();
+    float const attackThreatBefore = hostile.creature->GetThreatManager().getThreat(bot);
+    DecisionReport attackReport = attackEngine.Evaluate(attackContext);
+    bool const attackSelected = attackReport.selectedIndices.size() == 1 &&
+        attackReport.candidates[attackReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (attackSelected)
+        attackEngine.ExecuteSelected(attackContext, attackReport);
+    CandidateEvaluation const* attackEvaluation = attackSelected
+        ? &attackReport.candidates[attackReport.selectedIndices[0]] : nullptr;
+    float const attackThreatAfter = hostile.creature->GetThreatManager().getThreat(bot);
+    bool const attackAccepted = attackEvaluation &&
+        attackEvaluation->status == CandidateStatus::Executed &&
+        attackEvaluation->actionResult == ActionResult::Success &&
+        attackEvaluation->reason == "attack_target_auto_attack_request_accepted" &&
+        bot->GetVictim() == hostile.creature &&
+        bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid();
+    bool const attackNoImmediateDamageOrThreat =
+        hostile.creature->GetHealth() == attackTargetHealthBefore &&
+        std::fabs(attackThreatAfter - attackThreatBefore) <= 0.001f;
+    bot->AttackStop();
+
+    // A stale positive hostile snapshot must not make a same-faction Creature
+    // attackable; the final live CanAttack preflight must veto it.
+    Guid const friendlyGuid = friendly.creature->GetObjectGuid().GetRawValue();
+    bot->SetSelectionGuid(friendly.creature->GetObjectGuid());
+    PartySnapshot attackFriendlySnapshot = attackSnapshot;
+    attackFriendlySnapshot.epoch++;
+    attackFriendlySnapshot.members[0].selectionGuid = friendlyGuid;
+    attackFriendlySnapshot.hostiles.clear();
+    HostileSnapshot staleAttackFriendly;
+    staleAttackFriendly.guid = friendlyGuid;
+    staleAttackFriendly.health = friendly.creature->GetHealth();
+    staleAttackFriendly.maxHealth = friendly.creature->GetMaxHealth();
+    staleAttackFriendly.alive = friendly.creature->IsAlive();
+    attackFriendlySnapshot.hostiles.push_back(staleAttackFriendly);
+    PartyCoordinator attackFriendlyCoordinator;
+    DecisionContext attackFriendlyContext(
+        attackFriendlySnapshot, attackFriendlySnapshot.members[0],
+        attackFriendlyCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine attackFriendlyEngine;
+    std::shared_ptr<AttackTargetAction> attackFriendlyAction(
+        new AttackTargetAction());
+    bool const attackFriendlyRegistered =
+        attackFriendlyEngine.RegisterAction(attackFriendlyAction);
+    std::shared_ptr<Strategy> attackFriendlyStrategy(
+        new Strategy("simulator_attack_stale_friendly"));
+    attackFriendlyStrategy->AddTrigger(
+        std::make_shared<SimulatorAttackTargetTrigger>(friendlyGuid));
+    attackFriendlyEngine.AddStrategy(attackFriendlyStrategy);
+    DecisionReport attackFriendlyReport =
+        attackFriendlyEngine.Evaluate(attackFriendlyContext);
+    bool const attackFriendlySelected = attackFriendlyRegistered &&
+        attackFriendlyReport.selectedIndices.size() == 1 &&
+        attackFriendlyReport.candidates[
+            attackFriendlyReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (attackFriendlySelected)
+        attackFriendlyEngine.ExecuteSelected(
+            attackFriendlyContext, attackFriendlyReport);
+    CandidateEvaluation const* attackFriendlyEvaluation = attackFriendlySelected
+        ? &attackFriendlyReport.candidates[
+            attackFriendlyReport.selectedIndices[0]] : nullptr;
+    bool const attackFriendlyRejected = attackFriendlyEvaluation &&
+        attackFriendlyEvaluation->status == CandidateStatus::ExecutionFailed &&
+        attackFriendlyEvaluation->actionResult == ActionResult::Impossible &&
+        attackFriendlyEvaluation->reason == "attack_target_not_attackable" &&
+        bot->GetVictim() == nullptr &&
+        bot->GetSelectionGuid() == friendly.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid();
+
+    // Change selection after evaluation. The adapter must detect target drift
+    // before invoking Unit::Attack and leave the live selection untouched.
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    PartySnapshot attackRaceSnapshot = attackSnapshot;
+    attackRaceSnapshot.epoch++;
+    PartyCoordinator attackRaceCoordinator;
+    DecisionContext attackRaceContext(
+        attackRaceSnapshot, attackRaceSnapshot.members[0], attackRaceCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine attackRaceEngine;
+    std::shared_ptr<AttackTargetAction> attackRaceAction(new AttackTargetAction());
+    bool const attackRaceRegistered = attackRaceEngine.RegisterAction(attackRaceAction);
+    std::shared_ptr<Strategy> attackRaceStrategy(
+        new Strategy("simulator_attack_selection_drift"));
+    attackRaceStrategy->AddTrigger(
+        std::make_shared<SimulatorAttackTargetTrigger>(hostileGuid));
+    attackRaceEngine.AddStrategy(attackRaceStrategy);
+    DecisionReport attackRaceReport = attackRaceEngine.Evaluate(attackRaceContext);
+    bool const attackRaceSelected = attackRaceRegistered &&
+        attackRaceReport.selectedIndices.size() == 1 &&
+        attackRaceReport.candidates[attackRaceReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    bot->SetSelectionGuid(friendly.creature->GetObjectGuid());
+    if (attackRaceSelected)
+        attackRaceEngine.ExecuteSelected(attackRaceContext, attackRaceReport);
+    CandidateEvaluation const* attackRaceEvaluation = attackRaceSelected
+        ? &attackRaceReport.candidates[attackRaceReport.selectedIndices[0]] : nullptr;
+    bool const attackSelectionDriftRejected = attackRaceEvaluation &&
+        attackRaceEvaluation->status == CandidateStatus::ExecutionFailed &&
+        attackRaceEvaluation->actionResult == ActionResult::Impossible &&
+        attackRaceEvaluation->reason == "attack_target_live_selection_mismatch" &&
+        bot->GetVictim() == nullptr &&
+        bot->GetSelectionGuid() == friendly.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid();
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+
+    bool const attackFixturePassed = attackRegistered && attackSelected &&
+        attackAccepted && attackNoImmediateDamageOrThreat &&
+        attackFriendlyRegistered && attackFriendlySelected &&
+        attackFriendlyRejected && attackRaceRegistered && attackRaceSelected &&
+        attackSelectionDriftRejected;
+    sLog.Out(LOG_BASIC, attackFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] AttackTargetAction: registered=%u selected=%u accepted=%u noImmediateDamageOrThreat=%u staleFriendlyRejected=%u selectionDriftRejected=%u.",
+        attackRegistered ? 1u : 0u, attackSelected ? 1u : 0u,
+        attackAccepted ? 1u : 0u, attackNoImmediateDamageOrThreat ? 1u : 0u,
+        attackFriendlyRejected ? 1u : 0u,
+        attackSelectionDriftRejected ? 1u : 0u);
+
+    // F43: stop a current melee auto-attack by its captured victim GUID.
+    // This is deliberately narrower than CombatStop: Core AttackStop must leave
+    // selection/combat and non-melee spell state alone.
+    bool const stopAutoAttackStarted = bot->Attack(hostile.creature, true);
+    bot->SetInCombatWith(hostile.creature);
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    PartySnapshot stopAutoAttackSnapshot = snapshot;
+    stopAutoAttackSnapshot.epoch++;
+    stopAutoAttackSnapshot.members[0].selectionGuid = hostileGuid;
+    stopAutoAttackSnapshot.members[0].victimGuid = hostileGuid;
+    stopAutoAttackSnapshot.members[0].inCombat = bot->IsInCombat();
+    stopAutoAttackSnapshot.members[0].currentSpellId = 0;
+
+    PartyCoordinator stopAutoAttackCoordinator;
+    DecisionContext stopAutoAttackContext(
+        stopAutoAttackSnapshot, stopAutoAttackSnapshot.members[0],
+        stopAutoAttackCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine stopAutoAttackEngine;
+    std::shared_ptr<StopAutoAttackAction> stopAutoAttackAction(
+        new StopAutoAttackAction());
+    bool const stopAutoAttackRegistered =
+        stopAutoAttackEngine.RegisterAction(stopAutoAttackAction);
+    std::shared_ptr<Strategy> stopAutoAttackStrategy(
+        new Strategy("simulator_stop_auto_attack"));
+    stopAutoAttackStrategy->AddTrigger(
+        std::make_shared<SimulatorStopAutoAttackTrigger>());
+    stopAutoAttackEngine.AddStrategy(stopAutoAttackStrategy);
+
+    uint32 const stopAutoAttackHealthBefore = hostile.creature->GetHealth();
+    float const stopAutoAttackThreatBefore =
+        hostile.creature->GetThreatManager().getThreat(bot);
+    ObjectGuid const stopAutoAttackSelectionBefore = bot->GetSelectionGuid();
+    bool const stopAutoAttackCombatBefore = bot->IsInCombat();
+    bool const stopAutoAttackReferenceBefore =
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+        hostile.creature->GetAttackers().end();
+    bool const stopAutoAttackMeleeBefore =
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING);
+
+    DecisionReport stopAutoAttackReport =
+        stopAutoAttackEngine.Evaluate(stopAutoAttackContext);
+    bool const stopAutoAttackSelected = stopAutoAttackReport.selectedIndices.size() == 1 &&
+        stopAutoAttackReport.candidates[
+            stopAutoAttackReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (stopAutoAttackSelected)
+        stopAutoAttackEngine.ExecuteSelected(
+            stopAutoAttackContext, stopAutoAttackReport);
+    CandidateEvaluation const* stopAutoAttackEvaluation = stopAutoAttackSelected
+        ? &stopAutoAttackReport.candidates[
+            stopAutoAttackReport.selectedIndices[0]] : nullptr;
+    float const stopAutoAttackThreatAfter =
+        hostile.creature->GetThreatManager().getThreat(bot);
+    bool const stopAutoAttackReferenceAfter =
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+        hostile.creature->GetAttackers().end();
+    bool const stopAutoAttackAccepted = stopAutoAttackStarted &&
+        stopAutoAttackMeleeBefore && stopAutoAttackReferenceBefore &&
+        stopAutoAttackEvaluation &&
+        stopAutoAttackEvaluation->status == CandidateStatus::Executed &&
+        stopAutoAttackEvaluation->actionResult == ActionResult::Success &&
+        stopAutoAttackEvaluation->reason ==
+            "stop_auto_attack_stopped_expected_victim" &&
+        bot->GetVictim() == nullptr && bot->GetTargetGuid().IsEmpty() &&
+        !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
+        bot->GetSelectionGuid() == stopAutoAttackSelectionBefore &&
+        bot->IsInCombat() == stopAutoAttackCombatBefore &&
+        !stopAutoAttackReferenceAfter &&
+        hostile.creature->GetHealth() == stopAutoAttackHealthBefore &&
+        std::fabs(stopAutoAttackThreatAfter - stopAutoAttackThreatBefore) <= 0.001f;
+
+    // With no current victim, the trigger must not propose a stop action.
+    PartySnapshot idleStopSnapshot = stopAutoAttackSnapshot;
+    idleStopSnapshot.epoch++;
+    idleStopSnapshot.members[0].victimGuid = 0;
+    PartyCoordinator idleStopCoordinator;
+    DecisionContext idleStopContext(
+        idleStopSnapshot, idleStopSnapshot.members[0], idleStopCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine idleStopEngine;
+    bool const idleStopRegistered =
+        idleStopEngine.RegisterAction(std::shared_ptr<StopAutoAttackAction>(
+            new StopAutoAttackAction()));
+    std::shared_ptr<Strategy> idleStopStrategy(
+        new Strategy("simulator_stop_auto_attack_idle"));
+    idleStopStrategy->AddTrigger(
+        std::make_shared<SimulatorStopAutoAttackTrigger>());
+    idleStopEngine.AddStrategy(idleStopStrategy);
+    DecisionReport idleStopReport = idleStopEngine.Evaluate(idleStopContext);
+    bool const noVictimNotProposed = idleStopRegistered &&
+        idleStopReport.selectedIndices.empty() &&
+        idleStopReport.candidates.empty() &&
+        bot->GetVictim() == nullptr && bot->IsInCombat() == stopAutoAttackCombatBefore;
+
+    // Re-target to a different live hostile after evaluation. The captured old
+    // victim GUID must not let the action detach the new attack.
+    friendly.creature->SetFactionTemplateId(hostileFaction);
+    bool const driftAttackStarted = bot->Attack(friendly.creature, true);
+    bot->SetInCombatWith(friendly.creature);
+    PartySnapshot driftStopSnapshot = stopAutoAttackSnapshot;
+    driftStopSnapshot.epoch++;
+    PartyCoordinator driftStopCoordinator;
+    DecisionContext driftStopContext(
+        driftStopSnapshot, driftStopSnapshot.members[0], driftStopCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine driftStopEngine;
+    bool const driftStopRegistered =
+        driftStopEngine.RegisterAction(std::shared_ptr<StopAutoAttackAction>(
+            new StopAutoAttackAction()));
+    std::shared_ptr<Strategy> driftStopStrategy(
+        new Strategy("simulator_stop_auto_attack_victim_drift"));
+    driftStopStrategy->AddTrigger(
+        std::make_shared<SimulatorStopAutoAttackTrigger>());
+    driftStopEngine.AddStrategy(driftStopStrategy);
+    DecisionReport driftStopReport = driftStopEngine.Evaluate(driftStopContext);
+    bool const driftStopSelected = driftStopRegistered &&
+        driftStopReport.selectedIndices.size() == 1 &&
+        driftStopReport.candidates[
+            driftStopReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    bool const driftStopCombatBefore = bot->IsInCombat();
+    bool const driftFriendlyReferenceBefore =
+        std::find(friendly.creature->GetAttackers().begin(),
+                  friendly.creature->GetAttackers().end(), bot) !=
+        friendly.creature->GetAttackers().end();
+    if (driftStopSelected)
+        driftStopEngine.ExecuteSelected(driftStopContext, driftStopReport);
+    CandidateEvaluation const* driftStopEvaluation = driftStopSelected
+        ? &driftStopReport.candidates[
+            driftStopReport.selectedIndices[0]] : nullptr;
+    bool const stopAutoAttackVictimDriftRejected = driftAttackStarted &&
+        driftFriendlyReferenceBefore && driftStopEvaluation &&
+        driftStopEvaluation->status == CandidateStatus::ExecutionFailed &&
+        driftStopEvaluation->actionResult == ActionResult::Impossible &&
+        driftStopEvaluation->reason == "stop_auto_attack_live_victim_mismatch" &&
+        bot->GetVictim() == friendly.creature &&
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid() &&
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
+        bot->GetSelectionGuid() == stopAutoAttackSelectionBefore &&
+        bot->IsInCombat() == driftStopCombatBefore &&
+        std::find(friendly.creature->GetAttackers().begin(),
+                  friendly.creature->GetAttackers().end(), bot) !=
+            friendly.creature->GetAttackers().end();
+    bot->AttackStop();
+    friendly.creature->SetFactionTemplateId(partyFaction);
+
+    bool const stopAutoAttackFixturePassed = stopAutoAttackRegistered &&
+        stopAutoAttackSelected && stopAutoAttackAccepted && noVictimNotProposed &&
+        driftStopRegistered && driftStopSelected && stopAutoAttackVictimDriftRejected;
+    sLog.Out(LOG_BASIC, stopAutoAttackFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] StopAutoAttackAction: registered=%u selected=%u stoppedOnly=%u noVictimNotProposed=%u victimDriftRejected=%u.",
+        stopAutoAttackRegistered ? 1u : 0u, stopAutoAttackSelected ? 1u : 0u,
+        stopAutoAttackAccepted ? 1u : 0u, noVictimNotProposed ? 1u : 0u,
+        stopAutoAttackVictimDriftRejected ? 1u : 0u);
+
+    // F43: face the selected hostile only when the value snapshot says the
+    // target is outside Core's 180-degree front arc. Live Core state still
+    // owns hostility, movement/cast/control validation and the final outcome.
+    bot->SetOrientation(3.14159265358979323846f);
+    PartySnapshot faceSnapshot = snapshot;
+    faceSnapshot.epoch++;
+    faceSnapshot.members[0].selectionGuid = hostileGuid;
+    faceSnapshot.members[0].orientation = bot->GetOrientation();
+    faceSnapshot.members[0].x = bot->GetPositionX();
+    faceSnapshot.members[0].y = bot->GetPositionY();
+    faceSnapshot.members[0].z = bot->GetPositionZ();
+    PartyCoordinator faceCoordinator;
+    DecisionContext faceContext(
+        faceSnapshot, faceSnapshot.members[0], faceCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine faceEngine;
+    std::shared_ptr<FaceTargetAction> faceAction(new FaceTargetAction());
+    bool const faceRegistered = faceEngine.RegisterAction(faceAction);
+    std::shared_ptr<Strategy> faceStrategy(new Strategy("simulator_face_target"));
+    faceStrategy->AddTrigger(
+        std::make_shared<SimulatorFaceTargetTrigger>(hostileGuid));
+    faceEngine.AddStrategy(faceStrategy);
+
+    float const faceXBefore = bot->GetPositionX();
+    float const faceYBefore = bot->GetPositionY();
+    float const faceZBefore = bot->GetPositionZ();
+    bool const faceCombatBefore = bot->IsInCombat();
+    DecisionReport faceReport = faceEngine.Evaluate(faceContext);
+    bool const faceSelected = faceRegistered &&
+        faceReport.selectedIndices.size() == 1 &&
+        faceReport.candidates[faceReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (faceSelected)
+        faceEngine.ExecuteSelected(faceContext, faceReport);
+    CandidateEvaluation const* faceEvaluation = faceSelected
+        ? &faceReport.candidates[faceReport.selectedIndices[0]] : nullptr;
+    bool const faceRequestAccepted = faceEvaluation &&
+        faceEvaluation->status == CandidateStatus::Executed &&
+        faceEvaluation->actionResult == ActionResult::Success &&
+        faceEvaluation->reason == "face_target_facing_request_accepted" &&
+        bot->GetPositionX() == faceXBefore &&
+        bot->GetPositionY() == faceYBefore &&
+        bot->GetPositionZ() == faceZBefore &&
+        bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetVictim() == nullptr && bot->IsInCombat() == faceCombatBefore;
+
+    // Unit::Update invokes UpdateSplineMovement as part of its ordinary Core
+    // update path. Drive that same public Unit update for this 1 ms facing spline;
+    // the fixture's local-session Player is not advanced by Map::Update here.
+    if (faceRequestAccepted)
+        bot->Update(10, 10);
+    bool const faceFacingComplete = faceRequestAccepted &&
+        bot->IsFacingTarget(hostile.creature);
+    bool const facePositionPreserved =
+        std::fabs(bot->GetPositionX() - faceXBefore) <= 0.001f &&
+        std::fabs(bot->GetPositionY() - faceYBefore) <= 0.001f &&
+        std::fabs(bot->GetPositionZ() - faceZBefore) <= 0.001f;
+    bool const faceTargetStatePreserved =
+        bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetVictim() == nullptr && bot->IsInCombat() == faceCombatBefore;
+    bool const faceAccepted = faceRequestAccepted && faceFacingComplete &&
+        facePositionPreserved && faceTargetStatePreserved;
+
+    // After refreshing only the value orientation, the already-facing target
+    // must not be proposed again.
+    faceSnapshot.members[0].orientation = bot->GetOrientation();
+    PartyCoordinator faceRepeatCoordinator;
+    DecisionContext faceRepeatContext(
+        faceSnapshot, faceSnapshot.members[0], faceRepeatCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport faceRepeatReport = faceEngine.Evaluate(faceRepeatContext);
+    bool const alreadyFacingNoOp = faceRepeatReport.selectedIndices.empty() &&
+        !faceRepeatReport.candidates.empty() &&
+        faceRepeatReport.candidates[0].status == CandidateStatus::RejectedUseless &&
+        faceRepeatReport.candidates[0].reason == "face_target_already_in_front";
+
+    // A positive but stale friendly snapshot can nominate this action; the
+    // final CanAttack preflight must reject it without changing orientation.
+    bot->SetSelectionGuid(friendly.creature->GetObjectGuid());
+    bot->SetTargetGuid(friendly.creature->GetObjectGuid());
+    bot->SetOrientation(3.14159265358979323846f);
+    PartySnapshot faceFriendlySnapshot = faceSnapshot;
+    faceFriendlySnapshot.epoch++;
+    faceFriendlySnapshot.members[0].selectionGuid =
+        friendly.creature->GetObjectGuid().GetRawValue();
+    faceFriendlySnapshot.members[0].orientation = bot->GetOrientation();
+    faceFriendlySnapshot.hostiles.clear();
+    HostileSnapshot staleFaceFriendly;
+    staleFaceFriendly.guid = friendly.creature->GetObjectGuid().GetRawValue();
+    staleFaceFriendly.health = friendly.creature->GetHealth();
+    staleFaceFriendly.maxHealth = friendly.creature->GetMaxHealth();
+    staleFaceFriendly.x = friendly.creature->GetPositionX();
+    staleFaceFriendly.y = friendly.creature->GetPositionY();
+    staleFaceFriendly.z = friendly.creature->GetPositionZ();
+    staleFaceFriendly.positionValid = true;
+    staleFaceFriendly.alive = friendly.creature->IsAlive();
+    faceFriendlySnapshot.hostiles.push_back(staleFaceFriendly);
+    PartyCoordinator faceFriendlyCoordinator;
+    DecisionContext faceFriendlyContext(
+        faceFriendlySnapshot, faceFriendlySnapshot.members[0],
+        faceFriendlyCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    // Use a trigger bound to the friendly GUID. Reusing faceEngine here
+    // would still emit the original hostile GUID and never exercise the
+    // stale-friendly CoreAction preflight.
+    PartyBotEngine faceFriendlyEngine;
+    std::shared_ptr<FaceTargetAction> faceFriendlyAction(
+        new FaceTargetAction());
+    bool const faceFriendlyRegistered =
+        faceFriendlyEngine.RegisterAction(faceFriendlyAction);
+    std::shared_ptr<Strategy> faceFriendlyStrategy(
+        new Strategy("simulator_face_stale_friendly"));
+    faceFriendlyStrategy->AddTrigger(
+        std::make_shared<SimulatorFaceTargetTrigger>(
+            friendly.creature->GetObjectGuid().GetRawValue()));
+    faceFriendlyEngine.AddStrategy(faceFriendlyStrategy);
+    DecisionReport staleFaceFriendlyReport =
+        faceFriendlyEngine.Evaluate(faceFriendlyContext);
+    bool const staleFaceFriendlySelected = faceFriendlyRegistered &&
+        staleFaceFriendlyReport.selectedIndices.size() == 1 &&
+        staleFaceFriendlyReport.candidates[
+            staleFaceFriendlyReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+    if (staleFaceFriendlySelected)
+        faceFriendlyEngine.ExecuteSelected(
+            faceFriendlyContext, staleFaceFriendlyReport);
+    CandidateEvaluation const* staleFaceFriendlyEvaluation =
+        staleFaceFriendlySelected
+            ? &staleFaceFriendlyReport.candidates[
+                staleFaceFriendlyReport.selectedIndices[0]] : nullptr;
+    std::string const staleFaceFriendlyReason = staleFaceFriendlyEvaluation
+        ? staleFaceFriendlyEvaluation->reason : "candidate_not_selected";
+    uint32 const staleFaceFriendlyStatus = staleFaceFriendlyEvaluation
+        ? static_cast<uint32>(staleFaceFriendlyEvaluation->status) : 0xffffffffu;
+    uint32 const staleFaceFriendlyResult = staleFaceFriendlyEvaluation
+        ? static_cast<uint32>(staleFaceFriendlyEvaluation->actionResult) : 0xffffffffu;
+    bool const staleFaceFriendlySelectionMatches =
+        bot->GetSelectionGuid() == friendly.creature->GetObjectGuid();
+    bool const staleFaceFriendlyTargetMatches =
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid();
+    bool const staleFaceFriendlyNotAttackable =
+        !bot->CanAttack(friendly.creature);
+    bool const staleFaceFriendlyRejected = staleFaceFriendlyEvaluation &&
+        staleFaceFriendlyEvaluation->status == CandidateStatus::ExecutionFailed &&
+        staleFaceFriendlyEvaluation->actionResult == ActionResult::Impossible &&
+        staleFaceFriendlyEvaluation->reason == "face_target_not_attackable" &&
+        std::fabs(bot->GetOrientation() - 3.14159265358979323846f) <= 0.001f &&
+        staleFaceFriendlySelectionMatches && staleFaceFriendlyTargetMatches &&
+        staleFaceFriendlyNotAttackable &&
+        bot->GetVictim() == nullptr && bot->IsInCombat() == faceCombatBefore;
+    sLog.Out(LOG_BASIC, staleFaceFriendlyRejected ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] FaceTarget stale-friendly detail: selected=%u status=%u result=%u reason=%s selectionMatch=%u targetMatch=%u canAttack=%u orientation=%.6f victim=%u combat=%u.",
+        staleFaceFriendlySelected ? 1u : 0u, staleFaceFriendlyStatus,
+        staleFaceFriendlyResult, staleFaceFriendlyReason.c_str(),
+        staleFaceFriendlySelectionMatches ? 1u : 0u,
+        staleFaceFriendlyTargetMatches ? 1u : 0u,
+        staleFaceFriendlyNotAttackable ? 1u : 0u,
+        bot->GetOrientation(), bot->GetVictim() ? 1u : 0u,
+        bot->IsInCombat() ? 1u : 0u);
+
+    // The native facing API intentionally ignores moving actors. Verify the
+    // adapter returns Useless and leaves an active Core PointMovementGenerator intact.
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    bot->SetTargetGuid(hostile.creature->GetObjectGuid());
+    bot->SetOrientation(3.14159265358979323846f);
+    faceSnapshot.members[0].selectionGuid = hostileGuid;
+    faceSnapshot.members[0].orientation = bot->GetOrientation();
+    faceSnapshot.members[0].x = bot->GetPositionX();
+    faceSnapshot.members[0].y = bot->GetPositionY();
+    faceSnapshot.members[0].z = bot->GetPositionZ();
+    bot->GetMotionMaster()->MovePoint(
+        77, bot->GetPositionX() + 10.0f, bot->GetPositionY(), bot->GetPositionZ());
+    PartyCoordinator faceMovingCoordinator;
+    DecisionContext faceMovingContext(
+        faceSnapshot, faceSnapshot.members[0], faceMovingCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport faceMovingReport = faceEngine.Evaluate(faceMovingContext);
+    bool const faceMovingSelected = faceMovingReport.selectedIndices.size() == 1 &&
+        faceMovingReport.candidates[faceMovingReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (faceMovingSelected)
+        faceEngine.ExecuteSelected(faceMovingContext, faceMovingReport);
+    CandidateEvaluation const* faceMovingEvaluation = faceMovingSelected
+        ? &faceMovingReport.candidates[faceMovingReport.selectedIndices[0]] : nullptr;
+    bool const movingRejectedWithoutMutation = faceMovingEvaluation &&
+        faceMovingEvaluation->status == CandidateStatus::ExecutionFailed &&
+        faceMovingEvaluation->actionResult == ActionResult::Useless &&
+        faceMovingEvaluation->reason == "face_target_actor_moving" &&
+        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+    bot->GetMotionMaster()->MovementExpired(false);
+
+    bool const faceFixturePassed = faceRegistered && faceSelected && faceAccepted &&
+        alreadyFacingNoOp && staleFaceFriendlyRejected && movingRejectedWithoutMutation;
+    sLog.Out(LOG_BASIC, faceFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] FaceTargetAction: registered=%u selected=%u requestAccepted=%u facingComplete=%u positionPreserved=%u targetStatePreserved=%u alreadyFacingNoOp=%u staleFriendlyRejected=%u movingRejected=%u.",
+        faceRegistered ? 1u : 0u, faceSelected ? 1u : 0u,
+        faceRequestAccepted ? 1u : 0u, faceFacingComplete ? 1u : 0u,
+        facePositionPreserved ? 1u : 0u, faceTargetStatePreserved ? 1u : 0u,
+        alreadyFacingNoOp ? 1u : 0u, staleFaceFriendlyRejected ? 1u : 0u,
+        movingRejectedWithoutMutation ? 1u : 0u);
+
+    // Deliberately retain a stale positive HostileSnapshot for the friendly
+    // unit. The final CoreAction preflight must re-resolve its live faction and
+    // reject it without changing the Player's current selection/target.
+    bot->SetSelectionGuid(ObjectGuid());
+    PartySnapshot staleSnapshot = snapshot;
+    staleSnapshot.epoch++;
+    staleSnapshot.members[0].selectionGuid = 0;
+    HostileSnapshot staleFriendlySnapshot;
+    staleFriendlySnapshot.guid = friendly.creature->GetObjectGuid().GetRawValue();
+    staleFriendlySnapshot.health = friendly.creature->GetHealth();
+    staleFriendlySnapshot.maxHealth = friendly.creature->GetMaxHealth();
+    staleFriendlySnapshot.alive = friendly.creature->IsAlive();
+    staleSnapshot.hostiles.clear();
+    staleSnapshot.hostiles.push_back(staleFriendlySnapshot);
+
+    PartyCoordinator staleCoordinator;
+    DecisionContext staleContext(
+        staleSnapshot, staleSnapshot.members[0], staleCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine staleEngine;
+    std::shared_ptr<SelectHostileTargetAction> staleAction(
+        new SelectHostileTargetAction());
+    bool const staleRegistered = staleEngine.RegisterAction(staleAction);
+    std::shared_ptr<Strategy> staleStrategy(new Strategy("simulator_stale_hostile_snapshot"));
+    staleStrategy->AddTrigger(std::make_shared<SimulatorSelectHostileTargetTrigger>(
+        staleFriendlySnapshot.guid));
+    staleEngine.AddStrategy(staleStrategy);
+
+    DecisionReport friendlyReport = staleEngine.Evaluate(staleContext);
+    bool const friendlyCandidateSelected = staleRegistered &&
+        friendlyReport.selectedIndices.size() == 1 &&
+        friendlyReport.candidates[friendlyReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (friendlyCandidateSelected)
+        staleEngine.ExecuteSelected(staleContext, friendlyReport);
+    CandidateEvaluation const* friendlyEvaluation =
+        friendlyCandidateSelected
+            ? &friendlyReport.candidates[friendlyReport.selectedIndices[0]] : nullptr;
+    bool const friendlyRejected = friendlyEvaluation &&
+        friendlyEvaluation->status == CandidateStatus::ExecutionFailed &&
+        friendlyEvaluation->actionResult == ActionResult::Impossible &&
+        friendlyEvaluation->reason == "select_hostile_target_not_attackable" &&
+        bot->GetSelectionGuid().IsEmpty() && bot->GetTargetGuid().IsEmpty() &&
+        bot->GetVictim() == nullptr;
+
+    // F43: Stop only an actually unattackable current victim. AttackStop must
+    // preserve the Player's combat flag; a stale negative snapshot against a
+    // still-hostile live victim must be rejected without detaching the attack.
+    bool const attackStarted = bot->Attack(hostile.creature, true);
+    bot->SetInCombatWith(hostile.creature);
+    Guid const currentVictimGuid = hostile.creature->GetObjectGuid().GetRawValue();
+    snapshot.members[0].victimGuid = currentVictimGuid;
+    snapshot.members[0].victimAttackable =
+        attackStarted && bot->CanAttack(hostile.creature);
+    bool const attackableBefore = snapshot.members[0].victimAttackable;
+    bool const attackerReferenceBefore =
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+        hostile.creature->GetAttackers().end();
+    bool const combatBeforeStop = bot->IsInCombat();
+
+    PartyCoordinator stopCoordinator;
+    DecisionContext stopContext(
+        snapshot, snapshot.members[0], stopCoordinator, WorldTimer::getMSTime(),
+        nullptr, nullptr, &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine stopEngine;
+    std::shared_ptr<StopUnattackableTargetAction> stopAction(
+        new StopUnattackableTargetAction());
+    bool const stopRegistered = stopEngine.RegisterAction(stopAction);
+    std::shared_ptr<Strategy> stopStrategy(
+        new Strategy("simulator_stop_unattackable_target"));
+    stopStrategy->AddTrigger(
+        std::make_shared<SimulatorStopUnattackableTargetTrigger>());
+    stopEngine.AddStrategy(stopStrategy);
+
+    DecisionReport attackableReport = stopEngine.Evaluate(stopContext);
+    bool const attackableNotProposed = attackStarted && attackableBefore &&
+        attackableReport.selectedIndices.empty() &&
+        attackableReport.candidates.empty() &&
+        bot->GetVictim() == hostile.creature && attackerReferenceBefore;
+
+    // Deliberately make the snapshot stale in the negative direction. The
+    // action is proposed, but final Core preflight must preserve a live attack.
+    snapshot.members[0].victimAttackable = false;
+    DecisionReport staleVictimReport = stopEngine.Evaluate(stopContext);
+    bool const staleVictimSelected = stopRegistered &&
+        staleVictimReport.selectedIndices.size() == 1 &&
+        staleVictimReport.candidates[staleVictimReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (staleVictimSelected)
+        stopEngine.ExecuteSelected(stopContext, staleVictimReport);
+    CandidateEvaluation const* staleVictimEvaluation = staleVictimSelected
+        ? &staleVictimReport.candidates[staleVictimReport.selectedIndices[0]] : nullptr;
+    bool const staleVictimRejected = staleVictimEvaluation &&
+        staleVictimEvaluation->status == CandidateStatus::ExecutionFailed &&
+        staleVictimEvaluation->actionResult == ActionResult::Useless &&
+        staleVictimEvaluation->reason ==
+            "stop_unattackable_target_live_victim_still_attackable" &&
+        bot->GetVictim() == hostile.creature &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid() &&
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
+        bot->IsInCombat() == combatBeforeStop &&
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+            hostile.creature->GetAttackers().end();
+
+    // Change only the live faction relation. The next snapshot-guided attempt
+    // must now use Core AttackStop, not CombatStop, and detach one back-reference.
+    hostile.creature->SetFactionTemplateId(partyFaction);
+    bool const liveVictimUnattackable = !bot->CanAttack(hostile.creature);
+    DecisionReport stopReport = stopEngine.Evaluate(stopContext);
+    bool const stopSelected = stopReport.selectedIndices.size() == 1 &&
+        stopReport.candidates[stopReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (stopSelected)
+        stopEngine.ExecuteSelected(stopContext, stopReport);
+    CandidateEvaluation const* stopEvaluation = stopSelected
+        ? &stopReport.candidates[stopReport.selectedIndices[0]] : nullptr;
+    bool const attackerReferenceAfter =
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+        hostile.creature->GetAttackers().end();
+    bool const attackStoppedWithoutCombatStop = liveVictimUnattackable &&
+        stopEvaluation && stopEvaluation->status == CandidateStatus::Executed &&
+        stopEvaluation->actionResult == ActionResult::Success &&
+        bot->GetVictim() == nullptr && bot->GetTargetGuid().IsEmpty() &&
+        !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
+        !attackerReferenceAfter && bot->IsInCombat() == combatBeforeStop;
+    bool const stopFixturePassed = stopRegistered && attackableNotProposed &&
+        staleVictimSelected && staleVictimRejected && liveVictimUnattackable &&
+        stopSelected && attackStoppedWithoutCombatStop;
+    sLog.Out(LOG_BASIC, stopFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] Core StopUnattackableTarget: registered=%u attackableNotProposed=%u staleSelected=%u staleRejected=%u liveUnattackable=%u selected=%u stoppedOnly=%u.",
+        stopRegistered ? 1u : 0u, attackableNotProposed ? 1u : 0u,
+        staleVictimSelected ? 1u : 0u, staleVictimRejected ? 1u : 0u,
+        liveVictimUnattackable ? 1u : 0u, stopSelected ? 1u : 0u,
+        attackStoppedWithoutCombatStop ? 1u : 0u);
+    hostile.creature->SetFactionTemplateId(hostileFaction);
+    bot->CombatStop(false);
+
+    // F43: clear a departed/dead selection without interrupting a different
+    // live victim or ending the encounter. Core resolution is actor-only
+    // (candidate.targetGuid=0), so a missing selected Unit is expected here.
+    bool const clearStaleAttackStarted = bot->Attack(hostile.creature, true);
+    bot->SetInCombatWith(hostile.creature);
+    ObjectGuid const combatStaleSelectionGuid(
+        HIGHGUID_UNIT, 0x00fffffeu, 0x00fffffeu);
+    bot->SetSelectionGuid(combatStaleSelectionGuid);
+    Guid const clearStaleVictimGuid =
+        hostile.creature->GetObjectGuid().GetRawValue();
+    bool const clearStaleSelectionMissing =
+        combatStaleSelectionGuid.IsUnit() &&
+        map.GetUnit(combatStaleSelectionGuid) == nullptr;
+    bool const clearStaleAttackerBefore =
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+        hostile.creature->GetAttackers().end();
+    bool const clearStaleCombatBefore = bot->IsInCombat();
+    bool const clearStaleMeleeBefore =
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING);
+    float const clearStaleThreatBefore =
+        hostile.creature->GetThreatManager().getThreat(bot);
+    uint32 const clearStaleVictimHealthBefore = hostile.creature->GetHealth();
+
+    PartySnapshot clearStaleSnapshot = snapshot;
+    clearStaleSnapshot.epoch++;
+    clearStaleSnapshot.members[0].selectionGuid =
+        combatStaleSelectionGuid.GetRawValue();
+    clearStaleSnapshot.members[0].victimGuid = clearStaleVictimGuid;
+    clearStaleSnapshot.members[0].inCombat = clearStaleCombatBefore;
+    PartyCoordinator clearStaleCoordinator;
+    DecisionContext clearStaleContext(
+        clearStaleSnapshot, clearStaleSnapshot.members[0],
+        clearStaleCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine clearStaleEngine;
+    std::shared_ptr<ClearStaleTargetAction> clearStaleAction(
+        new ClearStaleTargetAction());
+    bool const clearStaleRegistered =
+        clearStaleEngine.RegisterAction(clearStaleAction);
+    std::shared_ptr<Strategy> clearStaleStrategy(
+        new Strategy("simulator_clear_stale_target"));
+    clearStaleStrategy->AddTrigger(
+        std::make_shared<SimulatorClearStaleTargetTrigger>());
+    clearStaleEngine.AddStrategy(clearStaleStrategy);
+
+    DecisionReport clearStaleReport =
+        clearStaleEngine.Evaluate(clearStaleContext);
+    bool const clearStaleSelected =
+        clearStaleReport.selectedIndices.size() == 1 &&
+        clearStaleReport.candidates[
+            clearStaleReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (clearStaleSelected)
+    {
+        // Simulate a selection race after evaluation. A live selection change
+        // must be rejected before the actor's different victim is disturbed.
+        bot->SetSelectionGuid(friendly.creature->GetObjectGuid());
+        clearStaleEngine.ExecuteSelected(clearStaleContext, clearStaleReport);
+    }
+    CandidateEvaluation const* clearStaleDriftEvaluation = clearStaleSelected
+        ? &clearStaleReport.candidates[
+            clearStaleReport.selectedIndices[0]] : nullptr;
+    bool const clearStaleDriftRejected = clearStaleDriftEvaluation &&
+        clearStaleDriftEvaluation->status == CandidateStatus::ExecutionFailed &&
+        clearStaleDriftEvaluation->actionResult == ActionResult::Impossible &&
+        clearStaleDriftEvaluation->reason ==
+            "clear_stale_target_actor_or_selection_mismatch" &&
+        bot->GetSelectionGuid() == friendly.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid() &&
+        bot->GetVictim() == hostile.creature &&
+        bot->IsInCombat() == clearStaleCombatBefore;
+
+    // Restore the exact stale selection snapshot and run the accepted path.
+    bot->SetSelectionGuid(combatStaleSelectionGuid);
+    PartyCoordinator clearStaleAcceptedCoordinator;
+    DecisionContext clearStaleAcceptedContext(
+        clearStaleSnapshot, clearStaleSnapshot.members[0],
+        clearStaleAcceptedCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    DecisionReport clearStaleAcceptedReport =
+        clearStaleEngine.Evaluate(clearStaleAcceptedContext);
+    bool const clearStaleAcceptedSelected =
+        clearStaleAcceptedReport.selectedIndices.size() == 1 &&
+        clearStaleAcceptedReport.candidates[
+            clearStaleAcceptedReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+    if (clearStaleAcceptedSelected)
+        clearStaleEngine.ExecuteSelected(
+            clearStaleAcceptedContext, clearStaleAcceptedReport);
+    CandidateEvaluation const* clearStaleAcceptedEvaluation =
+        clearStaleAcceptedSelected
+            ? &clearStaleAcceptedReport.candidates[
+                clearStaleAcceptedReport.selectedIndices[0]] : nullptr;
+    bool const clearStaleAccepted =
+        clearStaleAcceptedEvaluation &&
+        clearStaleAcceptedEvaluation->status == CandidateStatus::Executed &&
+        clearStaleAcceptedEvaluation->actionResult == ActionResult::Success &&
+        clearStaleAcceptedEvaluation->reason ==
+            "clear_stale_target_cleared_selection_preserving_combat" &&
+        bot->GetSelectionGuid().IsEmpty() && bot->GetTargetGuid().IsEmpty();
+
+    bool const clearStaleVictimPreserved =
+        clearStaleAttackStarted && clearStaleSelectionMissing &&
+        bot->GetVictim() == hostile.creature &&
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) == clearStaleMeleeBefore;
+    bool const clearStaleCombatPreserved =
+        bot->IsInCombat() == clearStaleCombatBefore;
+    bool const clearStaleAttackerPreserved =
+        clearStaleAttackerBefore &&
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+            hostile.creature->GetAttackers().end();
+    float const clearStaleThreatAfter =
+        hostile.creature->GetThreatManager().getThreat(bot);
+    uint32 const clearStaleVictimHealthAfter = hostile.creature->GetHealth();
+    bool const clearStaleNoThreatMutation =
+        std::fabs(clearStaleThreatAfter - clearStaleThreatBefore) < 0.001f &&
+        clearStaleVictimHealthAfter == clearStaleVictimHealthBefore;
+    bool const clearStaleFixturePassed =
+        clearStaleRegistered && clearStaleSelected && clearStaleDriftRejected &&
+        clearStaleAccepted && clearStaleVictimPreserved &&
+        clearStaleCombatPreserved && clearStaleAttackerPreserved &&
+        clearStaleNoThreatMutation;
+    sLog.Out(LOG_BASIC, clearStaleFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] ClearStaleTargetAction: registered=%u selected=%u driftRejected=%u cleared=%u victimPreserved=%u combatPreserved=%u attackersPreserved=%u threatUnchanged=%u.",
+        clearStaleRegistered ? 1u : 0u, clearStaleSelected ? 1u : 0u,
+        clearStaleDriftRejected ? 1u : 0u, clearStaleAccepted ? 1u : 0u,
+        clearStaleVictimPreserved ? 1u : 0u, clearStaleCombatPreserved ? 1u : 0u,
+        clearStaleAttackerPreserved ? 1u : 0u,
+        clearStaleNoThreatMutation ? 1u : 0u);
+    bot->CombatStop(false);
+
+    bot->SetAI(nullptr);
+    actionRuntime.Remove();
+    botSession.LogoutPlayer(false);
+    bool const playerCleaned = botSession.GetPlayer() == nullptr;
+    bot = nullptr;
+    bool const friendlyCleaned = DestroySimulatorActor(map, friendly);
+    bool const hostileCleaned = DestroySimulatorActor(map, hostile);
+    bool const cleaned = playerCleaned && friendlyCleaned && hostileCleaned;
+
+    sLog.Out(LOG_BASIC, (staleSelectionCleared && hostileAccepted &&
+                         attackFixturePassed && stopAutoAttackFixturePassed &&
+                         faceFixturePassed && clearStaleFixturePassed &&
+                         friendlyRejected && cleaned)
+        ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] Core generic target actions: clearRegistered=%u staleSelectionCleared=%u hostileRegistered=%u hostileAccepted=%u faceFixture=%u clearStaleFixture=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
+        clearRegistered ? 1u : 0u, staleSelectionCleared ? 1u : 0u,
+        actionRegistered ? 1u : 0u, hostileAccepted ? 1u : 0u,
+        faceFixturePassed ? 1u : 0u, clearStaleFixturePassed ? 1u : 0u,
+        friendlyCandidateSelected ? 1u : 0u, friendlyRejected ? 1u : 0u,
+        (botSession.GetPlayer() == nullptr && friendlyRejected) ? 1u : 0u,
+        cleaned ? 1u : 0u);
+
+    if (!clearRegistered || !staleSelectionCleared || !actionRegistered ||
+        !hostileAccepted || !attackFixturePassed || !stopAutoAttackFixturePassed ||
+        !faceFixturePassed || !clearStaleFixturePassed ||
+        !friendlyCandidateSelected || !friendlyRejected ||
+        !stopFixturePassed || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core select-hostile target fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: generic Core target maintenance cleared an idle stale selection, selected a live hostile and rejected a stale friendly target without disturbing Player combat state.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Core preflight to reject a stale negative snapshot, then AttackStop detached only the invalid victim while preserving combat state.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: StopAutoAttackAction used the snapshot victim GUID and live Core AttackStop, preserved selection/combat/non-melee spell state and health/threat, and rejected a different live victim without calling CombatStop.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: AttackTargetAction used the CoreAction live resolver and CanAttack preflight, accepted only the selected hostile, rejected stale-friendly and selection-drift requests, and created no synchronous damage/threat or Legacy fallback.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: FaceTargetAction used snapshot geometry to face a live selected hostile, skipped an already-facing target, and rejected stale-friendly and moving actors without disturbing position, movement or combat state.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: ClearStaleTargetAction cleared a missing selection during a live encounter while preserving a different victim, melee state, attacker reference, combat flag and ThreatManager values.");
+    return true;
+}
+
+
+bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor patient;
+    bool const patientCreated = CreateSimulatorActor(map, *info, partyFaction, 1.0f, 6.0f, patient);
+    if (!patientCreated)
+    {
+        DestroySimulatorActor(map, patient);
+        return false;
+    }
+
+    WorldSession healerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* healer = nullptr;
+    bool const healerCreated = CreateSimulatorPlayer(map, partyFaction, healerSession, healer);
+    if (!healerCreated)
+    {
+        bool cleaned = true;
+        if (healerSession.GetPlayer())
+            healerSession.LogoutPlayer(false);
+        else if (healer)
+            delete healer;
+        cleaned = DestroySimulatorActor(map, patient) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Player spell/heal fixture creation failed (cleanup=%u).", cleaned ? 1u : 0u);
+        return false;
+    }
+
+    PartyBotAI engineActionAI(
+        healer, map.GetId(), map.GetInstanceId(),
+        healer->GetPositionX(), healer->GetPositionY(),
+        healer->GetPositionZ(), healer->GetOrientation());
+    engineActionAI.SetPlayer(healer);
+    // This fixture exercises PartyBotAI's PlayerAI observer hooks, not its
+    // Legacy startup path. The first normal AI tick would initialize the bot
+    // and refill Mana to 100%, masking the Core Spell::finish power deduction.
+    engineActionAI.m_initialized = true;
+    engineActionAI.m_updateTimer.Reset(600000);
+
+    patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
+    uint32 const healthBefore = patient.creature->GetHealth();
+    uint32 const manaBefore = healer->GetPower(POWER_MANA);
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 3;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 3;
+    uint32 const engineActionNowMs = WorldTimer::getMSTime();
+    snapshot.capturedAtMs = engineActionNowMs;
+
+    PartyMemberSnapshot healerMember;
+    healerMember.guid = healer->GetObjectGuid().GetRawValue();
+    healerMember.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    healerMember.mapId = map.GetId();
+    healerMember.instanceId = map.GetInstanceId();
+    healerMember.health = healer->GetHealth();
+    healerMember.maxHealth = healer->GetMaxHealth();
+    healerMember.online = true;
+    healerMember.alive = healer->IsAlive();
+    healerMember.inCombat = true; // Fixture-owned encounter scope for action trace correlation.
+    snapshot.members.push_back(healerMember);
+
+    PartyMemberSnapshot patientMember;
+    patientMember.guid = patient.creature->GetObjectGuid().GetRawValue();
+    patientMember.roleId = static_cast<std::uint8_t>(PartyRole::Tank);
+    patientMember.mapId = map.GetId();
+    patientMember.instanceId = map.GetInstanceId();
+    patientMember.health = healthBefore;
+    patientMember.maxHealth = patient.creature->GetMaxHealth();
+    patientMember.online = true;
+    patientMember.alive = patient.creature->IsAlive();
+    patientMember.isMainTank = true;
+    snapshot.members.push_back(patientMember);
+
+    std::shared_ptr<PartyCoordinator> coordinator(new PartyCoordinator());
+    coordinator->ConfigureEncounterTraceBudget(32, 16);
+    EncounterTransition const engineTraceEncounter =
+        coordinator->ObserveEncounter(snapshot, engineActionNowMs, 30000);
+    engineActionAI.m_partyCoordinator = coordinator;
+    engineActionAI.m_partyCoordinatorMapId = map.GetId();
+    engineActionAI.m_partyCoordinatorInstanceId = map.GetInstanceId();
+    engineActionAI.m_decisionTrace.BeginTick();
+    healer->SetAI(&engineActionAI);
+    DecisionContext context(snapshot, snapshot.members[0], *coordinator, engineActionNowMs,
+                            &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+    PartyBotEngine& engine = engineActionAI.m_partyBotEngine;
+    std::shared_ptr<CaptureCoreSpellTerminalListener> coreTerminalListener(
+        new CaptureCoreSpellTerminalListener());
+    bool const coreTerminalListenerRegistered =
+        engine.AddCoreSpellTerminalListener(coreTerminalListener);
+    uint32 continuationExecutionCount = 0;
+    std::shared_ptr<SimulatorCoreSpellContinuationAction> continuationAction(
+        new SimulatorCoreSpellContinuationAction(continuationExecutionCount));
+    bool const continuationActionRegistered = engine.RegisterAction(continuationAction);
+    uint32 actionResultAndSpellFollowupCount = 0;
+    std::shared_ptr<SimulatorCoreSpellContinuationAction> actionResultAndSpellFollowup(
+        new SimulatorCoreSpellContinuationAction(
+            actionResultAndSpellFollowupCount, "core_action_result_and_spell_followup"));
+    bool const actionResultAndSpellFollowupRegistered =
+        engine.RegisterAction(actionResultAndSpellFollowup);
+    std::shared_ptr<SimulatorCorePlayerHealAction> healAction(new SimulatorCorePlayerHealAction(map));
+    ActionCandidate continuationCandidate;
+    continuationCandidate.actionName = "core_spell_terminal_followup";
+    continuationCandidate.targetGuid = patientMember.guid;
+    continuationCandidate.basePriority = 25.0f;
+    continuationCandidate.finalPriority = 25.0f;
+    continuationCandidate.channel = ActionChannel::Utility;
+    healAction->SetContinuationCandidate(continuationCandidate);
+    bool const registered = engine.RegisterAction(healAction);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_healer_triage"));
+    strategy->AddTrigger(std::make_shared<SimulatorHealerTriageTrigger>("core_player_heal"));
+    engine.AddStrategy(strategy);
+    std::shared_ptr<Strategy> traceOverflowStrategy(
+        new Strategy("simulator_candidate_trace_overflow"));
+    traceOverflowStrategy->AddTrigger(
+        std::make_shared<SimulatorCandidateTraceOverflowTrigger>());
+    engine.AddStrategy(traceOverflowStrategy);
+
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
+        report.candidates[report.selectedIndices[0]].candidate.spellId == SIMULATOR_HEAL_SPELL_ID &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(context, report);
+    ActionId const engineActionId = report.selectedIndices.empty() ? 0 :
+        report.candidates[report.selectedIndices[0]].actionId;
+    bool const engineActionTraceSetup = engineTraceEncounter.kind ==
+        EncounterTransitionKind::Started && engineActionAI.m_decisionTrace.IsEnabled() &&
+        engineActionId != 0;
+
+    bool const accepted = !report.selectedIndices.empty() &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Success &&
+        healAction->GetLastCastResult() == SPELL_CAST_OK &&
+        healAction->WasCastPendingAfterAccept() && healAction->HadGcdAfterAccept();
+
+    // Map::Update's Player update cadence is driven by WorldTimer's real
+    // monotonic clock, not only by the synthetic t_diff argument. Sleep so
+    // the normal Player::Update / Unit::Update spell-event path actually runs.
+    for (uint32 tick = 0; tick < 20 && healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    uint32 const healthAfter = patient.creature->GetHealth();
+    uint32 const manaAfter = healer->GetPower(POWER_MANA);
+    uint32 const manaAfterAccept = healAction->GetManaAfterAccept();
+    // Core applies mana in Spell::finish, not at CastSpell acceptance. The
+    // LastManaUse timer is authoritative even if natural regeneration restores
+    // the numeric pool before this fixture reads it.
+    bool const coreManaSpendObserved = healer->IsUnderLastManaUseEffect();
+    bool const completed = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+                           healthAfter > healthBefore && coreManaSpendObserved;
+    bool const engineActionTracePassed = engineActionTraceSetup && accepted &&
+        report.candidates[report.selectedIndices[0]].actionId == engineActionId &&
+        report.candidates[report.selectedIndices[0]].candidate.actionId == engineActionId &&
+        engineActionAI.m_activeEngineActionId == 0 &&
+        engineActionAI.m_pendingCastTraceActionId == 0;
+    bool const coreSpellTerminalPassed = coreTerminalListenerRegistered &&
+        coreTerminalListener->events.size() == 1 &&
+        coreTerminalListener->events[0].actionId == engineActionId &&
+        coreTerminalListener->events[0].encounterId == coordinator->GetEncounterId() &&
+        coreTerminalListener->events[0].targetGuid == patientMember.guid &&
+        coreTerminalListener->events[0].spellId == SIMULATOR_HEAL_SPELL_ID &&
+        coreTerminalListener->events[0].status == CoreSpellTerminalStatus::Succeeded;
+    bool const continuationEnqueued = healAction->GetContinuationResult() ==
+        ActionContinuationEnqueueResult::Queued;
+    PendingActionDispatchSummary continuationDispatch;
+    std::size_t const pendingBeforeContinuationDispatch = engine.GetPendingActionCount();
+    std::size_t const continuationWaitersBeforeDispatch = engine.GetPendingContinuationCount();
+    bool continuationDispatched = false;
+    if (coreSpellTerminalPassed && continuationEnqueued && continuationActionRegistered)
+    {
+        DecisionContext continuationContext(
+            snapshot, snapshot.members[0], *coordinator,
+            coreTerminalListener->events[0].occurredAtMs + 1,
+            &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+        continuationDispatch = engine.ExecutePendingActions(continuationContext);
+        continuationDispatched = continuationDispatch.selected == 1 &&
+            continuationDispatch.executed == 1 && continuationExecutionCount == 1 &&
+            engine.GetPendingContinuationCount() == 0 && engine.GetPendingActionCount() == 0;
+    }
+
+    uint32 const f34ContinuationExecutionCount = continuationExecutionCount;
+
+    // F35: generate a second independent Core Spell::finish terminal from
+    // the same Player/Engine, then register an AND dependency after both casts
+    // have completed. This validates the real terminal-history late-registration
+    // seam rather than manually injecting synthetic terminal events.
+    SpellEntry const* f35HealSpell = sSpellMgr.GetSpellEntry(SIMULATOR_HEAL_SPELL_ID);
+    for (uint32 tick = 0; tick < 20 && f35HealSpell &&
+         (healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) || healer->HasGCD(f35HealSpell));
+         ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+    bool const f35SecondCastReady = f35HealSpell &&
+        !healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
+        !healer->HasGCD(f35HealSpell) && healer->IsSpellReady(f35HealSpell);
+    bool f35SecondCastSelected = false;
+    bool f35SecondCastAccepted = false;
+    bool f35SecondCastCompleted = false;
+    ActionId f35SecondActionId = 0;
+    bool f35MultiCoreTerminalsPassed = false;
+    ActionContinuationEnqueueResult f35DependencyResult =
+        ActionContinuationEnqueueResult::Invalid;
+    PendingActionDispatchSummary f35DependencyDispatch;
+    bool f35MultiDependencyDispatched = false;
+    uint32 f35AlternativeSelectedExecutions = 0;
+    uint32 f35AlternativeRejectedExecutions = 0;
+    ActionContinuationEnqueueResult f35AlternativeFirstResult =
+        ActionContinuationEnqueueResult::Invalid;
+    ActionContinuationEnqueueResult f35AlternativeSecondResult =
+        ActionContinuationEnqueueResult::Invalid;
+    PendingActionDispatchSummary f35AlternativeDispatch;
+    bool f35AlternativeGroupPassed = false;
+    ActionContinuationEnqueueResult f36MixedDependencyResult =
+        ActionContinuationEnqueueResult::Invalid;
+    PendingActionDispatchSummary f36MixedDependencyDispatch;
+    bool f36MixedDependencyPassed = false;
+    if (f35SecondCastReady)
+    {
+        // Keep a damaged target for the second ordinary Core heal. The first
+        // cast above already proved its own health/Mana side effects.
+        patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
+        healAction->DisableContinuationRegistration();
+        ActionCandidate actionResultAndSpellCandidate;
+        actionResultAndSpellCandidate.actionName =
+            "core_action_result_and_spell_followup";
+        actionResultAndSpellCandidate.targetGuid = patientMember.guid;
+        actionResultAndSpellCandidate.basePriority = 25.0f;
+        actionResultAndSpellCandidate.finalPriority = 25.0f;
+        actionResultAndSpellCandidate.channel = ActionChannel::Utility;
+        healAction->SetActionResultAndSpellDependencyCandidate(
+            actionResultAndSpellCandidate);
+        engineActionAI.m_decisionTrace.BeginTick();
+        DecisionContext secondCastContext(
+            snapshot, snapshot.members[0], *coordinator, WorldTimer::getMSTime(),
+            &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+        DecisionReport secondReport = engine.Evaluate(secondCastContext);
+        f35SecondCastSelected = secondReport.selectedIndices.size() == 1 &&
+            secondReport.candidates[secondReport.selectedIndices[0]].candidate.targetGuid ==
+                patientMember.guid &&
+            secondReport.candidates[secondReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+        if (f35SecondCastSelected)
+        {
+            engine.ExecuteSelected(secondCastContext, secondReport);
+            CandidateEvaluation const& secondEvaluation =
+                secondReport.candidates[secondReport.selectedIndices[0]];
+            f35SecondActionId = secondEvaluation.actionId;
+            f35SecondCastAccepted =
+                secondEvaluation.status == CandidateStatus::Executed &&
+                secondEvaluation.actionResult == ActionResult::Success &&
+                healAction->GetLastCastResult() == SPELL_CAST_OK &&
+                f35SecondActionId != 0;
+        }
+
+        for (uint32 tick = 0; tick < 20 &&
+             (healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) ||
+              coreTerminalListener->events.size() < 2);
+             ++tick)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            map.Update(250);
+        }
+        f35SecondCastCompleted = f35SecondCastAccepted &&
+            healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+            coreTerminalListener->events.size() == 2 &&
+            coreTerminalListener->events[1].actionId == f35SecondActionId &&
+            coreTerminalListener->events[1].status == CoreSpellTerminalStatus::Succeeded;
+
+        f36MixedDependencyResult =
+            healAction->GetActionResultAndSpellDependencyResult();
+        if (f35SecondCastCompleted && actionResultAndSpellFollowupRegistered &&
+            f36MixedDependencyResult == ActionContinuationEnqueueResult::Queued &&
+            engine.GetPendingContinuationCount() == 0 &&
+            engine.GetPendingActionCount() == 1)
+        {
+            DecisionContext f36DispatchContext(
+                snapshot, snapshot.members[0], *coordinator, WorldTimer::getMSTime(),
+                &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+            f36MixedDependencyDispatch =
+                engine.ExecutePendingActions(f36DispatchContext);
+            f36MixedDependencyPassed =
+                f36MixedDependencyDispatch.selected == 1 &&
+                f36MixedDependencyDispatch.executed == 1 &&
+                actionResultAndSpellFollowupCount == 1 &&
+                engine.GetPendingContinuationCount() == 0 &&
+                engine.GetPendingActionCount() == 0;
+        }
+
+        f35MultiCoreTerminalsPassed = f35SecondCastCompleted &&
+            coreTerminalListener->events[0].actionId == engineActionId &&
+            coreTerminalListener->events[0].actionId !=
+                coreTerminalListener->events[1].actionId &&
+            coreTerminalListener->events[0].encounterId == coordinator->GetEncounterId() &&
+            coreTerminalListener->events[1].encounterId == coordinator->GetEncounterId() &&
+            coreTerminalListener->events[0].targetGuid == patientMember.guid &&
+            coreTerminalListener->events[1].targetGuid == patientMember.guid &&
+            coreTerminalListener->events[0].spellId == SIMULATOR_HEAL_SPELL_ID &&
+            coreTerminalListener->events[1].spellId == SIMULATOR_HEAL_SPELL_ID &&
+            coreTerminalListener->events[0].status == CoreSpellTerminalStatus::Succeeded &&
+            coreTerminalListener->events[1].status == CoreSpellTerminalStatus::Succeeded;
+
+        if (f35MultiCoreTerminalsPassed)
+        {
+            ActionDependencyRequest dependency;
+            dependency.lifetimeMs = 4000;
+            for (CoreSpellTerminalEvent const& terminal : coreTerminalListener->events)
+            {
+                ActionTerminalPrerequisite prerequisite;
+                prerequisite.actionId = terminal.actionId;
+                prerequisite.encounterId = terminal.encounterId;
+                prerequisite.targetGuid = terminal.targetGuid;
+                prerequisite.spellId = terminal.spellId;
+                prerequisite.requiredStatus = CoreSpellTerminalStatus::Succeeded;
+                dependency.prerequisites.push_back(prerequisite);
+            }
+
+            DecisionContext lateDependencyContext(
+                snapshot, snapshot.members[0], *coordinator, WorldTimer::getMSTime(),
+                &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+            f35DependencyResult = engine.QueueActionDependency(
+                lateDependencyContext, dependency, continuationCandidate);
+            if (f35DependencyResult == ActionContinuationEnqueueResult::ReleasedImmediately &&
+                engine.GetPendingContinuationCount() == 0 &&
+                engine.GetPendingActionCount() == 1)
+            {
+                DecisionContext dependencyDispatchContext(
+                    snapshot, snapshot.members[0], *coordinator, WorldTimer::getMSTime(),
+                    &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+                f35DependencyDispatch =
+                    engine.ExecutePendingActions(dependencyDispatchContext);
+                f35MultiDependencyDispatched =
+                    f35DependencyDispatch.selected == 1 &&
+                    f35DependencyDispatch.executed == 1 &&
+                    continuationExecutionCount == 2 &&
+                    engine.GetPendingContinuationCount() == 0 &&
+                    engine.GetPendingActionCount() == 0;
+            }
+        }
+
+        // Reuse the real second Core terminal to prove atomic one-of-N
+        // selection. The lower-priority branch requires Success; a higher-
+        // priority sibling requires Failed and must be rejected by the actual
+        // Core Spell::finish result before the group chooses a winner.
+        if (f35MultiCoreTerminalsPassed && f35MultiDependencyDispatched)
+        {
+            std::shared_ptr<SimulatorCoreSpellContinuationAction> alternativeSelectedAction(
+                new SimulatorCoreSpellContinuationAction(
+                    f35AlternativeSelectedExecutions,
+                    "core_spell_alternative_selected"));
+            std::shared_ptr<SimulatorCoreSpellContinuationAction> alternativeRejectedAction(
+                new SimulatorCoreSpellContinuationAction(
+                    f35AlternativeRejectedExecutions,
+                    "core_spell_alternative_rejected"));
+            bool const alternativesRegistered =
+                engine.RegisterAction(alternativeSelectedAction) &&
+                engine.RegisterAction(alternativeRejectedAction);
+
+            ActionCandidate selectedAlternative = continuationCandidate;
+            selectedAlternative.actionName = "core_spell_alternative_selected";
+            selectedAlternative.basePriority = 10.0f;
+            selectedAlternative.finalPriority = 10.0f;
+            ActionCandidate rejectedAlternative = continuationCandidate;
+            rejectedAlternative.actionName = "core_spell_alternative_rejected";
+            rejectedAlternative.basePriority = 1000.0f;
+            rejectedAlternative.finalPriority = 1000.0f;
+
+            ActionDependencyRequest selectedAlternativeRequest;
+            selectedAlternativeRequest.lifetimeMs = 4000;
+            selectedAlternativeRequest.alternativeGroupId = 3501;
+            selectedAlternativeRequest.alternativeIndex = 0;
+            selectedAlternativeRequest.alternativeCount = 2;
+            CoreSpellTerminalEvent const& realParent =
+                coreTerminalListener->events[1];
+            ActionTerminalPrerequisite selectedParent;
+            selectedParent.actionId = realParent.actionId;
+            selectedParent.encounterId = realParent.encounterId;
+            selectedParent.targetGuid = realParent.targetGuid;
+            selectedParent.spellId = realParent.spellId;
+            selectedParent.requiredStatus = CoreSpellTerminalStatus::Succeeded;
+            selectedAlternativeRequest.prerequisites.push_back(selectedParent);
+
+            ActionDependencyRequest rejectedAlternativeRequest =
+                selectedAlternativeRequest;
+            rejectedAlternativeRequest.alternativeIndex = 1;
+            rejectedAlternativeRequest.prerequisites[0].requiredStatus =
+                CoreSpellTerminalStatus::Failed;
+
+            if (alternativesRegistered)
+            {
+                DecisionContext alternativeContext(
+                    snapshot, snapshot.members[0], *coordinator, WorldTimer::getMSTime(),
+                    &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+                f35AlternativeFirstResult = engine.QueueActionDependency(
+                    alternativeContext, selectedAlternativeRequest, selectedAlternative);
+                f35AlternativeSecondResult = engine.QueueActionDependency(
+                    alternativeContext, rejectedAlternativeRequest, rejectedAlternative);
+
+                bool const groupResolved = 
+                    f35AlternativeFirstResult == ActionContinuationEnqueueResult::Queued &&
+                    f35AlternativeSecondResult == ActionContinuationEnqueueResult::Queued &&
+                    engine.GetPendingContinuationCount() == 0 &&
+                    engine.GetPendingActionCount() == 1;
+                if (groupResolved)
+                {
+                    DecisionContext alternativeDispatchContext(
+                        snapshot, snapshot.members[0], *coordinator,
+                        WorldTimer::getMSTime(),
+                        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI);
+                    f35AlternativeDispatch =
+                        engine.ExecutePendingActions(alternativeDispatchContext);
+                    f35AlternativeGroupPassed =
+                        f35AlternativeDispatch.selected == 1 &&
+                        f35AlternativeDispatch.executed == 1 &&
+                        f35AlternativeSelectedExecutions == 1 &&
+                        f35AlternativeRejectedExecutions == 0 &&
+                        engine.GetPendingContinuationCount() == 0 &&
+                        engine.GetPendingActionCount() == 0;
+                }
+            }
+        }
+    }
+    // F39: exercise the Engine-only PointMovementGenerator correlation path on
+    // a real Core Player, then prove forced generator cleanup is not success.
+    uint32 movementFollowupExecutions = 0;
+    std::shared_ptr<SimulatorCoreSpellContinuationAction> movementFollowup(
+        new SimulatorCoreSpellContinuationAction(
+            movementFollowupExecutions, "core_player_move_followup"));
+    bool const movementFollowupRegistered = engine.RegisterAction(movementFollowup);
+    std::shared_ptr<CapturePointMovementTerminalListener> movementTerminalListener(
+        new CapturePointMovementTerminalListener());
+    bool const movementTerminalListenerRegistered =
+        engine.AddPointMovementTerminalListener(movementTerminalListener);
+
+    uint32 const enginePointId = 0xF390u;
+    float const movementArrivalTolerance = 0.75f;
+    ActionCandidate movementFollowupCandidate;
+    movementFollowupCandidate.actionName = "core_player_move_followup";
+    movementFollowupCandidate.targetGuid = healerMember.guid;
+    movementFollowupCandidate.basePriority = 10.0f;
+    movementFollowupCandidate.finalPriority = 10.0f;
+    movementFollowupCandidate.channel = ActionChannel::Utility;
+    std::shared_ptr<SimulatorCorePlayerPointMoveAction> playerPointMoveAction(
+        new SimulatorCorePlayerPointMoveAction(
+            enginePointId, movementArrivalTolerance, movementFollowupCandidate));
+    bool const playerPointMoveActionRegistered = engine.RegisterAction(playerPointMoveAction);
+
+    float const pointDestinationX = healer->GetPositionX() + 3.0f;
+    float const pointDestinationY = healer->GetPositionY();
+    float const pointDestinationZ = healer->GetPositionZ();
+    ActionCandidate playerPointMoveCandidate;
+    playerPointMoveCandidate.actionName = "core_player_point_move_engine";
+    playerPointMoveCandidate.strategyName = "simulator_player_movement";
+    playerPointMoveCandidate.triggerName = "simulator_player_point_move";
+    playerPointMoveCandidate.targetGuid = healerMember.guid;
+    playerPointMoveCandidate.basePriority = 90.0f;
+    playerPointMoveCandidate.finalPriority = 90.0f;
+    playerPointMoveCandidate.channel = ActionChannel::Movement;
+    playerPointMoveCandidate.hasDestination = true;
+    playerPointMoveCandidate.destinationX = pointDestinationX;
+    playerPointMoveCandidate.destinationY = pointDestinationY;
+    playerPointMoveCandidate.destinationZ = pointDestinationZ;
+
+    uint32 const movementNowMs = WorldTimer::getMSTime();
+    DecisionContext movementContext(
+        snapshot, snapshot.members[0], *coordinator, movementNowMs,
+        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI, &engine,
+        &engineActionAI);
+    CoreActionResolution const resolvedCoreContext =
+        engineActionAI.ResolveUnitContext(movementContext, healerMember.guid);
+    CoreActionResolution const missingCoreTarget =
+        engineActionAI.ResolveUnitContext(movementContext, 0xFFFFFFFFFFFFFFFFull);
+
+    PartySnapshot staleMapSnapshot = snapshot;
+    ++staleMapSnapshot.mapId;
+    DecisionContext staleMapContext(
+        staleMapSnapshot, staleMapSnapshot.members[0], *coordinator, movementNowMs,
+        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI, &engine,
+        &engineActionAI);
+    CoreActionResolution const staleMapResolution =
+        engineActionAI.ResolveUnitContext(staleMapContext, healerMember.guid);
+
+    PartySnapshot staleInstanceSnapshot = snapshot;
+    ++staleInstanceSnapshot.instanceId;
+    DecisionContext staleInstanceContext(
+        staleInstanceSnapshot, staleInstanceSnapshot.members[0], *coordinator,
+        movementNowMs, &engineActionAI.m_decisionTrace, nullptr,
+        &engineActionAI, &engine, &engineActionAI);
+    CoreActionResolution const staleInstanceResolution =
+        engineActionAI.ResolveUnitContext(staleInstanceContext, healerMember.guid);
+
+    bool const f41CoreActionPreflightPassed =
+        resolvedCoreContext.IsResolved() &&
+        resolvedCoreContext.actor == healer &&
+        resolvedCoreContext.target == healer &&
+        resolvedCoreContext.map == &map &&
+        missingCoreTarget.status == CoreActionResolveStatus::TargetNotFound &&
+        staleMapResolution.status == CoreActionResolveStatus::SnapshotMapMismatch &&
+        staleInstanceResolution.status == CoreActionResolveStatus::SnapshotInstanceMismatch;
+    sLog.Out(LOG_BASIC, f41CoreActionPreflightPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] F41 Core action preflight: resolved=%u selfTarget=%u missingTargetRejected=%u staleMapRejected=%u staleInstanceRejected=%u.",
+             resolvedCoreContext.IsResolved() ? 1u : 0u,
+             resolvedCoreContext.target == healer ? 1u : 0u,
+             missingCoreTarget.status == CoreActionResolveStatus::TargetNotFound ? 1u : 0u,
+             staleMapResolution.status == CoreActionResolveStatus::SnapshotMapMismatch ? 1u : 0u,
+             staleInstanceResolution.status == CoreActionResolveStatus::SnapshotInstanceMismatch ? 1u : 0u);
+    if (f41CoreActionPreflightPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F41 CoreAction required a fresh map-thread actor/target resolution and rejected missing targets plus stale map/instance snapshots before the real movement adapter ran.");
+
+    CandidateEvaluation movementEvaluation;
+    movementEvaluation.candidate = playerPointMoveCandidate;
+    movementEvaluation.status = CandidateStatus::Selected;
+    movementEvaluation.threatImpact = playerPointMoveAction->EstimateThreatImpact(
+        movementContext, playerPointMoveCandidate);
+    DecisionReport movementReport;
+    movementReport.candidates.push_back(movementEvaluation);
+    movementReport.selectedIndices.push_back(0);
+    // Earlier simulator scenarios can leave a legacy point generator active;
+    // clear that fixture state so this test measures the new Engine action.
+    healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
+
+    bool const movementSetupPassed = f41CoreActionPreflightPassed &&
+        movementFollowupRegistered && movementTerminalListenerRegistered &&
+        playerPointMoveActionRegistered;
+    if (movementSetupPassed)
+        engine.ExecuteSelected(movementContext, movementReport);
+
+    ActionId const engineMovementActionId =
+        movementReport.candidates.empty() ? 0 : movementReport.candidates[0].actionId;
+    bool const engineMovementStarted = movementSetupPassed &&
+        movementReport.candidates[0].status == CandidateStatus::Executed &&
+        movementReport.candidates[0].actionResult == ActionResult::Success &&
+        playerPointMoveAction->DidStartMovement() && engineMovementActionId != 0;
+
+    for (uint32 tick = 0; tick < 20 && movementTerminalListener->events.empty(); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    bool const naturalMovementReached = movementTerminalListener->events.size() == 1 &&
+        movementTerminalListener->events[0].actionId == engineMovementActionId &&
+        movementTerminalListener->events[0].encounterId == coordinator->GetEncounterId() &&
+        movementTerminalListener->events[0].moverGuid == healerMember.guid &&
+        movementTerminalListener->events[0].pointId == enginePointId &&
+        movementTerminalListener->events[0].status == PointMovementTerminalStatus::Reached &&
+        movementTerminalListener->events[0].finalDistance <= movementArrivalTolerance;
+    bool const movementContinuationReleased =
+        engine.GetPendingContinuationCount() == 0 && engine.GetPendingActionCount() == 1;
+    DecisionContext movementContinuationContext(
+        snapshot, snapshot.members[0], *coordinator, WorldTimer::getMSTime(),
+        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI, &engine,
+        &engineActionAI);
+    PendingActionDispatchSummary const movementFollowupDispatch =
+        engine.ExecutePendingActions(movementContinuationContext);
+    bool const movementFollowupDispatched = movementContinuationReleased &&
+        movementFollowupDispatch.selected == 1 &&
+        movementFollowupDispatch.executed == 1 &&
+        movementFollowupExecutions == 1;
+
+    ActionId const forcedCleanupActionId = coordinator->NextActionId();
+    float const forcedDestinationX = healer->GetPositionX() + 12.0f;
+    bool const forcedMoveStarted = forcedCleanupActionId &&
+        healer->GetMotionMaster()->MovePointForEngine(
+            enginePointId + 1, forcedDestinationX, healer->GetPositionY(),
+            healer->GetPositionZ(), MOVE_NONE, forcedCleanupActionId,
+            coordinator->GetEncounterId(), movementArrivalTolerance);
+    if (forcedMoveStarted)
+        healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
+    bool const forcedCleanupInterrupted = movementTerminalListener->events.size() == 2 &&
+        movementTerminalListener->events[1].actionId == forcedCleanupActionId &&
+        movementTerminalListener->events[1].pointId == enginePointId + 1 &&
+        movementTerminalListener->events[1].status == PointMovementTerminalStatus::Interrupted;
+
+    bool const f39MovementTerminalPassed = engineMovementStarted &&
+        naturalMovementReached && movementContinuationReleased &&
+        movementFollowupDispatched && forcedMoveStarted && forcedCleanupInterrupted;
+    sLog.Out(LOG_BASIC, f39MovementTerminalPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] F39 Player movement terminal: setup=%u started=%u action=%llu events=%zu reached=%u continuationReleased=%u followup=%u forcedStarted=%u forcedInterrupted=%u distance=%.3f cleanup=%.3f.",
+             movementSetupPassed ? 1u : 0u, engineMovementStarted ? 1u : 0u,
+             static_cast<unsigned long long>(engineMovementActionId),
+             movementTerminalListener->events.size(), naturalMovementReached ? 1u : 0u,
+             movementContinuationReleased ? 1u : 0u,
+             movementFollowupDispatched ? 1u : 0u,
+             forcedMoveStarted ? 1u : 0u, forcedCleanupInterrupted ? 1u : 0u,
+             movementTerminalListener->events.empty() ? -1.0f
+                 : movementTerminalListener->events[0].finalDistance,
+             movementTerminalListener->events.size() < 2 ? -1.0f
+                 : movementTerminalListener->events[1].finalDistance);
+
+    if (forcedMoveStarted && !forcedCleanupInterrupted)
+        healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
+
+    DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
+    std::vector<std::size_t> const candidateDetailIndices =
+        SelectPriorityCandidateEvaluationIndices(
+            report, DecisionReport::MaxCandidateTraceRows);
+    bool candidateDetailTracePassed = engineActionTracePassed &&
+        candidateDetailIndices.size() == DecisionReport::MaxCandidateTraceRows &&
+        candidateDetailIndices[0] == report.selectedIndices[0] &&
+        report.candidates.size() == 5 &&
+        report.candidates[candidateDetailIndices[0]].status == CandidateStatus::Executed &&
+        decisionSummary.candidateDetailOmitted == 2;
+    uint32 candidateDetailRowsEmitted = 0;
+    if (candidateDetailTracePassed && coordinator->HasActiveEncounter())
+    {
+        for (std::size_t index : candidateDetailIndices)
+        {
+            if (coordinator->TryAdmitEncounterTraceEvent(
+                    coordinator->GetEncounterId(), EncounterTraceEventClass::Detail) !=
+                EncounterTraceAdmission::Accepted)
+            {
+                candidateDetailTracePassed = false;
+                break;
+            }
+            uint32 const sequence = coordinator->NextEncounterSequence();
+            CandidateEvaluation const& evaluation = report.candidates[index];
+            ActionCandidate const& candidate = evaluation.candidate;
+            char const* status = evaluation.status == CandidateStatus::Executed
+                ? "executed" : (evaluation.status == CandidateStatus::RejectedMissingAction
+                    ? "rejected_missing_action" : "candidate");
+            engineActionAI.m_decisionTrace.RecordEncounterCandidate(
+                healer, snapshot.groupId, snapshot.mapId, snapshot.instanceId,
+                snapshot.epoch, coordinator->GetEncounterId(), sequence,
+                coordinator->GetEncounterElapsedMs(3000), "healer",
+                candidate.strategyName.c_str(), candidate.triggerName.c_str(),
+                candidate.actionName.c_str(), candidate.targetGuid, candidate.spellId,
+                static_cast<uint32>(candidate.channel), candidate.finalPriority,
+                status, evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
+            if (sequence)
+                ++candidateDetailRowsEmitted;
+        }
+    }
+
+    bool decisionSummaryTracePassed = engineActionTracePassed &&
+        decisionSummary.candidateCount == 5 &&
+        decisionSummary.selectedCount == 1 &&
+        decisionSummary.missingActionCount == 4 &&
+        decisionSummary.executedCount == 1 &&
+        decisionSummary.executionFailedCount == 0 &&
+        decisionSummary.candidateDetailLimit == 3 &&
+        decisionSummary.candidateDetailOmitted == 2 &&
+        candidateDetailTracePassed && candidateDetailRowsEmitted == 3;
+    if (decisionSummaryTracePassed && coordinator->HasActiveEncounter())
+    {
+        EncounterTraceAdmission const admission = coordinator->TryAdmitEncounterTraceEvent(
+            coordinator->GetEncounterId(), EncounterTraceEventClass::Detail);
+        uint32 const sequence = admission == EncounterTraceAdmission::Accepted
+            ? coordinator->NextEncounterSequence() : 0;
+        if (sequence)
+            engineActionAI.m_decisionTrace.RecordEncounterDecisionSummary(
+                healer, snapshot.groupId, snapshot.mapId, snapshot.instanceId,
+                snapshot.epoch, coordinator->GetEncounterId(), sequence,
+                coordinator->GetEncounterElapsedMs(3000), "healer", decisionSummary);
+        else
+            decisionSummaryTracePassed = false;
+    }
+    else
+        decisionSummaryTracePassed = false;
+
+    healer->SetAI(nullptr);
+    engineActionAI.Remove();
+    healerSession.LogoutPlayer(false);
+    bool const playerCleaned = healerSession.GetPlayer() == nullptr;
+    healer = nullptr; // LogoutPlayer(true/false) removes and deletes the in-world Player.
+    bool const patientCleaned = DestroySimulatorActor(map, patient);
+    bool const cleaned = playerCleaned && patientCleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine Player spell/heal: known=%u selected=%u accepted=%u pending=%u gcd=%u castResult=%u manaAtAccept=%u>%u manaAtFinish=%u>%u lastManaUse=%u health=%u>%u completed=%u engineActionTrace=%u decisionSummaryTrace=%u candidateDetailTrace=%u candidateRows=%u actionId=%llu continuationResult=%u coreTerminal=%u continuationWaiters=%zu pendingBeforeDispatch=%zu dispatchSelected=%zu dispatchExecuted=%zu dispatchRejected=%zu dispatchStale=%zu continuationExecuted=%u continuationEnqueued=%u continuationDispatched=%u cleanup=%u.",
+             1u, selected ? 1u : 0u, accepted ? 1u : 0u,
+             healAction->WasCastPendingAfterAccept() ? 1u : 0u,
+             healAction->HadGcdAfterAccept() ? 1u : 0u,
+             static_cast<uint32>(healAction->GetLastCastResult()),
+             manaBefore, manaAfterAccept, manaBefore, manaAfter,
+             coreManaSpendObserved ? 1u : 0u,
+             healthBefore, healthAfter,
+             completed ? 1u : 0u,
+             engineActionTracePassed ? 1u : 0u,
+             decisionSummaryTracePassed ? 1u : 0u,
+             candidateDetailTracePassed ? 1u : 0u,
+             candidateDetailRowsEmitted,
+             static_cast<unsigned long long>(engineActionId),
+             static_cast<uint32>(healAction->GetContinuationResult()),
+             coreSpellTerminalPassed ? 1u : 0u,
+             continuationWaitersBeforeDispatch, pendingBeforeContinuationDispatch,
+             continuationDispatch.selected, continuationDispatch.executed,
+             continuationDispatch.rejected, continuationDispatch.staleContext,
+             f34ContinuationExecutionCount, continuationEnqueued ? 1u : 0u,
+             continuationDispatched ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!registered || !continuationActionRegistered || !selected || !accepted || !completed ||
+        !engineActionTracePassed || !coreSpellTerminalPassed || !continuationEnqueued ||
+        !continuationDispatched || !f35MultiDependencyDispatched ||
+        !f35MultiCoreTerminalsPassed || !f35AlternativeGroupPassed ||
+        !f36MixedDependencyPassed || !f39MovementTerminalPassed ||
+        !decisionSummaryTracePassed || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine-to-Player normal spell/heal smoke test failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Engine action ID flowed through PartyBotAI into Core Spell::prepare/finish; one action_id correlated the adapter attempt/result and the later successful Core cast terminal, with real healing and mana effects.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F32 Core Spell::finish delivered a value-only terminal event to the registered Engine listener with the same action/encounter/spell/target correlation as the adapter attempt; Core success was distinct from SPELL_CAST_OK acceptance.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F34 released the registered continuation only after the matching successful Core terminal and executed it through the next Engine pending dispatch.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine Player spell/heal F35/F36: secondReady=%u secondSelected=%u secondAccepted=%u secondCompleted=%u coreEvents=%zu dependencyResult=%u pending=%zu dispatched=%u continuationExecutions=%u altFirst=%u altSecond=%u altSelected=%u altRejected=%u altDispatched=%u altSelectedExec=%u altRejectedExec=%u mixedResult=%u mixedSelected=%zu mixedExecuted=%zu mixedFollowups=%u mixedPassed=%u.",
+             f35SecondCastReady ? 1u : 0u, f35SecondCastSelected ? 1u : 0u,
+             f35SecondCastAccepted ? 1u : 0u, f35SecondCastCompleted ? 1u : 0u,
+             coreTerminalListener->events.size(),
+             static_cast<uint32>(f35DependencyResult), engine.GetPendingActionCount(),
+             f35MultiDependencyDispatched ? 1u : 0u, continuationExecutionCount,
+             static_cast<uint32>(f35AlternativeFirstResult),
+             static_cast<uint32>(f35AlternativeSecondResult),
+             f35AlternativeDispatch.selected, f35AlternativeDispatch.rejected,
+             f35AlternativeGroupPassed ? 1u : 0u,
+             f35AlternativeSelectedExecutions, f35AlternativeRejectedExecutions,
+             static_cast<uint32>(f36MixedDependencyResult),
+             f36MixedDependencyDispatch.selected, f36MixedDependencyDispatch.executed,
+             actionResultAndSpellFollowupCount, f36MixedDependencyPassed ? 1u : 0u);
+    if (!f35MultiDependencyDispatched || !f35MultiCoreTerminalsPassed ||
+        !f35AlternativeGroupPassed || !f36MixedDependencyPassed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] F35 multi-prerequisite / alternative Core terminal fixture failed.");
+        return false;
+    }
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F35 gated one follow-up on two distinct successful Core Spell::finish terminals and dispatched it through the normal Engine pending queue.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F35 resolved a real Core terminal alternative group, rejected the higher-priority wrong-status branch, and dispatched the valid branch.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F36 required both the synchronous successful ActionResult and the later successful Core Spell::finish for the same action ID before dispatching its child.");
+    sLog.Out(LOG_BASIC, f39MovementTerminalPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] %s: F39 emitted a correlated Reached terminal only after natural PointMovementGenerator completion and destination tolerance check; the movement prerequisite released its continuation through the next pending dispatch, while ClearType produced Interrupted.",
+             f39MovementTerminalPassed ? "PASS" : "FAIL");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F20 DecisionSummary aggregated the complete executed Core Player heal report and emitted the bounded encounter summary.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F24 candidate detail cap reported five complete candidates, retained the selected Core heal first after execution, emitted three rows and counted two omitted alternatives.");
+    return true;
+}
+
+bool RunEngineCoreExecutorSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor party[5];
+    SimulatorActor enemy;
+    bool created = true;
+    for (uint32 i = 0; i < 5 && created; ++i)
+        created = CreateSimulatorActor(map, *info, partyFaction,
+                                       static_cast<float>(i), 2.0f, party[i]);
+    if (created)
+        created = CreateSimulatorActor(map, *info, hostileFaction, 5.0f, 2.0f, enemy);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, enemy);
+        for (uint32 i = 0; i < 5; ++i)
+            cleaned = DestroySimulatorActor(map, party[i]) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine executor fixture creation failed (cleanup=%u).", cleaned ? 1u : 0u);
+        return false;
+    }
+
+    for (uint32 tick = 0; tick < 120; ++tick)
+    {
+        bool ready = enemy.updateCount != 0;
+        for (uint32 i = 0; i < 5; ++i)
+            ready = ready && party[i].updateCount != 0;
+        if (ready)
+            break;
+        map.Update(50);
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 1;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 1;
+    snapshot.capturedAtMs = 1000;
+    for (uint32 i = 0; i < 5; ++i)
+    {
+        PartyMemberSnapshot member;
+        member.guid = party[i].creature->GetObjectGuid().GetRawValue();
+        member.roleId = static_cast<std::uint8_t>(
+            i == 0 ? PartyRole::Tank :
+            i == 1 ? PartyRole::Healer :
+            i == 2 ? PartyRole::MeleeDamage :
+            i == 3 ? PartyRole::RangedDamage : PartyRole::Support);
+        member.mapId = map.GetId();
+        member.instanceId = map.GetInstanceId();
+        member.health = party[i].creature->GetHealth();
+        member.maxHealth = party[i].creature->GetMaxHealth();
+        member.online = true;
+        member.alive = party[i].creature->IsAlive();
+        member.isMainTank = i == 0;
+        snapshot.members.push_back(member);
+    }
+
+    HostileSnapshot hostile;
+    hostile.guid = enemy.creature->GetObjectGuid().GetRawValue();
+    hostile.health = enemy.creature->GetHealth();
+    hostile.maxHealth = enemy.creature->GetMaxHealth();
+    hostile.alive = enemy.creature->IsAlive();
+    snapshot.hostiles.push_back(hostile);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 1000);
+    PartyBotEngine engine;
+    bool const registered = engine.RegisterAction(std::make_shared<SimulatorCoreAttackAction>(map));
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_tank_assist"));
+    strategy->AddTrigger(std::make_shared<SimulatorTankAssistTrigger>());
+    engine.AddStrategy(strategy);
+
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = report.selectedIndices.size() == 1 &&
+        report.candidates[report.selectedIndices[0]].candidate.targetGuid == hostile.guid &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
+    engine.ExecuteSelected(context, report);
+    bool const executed = !report.selectedIndices.empty() &&
+        report.candidates[report.selectedIndices[0]].status == CandidateStatus::Executed &&
+        report.candidates[report.selectedIndices[0]].actionResult == ActionResult::Success &&
+        party[0].creature->GetVictim() == enemy.creature;
+
+    party[0].creature->AttackStop();
+    bool cleaned = DestroySimulatorActor(map, enemy);
+    for (uint32 i = 0; i < 5; ++i)
+        cleaned = DestroySimulatorActor(map, party[i]) && cleaned;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Engine executor: party=5 hostile=1 aiReady=%u registered=%u candidates=%u selected=%u executed=%u cleanup=%u.",
+             (enemy.updateCount != 0 && party[0].updateCount != 0 && party[1].updateCount != 0 &&
+              party[2].updateCount != 0 && party[3].updateCount != 0 && party[4].updateCount != 0) ? 1u : 0u,
+             registered ? 1u : 0u, static_cast<uint32>(report.candidates.size()),
+             selected ? 1u : 0u, executed ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!registered || !selected || !executed || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Engine-to-Core executor smoke test failed.");
+        return false;
+    }
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: PartyBotEngine selected a tank-assist action and executed real Unit::Attack against a hostile Core Creature.");
+    return true;
+}
+
+bool RunCoreCombatThreatSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    if (!info)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] No safe creature_template found (requires a normal-rank template with a display and no spawn spell, spell list or script).");
+        return false;
+    }
+
+    uint32 bossFaction = 0;
+    uint32 attackerFaction = 0;
+    if (!FindMutuallyHostileFactions(bossFaction, attackerFaction))
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Could not find a mutually hostile pair in the loaded faction_template data.");
+        return false;
+    }
+
+    SimulatorActor boss;
+    SimulatorActor tank;
+    SimulatorActor damageDealer;
+
+    bool created = CreateSimulatorActor(map, *info, bossFaction, 0.0f, 0.0f, boss) &&
+                   CreateSimulatorActor(map, *info, attackerFaction, 1.0f, 0.0f, tank) &&
+                   CreateSimulatorActor(map, *info, attackerFaction, 2.0f, 0.0f, damageDealer);
+
+    if (!created)
+    {
+        bool const cleanedBoss = DestroySimulatorActor(map, boss);
+        bool const cleanedTank = DestroySimulatorActor(map, tank);
+        bool const cleanedDamageDealer = DestroySimulatorActor(map, damageDealer);
+        if (!cleanedBoss || !cleanedTank || !cleanedDamageDealer)
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[PartyBotSimulator] Actor cleanup failed after a partial create.");
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Failed to create and insert all three template-backed Creature actors.");
+        return false;
+    }
+
+    bool const hostilePair = boss.creature->IsHostileTo(tank.creature) &&
+                             tank.creature->IsHostileTo(boss.creature) &&
+                             boss.creature->IsHostileTo(damageDealer.creature) &&
+                             damageDealer.creature->IsHostileTo(boss.creature);
+
+    // Map cell updates are paced by the Core's wall-clock update-cells
+    // interval. Drive bounded real map ticks and require each custom AI to
+    // prove that the active-object update path reached it.
+    for (uint32 tick = 0; tick < 120 &&
+         (!boss.updateCount || !tank.updateCount || !damageDealer.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!boss.updateCount || !tank.updateCount || !damageDealer.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    bool const aiUpdated = boss.updateCount && tank.updateCount && damageDealer.updateCount;
+    bool damageAndThreat = false;
+    bool targetSelection = false;
+    uint32 initialHealth = 0;
+    uint32 healthAfterTank = 0;
+    uint32 healthAfterDps = 0;
+    uint32 healthAfterFinalHit = 0;
+    uint32 tankDamage = 0;
+    uint32 dpsDamage = 0;
+    uint32 additionalDamage = 0;
+    float tankThreat = 0.0f;
+    float dpsThreat = 0.0f;
+    float estimatedTankThreat = 0.0f;
+    bool tankImpactMatchesCore = false;
+    uint32 selectedAfterTankGuid = 0;
+    uint32 selectedBelowThresholdGuid = 0;
+    uint32 selectedAboveThresholdGuid = 0;
+
+    if (hostilePair && aiUpdated)
+    {
+        initialHealth = boss.creature->GetHealth();
+        ThreatImpactEstimate const tankDamageImpact = EstimateAppliedDirectDamageComponent(
+            tank.creature, boss.creature, 100, SPELL_SCHOOL_MASK_NORMAL, 1,
+            ThreatImpactBound::Exact);
+        bool const tankImpactShapeValid =
+            tankDamageImpact.completeness == ThreatImpactCompleteness::Unknown &&
+            tankDamageImpact.snapshotEpoch == 1 && tankDamageImpact.impacts.size() == 1 &&
+            tankDamageImpact.impacts[0].source == ThreatImpactSource::DirectDamage &&
+            tankDamageImpact.impacts[0].bound == ThreatImpactBound::Exact;
+        estimatedTankThreat = tankImpactShapeValid
+            ? tankDamageImpact.impacts[0].threatPoints : -1.0f;
+        tankDamage = tank.creature->DealDamage(
+            boss.creature, 100, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        tankThreat = boss.creature->GetThreatManager().getThreat(tank.creature);
+        tankImpactMatchesCore = tankImpactShapeValid && tankDamage == 100 &&
+            std::fabs(estimatedTankThreat - tankThreat) < 0.01f;
+        healthAfterTank = boss.creature->GetHealth();
+
+        Unit* selectedAfterTank = boss.creature->GetThreatManager().getHostileTarget();
+        selectedAfterTankGuid = selectedAfterTank ? selectedAfterTank->GetGUIDLow() : 0;
+
+        dpsDamage = damageDealer.creature->DealDamage(
+            boss.creature, 105, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        dpsThreat = boss.creature->GetThreatManager().getThreat(damageDealer.creature);
+        healthAfterDps = boss.creature->GetHealth();
+        Unit* selectedBelowThreshold = boss.creature->GetThreatManager().getHostileTarget();
+        selectedBelowThresholdGuid = selectedBelowThreshold ? selectedBelowThreshold->GetGUIDLow() : 0;
+
+        additionalDamage = damageDealer.creature->DealDamage(
+            boss.creature, 10, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        dpsThreat = boss.creature->GetThreatManager().getThreat(damageDealer.creature);
+        healthAfterFinalHit = boss.creature->GetHealth();
+        Unit* selectedAboveThreshold = boss.creature->GetThreatManager().getHostileTarget();
+        selectedAboveThresholdGuid = selectedAboveThreshold ? selectedAboveThreshold->GetGUIDLow() : 0;
+
+        damageAndThreat = tankDamage > 0 && dpsDamage > 0 && additionalDamage > 0 &&
+                          healthAfterTank < initialHealth && healthAfterDps < healthAfterTank &&
+                          healthAfterFinalHit < healthAfterDps && tankThreat > 0.0f && dpsThreat > 0.0f &&
+                          tankImpactMatchesCore;
+
+        targetSelection = selectedAfterTank == tank.creature &&
+                          selectedBelowThreshold == tank.creature &&
+                          dpsThreat > 1.1f * tankThreat &&
+                          selectedAboveThreshold == damageDealer.creature;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Creature probe: template=%u factions=%u/%u aiUpdates=%u/%u/%u hostile=%u health=%u>%u>%u>%u damage=%u/%u/%u threat=%.1f/%.1f switchThreshold=%.1f selectedGUID=%u/%u/%u damageThreat=%u impactThreat=%.1f impactMatches=%u targetSwitch=%u.",
+             info->entry, bossFaction, attackerFaction,
+             boss.updateCount, tank.updateCount, damageDealer.updateCount,
+             hostilePair ? 1u : 0u, initialHealth, healthAfterTank, healthAfterDps, healthAfterFinalHit,
+             tankDamage, dpsDamage, additionalDamage, tankThreat, dpsThreat, 1.1f * tankThreat,
+             selectedAfterTankGuid, selectedBelowThresholdGuid, selectedAboveThresholdGuid,
+             damageAndThreat ? 1u : 0u, estimatedTankThreat,
+             tankImpactMatchesCore ? 1u : 0u, targetSelection ? 1u : 0u);
+
+    // Clear the boss-owned threat references before destroying their targets.
+    bool const cleanedBoss = DestroySimulatorActor(map, boss);
+    bool const cleanedTank = DestroySimulatorActor(map, tank);
+    bool const cleanedDamageDealer = DestroySimulatorActor(map, damageDealer);
+    bool const actorsCleaned = cleanedBoss && cleanedTank && cleanedDamageDealer;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Actor cleanup: boss=%u tank=%u damageDealer=%u.",
+             cleanedBoss ? 1u : 0u, cleanedTank ? 1u : 0u, cleanedDamageDealer ? 1u : 0u);
+
+    if (!hostilePair || !aiUpdated || !damageAndThreat || !targetSelection || !actorsCleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core combat/threat smoke test failed (actorsCleaned=%u).", actorsCleaned ? 1u : 0u);
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: real Creature updates, a Core-calculated applied-damage threat component matched the real ThreatManager increment, and Core retained its 110%% melee target switching.");
+    return true;
+}
+
+
+bool RunPeriodicDamageThreatFixture(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor caster;
+    SimulatorActor hostile;
+    bool const created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 24.0f, caster) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 24.0f, hostile);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic damage fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    // Give the spell a deterministic hit advantage and remove template-provided
+    // Shadow resistance. The simulator still exercises the real Core spell-hit
+    // and Aura application path; it must not fail intermittently because the
+    // generic creature template happened to resist a periodic tick's initial cast.
+    caster.creature->SetLevel(63);
+    hostile.creature->SetLevel(60);
+    hostile.creature->SetInt32Value(UNIT_FIELD_RESISTANCES + SPELL_SCHOOL_SHADOW, 0);
+
+    // Shadow Word: Pain (rank 8) is an ordinary one-effect periodic-damage aura
+    // in the pinned 5875 data. Reject data drift instead of silently exercising
+    // a different aura family or a scripted special case.
+    uint32 const spellId = 10894;
+    SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
+    bool const spellValid = spell &&
+        spell->Effect[0] == SPELL_EFFECT_APPLY_AURA &&
+        spell->EffectApplyAuraName[0] == SPELL_AURA_PERIODIC_DAMAGE &&
+        !spell->Effect[1] && !spell->Effect[2] &&
+        !spell->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT) &&
+        !spell->HasAttribute(SPELL_ATTR_EX_NO_THREAT);
+    if (!spellValid)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Expected simple periodic-damage spell %u was not available (cleanup=%u).",
+                 spellId, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    // Keep the victim in combat so passive Creature regeneration cannot hide
+    // the effective tick damage. The simulator AI intentionally does not attack.
+    hostile.creature->SetInCombatWith(caster.creature);
+    SpellCastResult castResult = SPELL_FAILED_DONT_REPORT;
+    Aura* aura = nullptr;
+    uint32 castAttempts = 0;
+    // A triggered cast can be accepted while its unit target independently
+    // resists the spell. Retry only that real Core cast path, and require the
+    // resulting Aura object before proceeding to the periodic-tick assertion.
+    for (; castAttempts < 4 && !aura; ++castAttempts)
+    {
+        castResult = caster.creature->CastSpell(hostile.creature, spell, true);
+        if (castResult == SPELL_CAST_OK)
+            aura = hostile.creature->GetAura(spellId, EFFECT_INDEX_0);
+    }
+    bool const auraIsOrdinary = aura && aura->IsPeriodic() &&
+        aura->GetAuraScript() == nullptr && aura->GetAuraPeriodicTimer() > 0;
+    if (!auraIsOrdinary)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic damage aura did not apply as a simple Core aura (attempts=%u cast=%u aura=%u script=%u timer=%d shadowResistance=%d casterLevel=%u targetLevel=%u cleanup=%u).",
+                 castAttempts, static_cast<uint32>(castResult), aura ? 1u : 0u,
+                 aura && aura->GetAuraScript() ? 1u : 0u,
+                 aura ? aura->GetAuraPeriodicTimer() : -1,
+                 hostile.creature->GetResistance(SPELL_SCHOOL_SHADOW),
+                 caster.creature->GetLevel(), hostile.creature->GetLevel(),
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    uint32 const healthBefore = hostile.creature->GetHealth();
+    uint32 const ticksBefore = aura->GetAuraTicks();
+    int32 const durationBefore = aura->GetAuraDuration();
+    int32 const maxDuration = aura->GetAuraMaxDuration();
+    int32 const timerBefore = aura->GetAuraPeriodicTimer();
+    float const threatBefore = hostile.creature->GetThreatManager().getThreat(caster.creature);
+
+    // Advance the ordinary active Creature/Aura update path. Duration can be
+    // zero for a permanent/otherwise non-expiring aura, so it must not gate
+    // ticking. Re-resolve the Aura after each map update in case Core removes it.
+    uint32 updates = 0;
+    for (; updates < 64; ++updates)
+    {
+        map.Update(250);
+        // Map/Unit active-object updates are wall-clock throttled; tiny sleeps
+        // do not advance Aura's periodic timer by the synthetic Map::Update diff.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        aura = hostile.creature->GetAura(spellId, EFFECT_INDEX_0);
+        if (!aura || aura->GetAuraTicks() > ticksBefore)
+            break;
+    }
+
+    uint32 const ticksAfter = aura ? aura->GetAuraTicks() : 0;
+    int32 const timerAfter = aura ? aura->GetAuraPeriodicTimer() : -1;
+    int32 const durationAfter = aura ? aura->GetAuraDuration() : -1;
+    uint32 const healthAfter = hostile.creature->GetHealth();
+    float const threatAfter = hostile.creature->GetThreatManager().getThreat(caster.creature);
+    uint32 const appliedDamage = healthBefore > healthAfter
+        ? healthBefore - healthAfter : 0;
+    float const actualThreatDelta = threatAfter - threatBefore;
+
+    ThreatImpactEstimate const estimate = EstimateAppliedPeriodicDamageComponent(
+        caster.creature, hostile.creature, appliedDamage, spell, 88001);
+    bool const estimateShape = estimate.completeness == ThreatImpactCompleteness::Unknown &&
+        estimate.impacts.size() == 1 &&
+        estimate.impacts[0].threatOwnerGuid == caster.creature->GetObjectGuid().GetRawValue() &&
+        estimate.impacts[0].hostileGuid == hostile.creature->GetObjectGuid().GetRawValue() &&
+        estimate.impacts[0].source == ThreatImpactSource::PeriodicDamage &&
+        estimate.impacts[0].bound == ThreatImpactBound::Exact;
+    float const estimatedThreat = estimateShape ? estimate.impacts[0].threatPoints : -1.0f;
+    bool const matched = ticksAfter == ticksBefore + 1 && appliedDamage > 0 &&
+        estimateShape && std::fabs(actualThreatDelta - estimatedThreat) < 0.01f;
+
+    bool cleaned = DestroySimulatorActor(map, hostile);
+    cleaned = DestroySimulatorActor(map, caster) && cleaned;
+    sLog.Out(LOG_BASIC, matched && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Periodic damage tick: spell=%u ticks=%u>%u updates=%u duration=%d>%d maxDuration=%d timer=%d>%d appliedDamage=%u estimated=%.3f actualDelta=%.3f estimateShape=%u matched=%u cleanup=%u.",
+             spellId, ticksBefore, ticksAfter, updates, durationBefore, durationAfter,
+             maxDuration, timerBefore, timerAfter, appliedDamage, estimatedThreat,
+             actualThreatDelta, estimateShape ? 1u : 0u, matched ? 1u : 0u,
+             cleaned ? 1u : 0u);
+
+    if (!matched || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core periodic-damage tick parity fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: a real Core Aura update delivered one periodic damage tick through Aura::PeriodicTick and Unit::DealDamage(DOT); the applied-tick threat component matched the actual ThreatManager delta.");
+    return true;
+}
+
+
+bool RunPeriodicHealingAssistThreatFixture(Map& map)
+{
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic healing fixture: begin.");
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor healer;
+    SimulatorActor healedTarget;
+    SimulatorActor hostileA;
+    SimulatorActor hostileB;
+    bool created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 36.0f, healer) &&
+        CreateSimulatorActor(map, *info, partyFaction, 2.0f, 36.0f, healedTarget) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 4.0f, 36.0f, hostileA) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 6.0f, 36.0f, hostileB);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, healedTarget) && cleaned;
+        cleaned = DestroySimulatorActor(map, healer) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic healing fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    healer.creature->SetLevel(60);
+    healedTarget.creature->SetLevel(60);
+    hostileA.creature->SetLevel(60);
+    hostileB.creature->SetLevel(60);
+    healedTarget.creature->SetHealth(50000);
+
+    // Create two real hostile references on the healed Unit. The hostile
+    // Creature ThreatManagers must both contain the healed target before the
+    // periodic heal so Core's HostileRefManager::threatAssist divides by 2.
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic healing fixture: actors ready; seeding hostile references.");
+    uint32 const seedDamageA = healedTarget.creature->DealDamage(
+        hostileA.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    uint32 const seedDamageB = healedTarget.creature->DealDamage(
+        hostileB.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    healedTarget.creature->SetInCombatWith(hostileA.creature);
+    healedTarget.creature->SetInCombatWith(hostileB.creature);
+    hostileA.creature->SetInCombatWith(healedTarget.creature);
+    hostileB.creature->SetInCombatWith(healedTarget.creature);
+
+    uint32 hostileReferenceCount = 0;
+    for (HostileReference* reference = healedTarget.creature->GetHostileRefManager().getFirst();
+         reference; reference = reference->next())
+        ++hostileReferenceCount;
+
+    // Rejuvenation rank 10 is an ordinary single-effect periodic heal in the
+    // pinned Vanilla 5875 data. Reject DB/script drift, rather than substituting
+    // a different effect family or broadening this fixture silently.
+    uint32 const spellId = 9841;
+    SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
+    bool const spellValid = spell &&
+        spell->Effect[0] == SPELL_EFFECT_APPLY_AURA &&
+        spell->EffectApplyAuraName[0] == SPELL_AURA_PERIODIC_HEAL &&
+        !spell->Effect[1] && !spell->Effect[2] &&
+        spell->IsPositiveEffect(EFFECT_INDEX_0) &&
+        spell->SpellVisual != 163 &&
+        !spell->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT) &&
+        !spell->HasAttribute(SPELL_ATTR_EX_NO_THREAT);
+    if (!spellValid || seedDamageA != 1 || seedDamageB != 1 ||
+        hostileReferenceCount != 2)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, healedTarget) && cleaned;
+        cleaned = DestroySimulatorActor(map, healer) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic healing fixture preconditions failed (spellValid=%u seed=%u/%u references=%u cleanup=%u).",
+                 spellValid ? 1u : 0u, seedDamageA, seedDamageB,
+                 hostileReferenceCount, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic healing fixture: refs=%u; applying Rejuvenation.", hostileReferenceCount);
+    SpellCastResult const castResult = healer.creature->CastSpell(
+        healedTarget.creature, spell, true);
+    Aura* aura = castResult == SPELL_CAST_OK
+        ? healedTarget.creature->GetAura(spellId, EFFECT_INDEX_0) : nullptr;
+    bool const auraIsOrdinary = aura && aura->IsPeriodic() &&
+        aura->GetAuraScript() == nullptr && aura->GetAuraPeriodicTimer() > 0;
+    if (!auraIsOrdinary)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, healedTarget) && cleaned;
+        cleaned = DestroySimulatorActor(map, healer) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic healing aura did not apply as a simple Core aura (cast=%u aura=%u script=%u timer=%d cleanup=%u).",
+                 static_cast<uint32>(castResult), aura ? 1u : 0u,
+                 aura && aura->GetAuraScript() ? 1u : 0u,
+                 aura ? aura->GetAuraPeriodicTimer() : -1, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    uint32 const healthBefore = healedTarget.creature->GetHealth();
+    uint32 const ticksBefore = aura->GetAuraTicks();
+    float const threatABefore = hostileA.creature->GetThreatManager().getThreat(healer.creature);
+    float const threatBBefore = hostileB.creature->GetThreatManager().getThreat(healer.creature);
+
+    // Drive the ordinary Core active-object/Aura scheduler until exactly one
+    // real tick has completed. Resolve the Aura pointer again after each update.
+    uint32 updates = 0;
+    for (; updates < 64; ++updates)
+    {
+        map.Update(250);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        aura = healedTarget.creature->GetAura(spellId, EFFECT_INDEX_0);
+        if (!aura || aura->GetAuraTicks() > ticksBefore)
+            break;
+    }
+
+    uint32 const ticksAfter = aura ? aura->GetAuraTicks() : 0;
+    uint32 const healthAfter = healedTarget.creature->GetHealth();
+    uint32 const effectiveHealing = healthAfter > healthBefore
+        ? healthAfter - healthBefore : 0;
+    float const threatAAfter = hostileA.creature->GetThreatManager().getThreat(healer.creature);
+    float const threatBAfter = hostileB.creature->GetThreatManager().getThreat(healer.creature);
+    float const actualDeltaA = threatAAfter - threatABefore;
+    float const actualDeltaB = threatBAfter - threatBBefore;
+
+    ThreatImpactEstimate const estimate = EstimateAppliedPeriodicHealingAssistComponent(
+        healer.creature, healedTarget.creature, effectiveHealing, spell, 88002);
+    bool rowA = false, rowB = false;
+    float estimatedA = -1.0f, estimatedB = -1.0f;
+    for (ThreatImpactEntry const& impact : estimate.impacts)
+    {
+        if (impact.threatOwnerGuid != healer.creature->GetObjectGuid().GetRawValue() ||
+            impact.source != ThreatImpactSource::PeriodicHealAssist ||
+            impact.bound != ThreatImpactBound::Exact)
+            continue;
+        if (impact.hostileGuid == hostileA.creature->GetObjectGuid().GetRawValue())
+        {
+            rowA = true;
+            estimatedA = impact.threatPoints;
+        }
+        else if (impact.hostileGuid == hostileB.creature->GetObjectGuid().GetRawValue())
+        {
+            rowB = true;
+            estimatedB = impact.threatPoints;
+        }
+    }
+
+    bool const estimateShape =
+        estimate.completeness == ThreatImpactCompleteness::Unknown &&
+        estimate.impacts.size() == 2 && rowA && rowB;
+    bool const matched = ticksAfter == ticksBefore + 1 &&
+        effectiveHealing > 0 && estimateShape &&
+        std::fabs(actualDeltaA - estimatedA) < 0.01f &&
+        std::fabs(actualDeltaB - estimatedB) < 0.01f &&
+        std::fabs(actualDeltaA - actualDeltaB) < 0.01f;
+
+    bool cleaned = DestroySimulatorActor(map, hostileB);
+    cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+    cleaned = DestroySimulatorActor(map, healedTarget) && cleaned;
+    cleaned = DestroySimulatorActor(map, healer) && cleaned;
+
+    sLog.Out(LOG_BASIC, matched && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Periodic healing tick: spell=%u ticks=%u>%u updates=%u effectiveHealing=%u refs=%u estimateShape=%u estimated=%.3f/%.3f actualDelta=%.3f/%.3f matched=%u cleanup=%u.",
+             spellId, ticksBefore, ticksAfter, updates, effectiveHealing,
+             hostileReferenceCount, estimateShape ? 1u : 0u, estimatedA,
+             estimatedB, actualDeltaA, actualDeltaB, matched ? 1u : 0u,
+             cleaned ? 1u : 0u);
+
+    if (!matched || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core periodic-healing assist tick parity fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: a real Core periodic-healing Aura tick distributed half the effective healing across both live hostile references; the component matched each actual ThreatManager delta.");
+    return true;
+}
+
+
+bool RunPeriodicPowerAssistThreatFixture(Map& map)
+{
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic power fixture: begin.");
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor energizedTarget;
+    SimulatorActor hostileA;
+    SimulatorActor hostileB;
+    bool created =
+        CreateSimulatorActor(map, *info, partyFaction, 2.0f, 48.0f, energizedTarget) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 4.0f, 48.0f, hostileA) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 6.0f, 48.0f, hostileB);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, energizedTarget) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic power fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    energizedTarget.creature->SetLevel(60);
+    hostileA.creature->SetLevel(60);
+    hostileB.creature->SetLevel(60);
+
+    // Both real hostile references are attached to the Unit that will cast
+    // the helpful aura on itself; HostileRefManager::threatAssist therefore
+    // distributes the tick's assist event to both hostile ThreatManagers.
+    uint32 const seedDamageA = energizedTarget.creature->DealDamage(
+        hostileA.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    uint32 const seedDamageB = energizedTarget.creature->DealDamage(
+        hostileB.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    energizedTarget.creature->SetInCombatWith(hostileA.creature);
+    energizedTarget.creature->SetInCombatWith(hostileB.creature);
+    hostileA.creature->SetInCombatWith(energizedTarget.creature);
+    hostileB.creature->SetInCombatWith(energizedTarget.creature);
+
+    uint32 hostileReferenceCount = 0;
+    for (HostileReference* reference = energizedTarget.creature->GetHostileRefManager().getFirst();
+         reference; reference = reference->next())
+        ++hostileReferenceCount;
+
+    // The pinned 5875 DBC set contains mana-periodic auras but no ordinary
+    // PERIODIC_ENERGIZE/ENERGY aura. Use a real SpellMgr-owned Rejuvenation
+    // entry and temporarily override only its Aura type/resource metadata.
+    // Spell::Spell's native-pointer invariant is preserved; an RAII guard
+    // restores the loaded DBC fields after each cast/tick/cleanup.
+    uint32 const spellId = 9841; // Rejuvenation rank 10, one ordinary helpful aura
+    SpellEntry const* nativeSpell = sSpellMgr.GetSpellEntry(spellId);
+    bool const spellValid = nativeSpell &&
+        nativeSpell->Effect[0] == SPELL_EFFECT_APPLY_AURA &&
+        !nativeSpell->Effect[1] && !nativeSpell->Effect[2] &&
+        nativeSpell->IsPositiveEffect(EFFECT_INDEX_0) &&
+        !nativeSpell->ScriptId &&
+        nativeSpell->SpellVisual != 163 &&
+        !nativeSpell->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT) &&
+        !nativeSpell->HasAttribute(SPELL_ATTR_EX_NO_THREAT);
+
+    if (!spellValid || seedDamageA != 1 || seedDamageB != 1 ||
+        hostileReferenceCount != 2)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, energizedTarget) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic power fixture preconditions failed (spellValid=%u seed=%u/%u references=%u cleanup=%u).",
+                 spellValid ? 1u : 0u, seedDamageA, seedDamageB,
+                 hostileReferenceCount, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    struct ScopedAuraEffectOverride
+    {
+        SpellEntry* spell;
+        uint32 originalAuraType;
+        int32 originalMiscValue;
+
+        ScopedAuraEffectOverride(SpellEntry* entry, uint32 auraType, int32 miscValue)
+            : spell(entry),
+              originalAuraType(entry->EffectApplyAuraName[0]),
+              originalMiscValue(entry->EffectMiscValue[0])
+        {
+            spell->EffectApplyAuraName[0] = auraType;
+            spell->EffectMiscValue[0] = miscValue;
+        }
+
+        ~ScopedAuraEffectOverride()
+        {
+            spell->EffectApplyAuraName[0] = originalAuraType;
+            spell->EffectMiscValue[0] = originalMiscValue;
+        }
+
+        ScopedAuraEffectOverride(ScopedAuraEffectOverride const&) = delete;
+        ScopedAuraEffectOverride& operator=(ScopedAuraEffectOverride const&) = delete;
+    };
+
+    struct PeriodicPowerVariantResult
+    {
+        bool matched = false;
+        uint32 spellId = 0;
+        uint32 effectiveGain = 0;
+        float estimatedA = -1.0f;
+        float estimatedB = -1.0f;
+        float actualA = 0.0f;
+        float actualB = 0.0f;
+    };
+
+    auto runVariant = [&](char const* label, uint32 auraType,
+                          Powers powerType, uint32 maxPower,
+                          bool expectThreat) -> PeriodicPowerVariantResult
+    {
+        PeriodicPowerVariantResult result;
+        energizedTarget.creature->SetPowerType(powerType);
+        energizedTarget.creature->SetMaxPower(powerType, maxPower);
+        energizedTarget.creature->SetPower(powerType, 0);
+
+        SpellEntry* mutableNativeSpell = const_cast<SpellEntry*>(nativeSpell);
+        ScopedAuraEffectOverride auraOverride(
+            mutableNativeSpell, auraType,
+            auraType == SPELL_AURA_PERIODIC_ENERGIZE
+                ? static_cast<int32>(powerType) : static_cast<int32>(POWER_MANA));
+
+        // The SpellEntry pointer remains the exact object owned by SpellMgr.
+        // Only its two effect metadata fields are overridden for this bounded
+        // isolated scenario; the Aura and ThreatManager are normal Core code.
+        SpellEntry const* selectedSpell = sSpellMgr.GetSpellEntry(spellId);
+        SpellCastResult const castResult = energizedTarget.creature->CastSpell(
+            energizedTarget.creature, selectedSpell, true);
+        Aura* aura = castResult == SPELL_CAST_OK
+            ? energizedTarget.creature->GetAura(spellId, EFFECT_INDEX_0) : nullptr;
+        bool const auraIsOrdinary = aura && aura->IsPeriodic() &&
+            aura->GetAuraScript() == nullptr && aura->GetAuraPeriodicTimer() > 0;
+        if (!auraIsOrdinary)
+        {
+            energizedTarget.creature->RemoveAurasDueToSpell(spellId);
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                     "[PartyBotSimulator] Periodic power variant %s failed to apply an ordinary Core Aura (cast=%u aura=%u script=%u timer=%d).",
+                     label, static_cast<uint32>(castResult), aura ? 1u : 0u,
+                     aura && aura->GetAuraScript() ? 1u : 0u,
+                     aura ? aura->GetAuraPeriodicTimer() : -1);
+            return result;
+        }
+
+        result.spellId = spellId;
+        uint32 const powerBefore = energizedTarget.creature->GetPower(powerType);
+        uint32 const ticksBefore = aura->GetAuraTicks();
+        float const threatABefore =
+            hostileA.creature->GetThreatManager().getThreat(energizedTarget.creature);
+        float const threatBBefore =
+            hostileB.creature->GetThreatManager().getThreat(energizedTarget.creature);
+
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] Periodic power variant %s: real SpellMgr spell %u applied; awaiting Core Aura tick.",
+                 label, spellId);
+
+        uint32 updates = 0;
+        for (; updates < 64; ++updates)
+        {
+            map.Update(250);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            aura = energizedTarget.creature->GetAura(spellId, EFFECT_INDEX_0);
+            if (!aura || aura->GetAuraTicks() > ticksBefore)
+                break;
+        }
+
+        uint32 const ticksAfter = aura ? aura->GetAuraTicks() : 0;
+        uint32 const powerAfter = energizedTarget.creature->GetPower(powerType);
+        result.effectiveGain = powerAfter > powerBefore ? powerAfter - powerBefore : 0;
+        result.actualA =
+            hostileA.creature->GetThreatManager().getThreat(energizedTarget.creature) - threatABefore;
+        result.actualB =
+            hostileB.creature->GetThreatManager().getThreat(energizedTarget.creature) - threatBBefore;
+
+        ThreatImpactEstimate const estimate = EstimateAppliedPeriodicPowerAssistComponent(
+            energizedTarget.creature, energizedTarget.creature, result.effectiveGain,
+            powerType, selectedSpell, EFFECT_INDEX_0, 88003);
+        bool rowA = false, rowB = false;
+        for (ThreatImpactEntry const& impact : estimate.impacts)
+        {
+            if (impact.threatOwnerGuid != energizedTarget.creature->GetObjectGuid().GetRawValue() ||
+                impact.source != ThreatImpactSource::PeriodicPowerAssist ||
+                impact.bound != ThreatImpactBound::Exact)
+                continue;
+            if (impact.hostileGuid == hostileA.creature->GetObjectGuid().GetRawValue())
+            {
+                rowA = true;
+                result.estimatedA = impact.threatPoints;
+            }
+            else if (impact.hostileGuid == hostileB.creature->GetObjectGuid().GetRawValue())
+            {
+                rowB = true;
+                result.estimatedB = impact.threatPoints;
+            }
+        }
+
+        bool estimateValid = false;
+        if (expectThreat)
+        {
+            estimateValid = estimate.completeness == ThreatImpactCompleteness::Unknown &&
+                estimate.impacts.size() == 2 && rowA && rowB;
+            result.matched = ticksAfter == ticksBefore + 1 &&
+                result.effectiveGain > 0 && estimateValid &&
+                std::fabs(result.actualA - result.estimatedA) < 0.01f &&
+                std::fabs(result.actualB - result.estimatedB) < 0.01f &&
+                std::fabs(result.actualA - result.actualB) < 0.01f;
+        }
+        else
+        {
+            estimateValid = estimate.completeness == ThreatImpactCompleteness::NoThreat &&
+                estimate.impacts.empty();
+            result.matched = ticksAfter == ticksBefore + 1 &&
+                result.effectiveGain > 0 && estimateValid &&
+                std::fabs(result.actualA) < 0.01f &&
+                std::fabs(result.actualB) < 0.01f;
+        }
+
+        sLog.Out(LOG_BASIC, result.matched ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic power variant: name=%s spell=%u auraType=%u power=%u ticks=%u>%u updates=%u gain=%u expectedThreat=%u estimateValid=%u estimated=%.3f/%.3f actualDelta=%.3f/%.3f matched=%u.",
+                 label, result.spellId, auraType, static_cast<uint32>(powerType),
+                 ticksBefore, ticksAfter, updates, result.effectiveGain,
+                 expectThreat ? 1u : 0u, estimateValid ? 1u : 0u,
+                 result.estimatedA, result.estimatedB, result.actualA,
+                 result.actualB, result.matched ? 1u : 0u);
+
+        energizedTarget.creature->RemoveAurasDueToSpell(spellId);
+        return result;
+    };
+
+    PeriodicPowerVariantResult const energy = runVariant(
+        "periodic-energy", SPELL_AURA_PERIODIC_ENERGIZE, POWER_ENERGY, 100, true);
+    PeriodicPowerVariantResult const manaEnergize = runVariant(
+        "periodic-mana-exempt", SPELL_AURA_PERIODIC_ENERGIZE, POWER_MANA, 1000, false);
+    PeriodicPowerVariantResult const observedMana = runVariant(
+        "observed-mana", SPELL_AURA_OBS_MOD_MANA, POWER_MANA, 1000, true);
+
+    bool const matched = energy.matched && manaEnergize.matched && observedMana.matched;
+    bool cleaned = DestroySimulatorActor(map, hostileB);
+    cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+    cleaned = DestroySimulatorActor(map, energizedTarget) && cleaned;
+
+    sLog.Out(LOG_BASIC, matched && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Periodic power summary: energyGain=%u actual=%.3f/%.3f manaEnergizeGain=%u actual=%.3f/%.3f observedManaGain=%u actual=%.3f/%.3f matched=%u cleanup=%u.",
+             energy.effectiveGain, energy.actualA, energy.actualB,
+             manaEnergize.effectiveGain, manaEnergize.actualA, manaEnergize.actualB,
+             observedMana.effectiveGain, observedMana.actualA, observedMana.actualB,
+             matched ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!matched || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core periodic-power assist fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: Core PERIODIC_ENERGIZE granted assist threat for energy but not mana, while OBS_MOD_MANA did grant mana assist threat; the component matched each real two-hostile ThreatManager result.");
+    return true;
+}
+
+
+bool RunPeriodicManaLeechThreatFixture(Map& map)
+{
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic mana leech fixture: begin.");
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor caster;
+    SimulatorActor hostile;
+    bool created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 60.0f, caster) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 60.0f, hostile);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic mana leech fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    caster.creature->SetLevel(60);
+    hostile.creature->SetLevel(60);
+    caster.creature->SetPowerType(POWER_MANA);
+    caster.creature->SetMaxPower(POWER_MANA, 1000);
+    caster.creature->SetPower(POWER_MANA, 0);
+    hostile.creature->SetPowerType(POWER_MANA);
+    hostile.creature->SetMaxPower(POWER_MANA, 1000);
+    hostile.creature->SetPower(POWER_MANA, 1000);
+    hostile.creature->SetInCombatWith(caster.creature);
+    caster.creature->SetInCombatWith(hostile.creature);
+
+    // Select a real native 5875 single-effect periodic mana-leech aura. Avoid
+    // Mark of Kazzak (its depletion explosion is a separate action) and any
+    // scripted/suppressed spell so this fixture isolates the direct mana-gain
+    // threat row only.
+    std::vector<SpellEntry const*> candidates;
+    uint32 const maxSpellId = sSpellMgr.GetMaxSpellId();
+    for (uint32 spellId = 1; spellId < maxSpellId; ++spellId)
+    {
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
+        if (!spell || spell->Id == 21056 ||
+            spell->Effect[0] != SPELL_EFFECT_APPLY_AURA ||
+            spell->EffectApplyAuraName[0] != SPELL_AURA_PERIODIC_MANA_LEECH ||
+            spell->EffectMiscValue[0] != POWER_MANA ||
+            spell->Effect[1] || spell->Effect[2] || spell->ScriptId ||
+            spell->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT) ||
+            spell->HasAttribute(SPELL_ATTR_EX_NO_THREAT))
+            continue;
+        candidates.push_back(spell);
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic mana leech fixture: native candidates=%u.",
+             static_cast<uint32>(candidates.size()));
+
+    SpellEntry const* selectedSpell = nullptr;
+    Aura* aura = nullptr;
+    SpellCastResult castResult = SPELL_FAILED_SPELL_UNAVAILABLE;
+    for (SpellEntry const* candidate : candidates)
+    {
+        // Preserve Core's exact SpellMgr-owned pointer invariant.
+        castResult = caster.creature->CastSpell(hostile.creature, candidate, true);
+        aura = castResult == SPELL_CAST_OK
+            ? hostile.creature->GetAura(candidate->Id, EFFECT_INDEX_0) : nullptr;
+        Modifier const* modifier = aura ? aura->GetModifier() : nullptr;
+        bool const hasEffectiveDrain = modifier && modifier->m_amount > 0.0f;
+        bool const transfersMana = candidate->EffectMultipleValue[0] > 0.0f;
+        bool const ordinaryManaLeech = aura && aura->IsPeriodic() &&
+            !aura->GetAuraScript() && aura->GetAuraPeriodicTimer() > 0 &&
+            hasEffectiveDrain && transfersMana;
+        if (ordinaryManaLeech)
+        {
+            selectedSpell = candidate;
+            break;
+        }
+
+        // Some 5875 rows use the PERIODIC_MANA_LEECH aura type for a zero
+        // amount or a zero transfer multiplier. They apply and tick normally,
+        // but cannot drain or produce threat. Do not let one masquerade as the
+        // representative mana-leech fixture.
+        sLog.Out(LOG_BASIC, LOG_LVL_DEBUG,
+                 "[PartyBotSimulator] Periodic mana leech candidate skipped: spell=%u cast=%u aura=%u amount=%.3f multiplier=%.3f timer=%d script=%u.",
+                 candidate->Id, static_cast<uint32>(castResult), aura ? 1u : 0u,
+                 modifier ? modifier->m_amount : 0.0f,
+                 candidate->EffectMultipleValue[0],
+                 aura ? aura->GetAuraPeriodicTimer() : -1,
+                 aura && aura->GetAuraScript() ? 1u : 0u);
+        hostile.creature->RemoveAurasDueToSpell(candidate->Id);
+    }
+
+    bool const auraFound = aura != nullptr;
+    bool const hostileCanHaveThreatList =
+        hostile.creature && hostile.creature->CanHaveThreatList();
+    bool const improvedDrainMana1 =
+        caster.creature && caster.creature->HasAura(17864, EFFECT_INDEX_0);
+    bool const improvedDrainMana2 =
+        caster.creature && caster.creature->HasAura(18393, EFFECT_INDEX_0);
+    if (!selectedSpell || !aura || !hostileCanHaveThreatList ||
+        improvedDrainMana1 || improvedDrainMana2)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic mana leech fixture preconditions failed (cast=%u aura=%u candidates=%u threatList=%u improvedA=%u improvedB=%u cleanup=%u).",
+                 static_cast<uint32>(castResult), auraFound ? 1u : 0u,
+                 static_cast<uint32>(candidates.size()),
+                 hostileCanHaveThreatList ? 1u : 0u,
+                 improvedDrainMana1 ? 1u : 0u,
+                 improvedDrainMana2 ? 1u : 0u, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    uint32 const targetPowerBefore = hostile.creature->GetPower(POWER_MANA);
+    uint32 const casterPowerBefore = caster.creature->GetPower(POWER_MANA);
+    uint32 const ticksBefore = aura->GetAuraTicks();
+    uint32 const targetHealthBefore = hostile.creature->GetHealth();
+    float const threatBefore =
+        hostile.creature->GetThreatManager().getThreat(caster.creature);
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic mana leech fixture: selected native spell %u; awaiting one Core Aura tick.",
+             selectedSpell->Id);
+
+    uint32 updates = 0;
+    for (; updates < 64; ++updates)
+    {
+        map.Update(250);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        aura = hostile.creature->GetAura(selectedSpell->Id, EFFECT_INDEX_0);
+        if (!aura || aura->GetAuraTicks() > ticksBefore)
+            break;
+    }
+
+    uint32 const ticksAfter = aura ? aura->GetAuraTicks() : 0;
+    uint32 const targetPowerAfter = hostile.creature->GetPower(POWER_MANA);
+    uint32 const casterPowerAfter = caster.creature->GetPower(POWER_MANA);
+    uint32 const drainedPower = targetPowerBefore > targetPowerAfter
+        ? targetPowerBefore - targetPowerAfter : 0;
+    uint32 const effectiveCasterGain = casterPowerAfter > casterPowerBefore
+        ? casterPowerAfter - casterPowerBefore : 0;
+    uint32 const appliedHealthDamage = targetHealthBefore > hostile.creature->GetHealth()
+        ? targetHealthBefore - hostile.creature->GetHealth() : 0;
+    float const actualThreatDelta =
+        hostile.creature->GetThreatManager().getThreat(caster.creature) - threatBefore;
+
+    ThreatImpactEstimate const estimate = EstimateAppliedPeriodicManaLeechComponent(
+        caster.creature, hostile.creature, effectiveCasterGain, POWER_MANA,
+        selectedSpell, EFFECT_INDEX_0, 88004);
+    bool const estimateShape =
+        estimate.completeness == ThreatImpactCompleteness::Unknown &&
+        estimate.impacts.size() == 1 &&
+        estimate.impacts[0].threatOwnerGuid == caster.creature->GetObjectGuid().GetRawValue() &&
+        estimate.impacts[0].hostileGuid == hostile.creature->GetObjectGuid().GetRawValue() &&
+        estimate.impacts[0].source == ThreatImpactSource::PeriodicManaLeech &&
+        estimate.impacts[0].bound == ThreatImpactBound::Exact;
+    float const estimatedThreat = estimateShape ? estimate.impacts[0].threatPoints : -1.0f;
+    bool const matched = ticksAfter == ticksBefore + 1 &&
+        drainedPower > 0 && effectiveCasterGain > 0 && estimateShape &&
+        std::fabs(actualThreatDelta - estimatedThreat) < 0.01f;
+
+    bool cleaned = true;
+    if (hostile.creature->IsInWorld())
+        hostile.creature->RemoveAurasDueToSpell(selectedSpell->Id);
+    cleaned = DestroySimulatorActor(map, hostile);
+    cleaned = DestroySimulatorActor(map, caster) && cleaned;
+
+    sLog.Out(LOG_BASIC, matched && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Periodic mana leech tick: spell=%u ticks=%u>%u updates=%u drained=%u casterGain=%u extraDamage=%u estimated=%.3f actualDelta=%.3f estimateShape=%u matched=%u cleanup=%u.",
+             selectedSpell->Id, ticksBefore, ticksAfter, updates, drainedPower,
+             effectiveCasterGain, appliedHealthDamage, estimatedThreat,
+             actualThreatDelta, estimateShape ? 1u : 0u, matched ? 1u : 0u,
+             cleaned ? 1u : 0u);
+
+    if (!matched || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core periodic mana leech threat fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: a real Core periodic mana-leech tick drained target Mana, credited the caster's effective Mana gain and matched the target ThreatManager delta with the direct 50-percent assist component.");
+    return true;
+}
+
+
+bool RunPeriodicLeechThreatFixture(Map& map)
+{
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic life leech fixture: begin.");
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor caster;
+    SimulatorActor hostileA;
+    SimulatorActor hostileB;
+    bool created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 72.0f, caster) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 72.0f, hostileA) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 4.0f, 72.0f, hostileB);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic life leech fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    caster.creature->SetLevel(60);
+    hostileA.creature->SetLevel(60);
+    hostileB.creature->SetLevel(60);
+    caster.creature->SetHealth(50000);
+
+    // Put two real hostile references on the self-healing caster. The damage
+    // portion of the same tick hits hostile A, while the heal-assist portion
+    // must fan out across both A and B.
+    uint32 const seedDamageA = caster.creature->DealDamage(
+        hostileA.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    uint32 const seedDamageB = caster.creature->DealDamage(
+        hostileB.creature, 1, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    caster.creature->SetInCombatWith(hostileA.creature);
+    caster.creature->SetInCombatWith(hostileB.creature);
+    hostileA.creature->SetInCombatWith(caster.creature);
+    hostileB.creature->SetInCombatWith(caster.creature);
+
+    uint32 hostileReferenceCount = 0;
+    for (HostileReference* reference = caster.creature->GetHostileRefManager().getFirst();
+         reference; reference = reference->next())
+        ++hostileReferenceCount;
+
+    std::vector<SpellEntry const*> candidates;
+    uint32 const maxSpellId = sSpellMgr.GetMaxSpellId();
+    for (uint32 spellId = 1; spellId < maxSpellId; ++spellId)
+    {
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
+        if (!spell || spell->Effect[0] != SPELL_EFFECT_APPLY_AURA ||
+            spell->EffectApplyAuraName[0] != SPELL_AURA_PERIODIC_LEECH ||
+            spell->Effect[1] || spell->Effect[2] || spell->ScriptId ||
+            spell->SpellVisual == 163 ||
+            spell->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT) ||
+            spell->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT) ||
+            spell->HasAttribute(SPELL_ATTR_EX_NO_THREAT))
+            continue;
+        candidates.push_back(spell);
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic life leech fixture: refs=%u native candidates=%u.",
+             hostileReferenceCount, static_cast<uint32>(candidates.size()));
+
+    SpellEntry const* selectedSpell = nullptr;
+    Aura* aura = nullptr;
+    SpellCastResult castResult = SPELL_FAILED_SPELL_UNAVAILABLE;
+    for (SpellEntry const* candidate : candidates)
+    {
+        castResult = caster.creature->CastSpell(hostileA.creature, candidate, true);
+        aura = castResult == SPELL_CAST_OK
+            ? hostileA.creature->GetAura(candidate->Id, EFFECT_INDEX_0) : nullptr;
+        if (aura && aura->IsPeriodic() && !aura->GetAuraScript() &&
+            aura->GetAuraPeriodicTimer() > 0)
+        {
+            selectedSpell = candidate;
+            break;
+        }
+        hostileA.creature->RemoveAurasDueToSpell(candidate->Id);
+    }
+
+    if (!selectedSpell || !aura || seedDamageA != 1 || seedDamageB != 1 ||
+        hostileReferenceCount != 2)
+    {
+        bool const auraFound = aura != nullptr;
+        bool cleaned = DestroySimulatorActor(map, hostileB);
+        cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Periodic life leech fixture preconditions failed (cast=%u aura=%u seed=%u/%u refs=%u candidates=%u cleanup=%u).",
+                 static_cast<uint32>(castResult), auraFound ? 1u : 0u,
+                 seedDamageA, seedDamageB, hostileReferenceCount,
+                 static_cast<uint32>(candidates.size()), cleaned ? 1u : 0u);
+        return false;
+    }
+
+    uint32 const casterHealthBefore = caster.creature->GetHealth();
+    uint32 const hostileHealthBefore = hostileA.creature->GetHealth();
+    uint32 const ticksBefore = aura->GetAuraTicks();
+    float const threatABefore =
+        hostileA.creature->GetThreatManager().getThreat(caster.creature);
+    float const threatBBefore =
+        hostileB.creature->GetThreatManager().getThreat(caster.creature);
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Periodic life leech fixture: selected native spell %u; awaiting Core Aura tick.",
+             selectedSpell->Id);
+
+    uint32 updates = 0;
+    for (; updates < 64; ++updates)
+    {
+        map.Update(250);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        aura = hostileA.creature->GetAura(selectedSpell->Id, EFFECT_INDEX_0);
+        if (!aura || aura->GetAuraTicks() > ticksBefore)
+            break;
+    }
+
+    uint32 const ticksAfter = aura ? aura->GetAuraTicks() : 0;
+    uint32 const casterHealthAfter = caster.creature->GetHealth();
+    uint32 const hostileHealthAfter = hostileA.creature->GetHealth();
+    uint32 const effectiveHealing = casterHealthAfter > casterHealthBefore
+        ? casterHealthAfter - casterHealthBefore : 0;
+    uint32 const appliedDamage = hostileHealthBefore > hostileHealthAfter
+        ? hostileHealthBefore - hostileHealthAfter : 0;
+    float const actualDeltaA =
+        hostileA.creature->GetThreatManager().getThreat(caster.creature) - threatABefore;
+    float const actualDeltaB =
+        hostileB.creature->GetThreatManager().getThreat(caster.creature) - threatBBefore;
+
+    ThreatImpactEstimate const damageEstimate = EstimateAppliedPeriodicDamageComponent(
+        caster.creature, hostileA.creature, appliedDamage, selectedSpell, 88005);
+    ThreatImpactEstimate const healEstimate = EstimateAppliedPeriodicHealingAssistComponent(
+        caster.creature, caster.creature, effectiveHealing, selectedSpell, 88006);
+
+    bool damageShape =
+        damageEstimate.completeness == ThreatImpactCompleteness::Unknown &&
+        damageEstimate.impacts.size() == 1 &&
+        damageEstimate.impacts[0].threatOwnerGuid == caster.creature->GetObjectGuid().GetRawValue() &&
+        damageEstimate.impacts[0].hostileGuid == hostileA.creature->GetObjectGuid().GetRawValue() &&
+        damageEstimate.impacts[0].source == ThreatImpactSource::PeriodicDamage &&
+        damageEstimate.impacts[0].bound == ThreatImpactBound::Exact;
+    bool healRowA = false, healRowB = false;
+    float estimatedDamageA = damageShape ? damageEstimate.impacts[0].threatPoints : -1.0f;
+    float estimatedHealA = -1.0f, estimatedHealB = -1.0f;
+    for (ThreatImpactEntry const& impact : healEstimate.impacts)
+    {
+        if (impact.threatOwnerGuid != caster.creature->GetObjectGuid().GetRawValue() ||
+            impact.source != ThreatImpactSource::PeriodicHealAssist ||
+            impact.bound != ThreatImpactBound::Exact)
+            continue;
+        if (impact.hostileGuid == hostileA.creature->GetObjectGuid().GetRawValue())
+        {
+            healRowA = true;
+            estimatedHealA = impact.threatPoints;
+        }
+        else if (impact.hostileGuid == hostileB.creature->GetObjectGuid().GetRawValue())
+        {
+            healRowB = true;
+            estimatedHealB = impact.threatPoints;
+        }
+    }
+
+    bool const healShape =
+        healEstimate.completeness == ThreatImpactCompleteness::Unknown &&
+        healEstimate.impacts.size() == 2 && healRowA && healRowB;
+    bool const matched = ticksAfter == ticksBefore + 1 &&
+        appliedDamage > 0 && effectiveHealing > 0 &&
+        damageShape && healShape &&
+        std::fabs(actualDeltaA - (estimatedDamageA + estimatedHealA)) < 0.01f &&
+        std::fabs(actualDeltaB - estimatedHealB) < 0.01f;
+
+    bool cleaned = true;
+    if (hostileA.creature->IsInWorld())
+        hostileA.creature->RemoveAurasDueToSpell(selectedSpell->Id);
+    cleaned = DestroySimulatorActor(map, hostileB);
+    cleaned = DestroySimulatorActor(map, hostileA) && cleaned;
+    cleaned = DestroySimulatorActor(map, caster) && cleaned;
+
+    sLog.Out(LOG_BASIC, matched && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Periodic life leech tick: spell=%u ticks=%u>%u updates=%u appliedDamage=%u effectiveHealing=%u damageEstimate=%.3f healAssistEstimate=%.3f/%.3f actualDelta=%.3f/%.3f damageShape=%u healShape=%u matched=%u cleanup=%u.",
+             selectedSpell->Id, ticksBefore, ticksAfter, updates, appliedDamage,
+             effectiveHealing, estimatedDamageA, estimatedHealA, estimatedHealB,
+             actualDeltaA, actualDeltaB, damageShape ? 1u : 0u,
+             healShape ? 1u : 0u, matched ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!matched || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core periodic life-leech threat fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: a real Core periodic life-leech tick matched both the hostile damage threat and the self-heal assist fan-out across two hostile ThreatManagers.");
+    return true;
+}
+
+bool RunNegativeFlatSpellThreatFixture(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor caster;
+    SimulatorActor hostile;
+    bool const created =
+        CreateSimulatorActor(map, *info, partyFaction, 0.0f, 20.0f, caster) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 20.0f, hostile);
+    if (!created)
+    {
+        bool cleaned = DestroySimulatorActor(map, hostile);
+        cleaned = DestroySimulatorActor(map, caster) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Negative flat spell-threat fixture actor creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    caster.creature->SetLevel(60);
+    hostile.creature->SetLevel(60);
+    for (uint32 tick = 0; tick < 120 &&
+         (!caster.updateCount || !hostile.updateCount); ++tick)
+    {
+        map.Update(50);
+        if (!caster.updateCount || !hostile.updateCount)
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    bool matched = false;
+    bool mismatch = false;
+    bool failClosedChecksPassed = false;
+    uint32 selectedSpellId = 0;
+    uint32 attemptedSpells = 0;
+    float estimatedThreat = 0.0f;
+    float actualThreatDelta = 0.0f;
+    uint32 const healthBefore = hostile.creature->GetHealth();
+
+    // Pick a real database-backed harmful, single-effect aura spell with a
+    // flat spell_threat row. Aura-only effects avoid mixing direct-damage
+    // threat into the flat-threat parity assertion.
+    for (uint32 spellId = 1; spellId < 50000 && !matched && !mismatch; ++spellId)
+    {
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
+        SpellThreatEntry const* threatEntry = sSpellMgr.GetSpellThreatEntry(spellId);
+        if (!spell || !threatEntry || !threatEntry->threat ||
+            spell->Effect[0] != SPELL_EFFECT_APPLY_AURA ||
+            !spell->EffectApplyAuraName[0] ||
+            spell->Effect[1] || spell->Effect[2] ||
+            spell->EffectImplicitTargetA[0] == TARGET_UNIT_CASTER ||
+            spell->IsPositiveEffect(SpellEffectIndex(0)) ||
+            spell->HasAttribute(SPELL_ATTR_EX4_NO_HARMFUL_THREAT) ||
+            spell->HasAttribute(SPELL_ATTR_EX_NO_THREAT) ||
+            !threatEntry->CanCauseThreatOnMask(0x01))
+            continue;
+
+        std::vector<NegativeFlatSpellThreatTarget> successfulTargets;
+        successfulTargets.push_back({hostile.creature, 0x01});
+        ThreatImpactEstimate const estimate = EstimateNegativeFlatSpellThreatComponent(
+            caster.creature, spell, threatEntry, successfulTargets, true, 77001);
+        if (estimate.completeness != ThreatImpactCompleteness::Unknown ||
+            estimate.impacts.size() != 1 ||
+            estimate.impacts[0].threatOwnerGuid != caster.creature->GetObjectGuid().GetRawValue() ||
+            estimate.impacts[0].hostileGuid != hostile.creature->GetObjectGuid().GetRawValue() ||
+            estimate.impacts[0].source != ThreatImpactSource::FlatSpellThreat ||
+            estimate.impacts[0].bound != ThreatImpactBound::Exact)
+            continue;
+
+        // Fail-closed contract tests use the same loaded spell/target as the
+        // parity case. Invalid or incomplete caller facts must never produce
+        // partial impact rows that a caller could mistake for a complete set.
+        auto isUnknownWithoutRows = [](ThreatImpactEstimate const& value)
+        {
+            return value.completeness == ThreatImpactCompleteness::Unknown &&
+                   value.impacts.empty();
+        };
+        std::vector<NegativeFlatSpellThreatTarget> incompleteTargets;
+        incompleteTargets.push_back({hostile.creature, 0x01});
+        bool const incompleteRejected = isUnknownWithoutRows(
+            EstimateNegativeFlatSpellThreatComponent(
+                caster.creature, spell, threatEntry, incompleteTargets, false, 77001));
+
+        std::vector<NegativeFlatSpellThreatTarget> invalidMaskTargets;
+        invalidMaskTargets.push_back({hostile.creature, 0x80});
+        bool const invalidMaskRejected = isUnknownWithoutRows(
+            EstimateNegativeFlatSpellThreatComponent(
+                caster.creature, spell, threatEntry, invalidMaskTargets, true, 77001));
+
+        std::vector<NegativeFlatSpellThreatTarget> duplicateTargets;
+        duplicateTargets.push_back({hostile.creature, 0x01});
+        duplicateTargets.push_back({hostile.creature, 0x01});
+        bool const duplicateRejected = isUnknownWithoutRows(
+            EstimateNegativeFlatSpellThreatComponent(
+                caster.creature, spell, threatEntry, duplicateTargets, true, 77001));
+
+        std::vector<NegativeFlatSpellThreatTarget> unresolvedTargets;
+        unresolvedTargets.push_back({nullptr, 0x01});
+        bool const unresolvedRejected = isUnknownWithoutRows(
+            EstimateNegativeFlatSpellThreatComponent(
+                caster.creature, spell, threatEntry, unresolvedTargets, true, 77001));
+
+        SpellEntry mixedSignSpell = *spell;
+        mixedSignSpell.Effect[1] = SPELL_EFFECT_HEAL;
+        mixedSignSpell.EffectImplicitTargetA[1] = TARGET_UNIT_CASTER;
+        std::vector<NegativeFlatSpellThreatTarget> mixedSignTargets;
+        mixedSignTargets.push_back({hostile.creature, 0x03});
+        ThreatImpactEstimate const mixedSignEstimate =
+            EstimateNegativeFlatSpellThreatComponent(
+                caster.creature, &mixedSignSpell, threatEntry,
+                mixedSignTargets, true, 77001);
+        bool const mixedSignRejected =
+            mixedSignEstimate.completeness == ThreatImpactCompleteness::NoThreat &&
+            mixedSignEstimate.impacts.empty();
+
+        failClosedChecksPassed = incompleteRejected && invalidMaskRejected &&
+            duplicateRejected && unresolvedRejected && mixedSignRejected;
+        if (!failClosedChecksPassed)
+        {
+            mismatch = true;
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                     "[PartyBotSimulator] Negative flat spell-threat fail-closed checks failed (incomplete=%u invalidMask=%u duplicate=%u unresolved=%u mixedSign=%u).",
+                     incompleteRejected ? 1u : 0u, invalidMaskRejected ? 1u : 0u,
+                     duplicateRejected ? 1u : 0u, unresolvedRejected ? 1u : 0u,
+                     mixedSignRejected ? 1u : 0u);
+            break;
+        }
+
+        ++attemptedSpells;
+        float const before = hostile.creature->GetThreatManager().getThreat(caster.creature);
+        SpellCastResult const castResult = caster.creature->CastSpell(
+            hostile.creature, spell, true);
+        if (castResult != SPELL_CAST_OK)
+            continue;
+
+        map.Update(50);
+        float const after = hostile.creature->GetThreatManager().getThreat(caster.creature);
+        float const delta = after - before;
+        if (delta <= 0.0f)
+            continue;
+
+        selectedSpellId = spellId;
+        estimatedThreat = estimate.impacts[0].threatPoints;
+        actualThreatDelta = delta;
+        matched = std::fabs(delta - estimatedThreat) < 0.01f &&
+                  hostile.creature->GetHealth() == healthBefore;
+        mismatch = !matched;
+    }
+
+    bool cleaned = DestroySimulatorActor(map, hostile);
+    cleaned = DestroySimulatorActor(map, caster) && cleaned;
+    bool const passed = matched && failClosedChecksPassed && !mismatch && cleaned;
+    sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Negative flat spell threat: spell=%u attempts=%u estimated=%.3f actualDelta=%.3f matched=%u cleanup=%u.",
+             selectedSpellId, attemptedSpells, estimatedThreat, actualThreatDelta,
+             matched ? 1u : 0u, cleaned ? 1u : 0u);
+    if (!passed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Negative flat spell-threat Core cast parity fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: negative flat spell-threat estimator rejected incomplete target sets, invalid masks, duplicate/unresolved targets and mixed-sign spells without emitting impacts.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: a real harmful Core aura spell routed negative flat spell_threat to its affected hostile and matched the estimator against the actual ThreatManager delta.");
+    return true;
+}
+
+} // namespace
+
+bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
+{
+    MapEntry const* entry = sMapStorage.LookupEntry<MapEntry>(mapId);
+    if (!entry || !entry->IsDungeon())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Map %u is not a valid dungeon/raid MapEntry; refusing to create a test map.",
+                 mapId);
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Creating isolated test map %u.", mapId);
+
+    Map* map = sMapMgr.CreateTestMap(mapId, true, 0.0f, 0.0f);
+    if (!map)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] MapManager::CreateTestMap(%u) returned null.", mapId);
+        return false;
+    }
+
+    uint32 const instanceId = map->GetInstanceId();
+    bool const registered = instanceId != 0 && sMapMgr.FindMap(mapId, instanceId) == map;
+
+    // Keep Stage A limited to map registration/registry cleanup. An empty
+    // Map::Update can execute instance-script work before simulator actors
+    // exist; the first map tick belongs to Stage B, after actors have completed
+    // the normal Creature::AIM_Initialize lifecycle above.
+    bool const mapRetained = sMapMgr.FindMap(mapId, instanceId) == map;
+
+    // Run every stage independently so one failure does not suppress the
+    // remaining diagnostics; the final result still requires every stage.
+    bool const creatureCombatPassed = RunCoreCombatThreatSmokeTest(*map);
+    bool const negativeFlatSpellThreatPassed = RunNegativeFlatSpellThreatFixture(*map);
+    bool const periodicDamagePassed = RunPeriodicDamageThreatFixture(*map);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Stage completed: periodic damage=%u; starting periodic healing.",
+             periodicDamagePassed ? 1u : 0u);
+    bool const periodicHealingPassed = RunPeriodicHealingAssistThreatFixture(*map);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Stage completed: periodic healing=%u; starting periodic power.",
+             periodicHealingPassed ? 1u : 0u);
+    bool const periodicPowerPassed = RunPeriodicPowerAssistThreatFixture(*map);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Stage completed: periodic power=%u; starting periodic mana leech.",
+             periodicPowerPassed ? 1u : 0u);
+    bool const periodicManaLeechPassed = RunPeriodicManaLeechThreatFixture(*map);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Stage completed: periodic mana leech=%u.",
+             periodicManaLeechPassed ? 1u : 0u);
+    bool const periodicLifeLeechPassed = RunPeriodicLeechThreatFixture(*map);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Stage completed: periodic life leech=%u.",
+             periodicLifeLeechPassed ? 1u : 0u);
+    bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
+    bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
+    bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
+    bool const selectHostileTargetPassed = RunEngineCoreSelectHostileTargetSmokeTest(*map);
+    bool const followPartyMemberPassed = RunEngineCoreFollowPartyMemberActionSmokeTest(*map);
+    bool const itemUsePassed = RunEngineCoreItemUseSmokeTest(*map);
+    bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
+    bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
+    bool const playerFollowCastSafetyPassed = RunEngineCorePlayerFollowCastSafetySmokeTest(*map);
+    bool const followRetargetPassed = RunEngineCoreFollowRetargetSmokeTest(*map);
+    bool const playerHealRevalidationPassed = RunEngineCorePlayerHealRevalidationSmokeTest(*map);
+    bool const playerHealLosPassed = RunEngineCorePlayerHealLosSmokeTest(*map);
+    bool const movePointControlSafetyPassed = RunEngineCoreMovePointControlSafetySmokeTest(*map);
+    bool const movementInterruptPassed = RunEngineCoreMovementInterruptSmokeTest(*map);
+    // Run the basic Group lifecycle fixture before the more demanding
+    // multi-add encounter fixture. F9 is the final Player/Group scenario.
+    // One five-Player Group fixture covers both the F8 roster/cache lifecycle
+    // and F9 multi-add threat path; do not create two Groups on the same Map.
+    bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
+    bool const combatPassed = registered && mapRetained &&
+                              creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && periodicManaLeechPassed && periodicLifeLeechPassed && engineExecutorPassed &&
+                              creatureHealPassed && playerHealPassed &&
+                              selectHostileTargetPassed && followPartyMemberPassed && itemUsePassed &&
+                              movementPassed && followPassed &&
+                              playerFollowCastSafetyPassed && followRetargetPassed &&
+                              playerHealRevalidationPassed && playerHealLosPassed &&
+                              movePointControlSafetyPassed && movementInterruptPassed &&
+                              realGroupThreatSnapshotPassed;
+
+    sMapMgr.DeleteTestMap(map);
+
+    bool const removed = sMapMgr.FindMap(mapId, instanceId) == nullptr;
+    if (!registered || !mapRetained || !combatPassed || !removed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Test-map/combat assertions failed (registered=%u retained=%u combat=%u removed=%u instance=%u).",
+                 registered ? 1u : 0u, mapRetained ? 1u : 0u, combatPassed ? 1u : 0u,
+                 removed ? 1u : 0u, instanceId);
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: created, ran a bounded Core Creature combat/threat scenario and deleted map %u instance %u.",
+             mapId, instanceId);
+    return true;
+}
+}

@@ -30,10 +30,13 @@
 #include "MoveSpline.h"
 #include "Anticheat.h"
 
+#include <cmath>
+
 //----- Point Movement Generator
 template<class T>
 void PointMovementGenerator<T>::Initialize(T& unit)
 {
+    m_engineNaturalCompletion = false;
     if (!unit.IsStopped())
         unit.StopMoving();
 
@@ -60,6 +63,26 @@ void PointMovementGenerator<T>::Initialize(T& unit)
 template<class T>
 void PointMovementGenerator<T>::Finalize(T& unit)
 {
+    // The regular MovementInform callback is a generator-finalized notification,
+    // not proof of arrival: MotionMaster also calls Finalize during cancellation
+    // and cleanup. Only this opt-in Engine path publishes a typed terminal result.
+    if (m_engineActionId && m_engineEncounterId)
+    {
+        float const dx = unit.GetPositionX() - m_x;
+        float const dy = unit.GetPositionY() - m_y;
+        float const dz = unit.GetPositionZ() - m_z;
+        float const finalDistance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        PlayerPointMovementResult result = PlayerPointMovementResult::Interrupted;
+        if (m_engineNaturalCompletion)
+            result = std::isfinite(finalDistance) && finalDistance <= m_engineArrivalTolerance
+                ? PlayerPointMovementResult::Reached : PlayerPointMovementResult::Failed;
+
+        Player* player = unit.ToPlayer();
+        if (player && player->AI())
+            player->AI()->OnPointMovementResult(m_engineActionId, m_engineEncounterId,
+                                                m_id, result, finalDistance);
+    }
+
     unit.ClearUnitState(UNIT_STATE_ROAMING | UNIT_STATE_ROAMING_MOVE);
     MovementInform(unit);
 }
@@ -98,7 +121,11 @@ bool PointMovementGenerator<T>::Update(T& unit, uint32 const& /*diff*/)
         m_recalculateSpeed = false;
         Initialize(unit);
     }
-    return !unit.movespline->Finalized();
+
+    bool const splineActive = !unit.movespline->Finalized();
+    if (m_engineActionId && !splineActive)
+        m_engineNaturalCompletion = true;
+    return splineActive;
 }
 
 template<>

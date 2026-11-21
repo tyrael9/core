@@ -91,6 +91,8 @@ class PlayerBotMgr
         void DeleteBattleBots();
 
         void DeleteAll();
+        // Flush map-owned PartyBot encounter boundaries after world updates stop.
+        void FlushEncounterTracesForShutdown();
         void AddAllBots();
 
         void OnBotLogout(PlayerBotEntry *e);

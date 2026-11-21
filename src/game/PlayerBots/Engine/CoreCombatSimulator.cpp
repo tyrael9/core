@@ -6707,15 +6707,30 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         faceFriendlySnapshot, faceFriendlySnapshot.members[0],
         faceFriendlyCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
         &actionRuntime, nullptr, &actionRuntime);
+    // Use a trigger bound to the friendly GUID. Reusing faceEngine here
+    // would still emit the original hostile GUID and never exercise the
+    // stale-friendly CoreAction preflight.
+    PartyBotEngine faceFriendlyEngine;
+    std::shared_ptr<FaceTargetAction> faceFriendlyAction(
+        new FaceTargetAction());
+    bool const faceFriendlyRegistered =
+        faceFriendlyEngine.RegisterAction(faceFriendlyAction);
+    std::shared_ptr<Strategy> faceFriendlyStrategy(
+        new Strategy("simulator_face_stale_friendly"));
+    faceFriendlyStrategy->AddTrigger(
+        std::make_shared<SimulatorFaceTargetTrigger>(
+            friendly.creature->GetObjectGuid().GetRawValue()));
+    faceFriendlyEngine.AddStrategy(faceFriendlyStrategy);
     DecisionReport staleFaceFriendlyReport =
-        faceEngine.Evaluate(faceFriendlyContext);
-    bool const staleFaceFriendlySelected =
+        faceFriendlyEngine.Evaluate(faceFriendlyContext);
+    bool const staleFaceFriendlySelected = faceFriendlyRegistered &&
         staleFaceFriendlyReport.selectedIndices.size() == 1 &&
         staleFaceFriendlyReport.candidates[
             staleFaceFriendlyReport.selectedIndices[0]].status ==
                 CandidateStatus::Selected;
     if (staleFaceFriendlySelected)
-        faceEngine.ExecuteSelected(faceFriendlyContext, staleFaceFriendlyReport);
+        faceFriendlyEngine.ExecuteSelected(
+            faceFriendlyContext, staleFaceFriendlyReport);
     CandidateEvaluation const* staleFaceFriendlyEvaluation =
         staleFaceFriendlySelected
             ? &staleFaceFriendlyReport.candidates[

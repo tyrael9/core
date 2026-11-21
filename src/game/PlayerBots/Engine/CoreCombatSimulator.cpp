@@ -486,7 +486,7 @@ public:
     {
         return context.bot.alive && m_targetGuid != 0;
     }
-    void CollectCandidates(DecisionContext const&, 
+    void CollectCandidates(DecisionContext const&,
                            std::vector<ActionCandidate>& candidates) const override
     {
         ActionCandidate candidate;
@@ -5589,7 +5589,7 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         snapshot, snapshot.members[0], coordinator, WorldTimer::getMSTime(),
         nullptr, nullptr, &actionRuntime, nullptr, &actionRuntime);
 
-    PartyBotEngine::PartyBotEngine engine;
+    PartyBotEngine engine;
     std::shared_ptr<SelectHostileTargetAction> action(
         new SelectHostileTargetAction());
     bool const actionRegistered = engine.RegisterAction(action);
@@ -5633,7 +5633,7 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         staleSnapshot, staleSnapshot.members[0], staleCoordinator,
         WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
         &actionRuntime);
-    PartyBotEngine::PartyBotEngine staleEngine;
+    PartyBotEngine staleEngine;
     std::shared_ptr<SelectHostileTargetAction> staleAction(
         new SelectHostileTargetAction());
     bool const staleRegistered = staleEngine.RegisterAction(staleAction);

@@ -5365,12 +5365,22 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             legacyPointMotion = motion;
             legacyPointBefore = current;
         }
-        else if (!idlePointPlayer &&
-                 motion->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
-        {
-            idlePointPlayer = member;
-            idlePointBefore = current;
-        }
+    }
+    // The first two overlay-safe candidates may both be Point generators.
+    // Idle correlation can come from any other Group member (including Tank
+    // or Healer), because it is only observed, never moved or expired.
+    for (Player* member : players)
+    {
+        if (!member || member == enginePointPlayer ||
+            member == legacyPointPlayer)
+            continue;
+        MotionMaster* motion = member->GetMotionMaster();
+        if (!motion || motion->empty() ||
+            motion->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+            continue;
+        idlePointPlayer = member;
+        idlePointBefore = motion->GetCurrent();
+        break;
     }
 
     ActionId const groupPointSnapshotActionId =

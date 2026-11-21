@@ -174,7 +174,7 @@ All eleven adapters remain deliberately unregistered in the production NewEngine
 
 - Register audited production generic/class/role Core adapters with structured outcomes.
 - Revalidate GUID, target life/relationship, map/instance, range, LOS, spell, resource, cooldown and control state immediately before every adapter side effect.
-- Add typed movement and item terminal-result sources; do not infer success from a generic generator-finalization callback.
+- Typed PointMovementTerminal and ItemUseTerminal sources are implemented, bounded and correlated; do not infer completion from generic generator finalization or adapter return. Add a dedicated typed terminal/result source for each future asynchronous Core action kind before exposing dependent continuations.
 - Complete action-specific threat forecasts and hard safety policy before enabling actions which can cause threat/CC/resource/movement side effects.
 - Extend trace facts for missing state-machine/boss context and close remaining cross-map/deployment diagnostics gaps.
 - Add in-game tests separately from fixture-backed CI, and keep Legacy as the default until an explicitly approved test-realm validation.

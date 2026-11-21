@@ -5616,7 +5616,7 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
 
     // First clear a deliberately stale, non-resolving selection GUID. The
     // live action must prove that the Player is truly idle before clearing it.
-    ObjectGuid const staleSelectionGuid(0xF430000000000001ull);
+    ObjectGuid const staleSelectionGuid(static_cast<uint64>(0xF430000000000001ull));
     bot->SetSelectionGuid(staleSelectionGuid);
     snapshot.members[0].selectionGuid = staleSelectionGuid.GetRawValue();
     PartyCoordinator clearCoordinator;

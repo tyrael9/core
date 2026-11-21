@@ -5560,6 +5560,16 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         return false;
     }
 
+    // The F43 Group-backed snapshot probe must be a hard runtime gate. A log-only
+    // failure here would let the simulator report Runtime PASS without validating
+    // that PartySnapshotBuilder copied Engine-owned Point correlation from Core.
+    if (!pointMovementSnapshotBuilderPassed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] F43 Group-backed point-movement snapshot integration failed.");
+        return false;
+    }
+
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states.");
     return true;

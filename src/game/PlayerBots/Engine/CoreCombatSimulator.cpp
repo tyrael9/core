@@ -6720,14 +6720,35 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         staleFaceFriendlySelected
             ? &staleFaceFriendlyReport.candidates[
                 staleFaceFriendlyReport.selectedIndices[0]] : nullptr;
+    std::string const staleFaceFriendlyReason = staleFaceFriendlyEvaluation
+        ? staleFaceFriendlyEvaluation->reason : "candidate_not_selected";
+    uint32 const staleFaceFriendlyStatus = staleFaceFriendlyEvaluation
+        ? static_cast<uint32>(staleFaceFriendlyEvaluation->status) : 0xffffffffu;
+    uint32 const staleFaceFriendlyResult = staleFaceFriendlyEvaluation
+        ? static_cast<uint32>(staleFaceFriendlyEvaluation->actionResult) : 0xffffffffu;
+    bool const staleFaceFriendlySelectionMatches =
+        bot->GetSelectionGuid() == friendly.creature->GetObjectGuid();
+    bool const staleFaceFriendlyTargetMatches =
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid();
+    bool const staleFaceFriendlyNotAttackable =
+        !bot->CanAttack(friendly.creature);
     bool const staleFaceFriendlyRejected = staleFaceFriendlyEvaluation &&
         staleFaceFriendlyEvaluation->status == CandidateStatus::ExecutionFailed &&
         staleFaceFriendlyEvaluation->actionResult == ActionResult::Impossible &&
         staleFaceFriendlyEvaluation->reason == "face_target_not_attackable" &&
-        bot->GetOrientation() == 3.14159265358979323846f &&
-        bot->GetSelectionGuid() == friendly.creature->GetObjectGuid() &&
-        bot->GetTargetGuid() == friendly.creature->GetObjectGuid() &&
+        std::fabs(bot->GetOrientation() - 3.14159265358979323846f) <= 0.001f &&
+        staleFaceFriendlySelectionMatches && staleFaceFriendlyTargetMatches &&
+        staleFaceFriendlyNotAttackable &&
         bot->GetVictim() == nullptr && bot->IsInCombat() == faceCombatBefore;
+    sLog.Out(LOG_BASIC, staleFaceFriendlyRejected ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] FaceTarget stale-friendly detail: selected=%u status=%u result=%u reason=%s selectionMatch=%u targetMatch=%u canAttack=%u orientation=%.6f victim=%u combat=%u.",
+        staleFaceFriendlySelected ? 1u : 0u, staleFaceFriendlyStatus,
+        staleFaceFriendlyResult, staleFaceFriendlyReason.c_str(),
+        staleFaceFriendlySelectionMatches ? 1u : 0u,
+        staleFaceFriendlyTargetMatches ? 1u : 0u,
+        staleFaceFriendlyNotAttackable ? 1u : 0u,
+        bot->GetOrientation(), bot->GetVictim() ? 1u : 0u,
+        bot->IsInCombat() ? 1u : 0u);
 
     // The native facing API intentionally ignores moving actors. Verify the
     // adapter returns Useless and leaves an active Core PointMovementGenerator intact.

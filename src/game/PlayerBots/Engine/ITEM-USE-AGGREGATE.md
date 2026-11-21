@@ -2,7 +2,7 @@
 
 ## Status
 
-F40 completed the source audit and single-slot potion baseline. F42 has now implemented the bounded typed aggregate source and pure tests, and added a synthetic two-ON_USE-slot fixture using real Core Spell objects. The production item-use action adapter is **not implemented**; real-Core delayed-use and cancellation-before/after-mutation fixtures remain open.
+F40 completed the source audit and single-slot potion baseline. F42 implements the bounded typed aggregate source and pure tests, the synthetic two-ON_USE-slot fixture using real Core Spell objects, and the real delayed Brimstone/Fireball cancellation-before/after-charge-mutation fixture. The production item-use action adapter is **not implemented**. Required F42 runtime coverage is closed; count-based expendable-item and item-as-reagent fixtures remain additional coverage.
 
 This document is the F42 implementation contract and status. It deliberately separates three lifetimes that the current Core API exposes independently:
 
@@ -88,8 +88,8 @@ The simulator and internal callers may invoke `Player::CastItemUseSpell` directl
 
 1. Preserve current single-potion and zero-charge tests.
 2. Add a real item with at least two ON_USE spell slots and assert exact child fan-out, trigger flags and root aggregation despite synchronous child completion.
-3. Add a delayed ON_USE spell and verify item mutation and child terminal order independently.
-4. Interrupt one scenario before item mutation and another after mutation; assert root status and mutation evidence differ.
+3. Add a delayed ON_USE spell and verify item mutation and child terminal order independently. **Completed:** real Brimstone (item 1402) / Fireball (spell 143, cast time 2,000 ms) fixture runs two real Core cancellations around `TakeCastItem`.
+4. Interrupt one scenario before item mutation and another after mutation; assert root status and mutation evidence differ. **Completed:** pre-mutation charge stays `-5`; post-mutation charge changes `-5` to `-4` before impact, and the interrupted spell leaves target health unchanged.
 5. Exercise at least one charge-based item and one stack/count-based expendable item, including item destruction and item-as-reagent if a native Vanilla item fixture supports it.
 6. Require final Core health/effect state from Core-owned objects; never accept trace counts as proof that the spell effect applied.
 
@@ -105,16 +105,16 @@ Implemented in the current branch:
 
 Pure tests in `tests/PartyBotEngineTests.cpp` cover fan-out closure, synchronous children, delayed children, partial/all-failure/interruption outcomes, independent mutation facts, capacity, TTL/uint32 wrap, late-child expiry, listener publication and continuation correlation/history.
 
-The Core simulator's two-slot prototype fixture has already emitted:
+The Core simulator's two-slot prototype fixture has emitted:
 `multiRoot=1 multiChildren=2 firstTriggered=0 secondTriggered=1 multiMutations=2 multiChargesConsumed=1 cleanup=1/1/1`.
-It temporarily sets a non-stackable one-count fixture to exercise the real finite-charge mutation path and restores the modified prototype fields before returning. The run also retains the single-potion success and zero-charge rejection checks.
+It temporarily modifies a disposable prototype to exercise two actual Core child Spells and restores the modified prototype fields before returning. The run also retains the single-potion success and zero-charge rejection checks.
 
-F42 is CI-closed by trusted Push CI [#44839748022](https://github.com/tyrael9/core/actions/runs/44839748022): pure tests, report collector, configure, full ARM64 build and fixture-backed runtime all passed, ending with final Runtime PASS. That runtime verified both single-slot success/zero-charge rejection and the two-ON-USE-slot aggregate with independent finite-charge mutations. The earlier stale F40 gate failure in [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) is historical and superseded by the corrected successful run.
+F42's required runtime coverage was finally closed by trusted Push CI [#44852141749](https://github.com/tyrael9/core/actions/runs/44852141749): pure tests, report collector, configure, full ARM64 build and fixture-backed runtime all passed, ending with final Runtime PASS. That run verifies the single-slot success/zero-charge rejection, two-ON_USE-slot aggregate, and real delayed Brimstone/Fireball cancellation both before and after charge mutation. The original corrected multi-slot gate run [#44839748022](https://github.com/tyrael9/core/actions/runs/44839748022) remains valid historical evidence for the first closure slice.
 
-The delayed-child and cancellation-before/after-mutation behavior is covered at the pure tracker level. A deterministic real-Core delayed ON_USE Spell fixture and a real-Core cancellation test on each side of actual item mutation are not yet verified.
+The real-Core delayed fixture logs `preInterrupted=1 preUnmutated=1 preCharge=-5>-5 postInterrupted=1 postMutation=1 mutationBeforeEffects=1 mutationIdentity=1 mutationCount=1 postCharge=-5>-4 postNoImpact=1 postTerminals=1 cleanup=1/1/1`, followed by the F42 PASS marker and final Runtime PASS. Runtime artifact: [partybot-simulator-dfdfdf0](https://github.com/tyrael9/core/actions/runs/44852141749/artifacts/14685618923). Count-based expendable stack consumption and item-as-reagent mutation remain untested optional cases.
 
 
 
 ## Non-goals for F42
 
-F42 does not register NewEngine class rotations, infer item success from a single child, alter the underlying Vanilla ON_USE fan-out, or implement generic inventory optimization. A production item-use action adapter remains future work; real-Core delayed-use/cancellation fixtures are still absent.
+F42 does not register NewEngine class rotations, infer item success from a single child, alter the underlying Vanilla ON_USE fan-out, or implement generic inventory optimization. A production item-use action adapter remains future work; count-based expendable-item and item-as-reagent Core fixtures remain optional follow-up.

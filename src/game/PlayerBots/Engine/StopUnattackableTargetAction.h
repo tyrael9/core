@@ -98,7 +98,7 @@ protected:
     }
 
     ActionExecutionResult ExecuteCore(
-        DecisionContext const& context, ActionCandidate const& candidate,
+        DecisionContext& context, ActionCandidate const& candidate,
         CoreActionResolution const& resolved) override
     {
         ActionExecutionResult result;

@@ -7076,9 +7076,9 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bool const clearStaleVictimPreserved =
         clearStaleAttackStarted && clearStaleSelectionMissing &&
         bot->GetVictim() == hostile.creature &&
-        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) == clearStaleMeleeBefore &&
-        bot->IsInCombat() == clearStaleCombatBefore &&
-        bot->GetThreatManager().getThreat(hostile.creature, false) == 0.0f;
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) == clearStaleMeleeBefore;
+    bool const clearStaleCombatPreserved =
+        bot->IsInCombat() == clearStaleCombatBefore;
     bool const clearStaleAttackerPreserved =
         clearStaleAttackerBefore &&
         std::find(hostile.creature->GetAttackers().begin(),
@@ -7093,12 +7093,13 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bool const clearStaleFixturePassed =
         clearStaleRegistered && clearStaleSelected && clearStaleDriftRejected &&
         clearStaleAccepted && clearStaleVictimPreserved &&
-        clearStaleAttackerPreserved && clearStaleNoThreatMutation;
+        clearStaleCombatPreserved && clearStaleAttackerPreserved &&
+        clearStaleNoThreatMutation;
     sLog.Out(LOG_BASIC, clearStaleFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
         "[PartyBotSimulator] ClearStaleTargetAction: registered=%u selected=%u driftRejected=%u cleared=%u victimPreserved=%u combatPreserved=%u attackersPreserved=%u threatUnchanged=%u.",
         clearStaleRegistered ? 1u : 0u, clearStaleSelected ? 1u : 0u,
         clearStaleDriftRejected ? 1u : 0u, clearStaleAccepted ? 1u : 0u,
-        clearStaleVictimPreserved ? 1u : 0u, clearStaleCombatBefore ? 1u : 0u,
+        clearStaleVictimPreserved ? 1u : 0u, clearStaleCombatPreserved ? 1u : 0u,
         clearStaleAttackerPreserved ? 1u : 0u,
         clearStaleNoThreatMutation ? 1u : 0u);
     bot->CombatStop(false);

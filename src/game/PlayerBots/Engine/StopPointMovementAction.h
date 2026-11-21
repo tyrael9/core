@@ -189,7 +189,7 @@ private:
         }
 
         MotionMaster* motion = actor->GetMotionMaster();
-        MovementGenerator* current = motion ? motion->GetCurrent() : nullptr;
+        MovementGenerator const* current = motion ? motion->GetCurrent() : nullptr;
         if (!current || current->GetMovementGeneratorType() != POINT_MOTION_TYPE)
         {
             result.result = ActionResult::Useless;

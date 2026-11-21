@@ -8434,7 +8434,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
             replacementMovePointB, healer->GetPositionX() + 8.0f,
             stopPointDestinationY, stopPointDestinationZ, MOVE_NONE,
             replacementMoveActionB, stopPointEncounterId, movementArrivalTolerance);
-    MovementGenerator* const replacementBGenerator =
+    MovementGenerator const* const replacementBGenerator =
         healer->GetMotionMaster()->GetCurrent();
     if (stopPointASelected)
         stopPointEngine.ExecuteSelected(stopPointContextA, stopPointReportA);
@@ -8482,7 +8482,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     healer->GetMotionMaster()->MovePoint(
         0xF443u, healer->GetPositionX() + 4.0f,
         stopPointDestinationY, stopPointDestinationZ, MOVE_NONE);
-    MovementGenerator* const legacyPointGenerator =
+    MovementGenerator const* const legacyPointGenerator =
         healer->GetMotionMaster()->GetCurrent();
     PartySnapshot legacyPointSnapshot = stopPointBaseSnapshot;
     legacyPointSnapshot.epoch += 2;

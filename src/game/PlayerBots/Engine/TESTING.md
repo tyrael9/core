@@ -120,12 +120,17 @@ FollowPartyMemberAction starts or retargets only the native Core `FollowMovement
 - Same-target follow returns Useless without restarting the generator. A request for a different member retargets only an already-active Follow generator or an idle/default movement slot.
 - The real three-Player Group fixture verifies first follow start, snapshot target capture, same-target no-op, retarget to a second member, and stale-snapshot rejection after the first member is removed from the live Group. The teardown explicitly removes its synthetic instance bind before Disband so the shared simulator Map is not reset.
 
-StopFollowingAction expires only a matching current native FollowMovementGenerator:\n- Snapshot eligibility requires an alive bot with a nonzero value-only `followTargetGuid` and no target argument.\n- Final Core preflight requires the live current generator to be FOLLOW and its target GUID/map/instance to match the snapshot; changed target identity is rejected before mutation, while an already-replaced non-FOLLOW movement returns Useless.\n- The adapter calls `MotionMaster::MovementExpired(false)`, not `MoveIdle` or `Clear`. Core finalizes/deletes the active generator immediately or defers deletion safely while `MotionMaster` is updating.\n- The Core fixture rejects a stale target GUID, successfully expires a matching follow, then proves a stale stop request cannot replace an unrelated PointMovementGenerator. Trusted runtime validation is pending.\n\nCurrent-head validation:
-- PR CI [#44860033826](https://github.com/tyrael9/core/actions/runs/44860033826) passed pure tests, report collector, configure, full Linux ARM64 Core build and harness syntax.
-- Trusted push [#44860028963](https://github.com/tyrael9/core/actions/runs/44860028963) passed the same stages and the full Core-backed simulator through final Runtime PASS. Follow marker: `registered=1 firstStarted=1 followTargetCaptured=1 sameTargetNotRestarted=1 retargetRegistered=1 retargeted=1 firstLeaderRemoved=1 staleSelected=1 staleGroupRejected=1`. The same run passed F24's candidate-detail gate scoped to the unique encounter/bot identity.
-- Artifact [partybot-simulator-f730018](https://github.com/tyrael9/core/actions/runs/44860028963/artifacts/14689004218) contains the complete runtime logs.
+StopFollowingAction expires only a matching current native FollowMovementGenerator:
+- Snapshot eligibility requires an alive bot with a nonzero value-only `followTargetGuid` and no target argument.
+- Final Core preflight requires the live current generator to be FOLLOW and its target GUID/map/instance to match the snapshot; changed target identity is rejected before mutation, while an already-replaced non-FOLLOW movement returns Useless.
+- The adapter calls `MotionMaster::MovementExpired(false)`, not `MoveIdle`, `Clear` or `ClearType`. Core finalizes/deletes the active generator immediately or defers deletion safely while `MotionMaster` is updating.
+- The Core fixture rejects a stale target GUID, successfully expires a matching follow, then proves a stale stop request cannot replace an unrelated PointMovementGenerator. Trusted push [#44864122550](https://github.com/tyrael9/core/actions/runs/44864122550) emitted `registered=1 snapshot=1 staleTargetRejected=1 stopped=1 pointMovementPreserved=1` and reached final Runtime PASS.
 
-All four adapters remain deliberately unregistered in the production NewEngine registry. They demonstrate narrow generic operations, not a complete target policy or playable combat AI.
+Current-head validation:
+- PR CI [#44864129963](https://github.com/tyrael9/core/actions/runs/44864129963) passed pure tests, report collector, configure, full Linux ARM64 Core build and harness syntax.
+- Trusted push [#44864122550](https://github.com/tyrael9/core/actions/runs/44864122550) passed the same stages and the full Core-backed simulator through final Runtime PASS. It passed F24's candidate-detail gate and emitted the StopFollowing marker above.
+- Artifact [partybot-simulator-221e5a3](https://github.com/tyrael9/core/actions/runs/44864122550/artifacts/14691023636) contains the complete runtime logs.
+All five adapters remain deliberately unregistered in the production NewEngine registry. They demonstrate narrow generic operations, not a complete target policy or playable combat AI.
 ## Production action readiness — still open
 
 - Register audited production generic/class/role Core adapters with structured outcomes.

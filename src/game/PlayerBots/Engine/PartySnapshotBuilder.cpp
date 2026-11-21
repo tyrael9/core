@@ -172,6 +172,7 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         memberData.maxPower = member->GetMaxPower(member->GetPowerType());
         memberData.victimGuid = member->GetVictim()
             ? member->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+        memberData.selectionGuid = member->GetSelectionGuid().GetRawValue();
         memberData.x = member->GetPositionX();
         memberData.y = member->GetPositionY();
         memberData.z = member->GetPositionZ();

@@ -11,6 +11,7 @@
 #include "Movement/MotionMaster.h"
 #include "PlayerBots/Engine/Action.h"
 #include "PlayerBots/Engine/CoreAction.h"
+#include "PlayerBots/Engine/SelectHostileTargetAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
@@ -472,6 +473,33 @@ public:
 private:
     Map& m_map;
     std::string m_name = "core_attack";
+};
+
+class SimulatorSelectHostileTargetTrigger final : public Trigger
+{
+public:
+    explicit SimulatorSelectHostileTargetTrigger(Guid targetGuid)
+        : m_targetGuid(targetGuid) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && m_targetGuid != 0;
+    }
+    void CollectCandidates(DecisionContext const&, 
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_select_hostile_target";
+        candidate.targetGuid = m_targetGuid;
+        candidate.basePriority = 40.0f;
+        candidate.channel = ActionChannel::Targeting;
+        candidates.push_back(candidate);
+    }
+
+private:
+    Guid m_targetGuid = 0;
+    std::string m_name = "simulator_select_hostile_target";
 };
 
 class SimulatorTankAssistTrigger final : public Trigger
@@ -5490,6 +5518,178 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
 }
 
 
+
+bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor hostile;
+    SimulatorActor friendly;
+    bool const actorsCreated =
+        CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 6.0f, hostile) &&
+        CreateSimulatorActor(map, *info, partyFaction, 3.0f, 6.0f, friendly);
+
+    WorldSession botSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* bot = nullptr;
+    bool const botCreated = actorsCreated &&
+        CreateSimulatorPlayer(map, partyFaction, botSession, bot, 0.0f, 6.0f, 4.0f);
+    if (!botCreated)
+    {
+        bool cleaned = true;
+        if (botSession.GetPlayer())
+            botSession.LogoutPlayer(false);
+        else if (bot)
+            delete bot;
+        cleaned = DestroySimulatorActor(map, friendly) && cleaned;
+        cleaned = DestroySimulatorActor(map, hostile) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Select-hostile target fixture creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    PartyBotAI actionRuntime(
+        bot, map.GetId(), map.GetInstanceId(),
+        bot->GetPositionX(), bot->GetPositionY(),
+        bot->GetPositionZ(), bot->GetOrientation());
+    actionRuntime.SetPlayer(bot);
+    actionRuntime.m_initialized = true;
+    actionRuntime.m_updateTimer.Reset(600000);
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 93;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 93;
+    snapshot.capturedAtMs = WorldTimer::getMSTime();
+
+    PartyMemberSnapshot member;
+    member.guid = bot->GetObjectGuid().GetRawValue();
+    member.mapId = map.GetId();
+    member.instanceId = map.GetInstanceId();
+    member.health = bot->GetHealth();
+    member.maxHealth = bot->GetMaxHealth();
+    member.selectionGuid = bot->GetSelectionGuid().GetRawValue();
+    member.online = bot->IsInWorld();
+    member.alive = bot->IsAlive();
+    snapshot.members.push_back(member);
+
+    HostileSnapshot hostileSnapshot;
+    hostileSnapshot.guid = hostile.creature->GetObjectGuid().GetRawValue();
+    hostileSnapshot.health = hostile.creature->GetHealth();
+    hostileSnapshot.maxHealth = hostile.creature->GetMaxHealth();
+    hostileSnapshot.alive = hostile.creature->IsAlive();
+    snapshot.hostiles.push_back(hostileSnapshot);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(
+        snapshot, snapshot.members[0], coordinator, WorldTimer::getMSTime(),
+        nullptr, nullptr, &actionRuntime, nullptr, &actionRuntime);
+
+    PartyBotEngine::PartyBotEngine engine;
+    std::shared_ptr<SelectHostileTargetAction> action(
+        new SelectHostileTargetAction());
+    bool const actionRegistered = engine.RegisterAction(action);
+    std::shared_ptr<Strategy> hostileStrategy(new Strategy("simulator_select_hostile_target"));
+    hostileStrategy->AddTrigger(std::make_shared<SimulatorSelectHostileTargetTrigger>(
+        hostileSnapshot.guid));
+    engine.AddStrategy(hostileStrategy);
+
+    DecisionReport hostileReport = engine.Evaluate(context);
+    bool const hostileSelected = actionRegistered &&
+        hostileReport.selectedIndices.size() == 1 &&
+        hostileReport.candidates[hostileReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (hostileSelected)
+        engine.ExecuteSelected(context, hostileReport);
+    bool const hostileAccepted = hostileSelected &&
+        hostileReport.candidates[hostileReport.selectedIndices[0]].status ==
+            CandidateStatus::Executed &&
+        hostileReport.candidates[hostileReport.selectedIndices[0]].actionResult ==
+            ActionResult::Success &&
+        bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid();
+
+    // Deliberately retain a stale positive HostileSnapshot for the friendly
+    // unit. The final CoreAction preflight must re-resolve its live faction and
+    // reject it without changing the Player's current selection/target.
+    bot->SetSelectionGuid(ObjectGuid());
+    PartySnapshot staleSnapshot = snapshot;
+    staleSnapshot.epoch++;
+    staleSnapshot.members[0].selectionGuid = 0;
+    HostileSnapshot staleFriendlySnapshot;
+    staleFriendlySnapshot.guid = friendly.creature->GetObjectGuid().GetRawValue();
+    staleFriendlySnapshot.health = friendly.creature->GetHealth();
+    staleFriendlySnapshot.maxHealth = friendly.creature->GetMaxHealth();
+    staleFriendlySnapshot.alive = friendly.creature->IsAlive();
+    staleSnapshot.hostiles.clear();
+    staleSnapshot.hostiles.push_back(staleFriendlySnapshot);
+
+    PartyCoordinator staleCoordinator;
+    DecisionContext staleContext(
+        staleSnapshot, staleSnapshot.members[0], staleCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine::PartyBotEngine staleEngine;
+    std::shared_ptr<SelectHostileTargetAction> staleAction(
+        new SelectHostileTargetAction());
+    bool const staleRegistered = staleEngine.RegisterAction(staleAction);
+    std::shared_ptr<Strategy> staleStrategy(new Strategy("simulator_stale_hostile_snapshot"));
+    staleStrategy->AddTrigger(std::make_shared<SimulatorSelectHostileTargetTrigger>(
+        staleFriendlySnapshot.guid));
+    staleEngine.AddStrategy(staleStrategy);
+
+    DecisionReport friendlyReport = staleEngine.Evaluate(staleContext);
+    bool const friendlyCandidateSelected = staleRegistered &&
+        friendlyReport.selectedIndices.size() == 1 &&
+        friendlyReport.candidates[friendlyReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (friendlyCandidateSelected)
+        staleEngine.ExecuteSelected(staleContext, friendlyReport);
+    CandidateEvaluation const* friendlyEvaluation =
+        friendlyCandidateSelected
+            ? &friendlyReport.candidates[friendlyReport.selectedIndices[0]] : nullptr;
+    bool const friendlyRejected = friendlyEvaluation &&
+        friendlyEvaluation->status == CandidateStatus::ExecutionFailed &&
+        friendlyEvaluation->actionResult == ActionResult::Impossible &&
+        friendlyEvaluation->reason == "select_hostile_target_not_attackable" &&
+        bot->GetSelectionGuid().IsEmpty() && bot->GetTargetGuid().IsEmpty() &&
+        bot->GetVictim() == nullptr;
+
+    bot->SetAI(nullptr);
+    actionRuntime.Remove();
+    botSession.LogoutPlayer(false);
+    bool const playerCleaned = botSession.GetPlayer() == nullptr;
+    bot = nullptr;
+    bool const friendlyCleaned = DestroySimulatorActor(map, friendly);
+    bool const hostileCleaned = DestroySimulatorActor(map, hostile);
+    bool const cleaned = playerCleaned && friendlyCleaned && hostileCleaned;
+
+    sLog.Out(LOG_BASIC, (hostileAccepted && friendlyRejected && cleaned)
+        ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] Core select-hostile target: registered=%u hostileAccepted=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
+        actionRegistered ? 1u : 0u, hostileAccepted ? 1u : 0u,
+        friendlyCandidateSelected ? 1u : 0u, friendlyRejected ? 1u : 0u,
+        (botSession.GetPlayer() == nullptr && friendlyRejected) ? 1u : 0u,
+        cleaned ? 1u : 0u);
+
+    if (!actionRegistered || !hostileAccepted || !friendlyCandidateSelected ||
+        !friendlyRejected || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core select-hostile target fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: the generic Core hostile-target selector selected a live hostile and its final preflight rejected a stale friendly target without modifying Player selection/target.");
+    return true;
+}
+
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -7734,6 +7934,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
+    bool const selectHostileTargetPassed = RunEngineCoreSelectHostileTargetSmokeTest(*map);
     bool const itemUsePassed = RunEngineCoreItemUseSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
     bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
@@ -7750,7 +7951,8 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const realGroupThreatSnapshotPassed = RunEngineCoreRealGroupThreatSnapshotSmokeTest(*map);
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && periodicManaLeechPassed && periodicLifeLeechPassed && engineExecutorPassed &&
-                              creatureHealPassed && playerHealPassed && itemUsePassed &&
+                              creatureHealPassed && playerHealPassed &&
+                              selectHostileTargetPassed && itemUsePassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&

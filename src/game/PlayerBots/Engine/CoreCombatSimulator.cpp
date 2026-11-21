@@ -6654,6 +6654,7 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
         bot->GetTargetGuid() == hostile.creature->GetObjectGuid();
 
+    Guid const hostileGuid = hostile.creature->GetObjectGuid().GetRawValue();
     // F43: execute a generic CoreAction against an already-selected hostile.
     // The fixture observes the synchronous Core request, stale-snapshot rejection
     // and a live selection race. It does not use PartyBotAI::AttackStart.
@@ -6799,7 +6800,6 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     // F43: face the selected hostile only when the value snapshot says the
     // target is outside Core's 180-degree front arc. Live Core state still
     // owns hostility, movement/cast/control validation and the final outcome.
-    Guid const hostileGuid = hostile.creature->GetObjectGuid().GetRawValue();
     bot->SetOrientation(3.14159265358979323846f);
     PartySnapshot faceSnapshot = snapshot;
     faceSnapshot.epoch++;

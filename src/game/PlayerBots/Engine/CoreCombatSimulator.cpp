@@ -6641,7 +6641,7 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bool const faceRequestAccepted = faceEvaluation &&
         faceEvaluation->status == CandidateStatus::Executed &&
         faceEvaluation->actionResult == ActionResult::Success &&
-        faceEvaluation->reason == "face_target_facing_spline_started" &&
+        faceEvaluation->reason == "face_target_facing_request_accepted" &&
         bot->GetPositionX() == faceXBefore &&
         bot->GetPositionY() == faceYBefore &&
         bot->GetPositionZ() == faceZBefore &&

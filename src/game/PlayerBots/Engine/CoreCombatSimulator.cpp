@@ -3593,89 +3593,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         cachedSnapshot && cachedSnapshot->epoch == initialSnapshot->epoch &&
         cachedSnapshot->capturedAtMs == 15000;
 
-    // F43: exercise the new Engine point-movement correlation fields through
-    // the real five-Player Group snapshot builder. One member owns a correlated
-    // Engine Point generator, one owns an ordinary Core/Legacy Point generator,
-    // and one remains idle. No movement update is needed to test value capture.
-    ActionId const groupPointSnapshotActionId =
-        static_cast<ActionId>(0xF4310001ull);
-    uint64 const groupPointSnapshotEncounterId = 0xF4310002ull;
-    uint32 const groupPointSnapshotPointId = 0xF431u;
-    uint32 const legacyPointSnapshotPointId = 0xF432u;
-    bool const groupPointMoveStarted = membersAdded &&
-        players[0]->GetMotionMaster()->MovePointForEngine(
-            groupPointSnapshotPointId, players[0]->GetPositionX() + 6.0f,
-            players[0]->GetPositionY(), players[0]->GetPositionZ(), MOVE_NONE,
-            groupPointSnapshotActionId, groupPointSnapshotEncounterId, 1.5f);
-    if (membersAdded)
-        players[1]->GetMotionMaster()->MovePoint(
-            legacyPointSnapshotPointId, players[1]->GetPositionX() + 6.0f,
-            players[1]->GetPositionY(), players[1]->GetPositionZ(), MOVE_NONE);
-    bool const legacyPointMoveStarted = membersAdded &&
-        players[1]->GetMotionMaster()->GetCurrentMovementGeneratorType() ==
-            POINT_MOTION_TYPE;
-    PartyCoordinator pointMovementSnapshotCoordinator;
-    PartySnapshot const* pointMovementSnapshot =
-        groupPointMoveStarted && legacyPointMoveStarted
-            ? PartySnapshotBuilder::GetOrBuild(
-                players[0], pointMovementSnapshotCoordinator,
-                WorldTimer::getMSTime(), 0)
-            : nullptr;
-    PartyMemberSnapshot const* enginePointMember = pointMovementSnapshot
-        ? pointMovementSnapshot->FindMember(
-            players[0]->GetObjectGuid().GetRawValue()) : nullptr;
-    PartyMemberSnapshot const* legacyPointMember = pointMovementSnapshot
-        ? pointMovementSnapshot->FindMember(
-            players[1]->GetObjectGuid().GetRawValue()) : nullptr;
-    PartyMemberSnapshot const* idlePointMember = pointMovementSnapshot
-        ? pointMovementSnapshot->FindMember(
-            players[2]->GetObjectGuid().GetRawValue()) : nullptr;
-    bool const enginePointCorrelationCopied = enginePointMember &&
-        enginePointMember->pointMovementActionId == groupPointSnapshotActionId &&
-        enginePointMember->pointMovementEncounterId ==
-            groupPointSnapshotEncounterId &&
-        enginePointMember->pointMovementPointId == groupPointSnapshotPointId;
-    bool const legacyPointHasNoEngineOwnership = legacyPointMember &&
-        legacyPointMember->pointMovementActionId == 0 &&
-        legacyPointMember->pointMovementEncounterId == 0 &&
-        legacyPointMember->pointMovementPointId == legacyPointSnapshotPointId;
-    bool const idlePointCorrelationEmpty = idlePointMember &&
-        idlePointMember->pointMovementActionId == 0 &&
-        idlePointMember->pointMovementEncounterId == 0 &&
-        idlePointMember->pointMovementPointId == 0;
-    bool const pointMovementSnapshotGroupValid = pointMovementSnapshot &&
-        pointMovementSnapshot->groupId == group->GetId() &&
-        pointMovementSnapshot->mapId == map.GetId() &&
-        pointMovementSnapshot->instanceId == map.GetInstanceId() &&
-        pointMovementSnapshot->members.size() == MAX_GROUP_SIZE;
-    if (groupPointMoveStarted)
-        players[0]->GetMotionMaster()->MovementExpired(false);
-    if (legacyPointMoveStarted)
-        players[1]->GetMotionMaster()->MovementExpired(false);
-    bool const pointMovementSnapshotCleanup =
-        players[0]->GetMotionMaster()->GetCurrentMovementGeneratorType() !=
-            POINT_MOTION_TYPE &&
-        players[1]->GetMotionMaster()->GetCurrentMovementGeneratorType() !=
-            POINT_MOTION_TYPE;
-    bool const pointMovementSnapshotBuilderPassed =
-        pointMovementSnapshotGroupValid && groupPointMoveStarted &&
-        legacyPointMoveStarted && enginePointCorrelationCopied &&
-        legacyPointHasNoEngineOwnership && idlePointCorrelationEmpty &&
-        pointMovementSnapshotCleanup;
-    sLog.Out(LOG_BASIC,
-        pointMovementSnapshotBuilderPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] Group PartySnapshotBuilder point movement: group=%u engineStarted=%u engineCopied=%u legacyStarted=%u legacyUnowned=%u idleEmpty=%u cleanup=%u.",
-        pointMovementSnapshotGroupValid ? 1u : 0u,
-        groupPointMoveStarted ? 1u : 0u,
-        enginePointCorrelationCopied ? 1u : 0u,
-        legacyPointMoveStarted ? 1u : 0u,
-        legacyPointHasNoEngineOwnership ? 1u : 0u,
-        idlePointCorrelationEmpty ? 1u : 0u,
-        pointMovementSnapshotCleanup ? 1u : 0u);
-    if (pointMovementSnapshotBuilderPassed)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: real five-Player Group PartySnapshotBuilder copied Engine point action/encounter/point correlation from the current Core generator, retained legacy point IDs without Engine ownership, and left idle member movement IDs empty.");
-
     bool actorsCreated = false;
     if (membersAdded && mainTankAssigned && allPlayersOnSameMap &&
         initialSnapshotValid && initialRosterResolved && initialValuesCopied &&
@@ -4265,7 +4182,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool const f9ChecksPassed = hostileAIReady && membersAdded && mainTankAssigned &&
         allPlayersOnSameMap && initialSnapshotValid && initialRosterResolved &&
         initialValuesCopied && initialFormCopied && initialRolesUnknown && initialCacheRetained &&
-        pointMovementSnapshotBuilderPassed &&
         registeredBeforeCleanup && bothHostilesInitiallyTargetTank &&
         threatBudgetSnapshotValid && overBudgetRejected && executionReservationRaceRejected &&
         safeBudgetSelectedAndReserved && enginePreservedCoreThreatState &&
@@ -5401,6 +5317,120 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         tankDeathSnapshotValid && tankDeathRosterValid && tankDeathThreatSnapshotValid &&
         healerDied && healerThreatReferencesRemoved && dpsRetargetedAfterHealerDeath &&
         healerDeathSnapshotValid && healerDeathRosterValid && healerDeathThreatSnapshotValid;
+
+    // F43: exercise point-movement correlation through the actual five-Player
+    // Group PartySnapshotBuilder only after all existing threat/death fixtures
+    // have completed. Use surviving non-tank members so movement expiry cannot
+    // alter the earlier F9/F12 combat and HostileRefManager assertions.
+    Player* const enginePointPlayer = players.size() > 2 ? players[2] : nullptr;
+    Player* const legacyPointPlayer = players.size() > 3 ? players[3] : nullptr;
+    Player* const idlePointPlayer = players.size() > 4 ? players[4] : nullptr;
+    MotionMaster* const enginePointMotion =
+        enginePointPlayer ? enginePointPlayer->GetMotionMaster() : nullptr;
+    MotionMaster* const legacyPointMotion =
+        legacyPointPlayer ? legacyPointPlayer->GetMotionMaster() : nullptr;
+    MovementGenerator const* const enginePointBefore =
+        enginePointMotion && !enginePointMotion->empty()
+            ? enginePointMotion->GetCurrent() : nullptr;
+    MovementGenerator const* const legacyPointBefore =
+        legacyPointMotion && !legacyPointMotion->empty()
+            ? legacyPointMotion->GetCurrent() : nullptr;
+    MovementGenerator const* const idlePointBefore =
+        idlePointPlayer && idlePointPlayer->GetMotionMaster() &&
+                !idlePointPlayer->GetMotionMaster()->empty()
+            ? idlePointPlayer->GetMotionMaster()->GetCurrent() : nullptr;
+
+    ActionId const groupPointSnapshotActionId =
+        static_cast<ActionId>(0xF4310001ull);
+    uint64 const groupPointSnapshotEncounterId = 0xF4310002ull;
+    uint32 const groupPointSnapshotPointId = 0xF431u;
+    uint32 const legacyPointSnapshotPointId = 0xF432u;
+    bool const groupPointMoveStarted =
+        enginePointPlayer && enginePointMotion &&
+        enginePointMotion->MovePointForEngine(
+            groupPointSnapshotPointId,
+            enginePointPlayer->GetPositionX() + 6.0f,
+            enginePointPlayer->GetPositionY(),
+            enginePointPlayer->GetPositionZ(), MOVE_NONE,
+            groupPointSnapshotActionId, groupPointSnapshotEncounterId, 1.5f);
+    if (legacyPointPlayer && legacyPointMotion)
+        legacyPointMotion->MovePoint(
+            legacyPointSnapshotPointId,
+            legacyPointPlayer->GetPositionX() + 6.0f,
+            legacyPointPlayer->GetPositionY(),
+            legacyPointPlayer->GetPositionZ(), MOVE_NONE);
+    bool const legacyPointMoveStarted = legacyPointPlayer && legacyPointMotion &&
+        legacyPointMotion->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE &&
+        legacyPointMotion->GetCurrent() != legacyPointBefore;
+    bool const idleMemberNotMoving = idlePointPlayer && idlePointBefore &&
+        idlePointBefore->GetMovementGeneratorType() != POINT_MOTION_TYPE;
+    PartyCoordinator pointMovementSnapshotCoordinator;
+    PartySnapshot const* pointMovementSnapshot =
+        groupPointMoveStarted && legacyPointMoveStarted && idleMemberNotMoving
+            ? PartySnapshotBuilder::GetOrBuild(
+                enginePointPlayer, pointMovementSnapshotCoordinator,
+                WorldTimer::getMSTime(), 0)
+            : nullptr;
+    PartyMemberSnapshot const* enginePointMember = pointMovementSnapshot
+        ? pointMovementSnapshot->FindMember(
+            enginePointPlayer->GetObjectGuid().GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* legacyPointMember = pointMovementSnapshot
+        ? pointMovementSnapshot->FindMember(
+            legacyPointPlayer->GetObjectGuid().GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* idlePointMember = pointMovementSnapshot
+        ? pointMovementSnapshot->FindMember(
+            idlePointPlayer->GetObjectGuid().GetRawValue()) : nullptr;
+    bool const enginePointCorrelationCopied = enginePointMember &&
+        enginePointMember->pointMovementActionId == groupPointSnapshotActionId &&
+        enginePointMember->pointMovementEncounterId ==
+            groupPointSnapshotEncounterId &&
+        enginePointMember->pointMovementPointId == groupPointSnapshotPointId;
+    bool const legacyPointHasNoEngineOwnership = legacyPointMember &&
+        legacyPointMember->pointMovementActionId == 0 &&
+        legacyPointMember->pointMovementEncounterId == 0 &&
+        legacyPointMember->pointMovementPointId == legacyPointSnapshotPointId;
+    bool const idlePointCorrelationEmpty = idlePointMember &&
+        idlePointMember->pointMovementActionId == 0 &&
+        idlePointMember->pointMovementEncounterId == 0 &&
+        idlePointMember->pointMovementPointId == 0;
+    bool const pointMovementSnapshotGroupValid = pointMovementSnapshot &&
+        pointMovementSnapshot->groupId == group->GetId() &&
+        pointMovementSnapshot->mapId == map.GetId() &&
+        pointMovementSnapshot->instanceId == map.GetInstanceId() &&
+        pointMovementSnapshot->members.size() == MAX_GROUP_SIZE;
+
+    // Expire only the temporary top generators and prove each previous native
+    // generator is restored; do not update the shared Map or advance any Player.
+    if (legacyPointMoveStarted)
+        legacyPointMotion->MovementExpired(false);
+    if (groupPointMoveStarted)
+        enginePointMotion->MovementExpired(false);
+    bool const pointMovementSnapshotCleanup =
+        enginePointMotion && legacyPointMotion &&
+        enginePointMotion->GetCurrent() == enginePointBefore &&
+        legacyPointMotion->GetCurrent() == legacyPointBefore &&
+        idlePointPlayer->GetMotionMaster()->GetCurrent() == idlePointBefore;
+    bool const pointMovementSnapshotBuilderPassed =
+        pointMovementSnapshotGroupValid && groupPointMoveStarted &&
+        legacyPointMoveStarted && idleMemberNotMoving &&
+        enginePointCorrelationCopied && legacyPointHasNoEngineOwnership &&
+        idlePointCorrelationEmpty && pointMovementSnapshotCleanup;
+    sLog.Out(LOG_BASIC,
+        pointMovementSnapshotBuilderPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] Group PartySnapshotBuilder point movement: group=%u engineStarted=%u engineCopied=%u legacyStarted=%u legacyUnowned=%u idleEmpty=%u cleanup=%u.",
+        pointMovementSnapshotGroupValid ? 1u : 0u,
+        groupPointMoveStarted ? 1u : 0u,
+        enginePointCorrelationCopied ? 1u : 0u,
+        legacyPointMoveStarted ? 1u : 0u,
+        legacyPointHasNoEngineOwnership ? 1u : 0u,
+        idlePointCorrelationEmpty ? 1u : 0u,
+        pointMovementSnapshotCleanup ? 1u : 0u);
+    if (pointMovementSnapshotBuilderPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: real five-Player Group PartySnapshotBuilder copied Engine point action/encounter/point correlation from the current Core generator, retained legacy point IDs without Engine ownership, and left idle member movement IDs empty.");
+    else
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSimulator] Group PartySnapshotBuilder point-movement integration failed after Group threat/death checks.");
 
     uint32 const groupIdAfterEvents = group->GetId();
     bool const groupStillRegistered = registeredBeforeCleanup &&

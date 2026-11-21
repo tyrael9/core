@@ -8410,7 +8410,17 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
             moveToStopPointA, healer->GetPositionX() + 12.0f,
             stopPointDestinationY, stopPointDestinationZ, MOVE_NONE,
             moveToStopActionA, stopPointEncounterId, movementArrivalTolerance);
-    bool const moveToStopASnapshotCaptured = moveToStopAStarted &&
+    MovementGenerator const* const moveAGenerator =
+        healer->GetMotionMaster()->GetCurrent();
+    PointMovementGenerator<Player> const* const moveAPoint =
+        moveAGenerator &&
+        moveAGenerator->GetMovementGeneratorType() == POINT_MOTION_TYPE
+            ? static_cast<PointMovementGenerator<Player> const*>(moveAGenerator) : nullptr;
+    bool const moveAIdentityCaptured = moveToStopAStarted && moveAPoint &&
+        moveAPoint->GetEngineActionId() == moveToStopActionA &&
+        moveAPoint->GetEngineEncounterId() == stopPointEncounterId &&
+        moveAPoint->GetPointId() == moveToStopPointA;
+    bool const moveToStopASnapshotCaptured = moveAIdentityCaptured &&
         capturePointMovementSnapshot(stopPointBaseBot, healer);
     PartySnapshot stopPointSnapshotA = stopPointBaseSnapshot;
     stopPointSnapshotA.epoch++;

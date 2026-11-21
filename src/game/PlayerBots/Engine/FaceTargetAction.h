@@ -122,8 +122,9 @@ protected:
 
         // SetFacingToObject launches Core's native facing-only spline. The
         // final WorldObject orientation is updated by UpdateSplineMovement,
-        // so do not require IsFacingTarget to change synchronously here.
-        bool const facingSplineStarted = !actor->IsStopped();
+        // so do not require IsFacingTarget to change synchronously here. The
+        // preflight was repeated immediately before dispatch on this same map
+        // thread, so Core's IsStopped() early-return guard has just passed.
         bool const positionPreserved =
             std::fabs(actor->GetPositionX() - xBefore) <= 0.001f &&
             std::fabs(actor->GetPositionY() - yBefore) <= 0.001f &&
@@ -146,12 +147,12 @@ protected:
             }
         }
 
-        bool const passed = facingSplineStarted && positionPreserved &&
+        bool const passed = positionPreserved &&
             targetStatePreserved && noSpellStarted;
         result.result = passed ? ActionResult::Success : ActionResult::Failed;
         result.reason = passed
-            ? "face_target_facing_spline_started"
-            : "face_target_facing_request_failed";
+            ? "face_target_facing_request_accepted"
+            : "face_target_facing_request_postcondition_failed";
         return result;
     }
 

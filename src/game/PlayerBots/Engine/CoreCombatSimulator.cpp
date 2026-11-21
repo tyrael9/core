@@ -8424,8 +8424,10 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         stopPointReportA.candidates[
             stopPointReportA.selectedIndices[0]].status == CandidateStatus::Selected;
 
-    // Replacing A with B emits A's Interrupted result through Core Finalize.
-    // The stale A stop must then reject without touching B.
+    // Core MotionMaster::Mutate stacks a new Point generator and calls
+    // Interrupt() on the old generator; it does not Finalize the old one.
+    // Therefore B becomes current while A remains underneath, and neither
+    // receives a terminal until each is explicitly expired.
     ActionId const replacementMoveActionB = coordinator->NextActionId();
     uint32 const replacementMovePointB =
         MovePointAction::PointIdForAction(replacementMoveActionB);
@@ -8436,6 +8438,14 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
             replacementMoveActionB, stopPointEncounterId, movementArrivalTolerance);
     MovementGenerator const* const replacementBGenerator =
         healer->GetMotionMaster()->GetCurrent();
+
+    bool moveAGeneratorStillStacked = false;
+    for (MotionMaster::const_iterator it = healer->GetMotionMaster()->begin();
+         it != healer->GetMotionMaster()->end(); ++it)
+        if (*it == moveAGenerator)
+            moveAGeneratorStillStacked = true;
+    bool const noPrematureTerminalForA = movementTerminalListener->events.empty();
+
     if (stopPointASelected)
         stopPointEngine.ExecuteSelected(stopPointContextA, stopPointReportA);
     CandidateEvaluation const* staleStopPointResult = stopPointASelected
@@ -8457,23 +8467,39 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         replacementBPoint->GetEngineActionId() == replacementMoveActionB &&
         replacementBPoint->GetEngineEncounterId() == stopPointEncounterId &&
         replacementBPoint->GetPointId() == replacementMovePointB;
-    bool const moveAInterrupted = movementTerminalListener->events.size() == 1 &&
-        movementTerminalListener->events[0].actionId == moveToStopActionA &&
-        movementTerminalListener->events[0].encounterId == stopPointEncounterId &&
-        movementTerminalListener->events[0].moverGuid == healerMember.guid &&
-        movementTerminalListener->events[0].pointId == moveToStopPointA &&
-        movementTerminalListener->events[0].status ==
-            PointMovementTerminalStatus::Interrupted;
 
-    // B is fixture-owned cleanup; it too must terminate as Interrupted with
-    // its own distinct correlation.
+    // Expire B first. Its own correlated Interrupted event must arrive, and
+    // the previously stacked A must resume as the current generator.
     if (replacementBStarted)
         healer->GetMotionMaster()->MovementExpired(false);
-    bool const replacementBInterrupted = movementTerminalListener->events.size() == 2 &&
-        movementTerminalListener->events[1].actionId == replacementMoveActionB &&
+    bool const replacementBInterrupted = movementTerminalListener->events.size() == 1 &&
+        movementTerminalListener->events[0].actionId == replacementMoveActionB &&
+        movementTerminalListener->events[0].encounterId == stopPointEncounterId &&
+        movementTerminalListener->events[0].moverGuid == healerMember.guid &&
+        movementTerminalListener->events[0].pointId == replacementMovePointB &&
+        movementTerminalListener->events[0].status ==
+            PointMovementTerminalStatus::Interrupted;
+    PointMovementGenerator<Player> const* resumedAPoint =
+        healer->GetMotionMaster()->GetCurrent() &&
+        healer->GetMotionMaster()->GetCurrent()->GetMovementGeneratorType() ==
+            POINT_MOTION_TYPE
+            ? static_cast<PointMovementGenerator<Player> const*>(
+                healer->GetMotionMaster()->GetCurrent()) : nullptr;
+    bool const moveAResumed = moveAGeneratorStillStacked &&
+        healer->GetMotionMaster()->GetCurrent() == moveAGenerator &&
+        resumedAPoint &&
+        resumedAPoint->GetEngineActionId() == moveToStopActionA &&
+        resumedAPoint->GetEngineEncounterId() == stopPointEncounterId &&
+        resumedAPoint->GetPointId() == moveToStopPointA;
+
+    // Expire the resurfaced A as fixture cleanup and require its own terminal.
+    if (moveAResumed)
+        healer->GetMotionMaster()->MovementExpired(false);
+    bool const moveAInterrupted = movementTerminalListener->events.size() == 2 &&
+        movementTerminalListener->events[1].actionId == moveToStopActionA &&
         movementTerminalListener->events[1].encounterId == stopPointEncounterId &&
         movementTerminalListener->events[1].moverGuid == healerMember.guid &&
-        movementTerminalListener->events[1].pointId == replacementMovePointB &&
+        movementTerminalListener->events[1].pointId == moveToStopPointA &&
         movementTerminalListener->events[1].status ==
             PointMovementTerminalStatus::Interrupted;
 
@@ -8564,8 +8590,10 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         healer->GetPower(stopPointPowerType) == stopPointPowerBefore;
     bool const stopPointFixturePassed =
         stopPointRegistered && moveToStopAStarted && moveToStopASnapshotCaptured &&
-        stopPointASelected && moveAInterrupted && replacementBStarted &&
+        stopPointASelected && moveAGeneratorStillStacked &&
+        noPrematureTerminalForA && replacementBStarted &&
         staleStopPointRejected && replacementBPreserved && replacementBInterrupted &&
+        moveAResumed && moveAInterrupted &&
         legacyPointNotProposed && legacyPointPreserved &&
         stopPointCStarted && stopPointCSnapshotCaptured &&
         stopPointSnapshotPossible && stopPointUseful && stopPointCSelected &&
@@ -8576,19 +8604,21 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
 
     sLog.Out(LOG_BASIC, stopPointFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] StopPointMovementAction: registered=%u moveAStarted=%u snapshotCaptured=%u selected=%u moveAInterrupted=%u replacementBStarted=%u staleRejected=%u replacementPreserved=%u replacementInterrupted=%u legacyNotProposed=%u legacyPreserved=%u moveCStarted=%u snapshotPossible=%u selectedC=%u stopExecuted=%u stopInterrupted=%u statePreserved=%u.",
+        "[PartyBotSimulator] StopPointMovementAction: registered=%u moveAStarted=%u snapshotCaptured=%u selected=%u moveAStacked=%u noPrematureTerminal=%u replacementBStarted=%u staleRejected=%u replacementPreserved=%u replacementInterrupted=%u moveAResumed=%u moveAInterrupted=%u legacyNotProposed=%u legacyPreserved=%u moveCStarted=%u snapshotPossible=%u selectedC=%u stopExecuted=%u stopInterrupted=%u statePreserved=%u.",
         stopPointRegistered ? 1u : 0u, moveToStopAStarted ? 1u : 0u,
         moveToStopASnapshotCaptured ? 1u : 0u, stopPointASelected ? 1u : 0u,
-        moveAInterrupted ? 1u : 0u, replacementBStarted ? 1u : 0u,
-        staleStopPointRejected ? 1u : 0u, replacementBPreserved ? 1u : 0u,
-        replacementBInterrupted ? 1u : 0u, legacyPointNotProposed ? 1u : 0u,
-        legacyPointPreserved ? 1u : 0u, stopPointCStarted ? 1u : 0u,
+        moveAGeneratorStillStacked ? 1u : 0u, noPrematureTerminalForA ? 1u : 0u,
+        replacementBStarted ? 1u : 0u, staleStopPointRejected ? 1u : 0u,
+        replacementBPreserved ? 1u : 0u, replacementBInterrupted ? 1u : 0u,
+        moveAResumed ? 1u : 0u, moveAInterrupted ? 1u : 0u,
+        legacyPointNotProposed ? 1u : 0u, legacyPointPreserved ? 1u : 0u,
+        stopPointCStarted ? 1u : 0u,
         stopPointSnapshotPossible ? 1u : 0u, stopPointCSelected ? 1u : 0u,
         stopPointCExecuted ? 1u : 0u, stopPointCInterrupted ? 1u : 0u,
         stopPointStatePreserved ? 1u : 0u);
     if (stopPointFixturePassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: StopPointMovementAction cancelled only the snapshot-matched Engine point generator, rejected a replaced move without disturbing it, ignored a legacy point generator, and received the matching Interrupted terminal.");
+            "[PartyBotSimulator] PASS: StopPointMovementAction rejected a stale A snapshot while stacked Engine move B remained current, observed B then A Interrupted terminals in Core expiry order, ignored a legacy point generator, and cancelled exact Engine move C with its matching Interrupted terminal.");
 
     DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
     std::vector<std::size_t> const candidateDetailIndices =

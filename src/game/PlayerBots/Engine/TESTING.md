@@ -95,7 +95,7 @@ These tests cover pure decision logic only. They do not validate live PartyBotAI
 - Bounded ActionResult/Core Spell terminal listeners; typed AND/alternative dependencies; late event registration; idempotency tombstones; starvation resistance; ready-backlog preservation under queue pressure.
 - Core-backed spell, movement/follow, range/LOS/resource, Group/death recovery and NewEngine authority fixtures.
 
-## F43 CoreAction executor and five generic adapters
+## F43 CoreAction executor and six generic adapters
 
 The common CoreAction wrapper requires a nonzero action ID, fresh map-thread actor/target/map resolution and a concrete ValidateCoreAction pass before ExecuteCore. ActionExecutionResult and ExecuteDetailed preserve exact validation/execution reasons in candidate state and traces. Pure C++14 regression coverage proves immediate and pending dispatch both use the action-specific preflight, a veto prevents ExecuteCore, and the exact veto reason survives into the candidate result.
 
@@ -126,11 +126,17 @@ StopFollowingAction expires only a matching current native FollowMovementGenerat
 - The adapter calls `MotionMaster::MovementExpired(false)`, not `MoveIdle`, `Clear` or `ClearType`. Core finalizes/deletes the active generator immediately or defers deletion safely while `MotionMaster` is updating.
 - The Core fixture rejects a stale target GUID, successfully expires a matching follow, then proves a stale stop request cannot replace an unrelated PointMovementGenerator. Trusted push [#44864122550](https://github.com/tyrael9/core/actions/runs/44864122550) emitted `registered=1 snapshot=1 staleTargetRejected=1 stopped=1 pointMovementPreserved=1` and reached final Runtime PASS.
 
+FaceTargetAction corrects the orientation of a selected, live hostile through Core's own facing-only spline:
+- `HostileSnapshot` includes finite value-only x/y/z plus a `positionValid` bit. `IsUseful` follows Core `WorldObject::HasInArc(target)` semantics (pi-radian/180-degree front arc) to avoid repeatedly dispatching an already-satisfied request.
+- Final Core preflight resolves the actor/target on the same live Map/instance, confirms both selection and target GUIDs still match, re-runs `CanAttack`, rejects GM/evading targets, moving actors, lost-control state and active non-melee Spells.
+- `ExecuteCore` calls `Unit::SetFacingToObject`. Core applies orientation asynchronously through the facing-only spline, so `ActionResult::Success` means the request was accepted, not that the final orientation has already changed. The simulator drives the Player's normal `Update` path, then asserts completed facing, unchanged coordinates, selection/target/victim/combat state and no Spell side effects.
+- The accepted/rejected fixture also covers already-facing no-op, a stale positive friendly snapshot rejected by live `CanAttack`, and a moving actor rejected without replacing its PointMovementGenerator. Cleanup is asserted. Threat impact is explicitly `NoThreat`; the adapter only changes orientation.
+
 Current-head validation:
-- PR CI [#44864129963](https://github.com/tyrael9/core/actions/runs/44864129963) passed pure tests, report collector, configure, full Linux ARM64 Core build and harness syntax.
-- Trusted push [#44864122550](https://github.com/tyrael9/core/actions/runs/44864122550) passed the same stages and the full Core-backed simulator through final Runtime PASS. It passed F24's candidate-detail gate and emitted the StopFollowing marker above.
-- Artifact [partybot-simulator-221e5a3](https://github.com/tyrael9/core/actions/runs/44864122550/artifacts/14691023636) contains the complete runtime logs.
-All five adapters remain deliberately unregistered in the production NewEngine registry. They demonstrate narrow generic operations, not a complete target policy or playable combat AI.
+- PR CI [#44874582915](https://github.com/tyrael9/core/actions/runs/44874582915) passed pure tests, report collector, configure, full Linux ARM64 Core build and harness syntax.
+- Trusted push [#44874579164](https://github.com/tyrael9/core/actions/runs/44874579164) passed the same stages and the complete fixture-backed Vanilla 5875 simulator through final `Runtime PASS`. FaceTarget reported `requestAccepted=1 facingComplete=1 positionPreserved=1 targetStatePreserved=1 alreadyFacingNoOp=1 staleFriendlyRejected=1 movingRejected=1`; the enclosing target fixture reported `cleanup=1`.
+- Artifact [partybot-simulator-f6986c8](https://github.com/tyrael9/core/actions/runs/44874579164/artifacts/14695646802) contains the complete trusted runtime logs.
+All six adapters remain deliberately unregistered in the production NewEngine registry. They demonstrate narrow generic operations, not a complete target policy or playable combat AI.
 ## Production action readiness — still open
 
 - Register audited production generic/class/role Core adapters with structured outcomes.
@@ -381,4 +387,4 @@ Remaining optional item-use coverage: a separate count-based stackable consumabl
 
 ## Production action readiness — still open
 
-Five reusable generic adapters are implemented and have real-Core accepted/rejected/cleanup coverage (the fifth adapter's latest fixture is awaiting trusted runtime validation), but are intentionally not registered in NewEngine. No production generic, class or role action is enabled. Every additional adapter still needs its own action-specific target/relation/range/LOS/spell/resource/cooldown/GCD/movement/control checks and Core-backed accepted/rejected/terminal matrix. NewEngine remains an explicit no-fallback mode; Legacy is still the default.
+Six reusable generic adapters are implemented and have real-Core accepted/rejected/cleanup coverage, including the FaceTarget orientation matrix validated by trusted push [#44874579164](https://github.com/tyrael9/core/actions/runs/44874579164), but are intentionally not registered in NewEngine. No production generic, class or role action is enabled. Every additional adapter still needs its own action-specific target/relation/range/LOS/spell/resource/cooldown/GCD/movement/control checks and Core-backed accepted/rejected/terminal matrix. NewEngine remains an explicit no-fallback mode; Legacy is still the default.

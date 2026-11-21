@@ -3607,10 +3607,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             groupPointSnapshotPointId, players[0]->GetPositionX() + 6.0f,
             players[0]->GetPositionY(), players[0]->GetPositionZ(), MOVE_NONE,
             groupPointSnapshotActionId, groupPointSnapshotEncounterId, 1.5f);
-    bool const legacyPointMoveStarted = membersAdded &&
+    if (membersAdded)
         players[1]->GetMotionMaster()->MovePoint(
             legacyPointSnapshotPointId, players[1]->GetPositionX() + 6.0f,
-            players[1]->GetPositionY(), players[1]->GetPositionZ(), MOVE_NONE),
+            players[1]->GetPositionY(), players[1]->GetPositionZ(), MOVE_NONE);
+    bool const legacyPointMoveStarted = membersAdded &&
         players[1]->GetMotionMaster()->GetCurrentMovementGeneratorType() ==
             POINT_MOTION_TYPE;
     PartyCoordinator pointMovementSnapshotCoordinator;

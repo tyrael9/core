@@ -250,6 +250,8 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         memberData.online = member->IsInWorld();
         memberData.alive = member->IsAlive();
         memberData.inCombat = member->IsInCombat();
+        memberData.mounted = member->IsMounted();
+        memberData.taxiFlying = member->IsTaxiFlying();
         snapshot.members.push_back(memberData);
 
         // Record the Player's primary controlled pet as a distinct threat actor.

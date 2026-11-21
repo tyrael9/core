@@ -31,8 +31,9 @@ public:
                     ActionCandidate const& candidate,
                     std::string& reason) const override
     {
+        ObjectGuid const selectedGuid(context.bot.selectionGuid);
         if (!context.bot.alive || candidate.targetGuid ||
-            !context.bot.selectionGuid ||
+            !selectedGuid.IsUnit() ||
             context.bot.selectionGuid == context.bot.guid ||
             context.bot.selectionGuid == context.bot.victimGuid ||
             (!context.bot.inCombat && !context.bot.victimGuid))
@@ -47,7 +48,8 @@ public:
                   ActionCandidate const& candidate,
                   std::string& reason) const override
     {
-        if (candidate.targetGuid || !context.bot.selectionGuid ||
+        ObjectGuid const selectedGuid(context.bot.selectionGuid);
+        if (candidate.targetGuid || !selectedGuid.IsUnit() ||
             context.bot.selectionGuid == context.bot.victimGuid ||
             (!context.bot.inCombat && !context.bot.victimGuid))
         {
@@ -117,8 +119,9 @@ private:
         ActionExecutionResult result;
         Player* actor = resolved.actor;
         Guid const expectedSelection = context.bot.selectionGuid;
+        ObjectGuid const expectedSelectionGuid(expectedSelection);
         if (!actor || !resolved.map || resolved.target || candidate.targetGuid ||
-            !expectedSelection || expectedSelection == context.bot.guid ||
+            !expectedSelectionGuid.IsUnit() || expectedSelection == context.bot.guid ||
             expectedSelection == context.bot.victimGuid ||
             !actor->IsInWorld() || !actor->IsAlive() ||
             actor->GetMap() != resolved.map ||

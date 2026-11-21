@@ -6979,11 +6979,12 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bool const clearStaleAttackStarted = bot->Attack(hostile.creature, true);
     bot->SetInCombatWith(hostile.creature);
     ObjectGuid const combatStaleSelectionGuid(
-        static_cast<uint64>(0xF430000000000002ull));
+        HIGHGUID_UNIT, 0x00fffffeu, 0x00fffffeu);
     bot->SetSelectionGuid(combatStaleSelectionGuid);
     Guid const clearStaleVictimGuid =
         hostile.creature->GetObjectGuid().GetRawValue();
     bool const clearStaleSelectionMissing =
+        combatStaleSelectionGuid.IsUnit() &&
         map.GetUnit(combatStaleSelectionGuid) == nullptr;
     bool const clearStaleAttackerBefore =
         std::find(hostile.creature->GetAttackers().begin(),

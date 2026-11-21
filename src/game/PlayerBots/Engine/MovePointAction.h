@@ -30,11 +30,14 @@ public:
     ThreatImpactEstimate EstimateThreatImpact(
         DecisionContext const& context, ActionCandidate const&) const override
     {
-        // A point move has no direct damage/heal effect, but its path can enter
-        // hostile aggro range. Do not mislabel that positional risk as NoThreat.
+        // The synchronous MovePointForEngine request does not itself apply
+        // damage, healing or threat. This does not predict environmental aggro
+        // caused later by the actor entering a hostile's detection radius; that
+        // route risk remains Core-owned and must be handled by future path policy.
         ThreatImpactEstimate estimate;
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
         estimate.snapshotEpoch = context.snapshot.epoch;
-        estimate.reason = "move_point_path_may_enter_hostile_aggro_radius";
+        estimate.reason = "move_point_request_has_no_synchronous_threat_mutation";
         return estimate;
     }
 

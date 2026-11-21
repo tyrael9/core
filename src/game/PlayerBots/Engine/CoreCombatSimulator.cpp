@@ -18,6 +18,7 @@
 #include "PlayerBots/Engine/SelectHostileTargetAction.h"
 #include "PlayerBots/Engine/ClearIdleTargetAction.h"
 #include "PlayerBots/Engine/StopUnattackableTargetAction.h"
+#include "PlayerBots/Engine/FollowPartyMemberAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"

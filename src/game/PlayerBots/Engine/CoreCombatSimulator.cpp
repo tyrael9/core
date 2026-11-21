@@ -6649,10 +6649,11 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         bot->GetTargetGuid() == hostile.creature->GetObjectGuid() &&
         bot->GetVictim() == nullptr && bot->IsInCombat() == faceCombatBefore;
 
-    // Core applies the final orientation from its facing-only spline during
-    // the normal Unit::UpdateSplineMovement path, not in SetFacingToObject.
+    // Unit::Update invokes this same Core spline updater. The local-session
+    // simulator Player is not advanced by the fixture Map's player scheduler,
+    // so drive the native Unit update routine directly for this 1 ms facing spline.
     if (faceRequestAccepted)
-        map.Update(10);
+        bot->UpdateSplineMovement(10);
     bool const faceFacingComplete = faceRequestAccepted &&
         bot->IsFacingTarget(hostile.creature);
     bool const facePositionPreserved =

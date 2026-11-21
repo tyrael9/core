@@ -91,6 +91,10 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         }
         hostile.health = hostileUnit->GetHealth();
         hostile.maxHealth = hostileUnit->GetMaxHealth();
+        hostile.x = hostileUnit->GetPositionX();
+        hostile.y = hostileUnit->GetPositionY();
+        hostile.z = hostileUnit->GetPositionZ();
+        hostile.positionValid = true;
         hostile.alive = hostileUnit->IsAlive();
 
         ThreatList const& threatList = hostileUnit->GetThreatManager().getThreatList();

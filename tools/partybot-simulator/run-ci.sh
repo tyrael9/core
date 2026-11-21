@@ -373,6 +373,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Co
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: FaceTargetAction used snapshot geometry to face a live selected hostile, skipped an already-facing target, and rejected stale-friendly and moving actors without disturbing position, movement or combat state." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The FaceTargetAction Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-only current-follow snapshot to avoid restarting the same target, retargeted the native Player FollowMovementGenerator to a new group member, and rejected stale live-Group membership without disturbing movement." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The FollowPartyMemberAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

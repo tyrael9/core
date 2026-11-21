@@ -19,6 +19,7 @@
 #include "PlayerBots/Engine/ClearIdleTargetAction.h"
 #include "PlayerBots/Engine/StopUnattackableTargetAction.h"
 #include "PlayerBots/Engine/FollowPartyMemberAction.h"
+#include "PlayerBots/Engine/FaceTargetAction.h"
 #include "PlayerBots/Engine/StopFollowingAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
@@ -530,6 +531,34 @@ public:
 private:
     Guid m_targetGuid = 0;
     std::string m_name = "simulator_select_hostile_target";
+};
+
+class SimulatorFaceTargetTrigger final : public Trigger
+{
+public:
+    explicit SimulatorFaceTargetTrigger(Guid targetGuid)
+        : m_targetGuid(targetGuid) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && m_targetGuid != 0 &&
+               context.bot.selectionGuid == m_targetGuid;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_face_target";
+        candidate.targetGuid = m_targetGuid;
+        candidate.basePriority = 30.0f;
+        candidate.channel = ActionChannel::Movement;
+        candidates.push_back(candidate);
+    }
+
+private:
+    Guid m_targetGuid = 0;
+    std::string m_name = "simulator_face_target";
 };
 
 class SimulatorClearIdleTargetTrigger final : public Trigger
@@ -6448,7 +6477,7 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     SimulatorActor hostile;
     SimulatorActor friendly;
     bool const actorsCreated =
-        CreateSimulatorActor(map, *info, hostileFaction, 2.0f, 6.0f, hostile) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 10.0f, 6.0f, hostile) &&
         CreateSimulatorActor(map, *info, partyFaction, 3.0f, 6.0f, friendly);
 
     WorldSession botSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
@@ -6500,7 +6529,15 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     hostileSnapshot.guid = hostile.creature->GetObjectGuid().GetRawValue();
     hostileSnapshot.health = hostile.creature->GetHealth();
     hostileSnapshot.maxHealth = hostile.creature->GetMaxHealth();
+    hostileSnapshot.x = hostile.creature->GetPositionX();
+    hostileSnapshot.y = hostile.creature->GetPositionY();
+    hostileSnapshot.z = hostile.creature->GetPositionZ();
+    hostileSnapshot.positionValid = true;
     hostileSnapshot.alive = hostile.creature->IsAlive();
+    member.x = bot->GetPositionX();
+    member.y = bot->GetPositionY();
+    member.z = bot->GetPositionZ();
+    member.orientation = bot->GetOrientation();
     snapshot.hostiles.push_back(hostileSnapshot);
 
     PartyCoordinator coordinator;
@@ -6562,6 +6599,156 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
             ActionResult::Success &&
         bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
         bot->GetTargetGuid() == hostile.creature->GetObjectGuid();
+
+    // F43: face the selected hostile only when the value snapshot says the
+    // target is outside Core's 180-degree front arc. Live Core state still
+    // owns hostility, movement/cast/control validation and the final outcome.
+    Guid const hostileGuid = hostile.creature->GetObjectGuid().GetRawValue();
+    bot->SetOrientation(3.14159265358979323846f);
+    PartySnapshot faceSnapshot = snapshot;
+    faceSnapshot.epoch++;
+    faceSnapshot.members[0].selectionGuid = hostileGuid;
+    faceSnapshot.members[0].orientation = bot->GetOrientation();
+    faceSnapshot.members[0].x = bot->GetPositionX();
+    faceSnapshot.members[0].y = bot->GetPositionY();
+    faceSnapshot.members[0].z = bot->GetPositionZ();
+    PartyCoordinator faceCoordinator;
+    DecisionContext faceContext(
+        faceSnapshot, faceSnapshot.members[0], faceCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine faceEngine;
+    std::shared_ptr<FaceTargetAction> faceAction(new FaceTargetAction());
+    bool const faceRegistered = faceEngine.RegisterAction(faceAction);
+    std::shared_ptr<Strategy> faceStrategy(new Strategy("simulator_face_target"));
+    faceStrategy->AddTrigger(
+        std::make_shared<SimulatorFaceTargetTrigger>(hostileGuid));
+    faceEngine.AddStrategy(faceStrategy);
+
+    float const faceXBefore = bot->GetPositionX();
+    float const faceYBefore = bot->GetPositionY();
+    float const faceZBefore = bot->GetPositionZ();
+    bool const faceCombatBefore = bot->IsInCombat();
+    DecisionReport faceReport = faceEngine.Evaluate(faceContext);
+    bool const faceSelected = faceRegistered &&
+        faceReport.selectedIndices.size() == 1 &&
+        faceReport.candidates[faceReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (faceSelected)
+        faceEngine.ExecuteSelected(faceContext, faceReport);
+    CandidateEvaluation const* faceEvaluation = faceSelected
+        ? &faceReport.candidates[faceReport.selectedIndices[0]] : nullptr;
+    bool const faceAccepted = faceEvaluation &&
+        faceEvaluation->status == CandidateStatus::Executed &&
+        faceEvaluation->actionResult == ActionResult::Success &&
+        bot->IsFacingTarget(hostile.creature) &&
+        bot->GetPositionX() == faceXBefore &&
+        bot->GetPositionY() == faceYBefore &&
+        bot->GetPositionZ() == faceZBefore &&
+        bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetVictim() == nullptr && bot->IsInCombat() == faceCombatBefore;
+
+    // After refreshing only the value orientation, the already-facing target
+    // must not be proposed again.
+    faceSnapshot.members[0].orientation = bot->GetOrientation();
+    PartyCoordinator faceRepeatCoordinator;
+    DecisionContext faceRepeatContext(
+        faceSnapshot, faceSnapshot.members[0], faceRepeatCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport faceRepeatReport = faceEngine.Evaluate(faceRepeatContext);
+    bool const alreadyFacingNoOp = faceRepeatReport.selectedIndices.empty() &&
+        !faceRepeatReport.candidates.empty() &&
+        faceRepeatReport.candidates[0].status == CandidateStatus::RejectedUseless &&
+        faceRepeatReport.candidates[0].reason == "face_target_already_in_front";
+
+    // A positive but stale friendly snapshot can nominate this action; the
+    // final CanAttack preflight must reject it without changing orientation.
+    bot->SetSelectionGuid(friendly.creature->GetObjectGuid());
+    bot->SetOrientation(3.14159265358979323846f);
+    PartySnapshot faceFriendlySnapshot = faceSnapshot;
+    faceFriendlySnapshot.epoch++;
+    faceFriendlySnapshot.members[0].selectionGuid =
+        friendly.creature->GetObjectGuid().GetRawValue();
+    faceFriendlySnapshot.members[0].orientation = bot->GetOrientation();
+    faceFriendlySnapshot.hostiles.clear();
+    HostileSnapshot staleFaceFriendly;
+    staleFaceFriendly.guid = friendly.creature->GetObjectGuid().GetRawValue();
+    staleFaceFriendly.health = friendly.creature->GetHealth();
+    staleFaceFriendly.maxHealth = friendly.creature->GetMaxHealth();
+    staleFaceFriendly.x = friendly.creature->GetPositionX();
+    staleFaceFriendly.y = friendly.creature->GetPositionY();
+    staleFaceFriendly.z = friendly.creature->GetPositionZ();
+    staleFaceFriendly.positionValid = true;
+    staleFaceFriendly.alive = friendly.creature->IsAlive();
+    faceFriendlySnapshot.hostiles.push_back(staleFaceFriendly);
+    PartyCoordinator faceFriendlyCoordinator;
+    DecisionContext faceFriendlyContext(
+        faceFriendlySnapshot, faceFriendlySnapshot.members[0],
+        faceFriendlyCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    DecisionReport staleFaceFriendlyReport =
+        faceEngine.Evaluate(faceFriendlyContext);
+    bool const staleFaceFriendlySelected =
+        staleFaceFriendlyReport.selectedIndices.size() == 1 &&
+        staleFaceFriendlyReport.candidates[
+            staleFaceFriendlyReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+    if (staleFaceFriendlySelected)
+        faceEngine.ExecuteSelected(faceFriendlyContext, staleFaceFriendlyReport);
+    CandidateEvaluation const* staleFaceFriendlyEvaluation =
+        staleFaceFriendlySelected
+            ? &staleFaceFriendlyReport.candidates[
+                staleFaceFriendlyReport.selectedIndices[0]] : nullptr;
+    bool const staleFaceFriendlyRejected = staleFaceFriendlyEvaluation &&
+        staleFaceFriendlyEvaluation->status == CandidateStatus::ExecutionFailed &&
+        staleFaceFriendlyEvaluation->actionResult == ActionResult::Impossible &&
+        staleFaceFriendlyEvaluation->reason == "face_target_not_attackable" &&
+        bot->GetOrientation() == 3.14159265358979323846f &&
+        bot->GetSelectionGuid() == friendly.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid() &&
+        bot->GetVictim() == nullptr && bot->IsInCombat() == faceCombatBefore;
+
+    // The native facing API intentionally ignores moving actors. Verify the
+    // adapter returns Useless and leaves an active Core PointMovementGenerator intact.
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    bot->SetOrientation(3.14159265358979323846f);
+    faceSnapshot.members[0].selectionGuid = hostileGuid;
+    faceSnapshot.members[0].orientation = bot->GetOrientation();
+    faceSnapshot.members[0].x = bot->GetPositionX();
+    faceSnapshot.members[0].y = bot->GetPositionY();
+    faceSnapshot.members[0].z = bot->GetPositionZ();
+    bot->GetMotionMaster()->MovePoint(
+        77, bot->GetPositionX() + 10.0f, bot->GetPositionY(), bot->GetPositionZ());
+    PartyCoordinator faceMovingCoordinator;
+    DecisionContext faceMovingContext(
+        faceSnapshot, faceSnapshot.members[0], faceMovingCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport faceMovingReport = faceEngine.Evaluate(faceMovingContext);
+    bool const faceMovingSelected = faceMovingReport.selectedIndices.size() == 1 &&
+        faceMovingReport.candidates[faceMovingReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (faceMovingSelected)
+        faceEngine.ExecuteSelected(faceMovingContext, faceMovingReport);
+    CandidateEvaluation const* faceMovingEvaluation = faceMovingSelected
+        ? &faceMovingReport.candidates[faceMovingReport.selectedIndices[0]] : nullptr;
+    bool const movingRejectedWithoutMutation = faceMovingEvaluation &&
+        faceMovingEvaluation->status == CandidateStatus::ExecutionFailed &&
+        faceMovingEvaluation->actionResult == ActionResult::Useless &&
+        faceMovingEvaluation->reason == "face_target_actor_moving" &&
+        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+    bot->GetMotionMaster()->MovementExpired(false);
+
+    bool const faceFixturePassed = faceRegistered && faceSelected && faceAccepted &&
+        alreadyFacingNoOp && staleFaceFriendlyRejected && movingRejectedWithoutMutation;
+    sLog.Out(LOG_BASIC, faceFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] FaceTargetAction: registered=%u selected=%u faced=%u positionPreserved=%u alreadyFacingNoOp=%u staleFriendlyRejected=%u movingRejected=%u.",
+        faceRegistered ? 1u : 0u, faceSelected ? 1u : 0u,
+        faceAccepted ? 1u : 0u, faceAccepted ? 1u : 0u,
+        alreadyFacingNoOp ? 1u : 0u, staleFaceFriendlyRejected ? 1u : 0u,
+        movingRejectedWithoutMutation ? 1u : 0u);
 
     // Deliberately retain a stale positive HostileSnapshot for the friendly
     // unit. The final CoreAction preflight must re-resolve its live faction and
@@ -6714,17 +6901,19 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bool const cleaned = playerCleaned && friendlyCleaned && hostileCleaned;
 
     sLog.Out(LOG_BASIC, (staleSelectionCleared && hostileAccepted &&
-                         friendlyRejected && cleaned)
+                         faceFixturePassed && friendlyRejected && cleaned)
         ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] Core generic target actions: clearRegistered=%u staleSelectionCleared=%u hostileRegistered=%u hostileAccepted=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
+        "[PartyBotSimulator] Core generic target actions: clearRegistered=%u staleSelectionCleared=%u hostileRegistered=%u hostileAccepted=%u faceFixture=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
         clearRegistered ? 1u : 0u, staleSelectionCleared ? 1u : 0u,
         actionRegistered ? 1u : 0u, hostileAccepted ? 1u : 0u,
-        friendlyCandidateSelected ? 1u : 0u, friendlyRejected ? 1u : 0u,
+        faceFixturePassed ? 1u : 0u, friendlyCandidateSelected ? 1u : 0u,
+        friendlyRejected ? 1u : 0u,
         (botSession.GetPlayer() == nullptr && friendlyRejected) ? 1u : 0u,
         cleaned ? 1u : 0u);
 
     if (!clearRegistered || !staleSelectionCleared || !actionRegistered ||
-        !hostileAccepted || !friendlyCandidateSelected || !friendlyRejected ||
+        !hostileAccepted || !faceFixturePassed ||
+        !friendlyCandidateSelected || !friendlyRejected ||
         !stopFixturePassed || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
@@ -6736,6 +6925,8 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
              "[PartyBotSimulator] PASS: generic Core target maintenance cleared an idle stale selection, selected a live hostile and rejected a stale friendly target without disturbing Player combat state.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Core preflight to reject a stale negative snapshot, then AttackStop detached only the invalid victim while preserving combat state.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: FaceTargetAction used snapshot geometry to face a live selected hostile, skipped an already-facing target, and rejected stale-friendly and moving actors without disturbing position, movement or combat state.");
     return true;
 }
 

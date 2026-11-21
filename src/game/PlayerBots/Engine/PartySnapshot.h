@@ -34,6 +34,8 @@ struct HostileSnapshot {
     Guid guid = 0, victimGuid = 0;
     std::uint32_t entry = 0, rank = 0;
     std::uint32_t health = 0, maxHealth = 0;
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    bool positionValid = false;
     bool alive = false, worldBoss = false, crowdControlProtected = false;
     std::vector<ThreatEntrySnapshot> threat;
 };

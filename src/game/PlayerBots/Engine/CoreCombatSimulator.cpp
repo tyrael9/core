@@ -24,6 +24,7 @@
 #include "PlayerBots/Engine/StopFollowingAction.h"
 #include "PlayerBots/Engine/AttackTargetAction.h"
 #include "PlayerBots/Engine/StopAutoAttackAction.h"
+#include "PlayerBots/Engine/MovePointAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
@@ -8122,6 +8123,189 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
     if (forcedMoveStarted && !forcedCleanupInterrupted)
         healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
 
+    // F43: exercise the reusable actor-only MovePointAction. It must never
+    // overwrite an unrelated active generator, and request acceptance is not
+    // considered arrival until the correlated Core terminal says Reached.
+    PartySnapshot movePointSnapshot = snapshot;
+    movePointSnapshot.epoch = snapshot.epoch + 1;
+    PartyMemberSnapshot& movePointBot = movePointSnapshot.members[0];
+    movePointBot.x = healer->GetPositionX();
+    movePointBot.y = healer->GetPositionY();
+    movePointBot.z = healer->GetPositionZ();
+    movePointBot.online = true;
+    movePointBot.alive = healer->IsAlive();
+    movePointBot.inCombat = false;
+    movePointBot.victimGuid = 0;
+    movePointBot.currentSpellId = 0;
+    movePointBot.mapId = map.GetId();
+    movePointBot.instanceId = map.GetInstanceId();
+
+    DecisionContext movePointContext(
+        movePointSnapshot, movePointBot, *coordinator, WorldTimer::getMSTime(),
+        &engineActionAI.m_decisionTrace, nullptr, &engineActionAI, nullptr,
+        &engineActionAI);
+    std::shared_ptr<MovePointAction> movePointAction(new MovePointAction(
+        movementArrivalTolerance));
+    bool const movePointRegistered = engine.RegisterAction(movePointAction);
+
+    ActionCandidate movePointCandidate;
+    movePointCandidate.actionName = "core_move_point";
+    movePointCandidate.strategyName = "simulator_move_point";
+    movePointCandidate.triggerName = "simulator_move_point";
+    movePointCandidate.basePriority = 90.0f;
+    movePointCandidate.finalPriority = 90.0f;
+    movePointCandidate.channel = ActionChannel::Movement;
+    movePointCandidate.hasDestination = true;
+    movePointCandidate.destinationX = movePointBot.x + 3.0f;
+    movePointCandidate.destinationY = movePointBot.y;
+    movePointCandidate.destinationZ = movePointBot.z;
+
+    std::string movePointReason;
+    bool const movePointActorOnlyResolved =
+        engineActionAI.ResolveUnitContext(movePointContext, 0).IsResolved() &&
+        engineActionAI.ResolveUnitContext(movePointContext, 0).target == nullptr;
+    bool const movePointSnapshotEligible = movePointAction->IsPossible(
+        movePointContext, movePointCandidate, movePointReason);
+    bool const movePointUseful = movePointAction->IsUseful(
+        movePointContext, movePointCandidate, movePointReason);
+    ActionCandidate alreadyThereCandidate = movePointCandidate;
+    alreadyThereCandidate.destinationX = movePointBot.x;
+    alreadyThereCandidate.destinationY = movePointBot.y;
+    alreadyThereCandidate.destinationZ = movePointBot.z;
+    std::string alreadyThereReason;
+    bool const alreadyTherePossible = movePointAction->IsPossible(
+        movePointContext, alreadyThereCandidate, alreadyThereReason);
+    bool const alreadyThereNoOp = alreadyTherePossible &&
+        !movePointAction->IsUseful(
+            movePointContext, alreadyThereCandidate, alreadyThereReason);
+
+    // A currently active Point generator is unrelated movement and must not
+    // be replaced by this action, even when the requested destination differs.
+    healer->GetMotionMaster()->MovePoint(
+        0xF431u, healer->GetPositionX() + 8.0f, healer->GetPositionY(),
+        healer->GetPositionZ(), MOVE_NONE);
+    bool const unrelatedMovementStarted =
+        healer->GetMotionMaster()->GetCurrentMovementGeneratorType() ==
+            POINT_MOTION_TYPE;
+    CandidateEvaluation unrelatedMoveEvaluation;
+    unrelatedMoveEvaluation.candidate = movePointCandidate;
+    unrelatedMoveEvaluation.status = CandidateStatus::Selected;
+    unrelatedMoveEvaluation.threatImpact =
+        movePointAction->EstimateThreatImpact(
+            movePointContext, movePointCandidate);
+    DecisionReport unrelatedMoveReport;
+    unrelatedMoveReport.candidates.push_back(unrelatedMoveEvaluation);
+    unrelatedMoveReport.selectedIndices.push_back(0);
+    if (movePointRegistered && unrelatedMovementStarted)
+        engine.ExecuteSelected(movePointContext, unrelatedMoveReport);
+    CandidateEvaluation const* unrelatedMoveResult =
+        unrelatedMoveReport.candidates.empty()
+            ? nullptr : &unrelatedMoveReport.candidates[0];
+    bool const unrelatedMovementRejected = unrelatedMoveResult &&
+        unrelatedMoveResult->status == CandidateStatus::ExecutionFailed &&
+        unrelatedMoveResult->actionResult == ActionResult::Useless;
+    bool const unrelatedMovementPreserved = unrelatedMovementStarted &&
+        healer->GetMotionMaster()->GetCurrentMovementGeneratorType() ==
+            POINT_MOTION_TYPE;
+    if (unrelatedMovementPreserved)
+        healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
+
+    // The rejected request left the Player idle. Refresh the value snapshot
+    // coordinates before issuing a new, independently correlated move.
+    movePointBot.x = healer->GetPositionX();
+    movePointBot.y = healer->GetPositionY();
+    movePointBot.z = healer->GetPositionZ();
+    movePointCandidate.destinationX = movePointBot.x + 3.0f;
+    movePointCandidate.destinationY = movePointBot.y;
+    movePointCandidate.destinationZ = movePointBot.z;
+    movementTerminalListener->events.clear();
+
+    CandidateEvaluation movePointEvaluation;
+    movePointEvaluation.candidate = movePointCandidate;
+    movePointEvaluation.status = CandidateStatus::Selected;
+    movePointEvaluation.threatImpact =
+        movePointAction->EstimateThreatImpact(
+            movePointContext, movePointCandidate);
+    DecisionReport movePointReport;
+    movePointReport.candidates.push_back(movePointEvaluation);
+    movePointReport.selectedIndices.push_back(0);
+
+    ObjectGuid const movePointSelectionBefore = healer->GetSelectionGuid();
+    ObjectGuid const movePointTargetBefore = healer->GetTargetGuid();
+    Unit* const movePointVictimBefore = healer->GetVictim();
+    bool const movePointCombatBefore = healer->IsInCombat();
+    uint32 const movePointHealthBefore = healer->GetHealth();
+    uint32 const movePointPowerBefore = healer->GetPower(healer->GetPowerType());
+
+    if (movePointRegistered && movePointActorOnlyResolved &&
+        movePointSnapshotEligible && movePointUseful &&
+        alreadyThereNoOp && unrelatedMovementRejected &&
+        unrelatedMovementPreserved)
+        engine.ExecuteSelected(movePointContext, movePointReport);
+
+    ActionId const movePointActionId = movePointReport.candidates.empty()
+        ? 0 : movePointReport.candidates[0].actionId;
+    bool const movePointAccepted = movePointReport.candidates.size() == 1 &&
+        movePointReport.candidates[0].status == CandidateStatus::Executed &&
+        movePointReport.candidates[0].actionResult == ActionResult::Success &&
+        movePointActionId != 0 &&
+        healer->GetMotionMaster()->GetCurrentMovementGeneratorType() ==
+            POINT_MOTION_TYPE;
+
+    for (uint32 tick = 0;
+         tick < 20 && movementTerminalListener->events.empty(); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    float const movePointDistance = std::sqrt(
+        std::pow(healer->GetPositionX() - movePointCandidate.destinationX, 2.0f) +
+        std::pow(healer->GetPositionY() - movePointCandidate.destinationY, 2.0f) +
+        std::pow(healer->GetPositionZ() - movePointCandidate.destinationZ, 2.0f));
+    bool const movePointReached =
+        movementTerminalListener->events.size() == 1 &&
+        movementTerminalListener->events[0].actionId == movePointActionId &&
+        movementTerminalListener->events[0].encounterId ==
+            coordinator->GetEncounterId() &&
+        movementTerminalListener->events[0].moverGuid == healerMember.guid &&
+        movementTerminalListener->events[0].pointId ==
+            MovePointAction::PointIdForAction(movePointActionId) &&
+        movementTerminalListener->events[0].status ==
+            PointMovementTerminalStatus::Reached &&
+        movementTerminalListener->events[0].finalDistance <=
+            movementArrivalTolerance &&
+        movePointDistance <= movementArrivalTolerance;
+    bool const movePointStatePreserved =
+        healer->GetSelectionGuid() == movePointSelectionBefore &&
+        healer->GetTargetGuid() == movePointTargetBefore &&
+        healer->GetVictim() == movePointVictimBefore &&
+        healer->IsInCombat() == movePointCombatBefore &&
+        healer->GetHealth() == movePointHealthBefore &&
+        healer->GetPower(healer->GetPowerType()) == movePointPowerBefore;
+    bool const movePointFixturePassed =
+        movePointRegistered && movePointActorOnlyResolved &&
+        movePointSnapshotEligible && movePointUseful && alreadyThereNoOp &&
+        unrelatedMovementRejected && unrelatedMovementPreserved &&
+        movePointAccepted && movePointReached && movePointStatePreserved;
+
+    if (!movePointReached &&
+        healer->GetMotionMaster()->GetCurrentMovementGeneratorType() ==
+            POINT_MOTION_TYPE)
+        healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
+
+    sLog.Out(LOG_BASIC, movePointFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] MovePointAction: registered=%u actorOnly=%u snapshotEligible=%u alreadyThereNoOp=%u unrelatedMovementRejected=%u movementPreserved=%u accepted=%u reached=%u statePreserved=%u distance=%.3f.",
+        movePointRegistered ? 1u : 0u, movePointActorOnlyResolved ? 1u : 0u,
+        movePointSnapshotEligible ? 1u : 0u, alreadyThereNoOp ? 1u : 0u,
+        unrelatedMovementRejected ? 1u : 0u,
+        unrelatedMovementPreserved ? 1u : 0u,
+        movePointAccepted ? 1u : 0u, movePointReached ? 1u : 0u,
+        movePointStatePreserved ? 1u : 0u, movePointDistance);
+    if (movePointFixturePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: MovePointAction used an actor-only Core resolver, refused to replace unrelated movement, and treated Core's matching typed Reached terminal—not request acceptance—as proof of arrival.");
+
     DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
     std::vector<std::size_t> const candidateDetailIndices =
         SelectPriorityCandidateEvaluationIndices(
@@ -8225,7 +8409,7 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         !continuationDispatched || !f35MultiDependencyDispatched ||
         !f35MultiCoreTerminalsPassed || !f35AlternativeGroupPassed ||
         !f36MixedDependencyPassed || !f39MovementTerminalPassed ||
-        !decisionSummaryTracePassed || !cleaned)
+        !decisionSummaryTracePassed || !movePointFixturePassed || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Engine-to-Player normal spell/heal smoke test failed.");

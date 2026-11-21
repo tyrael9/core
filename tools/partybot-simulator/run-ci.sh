@@ -363,6 +363,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Co
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-only current-follow snapshot to avoid restarting the same target, retargeted the native Player FollowMovementGenerator to a new group member, and rejected stale live-Group membership without disturbing movement." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The FollowPartyMemberAction Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: F41 CoreAction required a fresh map-thread actor/target resolution and rejected missing targets plus stale map/instance snapshots before the real movement adapter ran." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F41 Core action preflight PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

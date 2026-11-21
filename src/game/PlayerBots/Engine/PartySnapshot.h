@@ -9,6 +9,7 @@ struct PartyMemberSnapshot {
     std::uint32_t health = 0, maxHealth = 0, power = 0, maxPower = 0;
     Guid victimGuid = 0;
     Guid selectionGuid = 0;
+    Guid followTargetGuid = 0;
     float x = 0.0f, y = 0.0f, z = 0.0f, orientation = 0.0f;
     std::uint32_t currentSpellId = 0, currentSpellState = 0;
     Guid currentSpellTargetGuid = 0;

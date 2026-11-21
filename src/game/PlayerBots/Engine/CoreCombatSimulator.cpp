@@ -9,6 +9,10 @@
 #include "Map.h"
 #include "MapManager.h"
 #include "Movement/MotionMaster.h"
+#include "Movement/MovementGenerator.h"
+#include "Movement/TargetedMovementGenerator.h"
+#include "Movement/MovementGenerator.h"
+#include "Movement/TargetedMovementGenerator.h"
 #include "PlayerBots/Engine/Action.h"
 #include "PlayerBots/Engine/CoreAction.h"
 #include "PlayerBots/Engine/SelectHostileTargetAction.h"
@@ -548,6 +552,33 @@ public:
 
 private:
     std::string m_name = "simulator_clear_idle_target";
+};
+
+class SimulatorFollowPartyMemberTrigger final : public Trigger
+{
+public:
+    explicit SimulatorFollowPartyMemberTrigger(Guid targetGuid)
+        : m_targetGuid(targetGuid) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && m_targetGuid != 0;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_follow_party_member";
+        candidate.targetGuid = m_targetGuid;
+        candidate.basePriority = 50.0f;
+        candidate.channel = ActionChannel::Movement;
+        candidates.push_back(candidate);
+    }
+
+private:
+    Guid m_targetGuid = 0;
+    std::string m_name = "simulator_follow_party_member";
 };
 
 class SimulatorTankAssistTrigger final : public Trigger
@@ -5931,6 +5962,306 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
 
 
 
+bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
+{
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    WorldSession followerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    WorldSession firstLeaderSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    WorldSession nextLeaderSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* follower = nullptr;
+    Player* firstLeader = nullptr;
+    Player* nextLeader = nullptr;
+
+    bool const playersCreated =
+        CreateSimulatorPlayer(map, partyFaction, followerSession, follower,
+                              0.0f, 30.0f, 0.0f) &&
+        CreateSimulatorPlayer(map, partyFaction, firstLeaderSession, firstLeader,
+                              8.0f, 30.0f, 0.0f) &&
+        CreateSimulatorPlayer(map, partyFaction, nextLeaderSession, nextLeader,
+                              14.0f, 30.0f, 0.0f);
+
+    ObjectGuid const followerGuid = follower
+        ? follower->GetObjectGuid() : ObjectGuid();
+    ObjectGuid const firstLeaderGuid = firstLeader
+        ? firstLeader->GetObjectGuid() : ObjectGuid();
+    ObjectGuid const nextLeaderGuid = nextLeader
+        ? nextLeader->GetObjectGuid() : ObjectGuid();
+
+    std::unique_ptr<Group> group(new Group());
+    bool groupRegistered = false;
+    std::unique_ptr<PartyBotAI> actionRuntime;
+
+    auto cleanup = [&]() -> bool
+    {
+        if (follower)
+        {
+            follower->GetMotionMaster()->MoveIdle();
+            follower->SetAI(nullptr);
+        }
+        actionRuntime.reset();
+
+        bool ungrouped = true;
+        if (group && group->GetId())
+        {
+            group->Disband(true, followerGuid);
+            for (Player* player : {follower, firstLeader, nextLeader})
+                if (player && player->GetGroup())
+                    ungrouped = false;
+            if (groupRegistered)
+            {
+                sObjectMgr.RemoveGroup(group.get());
+                groupRegistered = false;
+            }
+            group.reset();
+        }
+
+        if (followerSession.GetPlayer())
+            followerSession.LogoutPlayer(false);
+        if (firstLeaderSession.GetPlayer())
+            firstLeaderSession.LogoutPlayer(false);
+        if (nextLeaderSession.GetPlayer())
+            nextLeaderSession.LogoutPlayer(false);
+
+        bool const sessionsCleaned =
+            !followerSession.GetPlayer() &&
+            !firstLeaderSession.GetPlayer() &&
+            !nextLeaderSession.GetPlayer();
+        bool const playersDetached =
+            (!followerGuid || !map.GetUnit(followerGuid)) &&
+            (!firstLeaderGuid || !map.GetUnit(firstLeaderGuid)) &&
+            (!nextLeaderGuid || !map.GetUnit(nextLeaderGuid));
+
+        follower = nullptr;
+        firstLeader = nullptr;
+        nextLeader = nullptr;
+        return ungrouped && sessionsCleaned && playersDetached;
+    };
+
+    if (!playersCreated || !follower || !firstLeader || !nextLeader)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] FollowPartyMember Player creation failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    bool const groupCreated = group->Create(
+        follower->GetObjectGuid(), follower->GetName());
+    if (groupCreated)
+    {
+        sObjectMgr.AddGroup(group.get());
+        groupRegistered = true;
+    }
+    bool const membersAdded = groupCreated &&
+        group->AddMember(firstLeader->GetObjectGuid(), firstLeader->GetName()) &&
+        group->AddMember(nextLeader->GetObjectGuid(), nextLeader->GetName());
+    if (!membersAdded)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] FollowPartyMember Group setup failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    actionRuntime.reset(new PartyBotAI(
+        follower, map.GetId(), map.GetInstanceId(),
+        follower->GetPositionX(), follower->GetPositionY(),
+        follower->GetPositionZ(), follower->GetOrientation()));
+    actionRuntime->SetPlayer(follower);
+    actionRuntime->m_initialized = true;
+    actionRuntime->m_updateTimer.Reset(600000);
+    follower->SetAI(actionRuntime.get());
+
+    PartyCoordinator initialCoordinator;
+    PartySnapshot const* initialSnapshot = PartySnapshotBuilder::GetOrBuild(
+        follower, initialCoordinator, WorldTimer::getMSTime(), 1000);
+    PartyMemberSnapshot const* initialBot =
+        initialSnapshot ? initialSnapshot->FindMember(followerGuid.GetRawValue()) : nullptr;
+    bool const rosterValid = initialSnapshot &&
+        initialSnapshot->members.size() == 3 && initialBot &&
+        initialSnapshot->FindMember(firstLeaderGuid.GetRawValue()) &&
+        initialSnapshot->FindMember(nextLeaderGuid.GetRawValue());
+    if (!rosterValid)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] FollowPartyMember initial roster snapshot failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+    PartySnapshot const beforeFollow = *initialSnapshot;
+    Guid const firstGuid = firstLeaderGuid.GetRawValue();
+    Guid const nextGuid = nextLeaderGuid.GetRawValue();
+    Guid const botGuid = followerGuid.GetRawValue();
+
+    PartyBotEngine engine;
+    std::shared_ptr<FollowPartyMemberAction> action(
+        new FollowPartyMemberAction());
+    bool const registered = engine.RegisterAction(action);
+    std::shared_ptr<Strategy> firstStrategy(
+        new Strategy("simulator_follow_party_member_first"));
+    firstStrategy->AddTrigger(
+        std::make_shared<SimulatorFollowPartyMemberTrigger>(firstGuid));
+    engine.AddStrategy(firstStrategy);
+
+    PartyMemberSnapshot const* botSnapshot = beforeFollow.FindMember(botGuid);
+    DecisionContext firstContext(
+        beforeFollow, *botSnapshot, initialCoordinator, WorldTimer::getMSTime(),
+        nullptr, nullptr, nullptr, nullptr, actionRuntime.get());
+    DecisionReport firstReport = engine.Evaluate(firstContext);
+    bool const firstSelected = registered &&
+        firstReport.selectedIndices.size() == 1 &&
+        firstReport.candidates[firstReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (firstSelected)
+        engine.ExecuteSelected(firstContext, firstReport);
+
+    MovementGenerator const* firstMovement = follower->GetMotionMaster()->GetCurrent();
+    FollowMovementGenerator<Player> const* firstFollow =
+        firstMovement &&
+        firstMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+            ? static_cast<FollowMovementGenerator<Player> const*>(firstMovement)
+            : nullptr;
+    bool const firstStarted = firstSelected &&
+        firstReport.candidates[firstReport.selectedIndices[0]].status ==
+            CandidateStatus::Executed &&
+        firstReport.candidates[firstReport.selectedIndices[0]].actionResult ==
+            ActionResult::Success &&
+        firstFollow && firstFollow->GetTarget() == firstLeader &&
+        follower->HasUnitState(UNIT_STATE_FOLLOW);
+
+    PartyCoordinator observedCoordinator;
+    PartySnapshot const* observedSnapshot = PartySnapshotBuilder::GetOrBuild(
+        follower, observedCoordinator, WorldTimer::getMSTime(), 1000);
+    PartyMemberSnapshot const* observedBot = observedSnapshot
+        ? observedSnapshot->FindMember(botGuid) : nullptr;
+    bool const followTargetCaptured = observedBot &&
+        observedBot->followTargetGuid == firstGuid;
+
+    bool sameTargetNotRestarted = false;
+    bool retargeted = false;
+    bool staleGroupRejected = false;
+    bool retargetRegistered = false;
+    bool staleSelected = false;
+    bool firstLeaderRemoved = false;
+
+    if (observedSnapshot && observedBot)
+    {
+        DecisionContext sameTargetContext(
+            *observedSnapshot, *observedBot, observedCoordinator,
+            WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+            actionRuntime.get());
+        DecisionReport sameTargetReport = engine.Evaluate(sameTargetContext);
+        sameTargetNotRestarted = sameTargetReport.selectedIndices.empty() &&
+            !sameTargetReport.candidates.empty() &&
+            sameTargetReport.candidates[0].status == CandidateStatus::RejectedUseless;
+
+        PartyBotEngine retargetEngine;
+        std::shared_ptr<FollowPartyMemberAction> retargetAction(
+            new FollowPartyMemberAction());
+        retargetRegistered = retargetEngine.RegisterAction(retargetAction);
+        std::shared_ptr<Strategy> retargetStrategy(
+            new Strategy("simulator_follow_party_member_retarget"));
+        retargetStrategy->AddTrigger(
+            std::make_shared<SimulatorFollowPartyMemberTrigger>(nextGuid));
+        retargetEngine.AddStrategy(retargetStrategy);
+        DecisionContext retargetContext(
+            *observedSnapshot, *observedBot, observedCoordinator,
+            WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+            actionRuntime.get());
+        DecisionReport retargetReport = retargetEngine.Evaluate(retargetContext);
+        bool const retargetSelected = retargetRegistered &&
+            retargetReport.selectedIndices.size() == 1 &&
+            retargetReport.candidates[retargetReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+        if (retargetSelected)
+            retargetEngine.ExecuteSelected(retargetContext, retargetReport);
+        MovementGenerator const* retargetMovement =
+            follower->GetMotionMaster()->GetCurrent();
+        FollowMovementGenerator<Player> const* retargetFollow =
+            retargetMovement &&
+            retargetMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                ? static_cast<FollowMovementGenerator<Player> const*>(retargetMovement)
+                : nullptr;
+        retargeted = retargetSelected &&
+            retargetReport.candidates[retargetReport.selectedIndices[0]].status ==
+                CandidateStatus::Executed &&
+            retargetReport.candidates[retargetReport.selectedIndices[0]].actionResult ==
+                ActionResult::Success &&
+            retargetFollow && retargetFollow->GetTarget() == nextLeader;
+
+        // The old snapshot still includes firstLeader, but the live Group no longer does.
+        firstLeaderRemoved =
+            group->RemoveMember(firstLeaderGuid, 0) == 2 &&
+            firstLeader->GetGroup() == nullptr;
+        PartyCoordinator staleCoordinator;
+        PartyMemberSnapshot const* staleBot = beforeFollow.FindMember(botGuid);
+        DecisionContext staleContext(
+            beforeFollow, *staleBot, staleCoordinator, WorldTimer::getMSTime(),
+            nullptr, nullptr, nullptr, nullptr, actionRuntime.get());
+        PartyBotEngine staleEngine;
+        std::shared_ptr<FollowPartyMemberAction> staleAction(
+            new FollowPartyMemberAction());
+        bool const staleRegistered = staleEngine.RegisterAction(staleAction);
+        std::shared_ptr<Strategy> staleStrategy(
+            new Strategy("simulator_follow_party_member_stale_group"));
+        staleStrategy->AddTrigger(
+            std::make_shared<SimulatorFollowPartyMemberTrigger>(firstGuid));
+        staleEngine.AddStrategy(staleStrategy);
+        DecisionReport staleReport = staleEngine.Evaluate(staleContext);
+        staleSelected = staleRegistered &&
+            staleReport.selectedIndices.size() == 1 &&
+            staleReport.candidates[staleReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+        if (staleSelected)
+            staleEngine.ExecuteSelected(staleContext, staleReport);
+        CandidateEvaluation const* staleEvaluation = staleSelected
+            ? &staleReport.candidates[staleReport.selectedIndices[0]] : nullptr;
+        MovementGenerator const* afterStaleMovement =
+            follower->GetMotionMaster()->GetCurrent();
+        FollowMovementGenerator<Player> const* afterStaleFollow =
+            afterStaleMovement &&
+            afterStaleMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                ? static_cast<FollowMovementGenerator<Player> const*>(afterStaleMovement)
+                : nullptr;
+        staleGroupRejected = firstLeaderRemoved && staleEvaluation &&
+            staleEvaluation->status == CandidateStatus::ExecutionFailed &&
+            staleEvaluation->actionResult == ActionResult::Impossible &&
+            staleEvaluation->reason ==
+                "follow_party_member_live_group_or_target_invalid" &&
+            afterStaleFollow && afterStaleFollow->GetTarget() == nextLeader;
+    }
+
+    bool const passed = registered && firstStarted && followTargetCaptured &&
+        sameTargetNotRestarted && retargetRegistered && retargeted &&
+        firstLeaderRemoved && staleSelected && staleGroupRejected;
+    sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] Core FollowPartyMember action: registered=%u firstStarted=%u followTargetCaptured=%u sameTargetNotRestarted=%u retargetRegistered=%u retargeted=%u firstLeaderRemoved=%u staleSelected=%u staleGroupRejected=%u.",
+        registered ? 1u : 0u, firstStarted ? 1u : 0u,
+        followTargetCaptured ? 1u : 0u, sameTargetNotRestarted ? 1u : 0u,
+        retargetRegistered ? 1u : 0u, retargeted ? 1u : 0u,
+        firstLeaderRemoved ? 1u : 0u, staleSelected ? 1u : 0u,
+        staleGroupRejected ? 1u : 0u);
+
+    bool const cleaned = cleanup();
+    if (!passed || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] FollowPartyMember Core fixture failed (passed=%u cleanup=%u).",
+                 passed ? 1u : 0u, cleaned ? 1u : 0u);
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-only current-follow snapshot to avoid restarting the same target, retargeted the native Player FollowMovementGenerator to a new group member, and rejected stale live-Group membership without disturbing movement.");
+    return true;
+}
+
 bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -8478,6 +8809,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
     bool const selectHostileTargetPassed = RunEngineCoreSelectHostileTargetSmokeTest(*map);
+    bool const followPartyMemberPassed = RunEngineCoreFollowPartyMemberActionSmokeTest(*map);
     bool const itemUsePassed = RunEngineCoreItemUseSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
     bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
@@ -8495,7 +8827,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && periodicManaLeechPassed && periodicLifeLeechPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
-                              selectHostileTargetPassed && itemUsePassed &&
+                              selectHostileTargetPassed && followPartyMemberPassed && itemUsePassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&

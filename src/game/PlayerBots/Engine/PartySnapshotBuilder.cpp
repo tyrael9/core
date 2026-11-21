@@ -3,6 +3,9 @@
 #include "Creature.h"
 #include "Group.h"
 #include "Map.h"
+#include "MovementGenerator.h"
+#include "MotionMaster.h"
+#include "TargetedMovementGenerator.h"
 #include "Pet.h"
 #include "Player.h"
 #include "Spell.h"
@@ -182,6 +185,24 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
             !(currentVictim->ToCreature() && currentVictim->ToCreature()->IsInEvadeMode()) &&
             member->CanAttack(currentVictim);
         memberData.selectionGuid = member->GetSelectionGuid().GetRawValue();
+        MotionMaster* motionMaster = member->GetMotionMaster();
+        MovementGenerator const* currentMovement =
+            motionMaster && !motionMaster->empty() ? motionMaster->GetCurrent() : nullptr;
+        if (currentMovement &&
+            currentMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE)
+        {
+            // FollowMovementGenerator<Player> owns a live Core reference.
+            // Copy only its target GUID into the value snapshot.
+            FollowMovementGenerator<Player> const* follow =
+                static_cast<FollowMovementGenerator<Player> const*>(currentMovement);
+            Unit* followTarget = follow->GetTarget();
+            if (followTarget && followTarget->IsInWorld() &&
+                followTarget->GetMap() == map &&
+                followTarget->GetMapId() == snapshot.mapId &&
+                followTarget->GetInstanceId() == snapshot.instanceId)
+                memberData.followTargetGuid =
+                    followTarget->GetObjectGuid().GetRawValue();
+        }
         memberData.x = member->GetPositionX();
         memberData.y = member->GetPositionY();
         memberData.z = member->GetPositionZ();

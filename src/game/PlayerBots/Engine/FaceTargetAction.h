@@ -120,7 +120,10 @@ protected:
         // refuses that case so the action reports a truthful result.
         actor->SetFacingToObject(target);
 
-        bool const facingApplied = actor->IsFacingTarget(target);
+        // SetFacingToObject launches Core's native facing-only spline. The
+        // final WorldObject orientation is updated by UpdateSplineMovement,
+        // so do not require IsFacingTarget to change synchronously here.
+        bool const facingSplineStarted = !actor->IsStopped();
         bool const positionPreserved =
             std::fabs(actor->GetPositionX() - xBefore) <= 0.001f &&
             std::fabs(actor->GetPositionY() - yBefore) <= 0.001f &&
@@ -143,12 +146,12 @@ protected:
             }
         }
 
-        bool const passed = facingApplied && positionPreserved &&
+        bool const passed = facingSplineStarted && positionPreserved &&
             targetStatePreserved && noSpellStarted;
         result.result = passed ? ActionResult::Success : ActionResult::Failed;
         result.reason = passed
-            ? "face_target_faced_without_combat_side_effects"
-            : "face_target_postcondition_failed";
+            ? "face_target_facing_spline_started"
+            : "face_target_facing_request_failed";
         return result;
     }
 

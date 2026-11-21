@@ -6638,15 +6638,26 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         faceEngine.ExecuteSelected(faceContext, faceReport);
     CandidateEvaluation const* faceEvaluation = faceSelected
         ? &faceReport.candidates[faceReport.selectedIndices[0]] : nullptr;
-    bool const faceAccepted = faceEvaluation &&
+    bool const faceRequestAccepted = faceEvaluation &&
         faceEvaluation->status == CandidateStatus::Executed &&
         faceEvaluation->actionResult == ActionResult::Success &&
-        bot->IsFacingTarget(hostile.creature) &&
+        faceEvaluation->reason == "face_target_facing_spline_started" &&
         bot->GetPositionX() == faceXBefore &&
         bot->GetPositionY() == faceYBefore &&
         bot->GetPositionZ() == faceZBefore &&
         bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
         bot->GetTargetGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetVictim() == nullptr && bot->IsInCombat() == faceCombatBefore;
+
+    // Core applies the final orientation from its facing-only spline during
+    // the normal Unit::UpdateSplineMovement path, not in SetFacingToObject.
+    if (faceRequestAccepted)
+        map.Update(10);
+    bool const faceAccepted = faceRequestAccepted &&
+        bot->IsFacingTarget(hostile.creature) &&
+        std::fabs(bot->GetPositionX() - faceXBefore) <= 0.001f &&
+        std::fabs(bot->GetPositionY() - faceYBefore) <= 0.001f &&
+        std::fabs(bot->GetPositionZ() - faceZBefore) <= 0.001f &&
         bot->GetVictim() == nullptr && bot->IsInCombat() == faceCombatBefore;
 
     // After refreshing only the value orientation, the already-facing target

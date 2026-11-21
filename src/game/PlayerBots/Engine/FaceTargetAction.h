@@ -12,8 +12,9 @@
 
 namespace PartyBotEngine
 {
-// Face the currently selected hostile using Core's native facing spline.
-// This adapter never selects, attacks, moves, casts, damages or generates threat.
+// Face the currently selected hostile using Core's native facing-only spline.
+// This adapter never changes selection, attacks, casts, translates the actor,
+// damages or generates threat; the short facing spline is advanced by Core.
 class FaceTargetAction final : public CoreAction
 {
 public:

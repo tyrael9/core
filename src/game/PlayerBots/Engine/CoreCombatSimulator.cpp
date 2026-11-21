@@ -6653,12 +6653,18 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     // the normal Unit::UpdateSplineMovement path, not in SetFacingToObject.
     if (faceRequestAccepted)
         map.Update(10);
-    bool const faceAccepted = faceRequestAccepted &&
-        bot->IsFacingTarget(hostile.creature) &&
+    bool const faceFacingComplete = faceRequestAccepted &&
+        bot->IsFacingTarget(hostile.creature);
+    bool const facePositionPreserved =
         std::fabs(bot->GetPositionX() - faceXBefore) <= 0.001f &&
         std::fabs(bot->GetPositionY() - faceYBefore) <= 0.001f &&
-        std::fabs(bot->GetPositionZ() - faceZBefore) <= 0.001f &&
+        std::fabs(bot->GetPositionZ() - faceZBefore) <= 0.001f;
+    bool const faceTargetStatePreserved =
+        bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid() &&
         bot->GetVictim() == nullptr && bot->IsInCombat() == faceCombatBefore;
+    bool const faceAccepted = faceRequestAccepted && faceFacingComplete &&
+        facePositionPreserved && faceTargetStatePreserved;
 
     // After refreshing only the value orientation, the already-facing target
     // must not be proposed again.
@@ -6755,9 +6761,10 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bool const faceFixturePassed = faceRegistered && faceSelected && faceAccepted &&
         alreadyFacingNoOp && staleFaceFriendlyRejected && movingRejectedWithoutMutation;
     sLog.Out(LOG_BASIC, faceFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] FaceTargetAction: registered=%u selected=%u faced=%u positionPreserved=%u alreadyFacingNoOp=%u staleFriendlyRejected=%u movingRejected=%u.",
+        "[PartyBotSimulator] FaceTargetAction: registered=%u selected=%u requestAccepted=%u facingComplete=%u positionPreserved=%u targetStatePreserved=%u alreadyFacingNoOp=%u staleFriendlyRejected=%u movingRejected=%u.",
         faceRegistered ? 1u : 0u, faceSelected ? 1u : 0u,
-        faceAccepted ? 1u : 0u, faceAccepted ? 1u : 0u,
+        faceRequestAccepted ? 1u : 0u, faceFacingComplete ? 1u : 0u,
+        facePositionPreserved ? 1u : 0u, faceTargetStatePreserved ? 1u : 0u,
         alreadyFacingNoOp ? 1u : 0u, staleFaceFriendlyRejected ? 1u : 0u,
         movingRejectedWithoutMutation ? 1u : 0u);
 

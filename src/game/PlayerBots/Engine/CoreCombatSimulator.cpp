@@ -5801,7 +5801,7 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
 
     // Change only the live faction relation. The next snapshot-guided attempt
     // must now use Core AttackStop, not CombatStop, and detach one back-reference.
-    hostile.creature->SetFactionTemporary(partyFaction);
+    hostile.creature->SetFactionTemplateId(partyFaction);
     bool const liveVictimUnattackable = !bot->CanAttack(hostile.creature);
     DecisionReport stopReport = stopEngine.Evaluate(stopContext);
     bool const stopSelected = stopReport.selectedIndices.size() == 1 &&
@@ -5821,7 +5821,16 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         bot->GetVictim() == nullptr && bot->GetTargetGuid().IsEmpty() &&
         !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
         !attackerReferenceAfter && bot->IsInCombat() == combatBeforeStop;
-    hostile.creature->SetFactionTemporary(hostileFaction);
+    bool const stopFixturePassed = stopRegistered && attackableNotProposed &&
+        staleVictimSelected && staleVictimRejected && liveVictimUnattackable &&
+        stopSelected && attackStoppedWithoutCombatStop;
+    sLog.Out(LOG_BASIC, stopFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] Core StopUnattackableTarget: registered=%u attackableNotProposed=%u staleSelected=%u staleRejected=%u liveUnattackable=%u selected=%u stoppedOnly=%u.",
+        stopRegistered ? 1u : 0u, attackableNotProposed ? 1u : 0u,
+        staleVictimSelected ? 1u : 0u, staleVictimRejected ? 1u : 0u,
+        liveVictimUnattackable ? 1u : 0u, stopSelected ? 1u : 0u,
+        attackStoppedWithoutCombatStop ? 1u : 0u);
+    hostile.creature->SetFactionTemplateId(hostileFaction);
     bot->CombatStop(false);
 
     bot->SetAI(nullptr);
@@ -5844,7 +5853,8 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         cleaned ? 1u : 0u);
 
     if (!clearRegistered || !staleSelectionCleared || !actionRegistered ||
-        !hostileAccepted || !friendlyCandidateSelected || !friendlyRejected || !cleaned)
+        !hostileAccepted || !friendlyCandidateSelected || !friendlyRejected ||
+        !stopFixturePassed || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Core select-hostile target fixture failed.");
@@ -5853,6 +5863,8 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: generic Core target maintenance cleared an idle stale selection, selected a live hostile and rejected a stale friendly target without disturbing Player combat state.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Core preflight to reject a stale negative snapshot, then AttackStop detached only the invalid victim while preserving combat state.");
     return true;
 }
 

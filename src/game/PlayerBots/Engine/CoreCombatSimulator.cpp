@@ -5606,10 +5606,306 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
         mutablePotionPrototype->Stackable = savedPotionStackable;
     }
 
+    // A pinned Vanilla 5875 item_template row with a real missile spell
+    // exercises both sides of Core's TakeCastItem timing. Brimstone casts
+    // Fireball (2s cast, 24 yd/s); the first Player cancels while PREPARING,
+    // the second is interrupted after launch/mutation while DELAYED.
+    static uint32 const DelayedItemId = 1402; // Brimstone
+    static uint32 const DelayedSpellId = 143; // Fireball
+    ItemPrototype const* delayedPrototype =
+        sObjectMgr.GetItemPrototype(DelayedItemId);
+    SpellEntry const* delayedSpell = sSpellMgr.GetSpellEntry(DelayedSpellId);
+    uint8 delayedSpellSlot = 0xff;
+    if (delayedPrototype)
+    {
+        for (uint8 slot = 0; slot < MAX_ITEM_PROTO_SPELLS; ++slot)
+        {
+            _ItemSpell const& itemSpell = delayedPrototype->Spells[slot];
+            if (itemSpell.SpellId == DelayedSpellId &&
+                itemSpell.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+            {
+                delayedSpellSlot = slot;
+                break;
+            }
+        }
+    }
+    bool const delayedDataValid = delayedPrototype && delayedSpell &&
+        delayedSpellSlot < MAX_ITEM_PROTO_SPELLS &&
+        delayedPrototype->Spells[delayedSpellSlot].SpellCharges == -5 &&
+        delayedPrototype->Stackable < 2 &&
+        delayedSpell->GetCastTime(nullptr, nullptr) == 2000 &&
+        delayedSpell->speed == 24.0f &&
+        delayedSpell->Effect[EFFECT_INDEX_0] == SPELL_EFFECT_SCHOOL_DAMAGE &&
+        delayedSpell->EffectImplicitTargetA[EFFECT_INDEX_0] == 6;
+
+    CreatureInfo const* delayedTargetInfo = FindSafeCreatureTemplate();
+    uint32 delayedPartyFaction = 0, delayedHostileFaction = 0;
+    bool const delayedFactionsValid =
+        FindMutuallyHostileFactions(delayedPartyFaction, delayedHostileFaction);
+    SimulatorActor delayedTarget;
+    bool const delayedTargetCreated = delayedDataValid &&
+        delayedTargetInfo && delayedFactionsValid &&
+        CreateSimulatorActor(map, *delayedTargetInfo, delayedHostileFaction,
+                             20.0f, 9.0f, delayedTarget);
+    bool preCancelPlayerCleaned = false;
+    bool postCancelPlayerCleaned = false;
+    bool preCancelPrepared = false;
+    bool preCancelInterrupted = false;
+    bool preCancelUnmutated = false;
+    bool postCancelDelayed = false;
+    bool postCancelInterrupted = false;
+    bool postCancelMutation = false;
+    bool postCancelNoImpact = false;
+    uint32 delayedTargetHealthBefore = delayedTarget.creature
+        ? delayedTarget.creature->GetHealth() : 0;
+    uint32 delayedTargetHealthAfter = delayedTargetHealthBefore;
+    int32 preCancelChargesBefore = 0;
+    int32 preCancelChargesAfter = 0;
+    int32 postCancelChargesBefore = 0;
+    int32 postCancelChargesAfter = 0;
+    bool delayedPreListenerAdded = false;
+    bool delayedPostListenerAdded = false;
+    uint8 preCancelTerminalCount = 0;
+    uint8 postCancelTerminalCount = 0;
+    uint8 postCancelMutationCount = 0;
+    bool postCancelMutationPhaseBeforeEffects = false;
+    bool postCancelMutationIdentityValid = false;
+
+    if (delayedTargetCreated)
+    {
+        WorldSession preCancelSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+        Player* preCancelPlayer = nullptr;
+        if (CreateSimulatorPlayer(map, delayedPartyFaction, preCancelSession,
+                                  preCancelPlayer, 0.0f, 9.0f, 4.0f))
+        {
+            PartyBotAI preCancelAI(
+                preCancelPlayer, map.GetId(), map.GetInstanceId(),
+                preCancelPlayer->GetPositionX(), preCancelPlayer->GetPositionY(),
+                preCancelPlayer->GetPositionZ(), preCancelPlayer->GetOrientation());
+            preCancelAI.SetPlayer(preCancelPlayer);
+            preCancelPlayer->SetAI(&preCancelAI);
+            std::shared_ptr<SimulatorItemUseCapture> capture(
+                new SimulatorItemUseCapture());
+            delayedPreListenerAdded =
+                preCancelAI.m_partyBotEngine.AddItemUseTerminalListener(capture);
+
+            Item* item = preCancelPlayer->StoreNewItemInInventorySlot(
+                DelayedItemId, 1);
+            ObjectGuid const itemGuid = item ? item->GetObjectGuid() : ObjectGuid();
+            preCancelChargesBefore = item && delayedSpellSlot < MAX_ITEM_PROTO_SPELLS
+                ? item->GetSpellCharges(delayedSpellSlot) : 0;
+            SpellCastTargets targets;
+            targets.PrepareForSpellSystem(preCancelPlayer);
+            if (delayedTarget.creature)
+                targets.setUnitTarget(delayedTarget.creature);
+            uint64 const itemUseId = item
+                ? preCancelPlayer->CastItemUseSpell(item, targets) : 0;
+            Spell* const preparingSpell =
+                preCancelPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            preCancelPrepared = delayedPreListenerAdded && itemUseId &&
+                itemGuid && item->GetCount() == 1 &&
+                preCancelChargesBefore == -5 &&
+                preCancelPlayer->CanUseItem(item) == EQUIP_ERR_OK &&
+                delayedTarget.creature &&
+                preCancelPlayer->CanAttack(delayedTarget.creature) &&
+                preparingSpell && preparingSpell->m_spellInfo->Id == DelayedSpellId &&
+                preparingSpell->getState() == SPELL_STATE_PREPARING;
+
+            if (preCancelPrepared)
+            {
+                // The cast-time SpellEvent has not fired, so Core has not called
+                // TakeCastItem. The regular non-delayed interrupt must preserve
+                // the real item and its charge.
+                preCancelPlayer->InterruptNonMeleeSpells(
+                    false, DelayedSpellId);
+                preCancelInterrupted =
+                    preCancelPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+                    capture->events.size() == 1 &&
+                    capture->events[0].itemUseId == itemUseId &&
+                    capture->events[0].status == ItemUseAggregateStatus::AllInterrupted &&
+                    capture->events[0].childCount == 1 &&
+                    capture->events[0].interruptedChildCount == 1 &&
+                    capture->events[0].observedMutationCount == 0;
+                Item* const itemAfter = preCancelPlayer->GetItemByGuid(itemGuid);
+                preCancelChargesAfter = itemAfter && delayedSpellSlot < MAX_ITEM_PROTO_SPELLS
+                    ? itemAfter->GetSpellCharges(delayedSpellSlot) : 0;
+                preCancelUnmutated = itemAfter == item &&
+                    itemAfter->GetCount() == 1 &&
+                    preCancelChargesAfter == preCancelChargesBefore &&
+                    preCancelAI.m_partyBotEngine.GetPendingItemUseCount() == 0;
+                preCancelTerminalCount =
+                    capture->events.empty() ? 0 : capture->events[0].completedChildCount;
+            }
+            preCancelPlayer->SetAI(nullptr);
+            preCancelSession.LogoutPlayer(false);
+            preCancelPlayerCleaned = preCancelSession.GetPlayer() == nullptr;
+        }
+        else
+        {
+            if (preCancelSession.GetPlayer())
+                preCancelSession.LogoutPlayer(false);
+            else if (preCancelPlayer)
+                delete preCancelPlayer;
+        }
+
+        // The second Player has a clean cooldown/GCD and a fresh real item.
+        WorldSession postCancelSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+        Player* postCancelPlayer = nullptr;
+        if (CreateSimulatorPlayer(map, delayedPartyFaction, postCancelSession,
+                                  postCancelPlayer, 0.0f, 9.0f, 4.0f))
+        {
+            PartyBotAI postCancelAI(
+                postCancelPlayer, map.GetId(), map.GetInstanceId(),
+                postCancelPlayer->GetPositionX(), postCancelPlayer->GetPositionY(),
+                postCancelPlayer->GetPositionZ(), postCancelPlayer->GetOrientation());
+            postCancelAI.SetPlayer(postCancelPlayer);
+            postCancelPlayer->SetAI(&postCancelAI);
+            std::shared_ptr<SimulatorItemUseCapture> capture(
+                new SimulatorItemUseCapture());
+            delayedPostListenerAdded =
+                postCancelAI.m_partyBotEngine.AddItemUseTerminalListener(capture);
+
+            Item* item = postCancelPlayer->StoreNewItemInInventorySlot(
+                DelayedItemId, 1);
+            ObjectGuid const itemGuid = item ? item->GetObjectGuid() : ObjectGuid();
+            postCancelChargesBefore = item && delayedSpellSlot < MAX_ITEM_PROTO_SPELLS
+                ? item->GetSpellCharges(delayedSpellSlot) : 0;
+            SpellCastTargets targets;
+            targets.PrepareForSpellSystem(postCancelPlayer);
+            if (delayedTarget.creature)
+                targets.setUnitTarget(delayedTarget.creature);
+            uint64 const itemUseId = item
+                ? postCancelPlayer->CastItemUseSpell(item, targets) : 0;
+            Spell* const initialSpell =
+                postCancelPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            bool const initialPreparing = delayedPostListenerAdded && itemUseId &&
+                itemGuid && item->GetCount() == 1 &&
+                postCancelChargesBefore == -5 &&
+                postCancelPlayer->CanUseItem(item) == EQUIP_ERR_OK &&
+                delayedTarget.creature &&
+                postCancelPlayer->CanAttack(delayedTarget.creature) &&
+                initialSpell && initialSpell->m_spellInfo->Id == DelayedSpellId &&
+                initialSpell->getState() == SPELL_STATE_PREPARING;
+
+            ItemUseMutationEvent mutation;
+            bool haveLaunchMutation = false;
+            // Advance the real EventProcessor in small bounded increments.
+            // Stop on the exact update where Core has launched the projectile
+            // and TakeCastItem has emitted its BeforeEffects mutation.
+            for (uint32 tick = 0; initialPreparing && tick < 350; ++tick)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                map.Update(10);
+                while (postCancelAI.m_partyBotEngine.PopItemUseMutationEvent(mutation))
+                {
+                    ++postCancelMutationCount;
+                    haveLaunchMutation = haveLaunchMutation ||
+                        (mutation.itemUseId == itemUseId && mutation.childId != 0);
+                }
+                Spell* const current =
+                    postCancelPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                if (current && current->m_spellInfo->Id == DelayedSpellId &&
+                    current->getState() == SPELL_STATE_DELAYED &&
+                    haveLaunchMutation)
+                {
+                    postCancelDelayed = true;
+                    break;
+                }
+                if (!capture->events.empty())
+                    break;
+            }
+
+            if (postCancelDelayed && postCancelMutationCount == 1)
+            {
+                Item* const itemAtLaunch = postCancelPlayer->GetItemByGuid(itemGuid);
+                postCancelChargesAfter = itemAtLaunch &&
+                    delayedSpellSlot < MAX_ITEM_PROTO_SPELLS
+                    ? itemAtLaunch->GetSpellCharges(delayedSpellSlot) : 0;
+                // Core deliberately ignores delayed generic spells unless
+                // withDelayed=true. Cancel on the same map-thread turn as the
+                // charge mutation, before the projectile's future impact event.
+                postCancelPlayer->InterruptNonMeleeSpells(
+                    true, DelayedSpellId);
+                postCancelInterrupted =
+                    postCancelPlayer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+                    capture->events.size() == 1 &&
+                    capture->events[0].itemUseId == itemUseId &&
+                    capture->events[0].status == ItemUseAggregateStatus::AllInterrupted &&
+                    capture->events[0].childCount == 1 &&
+                    capture->events[0].interruptedChildCount == 1 &&
+                    capture->events[0].observedMutationCount == 1;
+                postCancelMutation =
+                    mutation.kind == ItemUseMutationKind::ChargeChanged &&
+                    mutation.phase == ItemUseMutationPhase::BeforeEffects &&
+                    mutation.slotIndex == delayedSpellSlot &&
+                    mutation.itemGuid == itemGuid.GetRawValue() &&
+                    mutation.itemEntry == DelayedItemId &&
+                    mutation.beforeCharges == -5 && mutation.afterCharges == -4 &&
+                    mutation.itemExistsAfter &&
+                    postCancelChargesAfter == -4;
+                postCancelMutationPhaseBeforeEffects =
+                    mutation.phase == ItemUseMutationPhase::BeforeEffects;
+                postCancelMutationIdentityValid =
+                    capture->events.size() == 1 &&
+                    mutation.itemUseId == itemUseId &&
+                    mutation.childId == capture->events[0].children[0].childId;
+                postCancelTerminalCount = capture->events.empty()
+                    ? 0 : capture->events[0].completedChildCount;
+                // Let the already-scheduled projectile event mature. A
+                // cancelled Spell must be deleted without applying Fireball.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                map.Update(1000);
+                delayedTargetHealthAfter = delayedTarget.creature->GetHealth();
+                Item* const itemAfter = postCancelPlayer->GetItemByGuid(itemGuid);
+                postCancelNoImpact = delayedTargetHealthAfter ==
+                    delayedTargetHealthBefore &&
+                    itemAfter == item && itemAfter->GetCount() == 1 &&
+                    itemAfter->GetSpellCharges(delayedSpellSlot) == -4 &&
+                    postCancelAI.m_partyBotEngine.GetPendingItemUseCount() == 0;
+            }
+
+            postCancelPlayer->SetAI(nullptr);
+            postCancelSession.LogoutPlayer(false);
+            postCancelPlayerCleaned = postCancelSession.GetPlayer() == nullptr;
+        }
+        else
+        {
+            if (postCancelSession.GetPlayer())
+                postCancelSession.LogoutPlayer(false);
+            else if (postCancelPlayer)
+                delete postCancelPlayer;
+        }
+    }
+
+    bool const delayedTargetCleaned = DestroySimulatorActor(map, delayedTarget);
+    bool const delayedCancellationFixturePassed = delayedDataValid &&
+        delayedTargetCreated && delayedPreListenerAdded && delayedPostListenerAdded &&
+        preCancelPrepared && preCancelInterrupted && preCancelUnmutated &&
+        postCancelDelayed && postCancelInterrupted && postCancelMutation &&
+        postCancelMutationPhaseBeforeEffects && postCancelMutationIdentityValid &&
+        postCancelNoImpact && preCancelPlayerCleaned && postCancelPlayerCleaned &&
+        delayedTargetCleaned;
+    sLog.Out(LOG_BASIC, delayedCancellationFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F42 delayed ON_USE cancellation: data=%u target=%u prePrepared=%u preInterrupted=%u preUnmutated=%u preCharge=%d>%d preTerminals=%u postDelayed=%u postInterrupted=%u postMutation=%u mutationBeforeEffects=%u mutationIdentity=%u mutationCount=%u postCharge=%d>%d postNoImpact=%u postTerminals=%u cleanup=%u/%u/%u.",
+        delayedDataValid ? 1u : 0u, delayedTargetCreated ? 1u : 0u,
+        preCancelPrepared ? 1u : 0u, preCancelInterrupted ? 1u : 0u,
+        preCancelUnmutated ? 1u : 0u, preCancelChargesBefore,
+        preCancelChargesAfter, preCancelTerminalCount,
+        postCancelDelayed ? 1u : 0u, postCancelInterrupted ? 1u : 0u,
+        postCancelMutation ? 1u : 0u,
+        postCancelMutationPhaseBeforeEffects ? 1u : 0u,
+        postCancelMutationIdentityValid ? 1u : 0u, postCancelMutationCount,
+        postCancelChargesBefore, postCancelChargesAfter,
+        postCancelNoImpact ? 1u : 0u, postCancelTerminalCount,
+        preCancelPlayerCleaned ? 1u : 0u,
+        postCancelPlayerCleaned ? 1u : 0u,
+        delayedTargetCleaned ? 1u : 0u);
+
     bool const passed = successfulUse && rejectedWithoutConsumption &&
         successfulAggregate && rejectedAggregate &&
         multiSlotFixturePassed && multiPlayerCleaned &&
-        successPlayerCleaned && rejectedPlayerCleaned;
+        successPlayerCleaned && rejectedPlayerCleaned &&
+        delayedCancellationFixturePassed;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
              "[PartyBotSimulator] F42 Core item-use aggregate: prototype=%u spellSlot=%u spellId=%u healed=%u>%u consumed=%u successRoot=%u successChildren=%u successMutations=%u rejectedRoot=%u rejectedChildren=%u rejectedMutations=%u multiSlot=%u multiRoot=%u multiChildren=%u firstTriggered=%u secondTriggered=%u multiMutations=%u multiChargesConsumed=%u cleanup=%u/%u/%u.",
              prototypeValid ? 1u : 0u, spellSlot,
@@ -5629,7 +5925,7 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
              multiPlayerCleaned ? 1u : 0u);
     if (passed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: F42 real Core aggregated single-slot use/rejection and a synthetic two-ON_USE-slot prototype. Child snapshots prove first/non-triggered and second/triggered Core Spells; the first child independently consumed both finite charges.");
+                 "[PartyBotSimulator] PASS: F42 real Core aggregated single-slot use/rejection, a synthetic two-ON_USE-slot prototype, and a real delayed Brimstone/Fireball ON_USE cancellation before and after its Core charge mutation.");
     return passed;
 }
 

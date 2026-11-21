@@ -17,6 +17,7 @@
 #include "PlayerBots/Engine/CoreAction.h"
 #include "PlayerBots/Engine/SelectHostileTargetAction.h"
 #include "PlayerBots/Engine/ClearIdleTargetAction.h"
+#include "PlayerBots/Engine/ClearStaleTargetAction.h"
 #include "PlayerBots/Engine/StopUnattackableTargetAction.h"
 #include "PlayerBots/Engine/FollowPartyMemberAction.h"
 #include "PlayerBots/Engine/FaceTargetAction.h"
@@ -583,6 +584,30 @@ public:
 
 private:
     std::string m_name = "simulator_clear_idle_target";
+};
+
+class SimulatorClearStaleTargetTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && context.bot.selectionGuid != 0 &&
+               context.bot.selectionGuid != context.bot.victimGuid &&
+               (context.bot.inCombat || context.bot.victimGuid != 0);
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_clear_stale_target";
+        candidate.basePriority = 38.0f;
+        candidate.channel = ActionChannel::Targeting;
+        candidates.push_back(candidate);
+    }
+
+private:
+    std::string m_name = "simulator_clear_stale_target";
 };
 
 class SimulatorFollowPartyMemberTrigger final : public Trigger
@@ -6948,6 +6973,136 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     hostile.creature->SetFactionTemplateId(hostileFaction);
     bot->CombatStop(false);
 
+    // F43: clear a departed/dead selection without interrupting a different
+    // live victim or ending the encounter. Core resolution is actor-only
+    // (candidate.targetGuid=0), so a missing selected Unit is expected here.
+    bool const clearStaleAttackStarted = bot->Attack(hostile.creature, true);
+    bot->SetInCombatWith(hostile.creature);
+    ObjectGuid const combatStaleSelectionGuid(
+        static_cast<uint64>(0xF430000000000002ull));
+    bot->SetSelectionGuid(combatStaleSelectionGuid);
+    Guid const clearStaleVictimGuid =
+        hostile.creature->GetObjectGuid().GetRawValue();
+    bool const clearStaleSelectionMissing =
+        map.GetUnit(combatStaleSelectionGuid) == nullptr;
+    bool const clearStaleAttackerBefore =
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+        hostile.creature->GetAttackers().end();
+    bool const clearStaleCombatBefore = bot->IsInCombat();
+    bool const clearStaleMeleeBefore =
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING);
+    float const clearStaleThreatBefore =
+        hostile.creature->GetThreatManager().getThreat(bot);
+    uint32 const clearStaleVictimHealthBefore = hostile.creature->GetHealth();
+
+    PartySnapshot clearStaleSnapshot = snapshot;
+    clearStaleSnapshot.epoch++;
+    clearStaleSnapshot.members[0].selectionGuid =
+        combatStaleSelectionGuid.GetRawValue();
+    clearStaleSnapshot.members[0].victimGuid = clearStaleVictimGuid;
+    clearStaleSnapshot.members[0].inCombat = clearStaleCombatBefore;
+    PartyCoordinator clearStaleCoordinator;
+    DecisionContext clearStaleContext(
+        clearStaleSnapshot, clearStaleSnapshot.members[0],
+        clearStaleCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine clearStaleEngine;
+    std::shared_ptr<ClearStaleTargetAction> clearStaleAction(
+        new ClearStaleTargetAction());
+    bool const clearStaleRegistered =
+        clearStaleEngine.RegisterAction(clearStaleAction);
+    std::shared_ptr<Strategy> clearStaleStrategy(
+        new Strategy("simulator_clear_stale_target"));
+    clearStaleStrategy->AddTrigger(
+        std::make_shared<SimulatorClearStaleTargetTrigger>());
+    clearStaleEngine.AddStrategy(clearStaleStrategy);
+
+    DecisionReport clearStaleReport =
+        clearStaleEngine.Evaluate(clearStaleContext);
+    bool const clearStaleSelected =
+        clearStaleReport.selectedIndices.size() == 1 &&
+        clearStaleReport.candidates[
+            clearStaleReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (clearStaleSelected)
+    {
+        // Simulate a selection race after evaluation. A live selection change
+        // must be rejected before the actor's different victim is disturbed.
+        bot->SetSelectionGuid(friendly.creature->GetObjectGuid());
+        clearStaleEngine.ExecuteSelected(clearStaleContext, clearStaleReport);
+    }
+    CandidateEvaluation const* clearStaleDriftEvaluation = clearStaleSelected
+        ? &clearStaleReport.candidates[
+            clearStaleReport.selectedIndices[0]] : nullptr;
+    bool const clearStaleDriftRejected = clearStaleDriftEvaluation &&
+        clearStaleDriftEvaluation->status == CandidateStatus::ExecutionFailed &&
+        clearStaleDriftEvaluation->actionResult == ActionResult::Impossible &&
+        clearStaleDriftEvaluation->reason ==
+            "clear_stale_target_actor_or_selection_mismatch" &&
+        bot->GetSelectionGuid() == friendly.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid() &&
+        bot->GetVictim() == hostile.creature &&
+        bot->IsInCombat() == clearStaleCombatBefore;
+
+    // Restore the exact stale selection snapshot and run the accepted path.
+    bot->SetSelectionGuid(combatStaleSelectionGuid);
+    PartyCoordinator clearStaleAcceptedCoordinator;
+    DecisionContext clearStaleAcceptedContext(
+        clearStaleSnapshot, clearStaleSnapshot.members[0],
+        clearStaleAcceptedCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    DecisionReport clearStaleAcceptedReport =
+        clearStaleEngine.Evaluate(clearStaleAcceptedContext);
+    bool const clearStaleAcceptedSelected =
+        clearStaleAcceptedReport.selectedIndices.size() == 1 &&
+        clearStaleAcceptedReport.candidates[
+            clearStaleAcceptedReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+    if (clearStaleAcceptedSelected)
+        clearStaleEngine.ExecuteSelected(
+            clearStaleAcceptedContext, clearStaleAcceptedReport);
+    CandidateEvaluation const* clearStaleAcceptedEvaluation =
+        clearStaleAcceptedSelected
+            ? &clearStaleAcceptedReport.candidates[
+                clearStaleAcceptedReport.selectedIndices[0]] : nullptr;
+    bool const clearStaleAccepted =
+        clearStaleAcceptedEvaluation &&
+        clearStaleAcceptedEvaluation->status == CandidateStatus::Executed &&
+        clearStaleAcceptedEvaluation->actionResult == ActionResult::Success &&
+        clearStaleAcceptedEvaluation->reason ==
+            "clear_stale_target_cleared_selection_preserving_combat" &&
+        bot->GetSelectionGuid().IsEmpty() && bot->GetTargetGuid().IsEmpty();
+
+    bool const clearStaleVictimPreserved =
+        clearStaleAttackStarted && clearStaleSelectionMissing &&
+        bot->GetVictim() == hostile.creature &&
+        bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING) == clearStaleMeleeBefore &&
+        bot->IsInCombat() == clearStaleCombatBefore &&
+        bot->GetThreatManager().getThreat(hostile.creature, false) == 0.0f;
+    bool const clearStaleAttackerPreserved =
+        clearStaleAttackerBefore &&
+        std::find(hostile.creature->GetAttackers().begin(),
+                  hostile.creature->GetAttackers().end(), bot) !=
+            hostile.creature->GetAttackers().end();
+    float const clearStaleThreatAfter =
+        hostile.creature->GetThreatManager().getThreat(bot);
+    uint32 const clearStaleVictimHealthAfter = hostile.creature->GetHealth();
+    bool const clearStaleNoThreatMutation =
+        std::fabs(clearStaleThreatAfter - clearStaleThreatBefore) < 0.001f &&
+        clearStaleVictimHealthAfter == clearStaleVictimHealthBefore;
+    bool const clearStaleFixturePassed =
+        clearStaleRegistered && clearStaleSelected && clearStaleDriftRejected &&
+        clearStaleAccepted && clearStaleVictimPreserved &&
+        clearStaleAttackerPreserved && clearStaleNoThreatMutation;
+    sLog.Out(LOG_BASIC, clearStaleFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] ClearStaleTargetAction: registered=%u selected=%u driftRejected=%u cleared=%u victimPreserved=%u combatPreserved=%u attackersPreserved=%u threatUnchanged=%u.",
+        clearStaleRegistered ? 1u : 0u, clearStaleSelected ? 1u : 0u,
+        clearStaleDriftRejected ? 1u : 0u, clearStaleAccepted ? 1u : 0u,
+        clearStaleVictimPreserved ? 1u : 0u, clearStaleCombatBefore ? 1u : 0u,
+        clearStaleAttackerPreserved ? 1u : 0u,
+        clearStaleNoThreatMutation ? 1u : 0u);
+    bot->CombatStop(false);
+
     bot->SetAI(nullptr);
     actionRuntime.Remove();
     botSession.LogoutPlayer(false);
@@ -6958,18 +7113,19 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bool const cleaned = playerCleaned && friendlyCleaned && hostileCleaned;
 
     sLog.Out(LOG_BASIC, (staleSelectionCleared && hostileAccepted &&
-                         faceFixturePassed && friendlyRejected && cleaned)
+                         faceFixturePassed && clearStaleFixturePassed &&
+                         friendlyRejected && cleaned)
         ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] Core generic target actions: clearRegistered=%u staleSelectionCleared=%u hostileRegistered=%u hostileAccepted=%u faceFixture=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
+        "[PartyBotSimulator] Core generic target actions: clearRegistered=%u staleSelectionCleared=%u hostileRegistered=%u hostileAccepted=%u faceFixture=%u clearStaleFixture=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
         clearRegistered ? 1u : 0u, staleSelectionCleared ? 1u : 0u,
         actionRegistered ? 1u : 0u, hostileAccepted ? 1u : 0u,
-        faceFixturePassed ? 1u : 0u, friendlyCandidateSelected ? 1u : 0u,
-        friendlyRejected ? 1u : 0u,
+        faceFixturePassed ? 1u : 0u, clearStaleFixturePassed ? 1u : 0u,
+        friendlyCandidateSelected ? 1u : 0u, friendlyRejected ? 1u : 0u,
         (botSession.GetPlayer() == nullptr && friendlyRejected) ? 1u : 0u,
         cleaned ? 1u : 0u);
 
     if (!clearRegistered || !staleSelectionCleared || !actionRegistered ||
-        !hostileAccepted || !faceFixturePassed ||
+        !hostileAccepted || !faceFixturePassed || !clearStaleFixturePassed ||
         !friendlyCandidateSelected || !friendlyRejected ||
         !stopFixturePassed || !cleaned)
     {
@@ -6984,6 +7140,8 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
              "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Core preflight to reject a stale negative snapshot, then AttackStop detached only the invalid victim while preserving combat state.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: FaceTargetAction used snapshot geometry to face a live selected hostile, skipped an already-facing target, and rejected stale-friendly and moving actors without disturbing position, movement or combat state.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: ClearStaleTargetAction cleared a missing selection during a live encounter while preserving a different victim, melee state, attacker reference, combat flag and ThreatManager values.");
     return true;
 }
 

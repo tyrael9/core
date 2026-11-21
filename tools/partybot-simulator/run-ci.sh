@@ -378,6 +378,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: FaceTargetAction used snapshot geometry
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: ClearStaleTargetAction cleared a missing selection during a live encounter while preserving a different victim, melee state, attacker reference, combat flag and ThreatManager values." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The ClearStaleTargetAction Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-only current-follow snapshot to avoid restarting the same target, retargeted the native Player FollowMovementGenerator to a new group member, and rejected stale live-Group membership without disturbing movement." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The FollowPartyMemberAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

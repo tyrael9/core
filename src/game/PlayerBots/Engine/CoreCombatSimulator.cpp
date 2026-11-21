@@ -6007,6 +6007,11 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         bool ungrouped = true;
         if (group && group->GetId())
         {
+            // Group::Create converts the follower's temporary solo instance bind
+            // into a group bind. Remove only that synthetic bind before Disband:
+            // Group::Disband otherwise resets the shared test map, preventing
+            // later Core Player fixtures from being created on the same instance.
+            group->UnbindInstance(map.GetId(), false);
             group->Disband(true, followerGuid);
             for (Player* player : {follower, firstLeader, nextLeader})
                 if (player && player->GetGroup())

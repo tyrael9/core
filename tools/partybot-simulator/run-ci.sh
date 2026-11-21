@@ -378,6 +378,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-onl
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: F41 CoreAction required a fresh map-thread actor/target resolution and rejected missing targets plus stale map/instance snapshots before the real movement adapter ran." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F41 Core action preflight PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

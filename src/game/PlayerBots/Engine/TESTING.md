@@ -95,7 +95,7 @@ These tests cover pure decision logic only. They do not validate live PartyBotAI
 - Bounded ActionResult/Core Spell terminal listeners; typed AND/alternative dependencies; late event registration; idempotency tombstones; starvation resistance; ready-backlog preservation under queue pressure.
 - Core-backed spell, movement/follow, range/LOS/resource, Group/death recovery and NewEngine authority fixtures.
 
-## F43 CoreAction executor and four generic adapters
+## F43 CoreAction executor and five generic adapters
 
 The common CoreAction wrapper requires a nonzero action ID, fresh map-thread actor/target/map resolution and a concrete ValidateCoreAction pass before ExecuteCore. ActionExecutionResult and ExecuteDetailed preserve exact validation/execution reasons in candidate state and traces. Pure C++14 regression coverage proves immediate and pending dispatch both use the action-specific preflight, a veto prevents ExecuteCore, and the exact veto reason survives into the candidate result.
 
@@ -120,7 +120,7 @@ FollowPartyMemberAction starts or retargets only the native Core `FollowMovement
 - Same-target follow returns Useless without restarting the generator. A request for a different member retargets only an already-active Follow generator or an idle/default movement slot.
 - The real three-Player Group fixture verifies first follow start, snapshot target capture, same-target no-op, retarget to a second member, and stale-snapshot rejection after the first member is removed from the live Group. The teardown explicitly removes its synthetic instance bind before Disband so the shared simulator Map is not reset.
 
-Current-head validation:
+StopFollowingAction expires only a matching current native FollowMovementGenerator:\n- Snapshot eligibility requires an alive bot with a nonzero value-only `followTargetGuid` and no target argument.\n- Final Core preflight requires the live current generator to be FOLLOW and its target GUID/map/instance to match the snapshot; changed target identity is rejected before mutation, while an already-replaced non-FOLLOW movement returns Useless.\n- The adapter calls `MotionMaster::MovementExpired(false)`, not `MoveIdle` or `Clear`. Core finalizes/deletes the active generator immediately or defers deletion safely while `MotionMaster` is updating.\n- The Core fixture rejects a stale target GUID, successfully expires a matching follow, then proves a stale stop request cannot replace an unrelated PointMovementGenerator. Trusted runtime validation is pending.\n\nCurrent-head validation:
 - PR CI [#44860033826](https://github.com/tyrael9/core/actions/runs/44860033826) passed pure tests, report collector, configure, full Linux ARM64 Core build and harness syntax.
 - Trusted push [#44860028963](https://github.com/tyrael9/core/actions/runs/44860028963) passed the same stages and the full Core-backed simulator through final Runtime PASS. Follow marker: `registered=1 firstStarted=1 followTargetCaptured=1 sameTargetNotRestarted=1 retargetRegistered=1 retargeted=1 firstLeaderRemoved=1 staleSelected=1 staleGroupRejected=1`. The same run passed F24's candidate-detail gate scoped to the unique encounter/bot identity.
 - Artifact [partybot-simulator-f730018](https://github.com/tyrael9/core/actions/runs/44860028963/artifacts/14689004218) contains the complete runtime logs.
@@ -376,4 +376,4 @@ Remaining optional item-use coverage: a separate count-based stackable consumabl
 
 ## Production action readiness — still open
 
-Four reusable generic adapters are implemented and have real-Core accepted/rejected/cleanup coverage, but are intentionally not registered in NewEngine. No production generic, class or role action is enabled. Every additional adapter still needs its own action-specific target/relation/range/LOS/spell/resource/cooldown/GCD/movement/control checks and Core-backed accepted/rejected/terminal matrix. NewEngine remains an explicit no-fallback mode; Legacy is still the default.
+Five reusable generic adapters are implemented and have real-Core accepted/rejected/cleanup coverage (the fifth adapter's latest fixture is awaiting trusted runtime validation), but are intentionally not registered in NewEngine. No production generic, class or role action is enabled. Every additional adapter still needs its own action-specific target/relation/range/LOS/spell/resource/cooldown/GCD/movement/control checks and Core-backed accepted/rejected/terminal matrix. NewEngine remains an explicit no-fallback mode; Legacy is still the default.

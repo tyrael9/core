@@ -19,6 +19,7 @@
 #include "PlayerBots/Engine/ClearIdleTargetAction.h"
 #include "PlayerBots/Engine/StopUnattackableTargetAction.h"
 #include "PlayerBots/Engine/FollowPartyMemberAction.h"
+#include "PlayerBots/Engine/StopFollowingAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
@@ -580,6 +581,28 @@ public:
 private:
     Guid m_targetGuid = 0;
     std::string m_name = "simulator_follow_party_member";
+};
+
+class SimulatorStopFollowingTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && context.bot.followTargetGuid != 0;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_stop_following";
+        candidate.basePriority = 30.0f;
+        candidate.channel = ActionChannel::Movement;
+        candidates.push_back(candidate);
+    }
+
+private:
+    std::string m_name = "simulator_stop_following";
 };
 
 class SimulatorTankAssistTrigger final : public Trigger
@@ -6155,6 +6178,11 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
     bool retargetRegistered = false;
     bool staleSelected = false;
     bool firstLeaderRemoved = false;
+    bool stopFollowingSnapshotCaptured = false;
+    bool stopFollowingRegistered = false;
+    bool staleStopTargetRejected = false;
+    bool stoppedFollowing = false;
+    bool pointMovementPreserved = false;
 
     if (observedSnapshot && observedBot)
     {
@@ -6243,9 +6271,149 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
             afterStaleFollow && afterStaleFollow->GetTarget() == nextLeader;
     }
 
+    // F43: stop only the currently active native FollowMovementGenerator.
+    // A changed live target must reject a stale snapshot; a matching snapshot
+    // may clear FOLLOW, and a later Point move must remain untouched.
+    PartyCoordinator stopSnapshotCoordinator;
+    PartySnapshot const* stopSnapshotSource = PartySnapshotBuilder::GetOrBuild(
+        follower, stopSnapshotCoordinator, WorldTimer::getMSTime(), 1000);
+    PartyMemberSnapshot const* stopSnapshotBot = stopSnapshotSource
+        ? stopSnapshotSource->FindMember(botGuid) : nullptr;
+    PartySnapshot stopSnapshot;
+    PartyMemberSnapshot stopBotSnapshot;
+    if (stopSnapshotSource && stopSnapshotBot)
+    {
+        stopSnapshot = *stopSnapshotSource;
+        stopBotSnapshot = *stopSnapshotBot;
+        stopFollowingSnapshotCaptured =
+            stopBotSnapshot.followTargetGuid == nextGuid;
+    }
+
+    PartyBotEngine stopEngine;
+    std::shared_ptr<StopFollowingAction> stopAction(
+        new StopFollowingAction());
+    stopFollowingRegistered = stopEngine.RegisterAction(stopAction);
+    std::shared_ptr<Strategy> stopStrategy(
+        new Strategy("simulator_stop_following"));
+    stopStrategy->AddTrigger(std::make_shared<SimulatorStopFollowingTrigger>());
+    stopEngine.AddStrategy(stopStrategy);
+
+    if (stopFollowingSnapshotCaptured && stopFollowingRegistered)
+    {
+        // Change the live target after the value snapshot was captured.
+        follower->GetMotionMaster()->MoveFollow(
+            firstLeader, 2.5f, 3.14159265358979323846f);
+        DecisionContext staleStopContext(
+            stopSnapshot, stopBotSnapshot, stopSnapshotCoordinator,
+            WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+            actionRuntime.get());
+        DecisionReport staleStopReport = stopEngine.Evaluate(staleStopContext);
+        bool const staleStopSelected = staleStopReport.selectedIndices.size() == 1 &&
+            staleStopReport.candidates[staleStopReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+        if (staleStopSelected)
+            stopEngine.ExecuteSelected(staleStopContext, staleStopReport);
+        CandidateEvaluation const* staleStopEvaluation = staleStopSelected
+            ? &staleStopReport.candidates[staleStopReport.selectedIndices[0]] : nullptr;
+        MovementGenerator const* changedFollowMovement =
+            follower->GetMotionMaster()->GetCurrent();
+        FollowMovementGenerator<Player> const* changedFollow =
+            changedFollowMovement &&
+            changedFollowMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                ? static_cast<FollowMovementGenerator<Player> const*>(changedFollowMovement)
+                : nullptr;
+        staleStopTargetRejected = staleStopEvaluation &&
+            staleStopEvaluation->status == CandidateStatus::ExecutionFailed &&
+            staleStopEvaluation->actionResult == ActionResult::Impossible &&
+            staleStopEvaluation->reason == "stop_following_live_target_mismatch" &&
+            changedFollow && changedFollow->GetTarget() == firstLeader &&
+            follower->HasUnitState(UNIT_STATE_FOLLOW);
+
+        // Restore the target, capture a fresh value snapshot, and stop that follow.
+        follower->GetMotionMaster()->MoveFollow(
+            nextLeader, 2.5f, 3.14159265358979323846f);
+        PartyCoordinator freshStopCoordinator;
+        PartySnapshot const* freshStopSource = PartySnapshotBuilder::GetOrBuild(
+            follower, freshStopCoordinator, WorldTimer::getMSTime(), 1000);
+        PartyMemberSnapshot const* freshStopBot = freshStopSource
+            ? freshStopSource->FindMember(botGuid) : nullptr;
+        if (freshStopSource && freshStopBot &&
+            freshStopBot->followTargetGuid == nextGuid)
+        {
+            PartySnapshot freshStopSnapshot = *freshStopSource;
+            PartyMemberSnapshot freshStopBotSnapshot = *freshStopBot;
+            DecisionContext stopContext(
+                freshStopSnapshot, freshStopBotSnapshot, freshStopCoordinator,
+                WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+                actionRuntime.get());
+            DecisionReport stopReport = stopEngine.Evaluate(stopContext);
+            bool const stopSelected = stopReport.selectedIndices.size() == 1 &&
+                stopReport.candidates[stopReport.selectedIndices[0]].status ==
+                    CandidateStatus::Selected;
+            if (stopSelected)
+                stopEngine.ExecuteSelected(stopContext, stopReport);
+            CandidateEvaluation const* stopEvaluation = stopSelected
+                ? &stopReport.candidates[stopReport.selectedIndices[0]] : nullptr;
+
+            MotionMaster* motion = follower->GetMotionMaster();
+            bool followGeneratorRemains = false;
+            for (MotionMaster::const_iterator it = motion->begin();
+                 it != motion->end(); ++it)
+            {
+                if ((*it)->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE)
+                {
+                    followGeneratorRemains = true;
+                    break;
+                }
+            }
+            stoppedFollowing = stopEvaluation &&
+                stopEvaluation->status == CandidateStatus::Executed &&
+                stopEvaluation->actionResult == ActionResult::Success &&
+                !followGeneratorRemains &&
+                !follower->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
+
+            // A stale positive follow snapshot must not replace a new Point move.
+            motion->MovePoint(77, follower->GetPositionX() + 5.0f,
+                              follower->GetPositionY(), follower->GetPositionZ());
+            DecisionContext staleAfterStopContext(
+                freshStopSnapshot, freshStopBotSnapshot, freshStopCoordinator,
+                WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+                actionRuntime.get());
+            DecisionReport staleAfterStopReport =
+                stopEngine.Evaluate(staleAfterStopContext);
+            bool const staleAfterStopSelected =
+                staleAfterStopReport.selectedIndices.size() == 1 &&
+                staleAfterStopReport.candidates[staleAfterStopReport.selectedIndices[0]].status ==
+                    CandidateStatus::Selected;
+            if (staleAfterStopSelected)
+                stopEngine.ExecuteSelected(staleAfterStopContext, staleAfterStopReport);
+            CandidateEvaluation const* staleAfterStopEvaluation = staleAfterStopSelected
+                ? &staleAfterStopReport.candidates[
+                    staleAfterStopReport.selectedIndices[0]] : nullptr;
+            pointMovementPreserved = staleAfterStopEvaluation &&
+                staleAfterStopEvaluation->status == CandidateStatus::ExecutionFailed &&
+                staleAfterStopEvaluation->actionResult == ActionResult::Useless &&
+                staleAfterStopEvaluation->reason ==
+                    "stop_following_not_currently_following" &&
+                motion->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE &&
+                !follower->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
+            motion->MovementExpired(false);
+        }
+    }
+
+    bool const stopFollowingPassed = stopFollowingSnapshotCaptured &&
+        stopFollowingRegistered && staleStopTargetRejected &&
+        stoppedFollowing && pointMovementPreserved;
+    sLog.Out(LOG_BASIC, stopFollowingPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] StopFollowingAction: registered=%u snapshot=%u staleTargetRejected=%u stopped=%u pointMovementPreserved=%u.",
+        stopFollowingRegistered ? 1u : 0u, stopFollowingSnapshotCaptured ? 1u : 0u,
+        staleStopTargetRejected ? 1u : 0u, stoppedFollowing ? 1u : 0u,
+        pointMovementPreserved ? 1u : 0u);
+
     bool const passed = registered && firstStarted && followTargetCaptured &&
         sameTargetNotRestarted && retargetRegistered && retargeted &&
-        firstLeaderRemoved && staleSelected && staleGroupRejected;
+        firstLeaderRemoved && staleSelected && staleGroupRejected &&
+        stopFollowingPassed;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
         "[PartyBotSimulator] Core FollowPartyMember action: registered=%u firstStarted=%u followTargetCaptured=%u sameTargetNotRestarted=%u retargetRegistered=%u retargeted=%u firstLeaderRemoved=%u staleSelected=%u staleGroupRejected=%u.",
         registered ? 1u : 0u, firstStarted ? 1u : 0u,
@@ -6265,6 +6433,8 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
         "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-only current-follow snapshot to avoid restarting the same target, retargeted the native Player FollowMovementGenerator to a new group member, and rejected stale live-Group membership without disturbing movement.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator.");
     return true;
 }
 

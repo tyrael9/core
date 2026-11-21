@@ -52,6 +52,9 @@ class PointMovementGenerator
         MovementGeneratorType GetMovementGeneratorType() const override { return POINT_MOTION_TYPE; }
 
         bool GetDestination(float& x, float& y, float& z) const { x=m_x; y=m_y; z=m_z; return true; }
+        uint64 GetEngineActionId() const { return m_engineActionId; }
+        uint64 GetEngineEncounterId() const { return m_engineEncounterId; }
+        uint32 GetPointId() const { return m_id; }
     protected:
         uint32 m_id;
         float m_x,m_y,m_z,m_o;

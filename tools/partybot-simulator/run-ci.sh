@@ -373,6 +373,10 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Co
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: StopPointMovementAction cancelled only the snapshot-matched Engine point generator, rejected a replaced move without disturbing it, ignored a legacy point generator, and received the matching Interrupted terminal." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The StopPointMovementAction Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
 if ! grep -Fq "[PartyBotSimulator] PASS: MovePointAction used an actor-only Core resolver, rejected out-of-bounds destinations, preserved the exact unrelated movement generator, and treated its matching typed Reached terminal—not request acceptance—as proof of arrival." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The MovePointAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

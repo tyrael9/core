@@ -4,6 +4,7 @@
 #include "Group.h"
 #include "Map.h"
 #include "MovementGenerator.h"
+#include "PointMovementGenerator.h"
 #include "MotionMaster.h"
 #include "TargetedMovementGenerator.h"
 #include "Pet.h"
@@ -206,6 +207,19 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
                 followTarget->GetInstanceId() == snapshot.instanceId)
                 memberData.followTargetGuid =
                     followTarget->GetObjectGuid().GetRawValue();
+        }
+
+        if (currentMovement &&
+            currentMovement->GetMovementGeneratorType() == POINT_MOTION_TYPE)
+        {
+            // PointMovementGenerator<Player> may be legacy or Engine-owned.
+            // Copy only scalar correlation; zero action/encounter IDs leave
+            // ordinary Core point movement deliberately ineligible.
+            PointMovementGenerator<Player> const* point =
+                static_cast<PointMovementGenerator<Player> const*>(currentMovement);
+            memberData.pointMovementActionId = point->GetEngineActionId();
+            memberData.pointMovementEncounterId = point->GetEngineEncounterId();
+            memberData.pointMovementPointId = point->GetPointId();
         }
         memberData.x = member->GetPositionX();
         memberData.y = member->GetPositionY();

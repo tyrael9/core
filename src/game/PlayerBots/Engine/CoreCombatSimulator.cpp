@@ -25,6 +25,7 @@
 #include "PlayerBots/Engine/AttackTargetAction.h"
 #include "PlayerBots/Engine/StopAutoAttackAction.h"
 #include "PlayerBots/Engine/MovePointAction.h"
+#include "PlayerBots/Engine/StopPointMovementAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
@@ -531,6 +532,34 @@ public:
 
 private:
     std::string m_name = "simulator_stop_auto_attack";
+};
+
+class SimulatorStopPointMovementTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive &&
+            context.bot.pointMovementActionId != 0 &&
+            context.bot.pointMovementEncounterId != 0 &&
+            context.bot.pointMovementPointId != 0 &&
+            context.bot.pointMovementEncounterId ==
+                context.coordinator.GetEncounterId();
+    }
+
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_stop_point_movement";
+        candidate.basePriority = 42.0f;
+        candidate.channel = ActionChannel::Movement;
+        candidates.push_back(candidate);
+    }
+
+private:
+    std::string m_name = "simulator_stop_point_movement";
 };
 
 class SimulatorSelectHostileTargetTrigger final : public Trigger
@@ -8320,6 +8349,247 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: MovePointAction used an actor-only Core resolver, rejected out-of-bounds destinations, preserved the exact unrelated movement generator, and treated its matching typed Reached terminal—not request acceptance—as proof of arrival.");
 
+    // F43: cancellation is bound to the exact Engine-owned point movement
+    // correlation in the value snapshot. A replaced live generator must survive
+    // a stale stop request; successful cancellation must publish Interrupted.
+    PartySnapshot stopPointBaseSnapshot = movePointSnapshot;
+    stopPointBaseSnapshot.epoch = movePointSnapshot.epoch + 1;
+    PartyMemberSnapshot& stopPointBaseBot = stopPointBaseSnapshot.members[0];
+    stopPointBaseBot.x = healer->GetPositionX();
+    stopPointBaseBot.y = healer->GetPositionY();
+    stopPointBaseBot.z = healer->GetPositionZ();
+    stopPointBaseBot.online = healer->IsInWorld();
+    stopPointBaseBot.alive = healer->IsAlive();
+    stopPointBaseBot.inCombat = healer->IsInCombat();
+    stopPointBaseBot.victimGuid = healer->GetVictim()
+        ? healer->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+    stopPointBaseBot.pointMovementActionId = 0;
+    stopPointBaseBot.pointMovementEncounterId = 0;
+    stopPointBaseBot.pointMovementPointId = 0;
+
+    auto capturePointMovementSnapshot = [](
+        PartyMemberSnapshot& member, Player* player) -> bool
+    {
+        if (!player || !player->GetMotionMaster() ||
+            player->GetMotionMaster()->empty())
+            return false;
+        MovementGenerator const* movement = player->GetMotionMaster()->GetCurrent();
+        if (!movement || movement->GetMovementGeneratorType() != POINT_MOTION_TYPE)
+            return false;
+        PointMovementGenerator<Player> const* point =
+            static_cast<PointMovementGenerator<Player> const*>(movement);
+        member.pointMovementActionId = point->GetEngineActionId();
+        member.pointMovementEncounterId = point->GetEngineEncounterId();
+        member.pointMovementPointId = point->GetPointId();
+        return member.pointMovementActionId != 0 &&
+            member.pointMovementEncounterId != 0 &&
+            member.pointMovementPointId != 0;
+    };
+
+    std::shared_ptr<StopPointMovementAction> stopPointAction(
+        new StopPointMovementAction());
+    PartyBotEngine stopPointEngine;
+    bool const stopPointRegistered =
+        stopPointEngine.RegisterAction(stopPointAction);
+    std::shared_ptr<Strategy> stopPointStrategy(
+        new Strategy("simulator_stop_point_movement"));
+    stopPointStrategy->AddTrigger(
+        std::make_shared<SimulatorStopPointMovementTrigger>());
+    stopPointEngine.AddStrategy(stopPointStrategy);
+
+    float const stopPointDestinationY = healer->GetPositionY();
+    float const stopPointDestinationZ = healer->GetPositionZ();
+    uint64 const stopPointEncounterId = coordinator->GetEncounterId();
+    movementTerminalListener->events.clear();
+
+    ActionId const moveToStopActionA = coordinator->NextActionId();
+    uint32 const moveToStopPointA =
+        MovePointAction::PointIdForAction(moveToStopActionA);
+    bool const moveToStopAStarted = moveToStopActionA && stopPointEncounterId &&
+        healer->GetMotionMaster()->MovePointForEngine(
+            moveToStopPointA, healer->GetPositionX() + 12.0f,
+            stopPointDestinationY, stopPointDestinationZ, MOVE_NONE,
+            moveToStopActionA, stopPointEncounterId, movementArrivalTolerance);
+    bool const moveToStopASnapshotCaptured = moveToStopAStarted &&
+        capturePointMovementSnapshot(stopPointBaseBot, healer);
+    PartySnapshot stopPointSnapshotA = stopPointBaseSnapshot;
+    stopPointSnapshotA.epoch++;
+    DecisionContext stopPointContextA(
+        stopPointSnapshotA, stopPointSnapshotA.members[0], *coordinator,
+        WorldTimer::getMSTime(), &engineActionAI.m_decisionTrace, nullptr,
+        &engineActionAI, nullptr, &engineActionAI);
+    DecisionReport stopPointReportA = stopPointEngine.Evaluate(stopPointContextA);
+    bool const stopPointASelected = moveToStopASnapshotCaptured &&
+        stopPointReportA.selectedIndices.size() == 1 &&
+        stopPointReportA.candidates[
+            stopPointReportA.selectedIndices[0]].status == CandidateStatus::Selected;
+
+    // Replacing A with B emits A's Interrupted result through Core Finalize.
+    // The stale A stop must then reject without touching B.
+    ActionId const replacementMoveActionB = coordinator->NextActionId();
+    uint32 const replacementMovePointB =
+        MovePointAction::PointIdForAction(replacementMoveActionB);
+    bool const replacementBStarted = replacementMoveActionB &&
+        healer->GetMotionMaster()->MovePointForEngine(
+            replacementMovePointB, healer->GetPositionX() + 8.0f,
+            stopPointDestinationY, stopPointDestinationZ, MOVE_NONE,
+            replacementMoveActionB, stopPointEncounterId, movementArrivalTolerance);
+    MovementGenerator* const replacementBGenerator =
+        healer->GetMotionMaster()->GetCurrent();
+    if (stopPointASelected)
+        stopPointEngine.ExecuteSelected(stopPointContextA, stopPointReportA);
+    CandidateEvaluation const* staleStopPointResult = stopPointASelected
+        ? &stopPointReportA.candidates[
+            stopPointReportA.selectedIndices[0]] : nullptr;
+    PointMovementGenerator<Player> const* replacementBPoint =
+        replacementBGenerator &&
+        replacementBGenerator->GetMovementGeneratorType() == POINT_MOTION_TYPE
+            ? static_cast<PointMovementGenerator<Player> const*>(
+                replacementBGenerator) : nullptr;
+    bool const staleStopPointRejected = staleStopPointResult &&
+        staleStopPointResult->status == CandidateStatus::ExecutionFailed &&
+        staleStopPointResult->actionResult == ActionResult::Impossible &&
+        staleStopPointResult->reason ==
+            "stop_point_movement_live_generator_identity_mismatch";
+    bool const replacementBPreserved = replacementBStarted &&
+        healer->GetMotionMaster()->GetCurrent() == replacementBGenerator &&
+        replacementBPoint &&
+        replacementBPoint->GetEngineActionId() == replacementMoveActionB &&
+        replacementBPoint->GetEngineEncounterId() == stopPointEncounterId &&
+        replacementBPoint->GetPointId() == replacementMovePointB;
+    bool const moveAInterrupted = movementTerminalListener->events.size() == 1 &&
+        movementTerminalListener->events[0].actionId == moveToStopActionA &&
+        movementTerminalListener->events[0].encounterId == stopPointEncounterId &&
+        movementTerminalListener->events[0].moverGuid == healerMember.guid &&
+        movementTerminalListener->events[0].pointId == moveToStopPointA &&
+        movementTerminalListener->events[0].status ==
+            PointMovementTerminalStatus::Interrupted;
+
+    // B is fixture-owned cleanup; it too must terminate as Interrupted with
+    // its own distinct correlation.
+    if (replacementBStarted)
+        healer->GetMotionMaster()->MovementExpired(false);
+    bool const replacementBInterrupted = movementTerminalListener->events.size() == 2 &&
+        movementTerminalListener->events[1].actionId == replacementMoveActionB &&
+        movementTerminalListener->events[1].encounterId == stopPointEncounterId &&
+        movementTerminalListener->events[1].moverGuid == healerMember.guid &&
+        movementTerminalListener->events[1].pointId == replacementMovePointB &&
+        movementTerminalListener->events[1].status ==
+            PointMovementTerminalStatus::Interrupted;
+
+    // A legacy point move has zero Engine action/encounter IDs and must not be
+    // proposed or expired by this adapter.
+    healer->GetMotionMaster()->MovePoint(
+        0xF443u, healer->GetPositionX() + 4.0f,
+        stopPointDestinationY, stopPointDestinationZ, MOVE_NONE);
+    MovementGenerator* const legacyPointGenerator =
+        healer->GetMotionMaster()->GetCurrent();
+    PartySnapshot legacyPointSnapshot = stopPointBaseSnapshot;
+    legacyPointSnapshot.epoch += 2;
+    legacyPointSnapshot.members[0].pointMovementActionId = 0;
+    legacyPointSnapshot.members[0].pointMovementEncounterId = 0;
+    legacyPointSnapshot.members[0].pointMovementPointId = 0;
+    DecisionContext legacyPointContext(
+        legacyPointSnapshot, legacyPointSnapshot.members[0], *coordinator,
+        WorldTimer::getMSTime(), &engineActionAI.m_decisionTrace, nullptr,
+        &engineActionAI, nullptr, &engineActionAI);
+    DecisionReport legacyPointReport = stopPointEngine.Evaluate(legacyPointContext);
+    bool const legacyPointNotProposed =
+        legacyPointReport.selectedIndices.empty() &&
+        legacyPointReport.candidates.empty();
+    bool const legacyPointPreserved =
+        legacyPointGenerator &&
+        healer->GetMotionMaster()->GetCurrent() == legacyPointGenerator;
+    healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
+
+    // Start point C and stop it using C's fresh value snapshot.
+    movementTerminalListener->events.clear();
+    ActionId const stopPointActionC = coordinator->NextActionId();
+    uint32 const stopPointIdC = MovePointAction::PointIdForAction(stopPointActionC);
+    bool const stopPointCStarted = stopPointActionC &&
+        healer->GetMotionMaster()->MovePointForEngine(
+            stopPointIdC, healer->GetPositionX() + 10.0f,
+            stopPointDestinationY, stopPointDestinationZ, MOVE_NONE,
+            stopPointActionC, stopPointEncounterId, movementArrivalTolerance);
+    PartySnapshot stopPointSnapshotC = stopPointBaseSnapshot;
+    stopPointSnapshotC.epoch += 3;
+    bool const stopPointCSnapshotCaptured = stopPointCStarted &&
+        capturePointMovementSnapshot(stopPointSnapshotC.members[0], healer);
+    DecisionContext stopPointContextC(
+        stopPointSnapshotC, stopPointSnapshotC.members[0], *coordinator,
+        WorldTimer::getMSTime(), &engineActionAI.m_decisionTrace, nullptr,
+        &engineActionAI, nullptr, &engineActionAI);
+    std::string stopPointReasonC;
+    bool const stopPointSnapshotPossible = stopPointAction->IsPossible(
+        stopPointContextC, ActionCandidate(), stopPointReasonC);
+    bool const stopPointUseful = stopPointAction->IsUseful(
+        stopPointContextC, ActionCandidate(), stopPointReasonC);
+    DecisionReport stopPointReportC = stopPointEngine.Evaluate(stopPointContextC);
+    bool const stopPointCSelected = stopPointCSnapshotCaptured &&
+        stopPointSnapshotPossible && stopPointUseful &&
+        stopPointReportC.selectedIndices.size() == 1 &&
+        stopPointReportC.candidates[
+            stopPointReportC.selectedIndices[0]].status == CandidateStatus::Selected;
+
+    ObjectGuid const stopPointSelectionBefore = healer->GetSelectionGuid();
+    ObjectGuid const stopPointTargetBefore = healer->GetTargetGuid();
+    Unit* const stopPointVictimBefore = healer->GetVictim();
+    bool const stopPointCombatBefore = healer->IsInCombat();
+    uint32 const stopPointHealthBefore = healer->GetHealth();
+    Powers const stopPointPowerType = healer->GetPowerType();
+    uint32 const stopPointPowerBefore = healer->GetPower(stopPointPowerType);
+
+    if (stopPointCSelected)
+        stopPointEngine.ExecuteSelected(stopPointContextC, stopPointReportC);
+    CandidateEvaluation const* stopPointCEvaluation = stopPointCSelected
+        ? &stopPointReportC.candidates[stopPointReportC.selectedIndices[0]] : nullptr;
+    bool const stopPointCExecuted = stopPointCEvaluation &&
+        stopPointCEvaluation->status == CandidateStatus::Executed &&
+        stopPointCEvaluation->actionResult == ActionResult::Success &&
+        stopPointCEvaluation->reason ==
+            "stop_point_movement_expired_matching_engine_generator";
+    bool const stopPointCInterrupted = movementTerminalListener->events.size() == 1 &&
+        movementTerminalListener->events[0].actionId == stopPointActionC &&
+        movementTerminalListener->events[0].encounterId == stopPointEncounterId &&
+        movementTerminalListener->events[0].moverGuid == healerMember.guid &&
+        movementTerminalListener->events[0].pointId == stopPointIdC &&
+        movementTerminalListener->events[0].status ==
+            PointMovementTerminalStatus::Interrupted;
+    bool const stopPointStatePreserved =
+        healer->GetSelectionGuid() == stopPointSelectionBefore &&
+        healer->GetTargetGuid() == stopPointTargetBefore &&
+        healer->GetVictim() == stopPointVictimBefore &&
+        healer->IsInCombat() == stopPointCombatBefore &&
+        healer->GetHealth() == stopPointHealthBefore &&
+        healer->GetPower(stopPointPowerType) == stopPointPowerBefore;
+    bool const stopPointFixturePassed =
+        stopPointRegistered && moveToStopAStarted && moveToStopASnapshotCaptured &&
+        stopPointASelected && moveAInterrupted && replacementBStarted &&
+        staleStopPointRejected && replacementBPreserved && replacementBInterrupted &&
+        legacyPointNotProposed && legacyPointPreserved &&
+        stopPointCStarted && stopPointCSnapshotCaptured &&
+        stopPointSnapshotPossible && stopPointUseful && stopPointCSelected &&
+        stopPointCExecuted && stopPointCInterrupted && stopPointStatePreserved;
+
+    if (healer->GetMotionMaster()->GetCurrentMovementGeneratorType() ==
+        POINT_MOTION_TYPE)
+        healer->GetMotionMaster()->ClearType(POINT_MOTION_TYPE);
+
+    sLog.Out(LOG_BASIC, stopPointFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] StopPointMovementAction: registered=%u moveAStarted=%u snapshotCaptured=%u selected=%u moveAInterrupted=%u replacementBStarted=%u staleRejected=%u replacementPreserved=%u replacementInterrupted=%u legacyNotProposed=%u legacyPreserved=%u moveCStarted=%u snapshotPossible=%u selectedC=%u stopExecuted=%u stopInterrupted=%u statePreserved=%u.",
+        stopPointRegistered ? 1u : 0u, moveToStopAStarted ? 1u : 0u,
+        moveToStopASnapshotCaptured ? 1u : 0u, stopPointASelected ? 1u : 0u,
+        moveAInterrupted ? 1u : 0u, replacementBStarted ? 1u : 0u,
+        staleStopPointRejected ? 1u : 0u, replacementBPreserved ? 1u : 0u,
+        replacementBInterrupted ? 1u : 0u, legacyPointNotProposed ? 1u : 0u,
+        legacyPointPreserved ? 1u : 0u, stopPointCStarted ? 1u : 0u,
+        stopPointSnapshotPossible ? 1u : 0u, stopPointCSelected ? 1u : 0u,
+        stopPointCExecuted ? 1u : 0u, stopPointCInterrupted ? 1u : 0u,
+        stopPointStatePreserved ? 1u : 0u);
+    if (stopPointFixturePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: StopPointMovementAction cancelled only the snapshot-matched Engine point generator, rejected a replaced move without disturbing it, ignored a legacy point generator, and received the matching Interrupted terminal.");
+
     DecisionSummary const decisionSummary = SummarizeDecisionReport(report);
     std::vector<std::size_t> const candidateDetailIndices =
         SelectPriorityCandidateEvaluationIndices(
@@ -8423,7 +8693,8 @@ bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
         !continuationDispatched || !f35MultiDependencyDispatched ||
         !f35MultiCoreTerminalsPassed || !f35AlternativeGroupPassed ||
         !f36MixedDependencyPassed || !f39MovementTerminalPassed ||
-        !decisionSummaryTracePassed || !movePointFixturePassed || !cleaned)
+        !decisionSummaryTracePassed || !movePointFixturePassed ||
+        !stopPointFixturePassed || !cleaned)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                  "[PartyBotSimulator] Engine-to-Player normal spell/heal smoke test failed.");

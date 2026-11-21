@@ -10,6 +10,9 @@ struct PartyMemberSnapshot {
     Guid victimGuid = 0;
     Guid selectionGuid = 0;
     Guid followTargetGuid = 0;
+    ActionId pointMovementActionId = 0;
+    std::uint64_t pointMovementEncounterId = 0;
+    std::uint32_t pointMovementPointId = 0;
     float x = 0.0f, y = 0.0f, z = 0.0f, orientation = 0.0f;
     std::uint32_t currentSpellId = 0, currentSpellState = 0;
     Guid currentSpellTargetGuid = 0;

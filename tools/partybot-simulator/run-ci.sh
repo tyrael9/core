@@ -248,13 +248,23 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F24 candidate detail cap reported five 
     echo "[PartyBotSimulator] The F24 bounded candidate detail Core fixture PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
-candidate_detail_rows="$(grep -Ec '\[PartyBotEngineTrace\].*event=candidate .*group=3 map=33 instance=101' "$LOG_FILE" || true)"
-if [[ "$candidate_detail_rows" != "3" ]]; then
-    echo "[PartyBotSimulator] Expected exactly three F24 Core Player candidate detail rows, found $candidate_detail_rows." | tee -a "$LOG_FILE"
+f24_summary_line="$(grep -E '\[PartyBotEngineTrace\].*event=decision_summary .*group=3 map=33 instance=101 .*candidates=5 selected=1 executed=1 execution_failed=0 channel_losers=0 missing_action=4 impossible=0 useless=0 multiplier_veto=0 invalid_priority=0 threat_unknown=0 threat_budget_veto=0 pending_queued=0 candidate_detail_limit=3 candidate_detail_omitted=2([^[:alnum:]_]|$)' "$LOG_FILE" | head -n 1)"
+f24_encounter_id="$(printf '%s\n' "$f24_summary_line" | grep -Eo 'encounter_id=[0-9]+' | cut -d= -f2)"
+f24_bot_guid="$(printf '%s\n' "$f24_summary_line" | grep -Eo 'bot=[0-9]+' | cut -d= -f2)"
+if [[ -z "$f24_encounter_id" || -z "$f24_bot_guid" ]]; then
+    echo "[PartyBotSimulator] Could not identify the unique F24 Core Player encounter/bot from its decision summary." | tee -a "$LOG_FILE"
     exit 1
 fi
-if ! grep -Eq '\[PartyBotEngineTrace\].*event=candidate .*group=3 map=33 instance=101 .*action=core_player_heal .*status=executed' "$LOG_FILE"; then
-    echo "[PartyBotSimulator] The selected Core heal was not retained in the candidate detail sample after execution." | tee -a "$LOG_FILE"
+
+# Other simulator scenarios may legitimately reuse group/map/instance IDs. Scope
+# F24 candidate rows to the exact encounter and Player that emitted its summary.
+candidate_detail_rows="$(grep -Ec "\\[PartyBotEngineTrace\\].*encounter_id=$f24_encounter_id .*event=candidate .*group=3 map=33 instance=101 bot=$f24_bot_guid([[:space:]]|$)" "$LOG_FILE" || true)"
+if [[ "$candidate_detail_rows" != "3" ]]; then
+    echo "[PartyBotSimulator] Expected exactly three F24 Core Player candidate detail rows for encounter_id=$f24_encounter_id bot=$f24_bot_guid, found $candidate_detail_rows." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! grep -Eq "\\[PartyBotEngineTrace\\].*encounter_id=$f24_encounter_id .*event=candidate .*group=3 map=33 instance=101 bot=$f24_bot_guid .*action=core_player_heal .*status=executed" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The selected Core heal was not retained in the F24 candidate detail sample after execution." | tee -a "$LOG_FILE"
     exit 1
 fi
 decision_summary_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=decision_summary .*candidates=5 selected=1 executed=1 execution_failed=0 channel_losers=0 missing_action=4 impossible=0 useless=0 multiplier_veto=0 invalid_priority=0 threat_unknown=0 threat_budget_veto=0 pending_queued=0 candidate_detail_limit=3 candidate_detail_omitted=2([^[:alnum:]_]|$)' "$LOG_FILE" || true)"

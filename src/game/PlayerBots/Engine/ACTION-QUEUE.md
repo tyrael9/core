@@ -2,7 +2,7 @@
 
 ## Scope and current status (2026-11-20)
 
-The bounded dispatch/dependency mechanics are implemented through F38, F39 adds the typed movement terminal source, F40 audits item-use source behavior, F41 adds the final CoreAction resolver gate, and F42 implements bounded item-use root/child/mutation aggregation. This does **not** mean production gameplay actions are registered: there are currently no production class/role Core adapters, and the default runtime authority remains Legacy.
+The bounded dispatch/dependency mechanics are implemented through F38; F39 adds movement terminals; F40 audits item-use source behavior; F41 adds the map-thread CoreAction resolver; F42 implements bounded item-use root/child/mutation aggregation; F43 adds mandatory action-specific preflight/structured results and the first generic SelectHostileTargetAction. This does **not** mean production gameplay actions are registered: the selector is deliberately unregistered, no class/role adapters are enabled, and Legacy remains default.
 
 The design has two different queue lifetimes:
 
@@ -75,9 +75,9 @@ F33 promotes eligible pending work that has waited 3,000 ms ahead of not-yet-pro
 ## Remaining gaps
 
 - Player point-movement terminal results are implemented by F39; only the explicit `MovePointForEngine` path emits them. Legacy `MovePoint`/`MovementInform` behavior remains unchanged. `Reached` requires natural spline completion and destination tolerance; forced cleanup is `Interrupted`, and natural completion outside tolerance is `Failed`.
-- F42 implements the bounded item-use aggregate source and pure correlation/expiry/continuation tests. The two-slot Core fixture emitted its PASS marker in run [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522); its job failed only because the wrapper still grepped for the obsolete F40 marker. The gate was corrected in commit `2010ae74620de27b790bdda436031bdee16af4fc` and trusted Push CI [#44838633233](https://github.com/tyrael9/core/actions/runs/44838633233) is validating it. Real-Core delayed-use and cancellation-before/after-mutation fixtures remain open.
-- Production Core action adapters and uniform final pre-execution checks for target GUID/state, map/instance, range, LOS, spell, resource and cooldown are not registered.
-- Production NewEngine actions remain unregistered until F43's common/action-specific preflight and Core-backed accepted/rejected/terminal tests are complete.
+- F42 item-use root/child/mutation aggregation is closed by trusted push [#44839748022](https://github.com/tyrael9/core/actions/runs/44839748022), which passed the two-ON_USE-slot fixture and final Runtime PASS. Real-Core delayed-use and cancellation-before/after-mutation fixture variants remain open.
+- F43's common CoreAction preflight and structured execution-result boundary are implemented. SelectHostileTargetAction is the first generic adapter: live Core CanAttack accepts hostile and rejects stale-snapshot friendly targets with no selection/target side effect. PR [#44845475962](https://github.com/tyrael9/core/actions/runs/44845475962) and trusted runtime [#44845469020](https://github.com/tyrael9/core/actions/runs/44845469020) passed.
+- The generic selector is deliberately unregistered. Additional generic actions still need bounded threat estimates/fail-closed Unknown, live action-specific preflight, and exact accepted/rejected/terminal Core matrices. Class/role adapters remain future work.
 
 ## Verification evidence
 
@@ -87,7 +87,7 @@ F33 promotes eligible pending work that has waited 3,000 ms ahead of not-yet-pro
 - F33 starvation resistance and F34 Core-terminal-gated continuation: [#44680955006](https://github.com/tyrael9/core/actions/runs/44680955006), [#44689339405](https://github.com/tyrael9/core/actions/runs/44689339405).
 - F35 AND/alternative prerequisites, F36 mixed event sources, F37 tombstones and F38 full-queue ready backlog: [#44702889745](https://github.com/tyrael9/core/actions/runs/44702889745), [#44704096882](https://github.com/tyrael9/core/actions/runs/44704096882), [#44713147805](https://github.com/tyrael9/core/actions/runs/44713147805), [#44715114823](https://github.com/tyrael9/core/actions/runs/44715114823), [#44716873212](https://github.com/tyrael9/core/actions/runs/44716873212).
 
-Trusted Push CI [#44795113292](https://github.com/tyrael9/core/actions/runs/44795113292) passed pure tests, report collector, Linux ARM64 Vanilla 5875 build and fixture-backed simulator Runtime PASS, including F39. For F42, PR CI [#44833258687](https://github.com/tyrael9/core/actions/runs/44833258687) passed pure tests and ARM64 build; trusted Push CI [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) executed the complete fixture and printed the two-slot F42 PASS marker but failed the outer job on the stale F40 grep. The runner gate is corrected in commit `2010ae74620de27b790bdda436031bdee16af4fc`; trusted Push CI [#44838633233](https://github.com/tyrael9/core/actions/runs/44838633233) is the validating run and must reach final Runtime PASS.
+Trusted Push CI [#44795113292](https://github.com/tyrael9/core/actions/runs/44795113292) passed pure tests, report collector, Linux ARM64 Vanilla 5875 build and fixture-backed simulator Runtime PASS, including F39. F42 is closed by trusted push [#44839748022](https://github.com/tyrael9/core/actions/runs/44839748022). F43 current-head PR build [#44845475962](https://github.com/tyrael9/core/actions/runs/44845475962) and trusted push [#44845469020](https://github.com/tyrael9/core/actions/runs/44845469020) both passed; the trusted run includes the real hostile-selector positive/negative fixture and final Runtime PASS.
 
 ## Operational boundary
 

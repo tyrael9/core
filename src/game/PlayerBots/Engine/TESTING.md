@@ -95,7 +95,28 @@ These tests cover pure decision logic only. They do not validate live PartyBotAI
 - Bounded ActionResult/Core Spell terminal listeners; typed AND/alternative dependencies; late event registration; idempotency tombstones; starvation resistance; ready-backlog preservation under queue pressure.
 - Core-backed spell, movement/follow, range/LOS/resource, Group/death recovery and NewEngine authority fixtures.
 
-### Production action readiness — still open
+#
+## F43 CoreAction executor and generic hostile selector
+
+The common CoreAction wrapper requires a nonzero action ID, fresh map-thread actor/target/map resolution and a concrete ValidateCoreAction pass before ExecuteCore. ActionExecutionResult and ExecuteDetailed preserve exact validation/execution reasons in candidate state and traces. Pure C++14 regression coverage proves:
+- the action-specific preflight is invoked on immediate and pending dispatch;
+- a preflight veto prevents ExecuteCore from running;
+- the exact veto reason survives into the completed candidate result.
+
+SelectHostileTargetAction is the first reusable generic Core adapter. Its accepted operation only calls Player::SetSelectionGuid; this changes selection/target GUID fields but does not call Unit::Attack, cast, move, deal damage or generate threat. Its final live preflight uses Unit::CanAttack, plus explicit live Player/Creature GM/evade checks. The bot snapshot carries the selected GUID as a value-only field.
+
+The Core simulator creates one real Core Player, one hostile Creature and one friendly Creature:
+- A live hostile candidate is accepted and both Player selection/target GUIDs are updated to that hostile.
+- The fixture then deliberately places the friendly Creature in a stale positive HostileSnapshot. The candidate passes snapshot-time proposal and is rejected by final live CanAttack preflight with select_hostile_target_not_attackable.
+- Rejection leaves Player selection, target and victim unchanged; Player logout and both Creature removals must all succeed.
+
+Current-head validation:
+- PR CI [#44845475962](https://github.com/tyrael9/core/actions/runs/44845475962) passed pure tests, report collector, configure, full Linux ARM64 Core build and harness syntax.
+- Trusted push [#44845469020](https://github.com/tyrael9/core/actions/runs/44845469020) passed the same stages, ran the full fixture-backed Core simulator and reached final Runtime PASS. Exact selector log: registered=1 hostileAccepted=1 friendlyCandidate=1 friendlyRejected=1 unchangedOnReject=1 cleanup=1.
+- Artifact [partybot-simulator-ca6f5c5](https://github.com/tyrael9/core/actions/runs/44845469020/artifacts/14683480104) contains the runtime logs.
+
+The adapter is intentionally not registered in the production NewEngine registry. This fixture proves the reusable Core action's own boundary, not a complete target-selection policy or playable combat AI.
+## Production action readiness — still open
 
 - Register audited production generic/class/role Core adapters with structured outcomes.
 - Revalidate GUID, target life/relationship, map/instance, range, LOS, spell, resource, cooldown and control state immediately before every adapter side effect.
@@ -331,14 +352,14 @@ Pure C++14 coverage in `tests/PartyBotEngineTests.cpp` includes:
 - Capacity, skipped slots, duplicate reports, bounded TTL, late-child expiry and uint32 clock wrap.
 - ItemUseTerminal correlation, recent-terminal history, queued-success handling and ordinary pending continuation dispatch.
 
-The Core simulator fixture retains the real single-slot success/zero-charge rejection cases and adds a disposable two-ON_USE-slot prototype. It checks two actual Core child Spells, first child non-triggered and second triggered, the root aggregate, both independently observed finite-charge mutations and cleanup/restoration of the modified prototype. On head `41797d04071656479b193e4a0948abe0d3358583`, the simulator printed the F42 PASS marker with `multiChildren=2`, `multiMutations=2` and `cleanup=1/1/1`.
+The Core simulator fixture retains the real single-slot success/zero-charge rejection cases and adds a disposable two-ON_USE-slot prototype. It checks two actual Core child Spells, first child non-triggered and second triggered, the root aggregate, both independently observed finite-charge mutations and cleanup/restoration of the modified prototype. Trusted push [#44839748022](https://github.com/tyrael9/core/actions/runs/44839748022) passed the complete ARM64 build and fixture-backed run; its F42 line reported multiChildren=2, firstTriggered=0, secondTriggered=1, multiMutations=2, multiChargesConsumed=1, cleanup=1/1/1, followed by final Runtime PASS.
 
 CI evidence:
 - PR CI [#44833258687](https://github.com/tyrael9/core/actions/runs/44833258687) passed pure Engine tests, report collector, Linux ARM64 Vanilla 5875 build and runtime-harness syntax. The fixture runtime was skipped on PR by design.
-- Trusted push [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) compiled successfully and executed the full fixture suite; the F42 marker was present and the simulator completed its other scenarios and shutdown. The job failed only when the outer script searched for the old F40 PASS string. The runner gate now requires the exact F42 aggregate marker. Trusted Push CI [#44838633233](https://github.com/tyrael9/core/actions/runs/44838633233) was launched on the corrected code head; the milestone is not fully CI-closed until it reaches final `Runtime PASS`.
+- Trusted push [#44839748022](https://github.com/tyrael9/core/actions/runs/44839748022) is the corrected-gate closure run: all pure tests, report collector, configure, ARM64 build, fixture-backed simulator and final Runtime PASS succeeded. F42 is CI-closed. The delayed-use and cancellation-before/after-real-mutation fixture gap remains open.
 
 Still open: although the pure tracker covers delayed children and interruption before/after mutation, a deterministic real-Core delayed ON_USE fixture and cancellation-before/after-real-mutation fixture have not yet been validated.
 
 ## Production action readiness — still open
 
-No production generic/class/role Core action adapters are registered in NewEngine. F41's CoreAction wrapper enforces fresh map-thread actor/target/map/instance resolution, but each concrete action still needs immediate live-state, target-relation, range, LOS, spell, resource, cooldown/GCD and movement/control validation plus Core-backed accepted/rejected/terminal outcome tests. NewEngine remains an explicit development-only no-fallback mode; Legacy is still the default.
+The first reusable generic adapter (SelectHostileTargetAction) is implemented and has real-Core hostile/friendly accepted/rejected/cleanup coverage, but is intentionally not registered in NewEngine. No production generic, class or role action is enabled. Every additional adapter still needs its own action-specific target/relation/range/LOS/spell/resource/cooldown/GCD/movement/control checks and Core-backed accepted/rejected/terminal matrix. NewEngine remains an explicit no-fallback mode; Legacy is still the default.

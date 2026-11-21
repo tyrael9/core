@@ -109,7 +109,7 @@ The Core simulator's two-slot prototype fixture has already emitted:
 `multiRoot=1 multiChildren=2 firstTriggered=0 secondTriggered=1 multiMutations=2 multiChargesConsumed=1 cleanup=1/1/1`.
 It temporarily sets a non-stackable one-count fixture to exercise the real finite-charge mutation path and restores the modified prototype fields before returning. The run also retains the single-potion success and zero-charge rejection checks.
 
-Trusted Push CI [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) printed the exact F42 PASS marker and completed all later simulator scenarios, but the wrapper exited 1 because it still required the obsolete F40 marker. PR CI [#44833258687](https://github.com/tyrael9/core/actions/runs/44833258687) passed pure tests, report collector and ARM64 build; fixture execution is intentionally push-only. Corrected trusted Push CI [#44838633233](https://github.com/tyrael9/core/actions/runs/44838633233) is validating the gate; final Runtime PASS is required to close F42.
+F42 is CI-closed by trusted Push CI [#44839748022](https://github.com/tyrael9/core/actions/runs/44839748022): pure tests, report collector, configure, full ARM64 build and fixture-backed runtime all passed, ending with final Runtime PASS. That runtime verified both single-slot success/zero-charge rejection and the two-ON-USE-slot aggregate with independent finite-charge mutations. The earlier stale F40 gate failure in [#44833250522](https://github.com/tyrael9/core/actions/runs/44833250522) is historical and superseded by the corrected successful run.
 
 The delayed-child and cancellation-before/after-mutation behavior is covered at the pure tracker level. A deterministic real-Core delayed ON_USE Spell fixture and a real-Core cancellation test on each side of actual item mutation are not yet verified.
 
@@ -117,4 +117,4 @@ The delayed-child and cancellation-before/after-mutation behavior is covered at 
 
 ## Non-goals for F42
 
-F42 does not register NewEngine class rotations, infer item success from a single child, alter the underlying Vanilla ON_USE fan-out, or implement generic inventory optimization. The production item-use action adapter remains future work after the common executor contract and its Core-backed tests are proven.
+F42 does not register NewEngine class rotations, infer item success from a single child, alter the underlying Vanilla ON_USE fan-out, or implement generic inventory optimization. A production item-use action adapter remains future work; real-Core delayed-use/cancellation fixtures are still absent.

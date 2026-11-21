@@ -282,8 +282,8 @@ Current NewEngine is an exclusive, empty-policy development path. It is not a pl
 
 ## 18. Immediate next implementation sequence
 
-1. **F42 — implement the typed item-use aggregate.** Preserve one root request identity, the actual ON_USE child-Spell fan-out and independent item charge/count/destruction mutations. The F40 source audit is consolidated in `ITEM-USE-AGGREGATE.md`; do not equate one child Spell terminal with root success or item consumption.
-2. Extend the Core fixture to cover a multi-slot item, skipped/invalid slots, synchronous child completion before dispatch closes, delayed child completion and cancellation before/after item mutation. Keep the existing single-potion/zero-charge fixture as a baseline.
-3. **F43 — complete the production executor contract.** Build on F41's final CoreAction/map-thread resolver with common live target/map/instance and action-specific range, LOS, spell ownership, resource, cooldown, movement and control-state validation immediately before Core side effects.
-4. Register a small audited generic action set with exact accepted/rejected/terminal Core tests; only then expand generic state-machine behavior and class/role policies under exclusive NewEngine authority.
-5. Keep Legacy as default until the production policy/action library and in-game validation establish functional coverage.
+1. **F42 — closed:** the typed item-use root/child/mutation aggregate is implemented and has trusted fixture-backed Runtime PASS [#44839748022](https://github.com/tyrael9/core/actions/runs/44839748022). Preserve the remaining real-Core delayed-use and cancellation-before/after-mutation fixture gap as explicit follow-up work.
+2. **F43 — in progress:** the common CoreAction boundary now requires action-specific live preflight and preserves structured execution reasons. The first reusable generic action, SelectHostileTargetAction, is fixture-validated on trusted push [#44845469020](https://github.com/tyrael9/core/actions/runs/44845469020): hostile accepted; stale friendly proposal rejected without changing Player selection/target.
+3. Add the next small generic action only after auditing its Core side effects, threat closure, live preconditions and cleanup. Each action needs Core-backed accepted/rejected/terminal tests and must remain unregistered until its gate passes.
+4. Only after the generic action library and shared state-machine contracts are established should target/assist/attack/heal policies and class/role adapters begin.
+5. Keep Legacy as default; the current generic selector is not registered in NewEngine and the fixture does not establish playable NewEngine combat.

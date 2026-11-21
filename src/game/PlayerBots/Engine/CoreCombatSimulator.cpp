@@ -6684,6 +6684,7 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     // A positive but stale friendly snapshot can nominate this action; the
     // final CanAttack preflight must reject it without changing orientation.
     bot->SetSelectionGuid(friendly.creature->GetObjectGuid());
+    bot->SetTargetGuid(friendly.creature->GetObjectGuid());
     bot->SetOrientation(3.14159265358979323846f);
     PartySnapshot faceFriendlySnapshot = faceSnapshot;
     faceFriendlySnapshot.epoch++;
@@ -6731,6 +6732,7 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     // The native facing API intentionally ignores moving actors. Verify the
     // adapter returns Useless and leaves an active Core PointMovementGenerator intact.
     bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    bot->SetTargetGuid(hostile.creature->GetObjectGuid());
     bot->SetOrientation(3.14159265358979323846f);
     faceSnapshot.members[0].selectionGuid = hostileGuid;
     faceSnapshot.members[0].orientation = bot->GetOrientation();

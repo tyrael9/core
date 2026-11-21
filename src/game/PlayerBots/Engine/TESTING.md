@@ -95,7 +95,7 @@ These tests cover pure decision logic only. They do not validate live PartyBotAI
 - Bounded ActionResult/Core Spell terminal listeners; typed AND/alternative dependencies; late event registration; idempotency tombstones; starvation resistance; ready-backlog preservation under queue pressure.
 - Core-backed spell, movement/follow, range/LOS/resource, Group/death recovery and NewEngine authority fixtures.
 
-## F43 CoreAction executor and two generic target-maintenance actions
+## F43 CoreAction executor and three generic target-maintenance actions
 
 The common CoreAction wrapper requires a nonzero action ID, fresh map-thread actor/target/map resolution and a concrete ValidateCoreAction pass before ExecuteCore. ActionExecutionResult and ExecuteDetailed preserve exact validation/execution reasons in candidate state and traces. Pure C++14 regression coverage proves immediate and pending dispatch both use the action-specific preflight, a veto prevents ExecuteCore, and the exact veto reason survives into the candidate result.
 
@@ -107,12 +107,18 @@ ClearIdleTargetAction clears a stale selection only when the Player is genuinely
 - The only side effect is Player::SetSelectionGuid(ObjectGuid()). It does not call AttackStop, CombatStop or interrupt casts.
 - The real Core fixture sets a non-resolving selection GUID on a live Player, dispatches the action and proves the stale selection/target becomes empty while victim stays null and combat stays false. It then re-runs hostile acceptance and stale-friendly rejection in the same fixture.
 
-Current-head validation:
-- PR CI [#44847028717](https://github.com/tyrael9/core/actions/runs/44847028717) passed pure tests, report collector, configure, full Linux ARM64 Core build and harness syntax.
-- Trusted push [#44847023073](https://github.com/tyrael9/core/actions/runs/44847023073) passed the same stages, full fixture-backed Core simulator and final Runtime PASS. Exact combined marker: clearRegistered=1 staleSelectionCleared=1 hostileRegistered=1 hostileAccepted=1 friendlyCandidate=1 friendlyRejected=1 unchangedOnReject=1 cleanup=1.
-- Artifact [partybot-simulator-83e66ec](https://github.com/tyrael9/core/actions/runs/44847023073/artifacts/14684515060) contains the runtime logs.
+StopUnattackableTargetAction handles a stale current victim without confusing `AttackStop` and `CombatStop`:
+- The value-only party snapshot copies the current victim GUID and a `victimAttackable` boolean from live Core state. The action is proposed only when a victim GUID exists and that snapshot boolean is false.
+- Final Core preflight resolves that GUID again on the actor's Map, checks that it is still the Player's exact current victim, and re-runs live `CanAttack` plus GM/evade checks. If the snapshot is stale and the victim remains attackable, it returns Useless before any side effect.
+- For a live unattackable victim, the action calls only `Unit::AttackStop()`. Postconditions require null victim, empty target GUID, cleared melee state, no actor entry in the victim's attacker set and unchanged Player combat flag. It does not call `CombatStop`, clear other attackers or interrupt non-melee casts.
+- The real Core fixture proves an attackable hostile is not proposed, a deliberately stale negative snapshot is rejected without disturbing the attack, and a live faction change makes the target unattackable so AttackStop detaches only the actor reference.
 
-Both actions remain deliberately unregistered in the production NewEngine registry. They demonstrate two safe generic target-maintenance operations, not a complete target policy or playable combat AI.
+Current-head validation:
+- PR CI [#44849541737](https://github.com/tyrael9/core/actions/runs/44849541737) passed pure tests, report collector, configure, full Linux ARM64 Core build and harness syntax.
+- Trusted push [#44849535626](https://github.com/tyrael9/core/actions/runs/44849535626) passed the same stages, full fixture-backed Core simulator and final Runtime PASS. Exact StopUnattackableTarget marker: `registered=1 attackableNotProposed=1 staleSelected=1 staleRejected=1 liveUnattackable=1 selected=1 stoppedOnly=1`.
+- Artifact [partybot-simulator-c9836fc](https://github.com/tyrael9/core/actions/runs/44849535626/artifacts/14683889194) contains the runtime logs.
+
+All three actions remain deliberately unregistered in the production NewEngine registry. They demonstrate narrow generic target-maintenance operations, not a complete target policy or playable combat AI.
 ## Production action readiness — still open
 
 - Register audited production generic/class/role Core adapters with structured outcomes.
@@ -359,4 +365,4 @@ Still open: although the pure tracker covers delayed children and interruption b
 
 ## Production action readiness — still open
 
-Two reusable generic target-maintenance adapters are implemented and have real-Core cleanup/hostile/friendly accepted/rejected coverage, but are intentionally not registered in NewEngine. No production generic, class or role action is enabled. Every additional adapter still needs its own action-specific target/relation/range/LOS/spell/resource/cooldown/GCD/movement/control checks and Core-backed accepted/rejected/terminal matrix. NewEngine remains an explicit no-fallback mode; Legacy is still the default.
+Three reusable generic target-maintenance adapters are implemented and have real-Core cleanup/hostile/friendly accepted/rejected coverage, but are intentionally not registered in NewEngine. No production generic, class or role action is enabled. Every additional adapter still needs its own action-specific target/relation/range/LOS/spell/resource/cooldown/GCD/movement/control checks and Core-backed accepted/rejected/terminal matrix. NewEngine remains an explicit no-fallback mode; Legacy is still the default.

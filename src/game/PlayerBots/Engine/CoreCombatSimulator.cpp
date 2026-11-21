@@ -6649,11 +6649,11 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         bot->GetTargetGuid() == hostile.creature->GetObjectGuid() &&
         bot->GetVictim() == nullptr && bot->IsInCombat() == faceCombatBefore;
 
-    // Unit::Update invokes this same Core spline updater. The local-session
-    // simulator Player is not advanced by the fixture Map's player scheduler,
-    // so drive the native Unit update routine directly for this 1 ms facing spline.
+    // Unit::Update invokes UpdateSplineMovement as part of its ordinary Core
+    // update path. Drive that same public Unit update for this 1 ms facing spline;
+    // the fixture's local-session Player is not advanced by Map::Update here.
     if (faceRequestAccepted)
-        bot->UpdateSplineMovement(10);
+        bot->Update(10, 10);
     bool const faceFacingComplete = faceRequestAccepted &&
         bot->IsFacingTarget(hostile.creature);
     bool const facePositionPreserved =

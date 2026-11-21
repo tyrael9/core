@@ -5257,6 +5257,72 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
     if (!prototypeValid)
         return false;
 
+    // Inventory-backed diagnostic for a deterministic F42 cancellation
+    // fixture. Search the exact item_template rows loaded by this simulator
+    // together with its pinned Spell.dbc records; do not assume a retail item
+    // ID or synthesize timing/effect fields.
+    struct DelayedItemUseCandidate
+    {
+        ItemPrototype const* item = nullptr;
+        SpellEntry const* spell = nullptr;
+        uint8 slot = 0xff;
+        uint32 castTimeMs = 0;
+    };
+    std::vector<DelayedItemUseCandidate> delayedItemUseCandidates;
+    for (auto const& itemPair : sObjectMgr.GetItemPrototypeMap())
+    {
+        ItemPrototype const& item = itemPair.second;
+        if (item.ItemId != itemPair.first || item.Stackable >= 2)
+            continue;
+
+        for (uint8 slot = 0; slot < MAX_ITEM_PROTO_SPELLS; ++slot)
+        {
+            _ItemSpell const& itemSpell = item.Spells[slot];
+            if (!itemSpell.SpellId ||
+                itemSpell.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE ||
+                !itemSpell.SpellCharges)
+                continue;
+
+            SpellEntry const* spell = sSpellMgr.GetSpellEntry(itemSpell.SpellId);
+            if (!spell || spell->speed <= 0.0f)
+                continue;
+
+            uint32 const castTimeMs = spell->GetCastTime(nullptr, nullptr);
+            if (!castTimeMs)
+                continue;
+
+            delayedItemUseCandidates.push_back(
+                {&item, spell, slot, castTimeMs});
+        }
+    }
+    std::sort(delayedItemUseCandidates.begin(), delayedItemUseCandidates.end(),
+        [](DelayedItemUseCandidate const& lhs,
+           DelayedItemUseCandidate const& rhs)
+        {
+            if (lhs.item->ItemId != rhs.item->ItemId)
+                return lhs.item->ItemId < rhs.item->ItemId;
+            return lhs.slot < rhs.slot;
+        });
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] F42 delayed ON_USE scan: candidates=%u (real item_template + Spell.dbc; ON_USE, finite charges, non-stackable, castTime>0, speed>0).",
+        static_cast<uint32>(delayedItemUseCandidates.size()));
+    for (std::size_t i = 0;
+         i < delayedItemUseCandidates.size() && i < 24; ++i)
+    {
+        DelayedItemUseCandidate const& candidate = delayedItemUseCandidates[i];
+        ItemPrototype const& item = *candidate.item;
+        SpellEntry const& spell = *candidate.spell;
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] F42 delayed ON_USE candidate: item=%u name=%s slot=%u charges=%d stackable=%u requiredLevel=%u spell=%u spellName=%s castTimeMs=%u speed=%.2f effect0=%u targetA0=%u targetB0=%u effect1=%u targetA1=%u targetB1=%u.",
+            item.ItemId, item.Name1 ? item.Name1 : "<unnamed>",
+            candidate.slot, item.Spells[candidate.slot].SpellCharges,
+            item.Stackable, item.RequiredLevel, spell.Id,
+            spell.SpellName[0].c_str(), candidate.castTimeMs, spell.speed,
+            spell.Effect[0], spell.EffectImplicitTargetA[0],
+            spell.EffectImplicitTargetB[0], spell.Effect[1],
+            spell.EffectImplicitTargetA[1], spell.EffectImplicitTargetB[1]);
+    }
+
     class SimulatorItemUseCapture final : public ItemUseTerminalListener
     {
     public:

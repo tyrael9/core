@@ -349,8 +349,8 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F39 emitted a correlated Reached termin
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: F42 real Core aggregated single-slot use/rejection and a synthetic two-ON_USE-slot prototype. Child snapshots prove first/non-triggered and second/triggered Core Spells; the first child independently consumed both finite charges." "$LOG_FILE"; then
-    echo "[PartyBotSimulator] The F42 Core item-use aggregate PASS marker was not found." | tee -a "$LOG_FILE"
+if ! grep -Fq "[PartyBotSimulator] PASS: F42 real Core aggregated single-slot use/rejection, a synthetic two-ON_USE-slot prototype, and a real delayed Brimstone/Fireball ON_USE cancellation before and after its Core charge mutation." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F42 real delayed ON_USE cancellation PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 if ! grep -Fq "[PartyBotSimulator] PASS: generic Core target maintenance cleared an idle stale selection, selected a live hostile and rejected a stale friendly target without disturbing Player combat state." "$LOG_FILE"; then

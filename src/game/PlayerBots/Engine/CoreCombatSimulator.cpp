@@ -22,6 +22,7 @@
 #include "PlayerBots/Engine/FollowPartyMemberAction.h"
 #include "PlayerBots/Engine/FaceTargetAction.h"
 #include "PlayerBots/Engine/StopFollowingAction.h"
+#include "PlayerBots/Engine/AttackTargetAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
@@ -532,6 +533,34 @@ public:
 private:
     Guid m_targetGuid = 0;
     std::string m_name = "simulator_select_hostile_target";
+};
+
+class SimulatorAttackTargetTrigger final : public Trigger
+{
+public:
+    explicit SimulatorAttackTargetTrigger(Guid targetGuid)
+        : m_targetGuid(targetGuid) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && m_targetGuid != 0 &&
+               context.bot.selectionGuid == m_targetGuid;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_attack_target";
+        candidate.targetGuid = m_targetGuid;
+        candidate.basePriority = 35.0f;
+        candidate.channel = ActionChannel::Targeting;
+        candidates.push_back(candidate);
+    }
+
+private:
+    Guid m_targetGuid = 0;
+    std::string m_name = "simulator_attack_target";
 };
 
 class SimulatorFaceTargetTrigger final : public Trigger
@@ -6625,6 +6654,148 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
         bot->GetTargetGuid() == hostile.creature->GetObjectGuid();
 
+    // F43: execute a generic CoreAction against an already-selected hostile.
+    // The fixture observes the synchronous Core request, stale-snapshot rejection
+    // and a live selection race. It does not use PartyBotAI::AttackStart.
+    PartySnapshot attackSnapshot = snapshot;
+    attackSnapshot.epoch++;
+    attackSnapshot.members[0].selectionGuid = hostileGuid;
+    attackSnapshot.members[0].victimGuid = 0;
+    attackSnapshot.members[0].inCombat = bot->IsInCombat();
+    PartyCoordinator attackCoordinator;
+    DecisionContext attackContext(
+        attackSnapshot, attackSnapshot.members[0], attackCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine attackEngine;
+    std::shared_ptr<AttackTargetAction> attackAction(new AttackTargetAction());
+    bool const attackRegistered = attackEngine.RegisterAction(attackAction);
+    std::shared_ptr<Strategy> attackStrategy(new Strategy("simulator_attack_target"));
+    attackStrategy->AddTrigger(
+        std::make_shared<SimulatorAttackTargetTrigger>(hostileGuid));
+    attackEngine.AddStrategy(attackStrategy);
+
+    uint32 const attackTargetHealthBefore = hostile.creature->GetHealth();
+    float const attackThreatBefore = hostile.creature->GetThreatManager().getThreat(bot);
+    DecisionReport attackReport = attackEngine.Evaluate(attackContext);
+    bool const attackSelected = attackReport.selectedIndices.size() == 1 &&
+        attackReport.candidates[attackReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (attackSelected)
+        attackEngine.ExecuteSelected(attackContext, attackReport);
+    CandidateEvaluation const* attackEvaluation = attackSelected
+        ? &attackReport.candidates[attackReport.selectedIndices[0]] : nullptr;
+    float const attackThreatAfter = hostile.creature->GetThreatManager().getThreat(bot);
+    bool const attackAccepted = attackEvaluation &&
+        attackEvaluation->status == CandidateStatus::Executed &&
+        attackEvaluation->actionResult == ActionResult::Success &&
+        attackEvaluation->reason == "attack_target_auto_attack_request_accepted" &&
+        bot->GetVictim() == hostile.creature &&
+        bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == hostile.creature->GetObjectGuid();
+    bool const attackNoImmediateDamageOrThreat =
+        hostile.creature->GetHealth() == attackTargetHealthBefore &&
+        std::fabs(attackThreatAfter - attackThreatBefore) <= 0.001f;
+    bot->AttackStop();
+
+    // A stale positive hostile snapshot must not make a same-faction Creature
+    // attackable; the final live CanAttack preflight must veto it.
+    Guid const friendlyGuid = friendly.creature->GetObjectGuid().GetRawValue();
+    bot->SetSelectionGuid(friendly.creature->GetObjectGuid());
+    PartySnapshot attackFriendlySnapshot = attackSnapshot;
+    attackFriendlySnapshot.epoch++;
+    attackFriendlySnapshot.members[0].selectionGuid = friendlyGuid;
+    attackFriendlySnapshot.hostiles.clear();
+    HostileSnapshot staleAttackFriendly;
+    staleAttackFriendly.guid = friendlyGuid;
+    staleAttackFriendly.health = friendly.creature->GetHealth();
+    staleAttackFriendly.maxHealth = friendly.creature->GetMaxHealth();
+    staleAttackFriendly.alive = friendly.creature->IsAlive();
+    attackFriendlySnapshot.hostiles.push_back(staleAttackFriendly);
+    PartyCoordinator attackFriendlyCoordinator;
+    DecisionContext attackFriendlyContext(
+        attackFriendlySnapshot, attackFriendlySnapshot.members[0],
+        attackFriendlyCoordinator, WorldTimer::getMSTime(), nullptr, nullptr,
+        &actionRuntime, nullptr, &actionRuntime);
+    PartyBotEngine attackFriendlyEngine;
+    std::shared_ptr<AttackTargetAction> attackFriendlyAction(
+        new AttackTargetAction());
+    bool const attackFriendlyRegistered =
+        attackFriendlyEngine.RegisterAction(attackFriendlyAction);
+    std::shared_ptr<Strategy> attackFriendlyStrategy(
+        new Strategy("simulator_attack_stale_friendly"));
+    attackFriendlyStrategy->AddTrigger(
+        std::make_shared<SimulatorAttackTargetTrigger>(friendlyGuid));
+    attackFriendlyEngine.AddStrategy(attackFriendlyStrategy);
+    DecisionReport attackFriendlyReport =
+        attackFriendlyEngine.Evaluate(attackFriendlyContext);
+    bool const attackFriendlySelected = attackFriendlyRegistered &&
+        attackFriendlyReport.selectedIndices.size() == 1 &&
+        attackFriendlyReport.candidates[
+            attackFriendlyReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (attackFriendlySelected)
+        attackFriendlyEngine.ExecuteSelected(
+            attackFriendlyContext, attackFriendlyReport);
+    CandidateEvaluation const* attackFriendlyEvaluation = attackFriendlySelected
+        ? &attackFriendlyReport.candidates[
+            attackFriendlyReport.selectedIndices[0]] : nullptr;
+    bool const attackFriendlyRejected = attackFriendlyEvaluation &&
+        attackFriendlyEvaluation->status == CandidateStatus::ExecutionFailed &&
+        attackFriendlyEvaluation->actionResult == ActionResult::Impossible &&
+        attackFriendlyEvaluation->reason == "attack_target_not_attackable" &&
+        bot->GetVictim() == nullptr &&
+        bot->GetSelectionGuid() == friendly.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid();
+
+    // Change selection after evaluation. The adapter must detect target drift
+    // before invoking Unit::Attack and leave the live selection untouched.
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+    PartySnapshot attackRaceSnapshot = attackSnapshot;
+    attackRaceSnapshot.epoch++;
+    PartyCoordinator attackRaceCoordinator;
+    DecisionContext attackRaceContext(
+        attackRaceSnapshot, attackRaceSnapshot.members[0], attackRaceCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    PartyBotEngine attackRaceEngine;
+    std::shared_ptr<AttackTargetAction> attackRaceAction(new AttackTargetAction());
+    bool const attackRaceRegistered = attackRaceEngine.RegisterAction(attackRaceAction);
+    std::shared_ptr<Strategy> attackRaceStrategy(
+        new Strategy("simulator_attack_selection_drift"));
+    attackRaceStrategy->AddTrigger(
+        std::make_shared<SimulatorAttackTargetTrigger>(hostileGuid));
+    attackRaceEngine.AddStrategy(attackRaceStrategy);
+    DecisionReport attackRaceReport = attackRaceEngine.Evaluate(attackRaceContext);
+    bool const attackRaceSelected = attackRaceRegistered &&
+        attackRaceReport.selectedIndices.size() == 1 &&
+        attackRaceReport.candidates[attackRaceReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    bot->SetSelectionGuid(friendly.creature->GetObjectGuid());
+    if (attackRaceSelected)
+        attackRaceEngine.ExecuteSelected(attackRaceContext, attackRaceReport);
+    CandidateEvaluation const* attackRaceEvaluation = attackRaceSelected
+        ? &attackRaceReport.candidates[attackRaceReport.selectedIndices[0]] : nullptr;
+    bool const attackSelectionDriftRejected = attackRaceEvaluation &&
+        attackRaceEvaluation->status == CandidateStatus::ExecutionFailed &&
+        attackRaceEvaluation->actionResult == ActionResult::Impossible &&
+        attackRaceEvaluation->reason == "attack_target_live_selection_mismatch" &&
+        bot->GetVictim() == nullptr &&
+        bot->GetSelectionGuid() == friendly.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == friendly.creature->GetObjectGuid();
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
+
+    bool const attackFixturePassed = attackRegistered && attackSelected &&
+        attackAccepted && attackNoImmediateDamageOrThreat &&
+        attackFriendlyRegistered && attackFriendlySelected &&
+        attackFriendlyRejected && attackRaceRegistered && attackRaceSelected &&
+        attackSelectionDriftRejected;
+    sLog.Out(LOG_BASIC, attackFixturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] AttackTargetAction: registered=%u selected=%u accepted=%u noImmediateDamageOrThreat=%u staleFriendlyRejected=%u selectionDriftRejected=%u.",
+        attackRegistered ? 1u : 0u, attackSelected ? 1u : 0u,
+        attackAccepted ? 1u : 0u, attackNoImmediateDamageOrThreat ? 1u : 0u,
+        attackFriendlyRejected ? 1u : 0u,
+        attackSelectionDriftRejected ? 1u : 0u);
+
     // F43: face the selected hostile only when the value snapshot says the
     // target is outside Core's 180-degree front arc. Live Core state still
     // owns hostility, movement/cast/control validation and the final outcome.
@@ -7115,8 +7286,8 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bool const cleaned = playerCleaned && friendlyCleaned && hostileCleaned;
 
     sLog.Out(LOG_BASIC, (staleSelectionCleared && hostileAccepted &&
-                         faceFixturePassed && clearStaleFixturePassed &&
-                         friendlyRejected && cleaned)
+                         attackFixturePassed && faceFixturePassed &&
+                         clearStaleFixturePassed && friendlyRejected && cleaned)
         ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
         "[PartyBotSimulator] Core generic target actions: clearRegistered=%u staleSelectionCleared=%u hostileRegistered=%u hostileAccepted=%u faceFixture=%u clearStaleFixture=%u friendlyCandidate=%u friendlyRejected=%u unchangedOnReject=%u cleanup=%u.",
         clearRegistered ? 1u : 0u, staleSelectionCleared ? 1u : 0u,
@@ -7127,7 +7298,8 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
         cleaned ? 1u : 0u);
 
     if (!clearRegistered || !staleSelectionCleared || !actionRegistered ||
-        !hostileAccepted || !faceFixturePassed || !clearStaleFixturePassed ||
+        !hostileAccepted || !attackFixturePassed || !faceFixturePassed ||
+        !clearStaleFixturePassed ||
         !friendlyCandidateSelected || !friendlyRejected ||
         !stopFixturePassed || !cleaned)
     {
@@ -7140,6 +7312,8 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
              "[PartyBotSimulator] PASS: generic Core target maintenance cleared an idle stale selection, selected a live hostile and rejected a stale friendly target without disturbing Player combat state.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Core preflight to reject a stale negative snapshot, then AttackStop detached only the invalid victim while preserving combat state.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PASS: AttackTargetAction used the CoreAction live resolver and CanAttack preflight, accepted only the selected hostile, rejected stale-friendly and selection-drift requests, and created no synchronous damage/threat or Legacy fallback.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: FaceTargetAction used snapshot geometry to face a live selected hostile, skipped an already-facing target, and rejected stale-friendly and moving actors without disturbing position, movement or combat state.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,

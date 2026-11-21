@@ -20,6 +20,7 @@ struct PartyMemberSnapshot {
     bool online = false, alive = false, inCombat = false, isMainTank = false;
     bool victimAttackable = false;
     bool isPlayerBot = false;
+    bool mounted = false, taxiFlying = false;
 };
 struct PartyCompanionSnapshot {
     Guid guid = 0, ownerGuid = 0, victimGuid = 0;

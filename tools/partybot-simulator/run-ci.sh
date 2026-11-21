@@ -373,7 +373,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Co
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: StopAutoAttackAction used the snapshot victim GUID and live Core AttackStop, preserved selection/combat/non-melee spell state and health/threat, and rejected a different live victim without calling CombatStop." "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: StopAutoAttackAction used the snapshot victim GUID and live Core AttackStop, preserved selection/combat and unchanged health/threat, and rejected a different live victim without calling CombatStop." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopAutoAttackAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi

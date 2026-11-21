@@ -16,9 +16,9 @@ namespace PartyBotEngine
 {
 // Stop only the exact melee victim captured by the value snapshot. This is an
 // intentional disengage operation (for example, before a crowd-control cast),
-// not a CombatStop: selection, combat state, other attackers and non-melee
-// spells are preserved. Core AttackStop owns the melee-stop packet and current
-// melee-spell interruption.
+// not a CombatStop: selection and combat state are preserved. This adapter
+// refuses execution while a non-melee spell is active; Core AttackStop owns
+// the melee-stop packet and interrupts only CURRENT_MELEE_SPELL.
 class StopAutoAttackAction final : public CoreAction
 {
 public:

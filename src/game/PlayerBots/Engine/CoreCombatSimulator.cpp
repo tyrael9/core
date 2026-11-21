@@ -3593,6 +3593,88 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         cachedSnapshot && cachedSnapshot->epoch == initialSnapshot->epoch &&
         cachedSnapshot->capturedAtMs == 15000;
 
+    // F43: exercise the new Engine point-movement correlation fields through
+    // the real five-Player Group snapshot builder. One member owns a correlated
+    // Engine Point generator, one owns an ordinary Core/Legacy Point generator,
+    // and one remains idle. No movement update is needed to test value capture.
+    ActionId const groupPointSnapshotActionId =
+        static_cast<ActionId>(0xF4310001ull);
+    uint64 const groupPointSnapshotEncounterId = 0xF4310002ull;
+    uint32 const groupPointSnapshotPointId = 0xF431u;
+    uint32 const legacyPointSnapshotPointId = 0xF432u;
+    bool const groupPointMoveStarted = membersAdded &&
+        players[0]->GetMotionMaster()->MovePointForEngine(
+            groupPointSnapshotPointId, players[0]->GetPositionX() + 6.0f,
+            players[0]->GetPositionY(), players[0]->GetPositionZ(), MOVE_NONE,
+            groupPointSnapshotActionId, groupPointSnapshotEncounterId, 1.5f);
+    bool const legacyPointMoveStarted = membersAdded &&
+        players[1]->GetMotionMaster()->MovePoint(
+            legacyPointSnapshotPointId, players[1]->GetPositionX() + 6.0f,
+            players[1]->GetPositionY(), players[1]->GetPositionZ(), MOVE_NONE),
+        players[1]->GetMotionMaster()->GetCurrentMovementGeneratorType() ==
+            POINT_MOTION_TYPE;
+    PartyCoordinator pointMovementSnapshotCoordinator;
+    PartySnapshot const* pointMovementSnapshot =
+        groupPointMoveStarted && legacyPointMoveStarted
+            ? PartySnapshotBuilder::GetOrBuild(
+                players[0], pointMovementSnapshotCoordinator,
+                WorldTimer::getMSTime(), 0)
+            : nullptr;
+    PartyMemberSnapshot const* enginePointMember = pointMovementSnapshot
+        ? pointMovementSnapshot->FindMember(
+            players[0]->GetObjectGuid().GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* legacyPointMember = pointMovementSnapshot
+        ? pointMovementSnapshot->FindMember(
+            players[1]->GetObjectGuid().GetRawValue()) : nullptr;
+    PartyMemberSnapshot const* idlePointMember = pointMovementSnapshot
+        ? pointMovementSnapshot->FindMember(
+            players[2]->GetObjectGuid().GetRawValue()) : nullptr;
+    bool const enginePointCorrelationCopied = enginePointMember &&
+        enginePointMember->pointMovementActionId == groupPointSnapshotActionId &&
+        enginePointMember->pointMovementEncounterId ==
+            groupPointSnapshotEncounterId &&
+        enginePointMember->pointMovementPointId == groupPointSnapshotPointId;
+    bool const legacyPointHasNoEngineOwnership = legacyPointMember &&
+        legacyPointMember->pointMovementActionId == 0 &&
+        legacyPointMember->pointMovementEncounterId == 0 &&
+        legacyPointMember->pointMovementPointId == legacyPointSnapshotPointId;
+    bool const idlePointCorrelationEmpty = idlePointMember &&
+        idlePointMember->pointMovementActionId == 0 &&
+        idlePointMember->pointMovementEncounterId == 0 &&
+        idlePointMember->pointMovementPointId == 0;
+    bool const pointMovementSnapshotGroupValid = pointMovementSnapshot &&
+        pointMovementSnapshot->groupId == group->GetId() &&
+        pointMovementSnapshot->mapId == map.GetId() &&
+        pointMovementSnapshot->instanceId == map.GetInstanceId() &&
+        pointMovementSnapshot->members.size() == MAX_GROUP_SIZE;
+    if (groupPointMoveStarted)
+        players[0]->GetMotionMaster()->MovementExpired(false);
+    if (legacyPointMoveStarted)
+        players[1]->GetMotionMaster()->MovementExpired(false);
+    bool const pointMovementSnapshotCleanup =
+        players[0]->GetMotionMaster()->GetCurrentMovementGeneratorType() !=
+            POINT_MOTION_TYPE &&
+        players[1]->GetMotionMaster()->GetCurrentMovementGeneratorType() !=
+            POINT_MOTION_TYPE;
+    bool const pointMovementSnapshotBuilderPassed =
+        pointMovementSnapshotGroupValid && groupPointMoveStarted &&
+        legacyPointMoveStarted && enginePointCorrelationCopied &&
+        legacyPointHasNoEngineOwnership && idlePointCorrelationEmpty &&
+        pointMovementSnapshotCleanup;
+    sLog.Out(LOG_BASIC,
+        pointMovementSnapshotBuilderPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] Group PartySnapshotBuilder point movement: group=%u engineStarted=%u engineCopied=%u legacyStarted=%u legacyUnowned=%u idleEmpty=%u cleanup=%u.",
+        pointMovementSnapshotGroupValid ? 1u : 0u,
+        groupPointMoveStarted ? 1u : 0u,
+        enginePointCorrelationCopied ? 1u : 0u,
+        legacyPointMoveStarted ? 1u : 0u,
+        legacyPointHasNoEngineOwnership ? 1u : 0u,
+        idlePointCorrelationEmpty ? 1u : 0u,
+        pointMovementSnapshotCleanup ? 1u : 0u);
+    if (pointMovementSnapshotBuilderPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: real five-Player Group PartySnapshotBuilder copied Engine point action/encounter/point correlation from the current Core generator, retained legacy point IDs without Engine ownership, and left idle member movement IDs empty.");
+
     bool actorsCreated = false;
     if (membersAdded && mainTankAssigned && allPlayersOnSameMap &&
         initialSnapshotValid && initialRosterResolved && initialValuesCopied &&
@@ -4182,6 +4264,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool const f9ChecksPassed = hostileAIReady && membersAdded && mainTankAssigned &&
         allPlayersOnSameMap && initialSnapshotValid && initialRosterResolved &&
         initialValuesCopied && initialFormCopied && initialRolesUnknown && initialCacheRetained &&
+        pointMovementSnapshotBuilderPassed &&
         registeredBeforeCleanup && bothHostilesInitiallyTargetTank &&
         threatBudgetSnapshotValid && overBudgetRejected && executionReservationRaceRejected &&
         safeBudgetSelectedAndReserved && enginePreservedCoreThreatState &&

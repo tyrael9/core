@@ -7508,7 +7508,7 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Core preflight to reject a stale negative snapshot, then AttackStop detached only the invalid victim while preserving combat state.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PASS: StopAutoAttackAction used the snapshot victim GUID and live Core AttackStop, preserved selection/combat/non-melee spell state and health/threat, and rejected a different live victim without calling CombatStop.");
+             "[PartyBotSimulator] PASS: StopAutoAttackAction used the snapshot victim GUID and live Core AttackStop, preserved selection/combat and unchanged health/threat, and rejected a different live victim without calling CombatStop.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: AttackTargetAction used the CoreAction live resolver and CanAttack preflight, accepted only the selected hostile, rejected stale-friendly and selection-drift requests, and created no synchronous damage/threat or Legacy fallback.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,

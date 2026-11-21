@@ -6,6 +6,7 @@
 
 #include "Creature.h"
 #include "Player.h"
+#include "SpellAuras.h"
 #include "Unit.h"
 
 #include <cmath>
@@ -160,6 +161,24 @@ private:
         {
             result.result = ActionResult::Useless;
             result.reason = "attack_target_actor_cannot_attack";
+            return result;
+        }
+
+        // Unit::Attack would otherwise strip this aura as an implicit side
+        // effect. Refuse instead of silently changing the bot's defensive state.
+        if (actor->HasAuraType(SPELL_AURA_MOD_UNATTACKABLE))
+        {
+            result.result = ActionResult::Useless;
+            result.reason = "attack_target_actor_unattackable_aura";
+            return result;
+        }
+
+        // Core Unit::Attack also rejects Players while mounted. Surface that
+        // condition before dispatch rather than reporting a generic failure.
+        if (actor->IsMounted())
+        {
+            result.result = ActionResult::Useless;
+            result.reason = "attack_target_actor_mounted";
             return result;
         }
 

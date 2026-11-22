@@ -2,7 +2,7 @@
 
 ## Scope and current status (2026-11-22)
 
-The bounded dispatch/dependency mechanics are implemented through F38; F39 adds movement terminals; F40 audits item-use source behavior; F41 adds the map-thread CoreAction resolver; F42 implements bounded item-use root/child/mutation aggregation; F43 adds mandatory action-specific preflight/structured results and sixteen generic adapters covering target maintenance, follow/facing, attack, movement, stop/cleanup and dismount. This does **not** mean production gameplay actions are registered: all fifteen are deliberately unregistered, no class/role adapters are enabled, and Legacy remains default.
+The bounded dispatch/dependency mechanics are implemented through F38; F39 adds movement terminals; F40 audits item-use source behavior; F41 adds the map-thread CoreAction resolver; F42 implements bounded item-use root/child/mutation aggregation; F43 adds mandatory action-specific preflight/structured results and sixteen generic adapters covering target maintenance, follow/facing, attack, movement, stop/cleanup and dismount. This does **not** mean production gameplay actions are registered: all sixteen are deliberately unregistered, no class/role adapters are enabled, and Legacy remains default.
 
 The design has two different queue lifetimes:
 

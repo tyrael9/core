@@ -8315,8 +8315,12 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     bool const coreMeleeReachable = nearVictimPositioned &&
         bot->CanReachWithMeleeAutoAttack(hostile.creature);
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-        "[PartyBotSimulator] ChaseTargetAction melee-fixture: positioned=%u coreReachable=%u bot=(%.3f,%.3f,%.3f) hostile=(%.3f,%.3f,%.3f).",
+        "[PartyBotSimulator] ChaseTargetAction melee-fixture: positioned=%u coreReachable=%u selected=%u dispatched=%u status=%u result=%u reason=%s bot=(%.3f,%.3f,%.3f) hostile=(%.3f,%.3f,%.3f).",
         nearVictimPositioned ? 1u : 0u, coreMeleeReachable ? 1u : 0u,
+        reachableSelected ? 1u : 0u, reachableEvaluation ? 1u : 0u,
+        reachableEvaluation ? static_cast<uint32>(reachableEvaluation->status) : 0xffffffffu,
+        reachableEvaluation ? static_cast<uint32>(reachableEvaluation->actionResult) : 0xffffffffu,
+        reachableEvaluation ? reachableEvaluation->reason.c_str() : "not-dispatched",
         bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
         hostile.creature->GetPositionX(), hostile.creature->GetPositionY(),
         hostile.creature->GetPositionZ());
@@ -8332,12 +8336,18 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
         &actionRuntime);
     DecisionReport reachableReport = engine.Evaluate(reachableContext);
-    bool const alreadyReachableNotChased = coreMeleeReachable &&
-        reachableReport.selectedIndices.empty() &&
-        !reachableReport.candidates.empty() &&
-        reachableReport.candidates[0].status == CandidateStatus::RejectedUseless &&
-        reachableReport.candidates[0].reason ==
-            "chase_target_already_melee_reachable" &&
+    bool const reachableSelected = coreMeleeReachable &&
+        reachableReport.selectedIndices.size() == 1 &&
+        reachableReport.candidates[
+            reachableReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (reachableSelected)
+        engine.ExecuteSelected(reachableContext, reachableReport);
+    CandidateEvaluation const* reachableEvaluation = reachableSelected
+        ? &reachableReport.candidates[reachableReport.selectedIndices[0]] : nullptr;
+    bool const alreadyReachableNotChased = reachableEvaluation &&
+        reachableEvaluation->status == CandidateStatus::ExecutionFailed &&
+        reachableEvaluation->actionResult == ActionResult::Useless &&
+        reachableEvaluation->reason == "chase_target_already_melee_reachable" &&
         bot->GetVictim() == hostile.creature &&
         bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE;
     bool const originalPositionRestored =

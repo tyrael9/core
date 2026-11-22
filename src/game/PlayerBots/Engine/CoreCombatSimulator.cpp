@@ -8230,9 +8230,10 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
             "chase_target_already_chasing_current_victim" &&
         bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE;
 
-    // Combat engagement must be able to supersede a valid party Follow without
-    // destroying it: Core MoveChase stacks above Follow, then Follow resumes
-    // when the chase generator expires.
+    // Combat engagement may supersede a valid party Follow. Core MoveChase
+    // stacks above Follow, but Core MovementExpired intentionally drops stored
+    // targeted generators under a completed Chase; policy must reissue Follow
+    // after combat rather than expecting the old generator to resume.
     bot->GetMotionMaster()->MovementExpired(false);
     bot->StopMoving();
     bot->GetMotionMaster()->MoveFollow(followLeader, 2.5f, 3.14159265358979323846f);
@@ -8267,14 +8268,11 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         followChase && followChase->GetTarget() == hostile.creature;
     if (followChaseAccepted)
         bot->GetMotionMaster()->MovementExpired(false);
-    FollowMovementGenerator<Player> const* resumedFollow =
-        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE
-            ? static_cast<FollowMovementGenerator<Player> const*>(
-                bot->GetMotionMaster()->GetCurrent()) : nullptr;
-    bool const followResumed = followChaseAccepted && resumedFollow &&
-        resumedFollow->GetTarget() == followLeader &&
-        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE;
-    if (resumedFollow)
+    bool const followDroppedOnChaseExpiry = followChaseAccepted &&
+        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE &&
+        !bot->HasUnitState(UNIT_STATE_FOLLOW);
+    // Defensive cleanup if Core's stack behavior changes and leaves Follow on top.
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
         bot->GetMotionMaster()->MovementExpired(false);
     bot->StopMoving();
 
@@ -8370,7 +8368,7 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
 
     bool const fixturePassed = attackStarted && registered && selected && accepted &&
         sameChaseNotProposed && followStarted && followSelected &&
-        followChaseAccepted && followResumed && nearVictimPositioned &&
+        followChaseAccepted && followDroppedOnChaseExpiry && nearVictimPositioned &&
         alreadyReachableNotChased && originalPositionRestored &&
         staleSelected && staleVictimRejected && pointSelected &&
         pointMovementPreserved;
@@ -8416,16 +8414,16 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         static_cast<unsigned long long>(detailVictimGuid),
         detailMounted ? 1u : 0u, detailTaxi ? 1u : 0u);
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u followStarted=%u followChaseAccepted=%u followResumed=%u alreadyReachableNotChased=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
+        "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u followStarted=%u followChaseAccepted=%u followDroppedOnChaseExpiry=%u alreadyReachableNotChased=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
         attackStarted ? 1u : 0u, registered ? 1u : 0u, selected ? 1u : 0u,
         accepted ? 1u : 0u, sameChaseNotProposed ? 1u : 0u,
         followStarted ? 1u : 0u, followChaseAccepted ? 1u : 0u,
-        followResumed ? 1u : 0u, alreadyReachableNotChased ? 1u : 0u,
+        followDroppedOnChaseExpiry ? 1u : 0u, alreadyReachableNotChased ? 1u : 0u,
         staleSelected ? 1u : 0u, staleVictimRejected ? 1u : 0u,
         pointMovementPreserved ? 1u : 0u, cleaned ? 1u : 0u);
     if (passed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: ChaseTargetAction used Core MoveChase for the live victim, temporarily superseded and restored a valid party Follow, preserved combat and threat state, skipped redundant chases, rejected a stale victim, and preserved unrelated Point movement.");
+            "[PartyBotSimulator] PASS: ChaseTargetAction used Core MoveChase for the live victim, safely superseded a valid party Follow with Core's targeted-generator expiry semantics, preserved combat and threat state, skipped redundant chases, rejected a stale victim, and preserved unrelated Point movement.");
     return passed;
 }
 

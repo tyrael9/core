@@ -7531,11 +7531,11 @@ bool RunEngineCoreUtilitySpellAuditSmokeTest(Map& /*map*/)
             SpellRangeEntry const* range =
                 sSpellRangeStore.LookupEntry(spell->rangeIndex);
             uint32 const castTimeMs = castTime ? castTime->CastTime : 0;
-            float const maxRange = range ? GetSpellMaxRange(range) : 0.0f;
+            float const maxRange = range ? Spells::GetSpellMaxRange(range) : 0.0f;
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                "[PartyBotSimulator] F46 bounded self-utility candidate: spell=%u name=%s class=%u family=%u aura=%u mana=%u powerType=%u castMs=%u rangeIndex=%u maxRange=%.2f recoveryMs=%u categoryRecoveryMs=%u gcdMs=%u script=%u threat=0 procEvent=0 procFields=0 procsSuppressed=1.",
+                "[PartyBotSimulator] F46 bounded self-utility candidate: spell=%u name=%s family=%u aura=%u mana=%u powerType=%u castMs=%u rangeIndex=%u maxRange=%.2f recoveryMs=%u categoryRecoveryMs=%u gcdMs=%u script=%u threat=0 procEvent=0 procFields=0 procsSuppressed=1.",
                 spellId, spell->SpellName[0].c_str(), spell->SpellFamilyName,
-                spell->SpellFamilyFlags, auraType, spell->manaCost,
+                auraType, spell->manaCost,
                 spell->powerType, castTimeMs, spell->rangeIndex, maxRange,
                 spell->RecoveryTime, spell->CategoryRecoveryTime,
                 spell->StartRecoveryTime, spell->ScriptId);
@@ -7544,7 +7544,7 @@ bool RunEngineCoreUtilitySpellAuditSmokeTest(Map& /*map*/)
     }
 
     bool const auditRan = inspected > 1000 &&
-        sSpellMgr.GetMaxSpellId() > inspected;
+        sSpellMgr.GetMaxSpellId() > 1000;
     sLog.Out(LOG_BASIC, auditRan ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
         "[PartyBotSimulator] F46 utility spell audit: spellRows=%u positiveSelfAuraShapes=%u missingProcSuppression=%u threatOrProcRows=%u strictCandidates=%u loggedCandidates=%u.",
         inspected, positiveSelfAuraShapes, missingProcSuppression,

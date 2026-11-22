@@ -1038,10 +1038,6 @@ bool RunEngineCoreSpellHealSmokeTest(Map& map)
     engine.AddStrategy(strategy);
 
     DecisionReport report = engine.Evaluate(context);
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-        "[PartyBotSimulator] ChaseTargetAction stage=evaluated candidates=%u selected=%u.",
-        static_cast<uint32>(report.candidates.size()),
-        static_cast<uint32>(report.selectedIndices.size()));
     bool const selected = report.selectedIndices.size() == 1 &&
         report.candidates[report.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
         report.candidates[report.selectedIndices[0]].candidate.spellId == SIMULATOR_HEAL_SPELL_ID &&
@@ -6825,8 +6821,6 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
         return false;
 
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-        "[PartyBotSimulator] ChaseTargetAction stage=begin template=%u.", info->Entry);
 
     SimulatorActor hostile;
     SimulatorActor friendly;
@@ -8004,9 +7998,6 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     actionRuntime.Remove();
     botSession.LogoutPlayer(false);
     bool const playerCleaned = botSession.GetPlayer() == nullptr;
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-        "[PartyBotSimulator] ChaseTargetAction stage=player-logged-out cleaned=%u.",
-        playerCleaned ? 1u : 0u);
     bot = nullptr;
     bool const friendlyCleaned = DestroySimulatorActor(map, friendly);
     bool const hostileCleaned = DestroySimulatorActor(map, hostile);
@@ -8058,6 +8049,9 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     uint32 partyFaction = 0, hostileFaction = 0;
     if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
         return false;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=begin template=%u.", info->entry);
 
     SimulatorActor hostile;
     bool const hostileCreated =
@@ -8156,6 +8150,10 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     float const threatBefore = hostile.creature->GetThreatManager().getThreat(bot);
 
     DecisionReport report = engine.Evaluate(context);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=evaluated candidates=%u selected=%u.",
+        static_cast<uint32>(report.candidates.size()),
+        static_cast<uint32>(report.selectedIndices.size()));
     bool const selected = attackStarted && bot->GetVictim() == hostile.creature &&
         registered && report.selectedIndices.size() == 1 &&
         report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
@@ -8276,6 +8274,9 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     actionRuntime.Remove();
     botSession.LogoutPlayer(false);
     bool const playerCleaned = botSession.GetPlayer() == nullptr;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=player-logged-out cleaned=%u.",
+        playerCleaned ? 1u : 0u);
     bot = nullptr;
     bool const hostileCleaned = DestroySimulatorActor(map, hostile);
     bool const cleaned = playerCleaned && hostileCleaned;

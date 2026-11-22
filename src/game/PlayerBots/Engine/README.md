@@ -8,6 +8,10 @@ The project has completed most of the engine foundation, exclusive runtime/async
 
 Current F43 status (2026-11-22): seventeen generic CoreAction adapters are implemented with action-specific live preflight and structured results. The first sixteen have real Core-backed accepted/rejected fixtures and trusted push runtime validation. The seventeenth, CancelOwnCastAction, captures Spell action/encounter/target identity and uses SpellCaster::InterruptSpell. Its trusted fixture drives a real Fireball into DELAYED and a real Mind Flay into CHANNELED/CASTING, checks Engine fail-closed arbitration, then invokes the wrapper in isolation to verify suppressed delayed impact and full channel cleanup. Trusted push [#45063532285](https://github.com/tyrael9/core/actions/runs/45063532285) reached final Runtime PASS (artifact [#931b5e3](https://github.com/tyrael9/core/actions/runs/45063532285/artifacts/14770955128)); PR ARM64 build [#45063539061](https://github.com/tyrael9/core/actions/runs/45063539061) passed. All seventeen intentionally remain unregistered in production NewEngine. Legacy remains the default, NewEngine remains exclusive/no-fallback, and this library does not establish playable combat AI.
 
+
+
+F44 begins policy composition in simulator/test-only scope. The first slice is DPS Main-Tank assist through DpsAssistTrigger; its trusted Core fixture and pure C++14 regressions cover Main Tank/healer-peel ranking, CC exclusion, selection-to-attack progression, retargeting, threat fallback and inactive role states. No production policy/action registration is enabled; NewEngine remains an exclusive empty-policy path and Legacy remains default.
+
 Runtime authority is explicit:
 
 - `PlayerBot.EngineAuthority = 0`: Legacy, the default and current safe baseline.

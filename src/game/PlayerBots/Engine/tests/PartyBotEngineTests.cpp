@@ -4,6 +4,7 @@
 #include "ExecutionAuthority.h"
 #include "Value.h"
 #include "ShadowStrategies.h"
+#include "DpsAssistTrigger.h"
 #include "ThreatBudget.h"
 #include "ThreatBudgetPolicy.h"
 #include <cassert>
@@ -3585,6 +3586,190 @@ void TestDpsAssistTargetShadowStrategy() {
 }
 
 
+ActionCandidate const* FindDpsAssistCandidate(
+    std::vector<ActionCandidate> const& candidates, Guid targetGuid)
+{
+    for (ActionCandidate const& candidate : candidates)
+        if (candidate.targetGuid == targetGuid)
+            return &candidate;
+    return nullptr;
+}
+
+void TestDpsAssistPolicyComposition()
+{
+    DpsAssistTrigger trigger;
+    assert(trigger.GetName() == "dps_assist");
+
+    // A DPS bot must follow the Main Tank's target even while its current
+    // victim is a different hostile. Healer peel remains a lower-priority
+    // alternative, and crowd-control-protected targets are never proposed.
+    PartySnapshot snapshot;
+    snapshot.epoch = 84;
+    PartyMemberSnapshot dpsBot, mainTank, healer;
+    ConfigureMember(dpsBot, 11, PartyRole::RangedDamage, 100, 100);
+    ConfigureMember(mainTank, 22, PartyRole::Tank, 100, 100, true);
+    ConfigureMember(healer, 33, PartyRole::Healer, 100, 100);
+    mainTank.victimGuid = 4002;
+    dpsBot.victimGuid = 4003;
+    dpsBot.selectionGuid = 4003;
+    snapshot.members = {dpsBot, mainTank, healer};
+
+    HostileSnapshot healerPeel;
+    healerPeel.guid = 4001;
+    healerPeel.victimGuid = healer.guid;
+    healerPeel.alive = true;
+    HostileSnapshot mainTankTarget;
+    mainTankTarget.guid = 4002;
+    mainTankTarget.alive = true;
+    HostileSnapshot currentBotVictim;
+    currentBotVictim.guid = 4003;
+    currentBotVictim.victimGuid = dpsBot.guid;
+    currentBotVictim.alive = true;
+    HostileSnapshot crowdControlTarget;
+    crowdControlTarget.guid = 4004;
+    crowdControlTarget.alive = true;
+    crowdControlTarget.crowdControlProtected = true;
+    snapshot.hostiles = {
+        healerPeel, mainTankTarget, currentBotVictim, crowdControlTarget
+    };
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, dpsBot, coordinator, 1000);
+    assert(trigger.IsActive(context));
+
+    std::vector<ActionCandidate> candidates;
+    trigger.CollectCandidates(context, candidates);
+    assert(candidates.size() == 2);
+    ActionCandidate const* mainTankCandidate =
+        FindDpsAssistCandidate(candidates, mainTankTarget.guid);
+    ActionCandidate const* healerCandidate =
+        FindDpsAssistCandidate(candidates, healerPeel.guid);
+    assert(mainTankCandidate && healerCandidate);
+    assert(mainTankCandidate->actionName == "core_select_hostile_target");
+    assert(healerCandidate->actionName == "core_select_hostile_target");
+    assert(mainTankCandidate->channel == ActionChannel::Targeting);
+    assert(mainTankCandidate->basePriority == 300.0f);
+    assert(healerCandidate->basePriority == 260.0f);
+    assert(mainTankCandidate->basePriority > healerCandidate->basePriority);
+    assert(!FindDpsAssistCandidate(candidates, currentBotVictim.guid));
+    assert(!FindDpsAssistCandidate(candidates, crowdControlTarget.guid));
+
+    // Once the Main Tank target is selected, the policy advances to the
+    // existing auto-attack action. It still proposes the switch while the
+    // bot's old victim differs from the Main Tank target.
+    dpsBot.selectionGuid = mainTankTarget.guid;
+    candidates.clear();
+    trigger.CollectCandidates(context, candidates);
+    mainTankCandidate = FindDpsAssistCandidate(candidates, mainTankTarget.guid);
+    assert(mainTankCandidate);
+    assert(mainTankCandidate->actionName == "core_attack_target");
+
+    // A non-Main-Tank tank assist still outranks an emergency healer peel.
+    PartySnapshot roleSnapshot;
+    roleSnapshot.epoch = 85;
+    PartyMemberSnapshot roleBot, offTank, roleHealer;
+    ConfigureMember(roleBot, 101, PartyRole::MeleeDamage, 100, 100);
+    ConfigureMember(offTank, 102, PartyRole::Tank, 100, 100, false);
+    ConfigureMember(roleHealer, 103, PartyRole::Healer, 100, 100);
+    offTank.victimGuid = 5001;
+    roleSnapshot.members = {roleBot, offTank, roleHealer};
+    HostileSnapshot offTankTarget;
+    offTankTarget.guid = 5001;
+    offTankTarget.alive = true;
+    HostileSnapshot roleHealerPeel;
+    roleHealerPeel.guid = 5002;
+    roleHealerPeel.victimGuid = roleHealer.guid;
+    roleHealerPeel.alive = true;
+    roleSnapshot.hostiles = {offTankTarget, roleHealerPeel};
+    DecisionContext roleContext(roleSnapshot, roleBot, coordinator, 2000);
+    candidates.clear();
+    trigger.CollectCandidates(roleContext, candidates);
+    ActionCandidate const* offTankCandidate =
+        FindDpsAssistCandidate(candidates, offTankTarget.guid);
+    ActionCandidate const* rolePeelCandidate =
+        FindDpsAssistCandidate(candidates, roleHealerPeel.guid);
+    assert(offTankCandidate && rolePeelCandidate);
+    assert(offTankCandidate->basePriority == 280.0f);
+    assert(rolePeelCandidate->basePriority == 260.0f);
+    assert(offTankCandidate->basePriority > rolePeelCandidate->basePriority);
+
+    // If the hostile's live victim is outside the party, use only accessible,
+    // online party threat references to identify a peel target.
+    PartySnapshot fallbackSnapshot;
+    fallbackSnapshot.epoch = 86;
+    PartyMemberSnapshot fallbackBot, fallbackHealer, fallbackTank;
+    ConfigureMember(fallbackBot, 201, PartyRole::RangedDamage, 100, 100);
+    ConfigureMember(fallbackHealer, 202, PartyRole::Healer, 100, 100);
+    ConfigureMember(fallbackTank, 203, PartyRole::Tank, 100, 100);
+    fallbackSnapshot.members = {fallbackBot, fallbackHealer, fallbackTank};
+    HostileSnapshot fallbackHostile;
+    fallbackHostile.guid = 6001;
+    fallbackHostile.victimGuid = 9999;
+    fallbackHostile.alive = true;
+    ThreatEntrySnapshot inaccessibleTankThreat;
+    inaccessibleTankThreat.unitGuid = fallbackTank.guid;
+    inaccessibleTankThreat.threat = 900.0f;
+    inaccessibleTankThreat.online = true;
+    inaccessibleTankThreat.accessible = false;
+    ThreatEntrySnapshot offlineTankThreat;
+    offlineTankThreat.unitGuid = fallbackTank.guid;
+    offlineTankThreat.threat = 800.0f;
+    offlineTankThreat.online = false;
+    offlineTankThreat.accessible = true;
+    ThreatEntrySnapshot healerThreat;
+    healerThreat.unitGuid = fallbackHealer.guid;
+    healerThreat.threat = 5.0f;
+    healerThreat.online = true;
+    healerThreat.accessible = true;
+    fallbackHostile.threat = {
+        inaccessibleTankThreat, offlineTankThreat, healerThreat
+    };
+    fallbackSnapshot.hostiles = {fallbackHostile};
+    DecisionContext fallbackContext(
+        fallbackSnapshot, fallbackBot, coordinator, 3000);
+    candidates.clear();
+    trigger.CollectCandidates(fallbackContext, candidates);
+    ActionCandidate const* fallbackCandidate =
+        FindDpsAssistCandidate(candidates, fallbackHostile.guid);
+    assert(fallbackCandidate);
+    assert(fallbackCandidate->basePriority == 260.0f);
+
+    // Dead/offline assist members, unassigned hostiles, non-DPS bots and
+    // unavailable DPS bots must not generate actionable candidates.
+    PartySnapshot inactiveSnapshot;
+    inactiveSnapshot.epoch = 87;
+    PartyMemberSnapshot inactiveBot, deadMainTank;
+    ConfigureMember(inactiveBot, 301, PartyRole::RangedDamage, 100, 100);
+    ConfigureMember(deadMainTank, 302, PartyRole::MainTank, 100, 100, true);
+    deadMainTank.alive = false;
+    deadMainTank.victimGuid = 7001;
+    inactiveSnapshot.members = {inactiveBot, deadMainTank};
+    HostileSnapshot unassignedHostile;
+    unassignedHostile.guid = 7001;
+    unassignedHostile.alive = true;
+    HostileSnapshot crowdControlOnly;
+    crowdControlOnly.guid = 7002;
+    crowdControlOnly.alive = true;
+    crowdControlOnly.crowdControlProtected = true;
+    inactiveSnapshot.hostiles = {unassignedHostile, crowdControlOnly};
+    DecisionContext inactiveContext(
+        inactiveSnapshot, inactiveBot, coordinator, 4000);
+    candidates.clear();
+    trigger.CollectCandidates(inactiveContext, candidates);
+    assert(candidates.empty());
+
+    inactiveBot.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    DecisionContext nonDpsContext(
+        inactiveSnapshot, inactiveBot, coordinator, 4000);
+    assert(!trigger.IsActive(nonDpsContext));
+    inactiveBot.roleId = static_cast<std::uint8_t>(PartyRole::RangedDamage);
+    inactiveBot.online = false;
+    assert(!trigger.IsActive(nonDpsContext));
+    inactiveBot.online = true;
+    inactiveBot.alive = false;
+    assert(!trigger.IsActive(nonDpsContext));
+}
+
 void ConfigureThreat(HostileSnapshot& hostile, Guid victimGuid, float victimThreat,
                      Guid memberGuid, float memberThreat, bool meleeReachable) {
     hostile.guid = 9001;
@@ -4811,6 +4996,7 @@ int main() {
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();
+    TestDpsAssistPolicyComposition();
     TestActionThreatImpactContractDefaultsUnknownAndValidatesCompleteness();
     TestThreatImpactBudgetUsesFanoutAndReservations();
     TestThreatImpactBudgetUnknownAndCurrentVictimCases();

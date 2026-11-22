@@ -417,14 +417,39 @@ void TestItemUseAggregateRecordsMutationSeparately()
     mutation.occurredAtMs = 1010;
     assert(tracker.RecordMutation(mutation) == ItemUseTrackerResult::Accepted);
 
+    ItemUseMutationEvent stackMutation = mutation;
+    stackMutation.itemGuid = 201;
+    stackMutation.kind = ItemUseMutationKind::CountChanged;
+    stackMutation.phase = ItemUseMutationPhase::AfterEffects;
+    stackMutation.beforeCount = 2;
+    stackMutation.afterCount = 1;
+    stackMutation.itemExistsAfter = true;
+    stackMutation.occurredAtMs = 1011;
+    assert(tracker.RecordMutation(stackMutation) == ItemUseTrackerResult::Accepted);
+
+    ItemUseMutationEvent reagentMutation = mutation;
+    reagentMutation.itemGuid = 0;
+    reagentMutation.kind = ItemUseMutationKind::ReagentConsumed;
+    reagentMutation.phase = ItemUseMutationPhase::BeforeEffects;
+    reagentMutation.beforeCount = 3;
+    reagentMutation.afterCount = 0;
+    reagentMutation.itemExistsAfter = false;
+    reagentMutation.occurredAtMs = 1012;
+    assert(tracker.RecordMutation(reagentMutation) == ItemUseTrackerResult::Accepted);
+
+    ItemUseMutationEvent invalidStackMutation = stackMutation;
+    invalidStackMutation.itemGuid = 0;
+    assert(tracker.RecordMutation(invalidStackMutation) ==
+           ItemUseTrackerResult::Invalid);
+
     ItemUseTerminalEvent terminal;
     assert(tracker.RecordChildTerminal(root, child,
-        ItemUseChildStatus::Interrupted, 1011, terminal) ==
+        ItemUseChildStatus::Interrupted, 1013, terminal) ==
         ItemUseTrackerResult::Accepted);
-    assert(tracker.CloseDispatch(root, 1012, terminal) ==
+    assert(tracker.CloseDispatch(root, 1014, terminal) ==
            ItemUseTrackerResult::Completed);
     assert(terminal.status == ItemUseAggregateStatus::AllInterrupted);
-    assert(terminal.observedMutationCount == 1);
+    assert(terminal.observedMutationCount == 3);
 
     ItemUseMutationEvent emitted;
     assert(tracker.PopMutationEvent(emitted));
@@ -432,6 +457,21 @@ void TestItemUseAggregateRecordsMutationSeparately()
     assert(emitted.childId == child);
     assert(emitted.kind == ItemUseMutationKind::ItemDestroyed);
     assert(emitted.beforeCount == 1 && emitted.afterCount == 0);
+    assert(!emitted.itemExistsAfter);
+
+    assert(tracker.PopMutationEvent(emitted));
+    assert(emitted.itemGuid == 201);
+    assert(emitted.kind == ItemUseMutationKind::CountChanged);
+    assert(emitted.phase == ItemUseMutationPhase::AfterEffects);
+    assert(emitted.beforeCount == 2 && emitted.afterCount == 1);
+    assert(emitted.itemExistsAfter);
+
+    assert(tracker.PopMutationEvent(emitted));
+    assert(emitted.itemGuid == 0);
+    assert(emitted.itemEntry == 118);
+    assert(emitted.kind == ItemUseMutationKind::ReagentConsumed);
+    assert(emitted.phase == ItemUseMutationPhase::BeforeEffects);
+    assert(emitted.beforeCount == 3 && emitted.afterCount == 0);
     assert(!emitted.itemExistsAfter);
     assert(!tracker.PopMutationEvent(emitted));
 }

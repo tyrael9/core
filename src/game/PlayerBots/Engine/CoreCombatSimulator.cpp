@@ -7103,6 +7103,285 @@ bool RunEngineCoreItemUseSmokeTest(Map& map)
 
 
 
+
+bool RunEngineCoreCountBasedItemMutationSmokeTest(Map& map)
+{
+    static uint32 const PotionItemId = 118;
+    ItemPrototype const* potionPrototype = sObjectMgr.GetItemPrototype(PotionItemId);
+    uint8 spellSlot = 0xff;
+    if (potionPrototype)
+        for (uint8 slot = 0; slot < MAX_ITEM_PROTO_SPELLS; ++slot)
+            if (potionPrototype->Spells[slot].SpellId &&
+                potionPrototype->Spells[slot].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+            {
+                spellSlot = slot;
+                break;
+            }
+
+    SpellEntry const* constSpell = potionPrototype && spellSlot < MAX_ITEM_PROTO_SPELLS
+        ? sSpellMgr.GetSpellEntry(potionPrototype->Spells[spellSlot].SpellId) : nullptr;
+    bool const prototypeValid = potionPrototype &&
+        potionPrototype->Stackable >= 2 &&
+        spellSlot < MAX_ITEM_PROTO_SPELLS &&
+        potionPrototype->Spells[spellSlot].SpellCharges < 0 &&
+        constSpell && constSpell->Id == 439;
+    if (!prototypeValid)
+        return false;
+
+    class SimulatorCountMutationCapture final : public ItemUseTerminalListener
+    {
+    public:
+        void OnItemUseTerminal(ItemUseTerminalEvent const& event) override
+        {
+            events.push_back(event);
+        }
+        std::vector<ItemUseTerminalEvent> events;
+    };
+
+    bool stackUsePassed = false;
+    bool stackPlayerCleaned = false;
+    uint32 stackCountBefore = 0;
+    uint32 stackCountAfter = 0;
+    uint32 stackHealthBefore = 0;
+    uint32 stackHealthAfter = 0;
+    ItemUseId stackItemUseId = 0;
+    ItemUseMutationEvent stackMutation;
+    uint8 stackMutationCount = 0;
+
+    {
+        WorldSession session(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+        Player* player = nullptr;
+        if (CreateSimulatorPlayer(map, 1, session, player, 0.0f, 9.0f, 4.0f))
+        {
+            PartyBotAI observer(player, map.GetId(), map.GetInstanceId(),
+                                player->GetPositionX(), player->GetPositionY(),
+                                player->GetPositionZ(), player->GetOrientation());
+            observer.SetPlayer(player);
+            player->SetAI(&observer);
+            std::shared_ptr<SimulatorCountMutationCapture> capture(
+                new SimulatorCountMutationCapture());
+            bool const listenerAdded =
+                observer.m_partyBotEngine.AddItemUseTerminalListener(capture);
+
+            Item* potion = player->StoreNewItemInInventorySlot(PotionItemId, 2);
+            ObjectGuid const potionGuid = potion ? potion->GetObjectGuid() : ObjectGuid();
+            stackCountBefore = player->GetItemCount(PotionItemId);
+            stackHealthBefore = player->GetMaxHealth() / 2;
+            player->SetHealth(stackHealthBefore);
+            SpellCastTargets targets;
+            targets.PrepareForSpellSystem(player);
+            stackItemUseId = potion ? player->CastItemUseSpell(potion, targets) : 0;
+
+            for (uint32 tick = 0; tick < 8 &&
+                 (observer.m_partyBotEngine.GetPendingItemUseCount() != 0 ||
+                  player->GetCurrentSpell(CURRENT_GENERIC_SPELL)); ++tick)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                map.Update(250);
+            }
+
+            stackCountAfter = player->GetItemCount(PotionItemId);
+            stackHealthAfter = player->GetHealth();
+            Item* const remainingPotion = potionGuid
+                ? player->GetItemByGuid(potionGuid) : nullptr;
+            std::vector<ItemUseMutationEvent> mutations;
+            ItemUseMutationEvent mutation;
+            while (observer.m_partyBotEngine.PopItemUseMutationEvent(mutation))
+                mutations.push_back(mutation);
+            stackMutationCount = static_cast<uint8>(mutations.size());
+            if (!mutations.empty())
+                stackMutation = mutations[0];
+
+            bool const terminalValid = listenerAdded && stackItemUseId &&
+                capture->events.size() == 1 &&
+                capture->events[0].itemUseId == stackItemUseId &&
+                capture->events[0].status == ItemUseAggregateStatus::AllSucceeded &&
+                capture->events[0].childCount == 1 &&
+                capture->events[0].completedChildCount == 1 &&
+                capture->events[0].observedMutationCount == 1 &&
+                capture->events[0].children[0].spellId == constSpell->Id &&
+                capture->events[0].children[0].status == ItemUseChildStatus::Succeeded;
+            bool const mutationValid = mutations.size() == 1 &&
+                capture->events.size() == 1 &&
+                stackMutation.itemUseId == stackItemUseId &&
+                stackMutation.childId == capture->events[0].children[0].childId &&
+                stackMutation.itemGuid == potionGuid.GetRawValue() &&
+                stackMutation.itemEntry == PotionItemId &&
+                stackMutation.kind == ItemUseMutationKind::CountChanged &&
+                stackMutation.phase == ItemUseMutationPhase::AfterEffects &&
+                stackMutation.slotIndex == 0xff &&
+                stackMutation.beforeCount == 2 && stackMutation.afterCount == 1 &&
+                stackMutation.beforeCharges == 0 && stackMutation.afterCharges == 0 &&
+                stackMutation.itemExistsAfter;
+            stackUsePassed = terminalValid && mutationValid &&
+                stackCountBefore == 2 && stackCountAfter == 1 &&
+                remainingPotion && remainingPotion == potion &&
+                remainingPotion->GetCount() == 1 &&
+                stackHealthAfter > stackHealthBefore &&
+                player->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+                observer.m_partyBotEngine.GetPendingItemUseCount() == 0;
+
+            player->InterruptNonMeleeSpells(false);
+            player->SetAI(nullptr);
+            session.LogoutPlayer(false);
+        }
+        else if (session.GetPlayer())
+            session.LogoutPlayer(false);
+        else if (player)
+            delete player;
+        stackPlayerCleaned = session.GetPlayer() == nullptr;
+    }
+
+    struct SpellReagentRestore
+    {
+        SpellEntry* spell = nullptr;
+        int32 reagent[MAX_SPELL_REAGENTS] = {};
+        uint32 reagentCount[MAX_SPELL_REAGENTS] = {};
+        explicit SpellReagentRestore(SpellEntry* value) : spell(value)
+        {
+            for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+            {
+                reagent[i] = spell->Reagent[i];
+                reagentCount[i] = spell->ReagentCount[i];
+                spell->Reagent[i] = 0;
+                spell->ReagentCount[i] = 0;
+            }
+        }
+        ~SpellReagentRestore()
+        {
+            for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+            {
+                spell->Reagent[i] = reagent[i];
+                spell->ReagentCount[i] = reagentCount[i];
+            }
+        }
+    };
+
+    SpellEntry* mutableSpell = const_cast<SpellEntry*>(constSpell);
+    bool reagentUsePassed = false;
+    bool reagentPlayerCleaned = false;
+    bool reagentConfigured = false;
+    uint32 reagentCountBefore = 0;
+    uint32 reagentCountAfter = 0;
+    uint32 reagentHealthBefore = 0;
+    uint32 reagentHealthAfter = 0;
+    ItemUseId reagentItemUseId = 0;
+    ItemUseMutationEvent reagentMutation;
+    uint8 reagentMutationCount = 0;
+
+    {
+        SpellReagentRestore restore(mutableSpell);
+        mutableSpell->Reagent[0] = static_cast<int32>(PotionItemId);
+        mutableSpell->ReagentCount[0] = 2;
+        reagentConfigured = mutableSpell->Reagent[0] == static_cast<int32>(PotionItemId) &&
+            mutableSpell->ReagentCount[0] == 2;
+
+        WorldSession session(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+        Player* player = nullptr;
+        if (CreateSimulatorPlayer(map, 1, session, player, 0.0f, 9.0f, 4.0f))
+        {
+            PartyBotAI observer(player, map.GetId(), map.GetInstanceId(),
+                                player->GetPositionX(), player->GetPositionY(),
+                                player->GetPositionZ(), player->GetOrientation());
+            observer.SetPlayer(player);
+            player->SetAI(&observer);
+            std::shared_ptr<SimulatorCountMutationCapture> capture(
+                new SimulatorCountMutationCapture());
+            bool const listenerAdded =
+                observer.m_partyBotEngine.AddItemUseTerminalListener(capture);
+
+            // The item is both the cast item and the spell's reagent. The
+            // Core CheckItems/TakeReagents special case adds the cast item to
+            // the required reagent count, so two reagents require a stack of 3.
+            Item* potion = player->StoreNewItemInInventorySlot(PotionItemId, 3);
+            ObjectGuid const potionGuid = potion ? potion->GetObjectGuid() : ObjectGuid();
+            reagentCountBefore = player->GetItemCount(PotionItemId);
+            reagentHealthBefore = player->GetMaxHealth() / 2;
+            player->SetHealth(reagentHealthBefore);
+            SpellCastTargets targets;
+            targets.PrepareForSpellSystem(player);
+            reagentItemUseId = potion ? player->CastItemUseSpell(potion, targets) : 0;
+
+            for (uint32 tick = 0; tick < 8 &&
+                 (observer.m_partyBotEngine.GetPendingItemUseCount() != 0 ||
+                  player->GetCurrentSpell(CURRENT_GENERIC_SPELL)); ++tick)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                map.Update(250);
+            }
+
+            reagentCountAfter = player->GetItemCount(PotionItemId);
+            reagentHealthAfter = player->GetHealth();
+            bool const originalStackGone = potionGuid &&
+                player->GetItemByGuid(potionGuid) == nullptr;
+            std::vector<ItemUseMutationEvent> mutations;
+            ItemUseMutationEvent mutation;
+            while (observer.m_partyBotEngine.PopItemUseMutationEvent(mutation))
+                mutations.push_back(mutation);
+            reagentMutationCount = static_cast<uint8>(mutations.size());
+            if (!mutations.empty())
+                reagentMutation = mutations[0];
+
+            bool const terminalValid = listenerAdded && reagentItemUseId &&
+                capture->events.size() == 1 &&
+                capture->events[0].itemUseId == reagentItemUseId &&
+                capture->events[0].status == ItemUseAggregateStatus::AllSucceeded &&
+                capture->events[0].childCount == 1 &&
+                capture->events[0].completedChildCount == 1 &&
+                capture->events[0].observedMutationCount == 1 &&
+                capture->events[0].children[0].spellId == constSpell->Id &&
+                capture->events[0].children[0].status == ItemUseChildStatus::Succeeded;
+            bool const mutationValid = mutations.size() == 1 &&
+                capture->events.size() == 1 &&
+                reagentMutation.itemUseId == reagentItemUseId &&
+                reagentMutation.childId == capture->events[0].children[0].childId &&
+                reagentMutation.itemGuid == 0 &&
+                reagentMutation.itemEntry == PotionItemId &&
+                reagentMutation.kind == ItemUseMutationKind::ReagentConsumed &&
+                reagentMutation.phase == ItemUseMutationPhase::BeforeEffects &&
+                reagentMutation.slotIndex == 0xff &&
+                reagentMutation.beforeCount == 3 && reagentMutation.afterCount == 0 &&
+                reagentMutation.beforeCharges == 0 && reagentMutation.afterCharges == 0 &&
+                !reagentMutation.itemExistsAfter;
+            reagentUsePassed = terminalValid && mutationValid &&
+                reagentCountBefore == 3 && reagentCountAfter == 0 &&
+                originalStackGone && reagentHealthAfter > reagentHealthBefore &&
+                player->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+                observer.m_partyBotEngine.GetPendingItemUseCount() == 0;
+
+            player->InterruptNonMeleeSpells(false);
+            player->SetAI(nullptr);
+            session.LogoutPlayer(false);
+        }
+        else if (session.GetPlayer())
+            session.LogoutPlayer(false);
+        else if (player)
+            delete player;
+        reagentPlayerCleaned = session.GetPlayer() == nullptr;
+    }
+
+    bool const passed = prototypeValid && stackUsePassed && stackPlayerCleaned &&
+        reagentConfigured && reagentUsePassed && reagentPlayerCleaned;
+    sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F45 CountBasedItemMutation: prototype=%u stackUse=%u stackCount=%u>%u stackHeal=%u>%u stackMutation=%u stackKind=%u stackPhase=%u stackCleanup=%u reagentConfigured=%u reagentUse=%u reagentCount=%u>%u reagentHeal=%u>%u reagentMutation=%u reagentKind=%u reagentPhase=%u reagentGuidZero=%u reagentCleanup=%u.",
+        prototypeValid ? 1u : 0u, stackUsePassed ? 1u : 0u,
+        stackCountBefore, stackCountAfter, stackHealthBefore, stackHealthAfter,
+        stackMutationCount, static_cast<uint32>(stackMutation.kind),
+        static_cast<uint32>(stackMutation.phase), stackPlayerCleaned ? 1u : 0u,
+        reagentConfigured ? 1u : 0u, reagentUsePassed ? 1u : 0u,
+        reagentCountBefore, reagentCountAfter, reagentHealthBefore, reagentHealthAfter,
+        reagentMutationCount, static_cast<uint32>(reagentMutation.kind),
+        static_cast<uint32>(reagentMutation.phase),
+        reagentMutation.itemGuid == 0 ? 1u : 0u,
+        reagentPlayerCleaned ? 1u : 0u);
+    if (passed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: real Core stackable item use reduced a two-potion stack to one with a CountChanged after-effects record, and using the cast item as its own reagent consumed three items once with a GUID-less ReagentConsumed before-effects record.");
+    return passed;
+}
+
+
+
 bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
 {
     uint32 partyFaction = 0, unusedHostileFaction = 0;
@@ -13715,6 +13994,8 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const dpsAssistGroupSnapshotPassed = RunEngineCoreDpsAssistGroupSnapshotSmokeTest(*map);
     bool const followPartyMemberPassed = RunEngineCoreFollowPartyMemberActionSmokeTest(*map);
     bool const itemUsePassed = RunEngineCoreItemUseSmokeTest(*map);
+    bool const countBasedItemMutationPassed =
+        RunEngineCoreCountBasedItemMutationSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
     bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
     bool const playerFollowCastSafetyPassed = RunEngineCorePlayerFollowCastSafetySmokeTest(*map);
@@ -13736,7 +14017,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                               moveDistancePassed && stopStaleChasePassed && stopChasePassed &&
                               dpsAssistPassed && dpsAssistGroupSnapshotPassed &&
                               followPartyMemberPassed && itemUsePassed &&
-                              movementPassed && followPassed &&
+                              countBasedItemMutationPassed && movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&
                               movePointControlSafetyPassed && movementInterruptPassed &&

@@ -147,6 +147,16 @@ private:
         return static_cast<ChaseMovementGenerator<Player> const*>(current);
     }
 
+    static FollowMovementGenerator<Player> const* GetCurrentFollow(Player* actor)
+    {
+        if (!actor || !actor->GetMotionMaster())
+            return nullptr;
+        MovementGenerator const* current = actor->GetMotionMaster()->GetCurrent();
+        if (!current || current->GetMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+            return nullptr;
+        return static_cast<FollowMovementGenerator<Player> const*>(current);
+    }
+
     static bool HasNonMeleeSpell(Player* actor)
     {
         if (!actor)
@@ -229,6 +239,14 @@ private:
             return result;
         }
 
+        MotionMaster* motion = actor->GetMotionMaster();
+        if (!motion)
+        {
+            result.result = ActionResult::Impossible;
+            result.reason = "chase_target_motion_master_missing";
+            return result;
+        }
+
         ChaseMovementGenerator<Player> const* currentChase = GetCurrentChase(actor);
         if (currentChase && currentChase->GetTarget() == target)
         {
@@ -237,11 +255,41 @@ private:
             return result;
         }
 
-        if (!currentChase && !actor->GetMotionMaster()->IsUsingIdleOrDefaultMovement())
+        if (!currentChase)
         {
-            result.result = ActionResult::Useless;
-            result.reason = "chase_target_unrelated_movement_active";
-            return result;
+            FollowMovementGenerator<Player> const* currentFollow =
+                GetCurrentFollow(actor);
+            if (currentFollow)
+            {
+                // Core MoveChase stacks over the existing Follow generator;
+                // after the chase ends, the valid party follow resumes. Only
+                // preserve a follow whose live target still matches this
+                // snapshot's same-map party roster.
+                Player* followTarget = currentFollow->GetTarget();
+                Guid const followGuid = followTarget
+                    ? followTarget->GetObjectGuid().GetRawValue() : 0;
+                PartyMemberSnapshot const* followMember =
+                    followGuid ? context.snapshot.FindMember(followGuid) : nullptr;
+                if (!followTarget || !followTarget->IsInWorld() ||
+                    !followTarget->IsAlive() || followTarget->GetMap() != resolved.map ||
+                    followTarget->GetMapId() != context.snapshot.mapId ||
+                    followTarget->GetInstanceId() != context.snapshot.instanceId ||
+                    context.bot.followTargetGuid != followGuid ||
+                    !followMember || !followMember->online || !followMember->alive ||
+                    followMember->mapId != context.snapshot.mapId ||
+                    followMember->instanceId != context.snapshot.instanceId)
+                {
+                    result.result = ActionResult::Useless;
+                    result.reason = "chase_target_follow_target_stale";
+                    return result;
+                }
+            }
+            else if (!motion->IsUsingIdleOrDefaultMovement())
+            {
+                result.result = ActionResult::Useless;
+                result.reason = "chase_target_unrelated_movement_active";
+                return result;
+            }
         }
 
         if (actor->CanReachWithMeleeAutoAttack(target))

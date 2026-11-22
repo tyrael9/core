@@ -459,8 +459,11 @@ Trusted Push [#45074121261](https://github.com/tyrael9/core/actions/runs/4507412
 Matching PR ARM64 build [#45074126327](https://github.com/tyrael9/core/actions/runs/45074126327) passed. Artifact: [partybot-simulator-f50c79e](https://github.com/tyrael9/core/actions/runs/45074121261/artifacts/14774942008). External human Player target changes still need a host invalidation signal or the 250ms snapshot freshness bound. The CC-protected row remains a test-only overlay because the builder does not yet infer CC protection from live auras. DpsAssistTrigger remains unregistered in production NewEngine.
 
 
-## F45 — count-based item-use mutation coverage (pending trusted runtime)
+## F45 — count-based item-use mutation coverage (trusted-runtime validated)
 
 The Core fixture adds a real stackable Minor Healing Potion item 118 / spell 439 case. It casts from a stack of two and requires successful healing, a surviving one-item stack, and exactly one CountChanged mutation with the same Item GUID, BeforeEffects phase and count 2→1; the Core fixture's Player heal is delayable under spell batching, so TakeCastItem records the stack decrement before the effect resolves.
 
 A second isolated Player temporarily uses the same spell with item 118 configured as a reagent of count two. Core's cast-item/reagent special case requires three units including the cast item, clears m_CastItem during TakeReagents, consumes the stack 3→0, and must emit one GUID-less ReagentConsumed event in BeforeEffects with no duplicate TakeCastItem event. The fixture restores the SpellEntry reagent arrays and requires session cleanup. Pure C++ tests accept both mutation shapes and reject a GUID-less CountChanged.
+
+
+Trusted Push [#45076438039](https://github.com/tyrael9/core/actions/runs/45076438039) completed the F45 real-Core fixture and final Runtime PASS. Its diagnostic was `prototype=1 stackUse=1 stackCount=2>1 stackHeal=858>969 stackMutation=1 stackKind=CountChanged stackPhase=BeforeEffects stackCleanup=1 reagentConfigured=1 reagentUse=1 reagentCount=3>0 reagentHeal=858>969 reagentMutation=1 reagentKind=ReagentConsumed reagentPhase=BeforeEffects reagentGuidZero=1 reagentCleanup=1`. The exact PASS marker is required by `tools/partybot-simulator/run-ci.sh`. Matching PR ARM64 build [#45076443461](https://github.com/tyrael9/core/actions/runs/45076443461) passed. Artifact [partybot-simulator-945ad2f](https://github.com/tyrael9/core/actions/runs/45076438039/artifacts/14775915604).

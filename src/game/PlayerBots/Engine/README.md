@@ -10,7 +10,9 @@ Current F43 status (2026-11-22): seventeen generic CoreAction adapters are imple
 
 
 
-F44 begins policy composition in simulator/test-only scope. The first slice is DPS Main-Tank assist through DpsAssistTrigger; its trusted Core fixture and pure C++14 regressions cover Main Tank/healer-peel ranking, CC exclusion, selection-to-attack progression, retargeting, threat fallback and inactive role states. No production policy/action registration is enabled; NewEngine remains an exclusive empty-policy path and Legacy remains default.
+F44 is closed in simulator/test-only scope. DPS Main-Tank assist through DpsAssistTrigger has trusted five-Player Group / PartySnapshotBuilder handoff validation and pure C++14 coverage for Main Tank/healer-peel ranking, CC exclusion, selection-to-attack progression, retargeting, threat fallback and inactive role states. No production policy/action registration is enabled; NewEngine remains an exclusive empty-policy path and Legacy remains default.
+
+F45 separately closes count-based Core item-use mutation follow-up coverage. Trusted Push [#45076438039](https://github.com/tyrael9/core/actions/runs/45076438039) and PR ARM64 [#45076443461](https://github.com/tyrael9/core/actions/runs/45076443461) prove stack CountChanged 2→1 and GUID-less item-as-reagent ReagentConsumed 3→0, both BeforeEffects under Core spell batching/TakeReagents semantics, with complete Player cleanup and final Runtime PASS. Artifact [partybot-simulator-945ad2f](https://github.com/tyrael9/core/actions/runs/45076438039/artifacts/14775915604). This is simulator-only lifecycle coverage, not a production item-use adapter.
 
 Runtime authority is explicit:
 

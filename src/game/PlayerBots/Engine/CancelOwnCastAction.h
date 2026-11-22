@@ -165,8 +165,24 @@ private:
         Spell* spell = resolved.actor->GetCurrentSpell(spellType);
         if (!spell || !spell->m_spellInfo ||
             spell->GetCaster() != resolved.actor ||
-            spell->m_spellInfo->Id != candidate.spellId ||
-            !IsCancellableState(spell->getState()) ||
+            spell->m_spellInfo->Id != candidate.spellId)
+        {
+            return Reject(
+                ActionResult::Impossible,
+                "cancel_own_cast_live_spell_identity_mismatch");
+        }
+
+        // A state change can alter the action's threat aftermath after its
+        // estimate was produced. Never execute with a stale PREPARING estimate
+        // against a now-DELAYED or now-CASTING Spell.
+        if (spell->getState() != context.bot.currentSpellState)
+        {
+            return Reject(
+                ActionResult::Impossible,
+                "cancel_own_cast_live_spell_state_changed");
+        }
+
+        if (!IsCancellableState(spell->getState()) ||
             !spell->IsPartyBotTraceEngineAction() ||
             spell->GetPartyBotTraceActionId() != context.bot.currentSpellActionId ||
             spell->GetPartyBotTraceEncounterId() !=

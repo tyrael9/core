@@ -2239,6 +2239,16 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
         delayedEstimateReport.candidates[0].reason ==
             "threat_impact_estimate_unknown";
 
+    ActionCandidate staleStateCandidate;
+    staleStateCandidate.actionId = 0xcace1001ull;
+    staleStateCandidate.spellId = SIMULATOR_HEAL_SPELL_ID;
+    ActionExecutionResult const delayedStateResult =
+        cancelAction->ExecuteDetailed(delayedEstimateContext, staleStateCandidate);
+    bool const delayedStateDriftRejected =
+        delayedStateResult.result == ActionResult::Impossible &&
+        delayedStateResult.reason == "cancel_own_cast_live_spell_state_changed" &&
+        spellObserver.finishCount == 1;
+
     PartyMemberSnapshot castingEstimateMember = *replacementBot;
     castingEstimateMember.currentSpellState = SPELL_STATE_CASTING;
     DecisionContext castingEstimateContext(
@@ -2253,6 +2263,13 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
             CandidateStatus::RejectedThreatUnknown &&
         castingEstimateReport.candidates[0].reason ==
             "threat_impact_estimate_unknown";
+
+    ActionExecutionResult const castingStateResult =
+        cancelAction->ExecuteDetailed(castingEstimateContext, staleStateCandidate);
+    bool const castingStateDriftRejected =
+        castingStateResult.result == ActionResult::Impossible &&
+        castingStateResult.reason == "cancel_own_cast_live_spell_state_changed" &&
+        spellObserver.finishCount == 1;
 
     PartyMemberSnapshot preparingEstimateMember = *replacementBot;
     DecisionContext preparingEstimateContext(
@@ -2352,15 +2369,17 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
     bool const beforeCleanup =
         firstCastCaptured && firstTerminalCaptured && replacementCaptured &&
         registered && preparingNoThreat && delayedFailsClosed &&
-        castingFailsClosed && staleSnapshotRejected && replacementPreserved &&
+        castingFailsClosed && delayedStateDriftRejected &&
+        castingStateDriftRejected && staleSnapshotRejected && replacementPreserved &&
         currentSelected && currentCancelled && repeatedCancelRejected && noEffects;
     bool const cleaned = cleanup();
 
     sLog.Out(LOG_BASIC, beforeCleanup && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] CancelOwnCastAction: snapshotIdentity=%u firstInterrupted=%u replacementIdentity=%u preparingNoThreat=%u delayedUnknown=%u castingUnknown=%u staleRejected=%u replacementPreserved=%u selected=%u cancelled=%u repeatedRejected=%u noEffects=%u cleanup=%u.",
+        "[PartyBotSimulator] CancelOwnCastAction: snapshotIdentity=%u firstInterrupted=%u replacementIdentity=%u preparingNoThreat=%u delayedUnknown=%u castingUnknown=%u delayedStateDriftRejected=%u castingStateDriftRejected=%u staleRejected=%u replacementPreserved=%u selected=%u cancelled=%u repeatedRejected=%u noEffects=%u cleanup=%u.",
         firstCastCaptured ? 1u : 0u, firstTerminalCaptured ? 1u : 0u,
         replacementCaptured ? 1u : 0u, preparingNoThreat ? 1u : 0u,
         delayedFailsClosed ? 1u : 0u, castingFailsClosed ? 1u : 0u,
+        delayedStateDriftRejected ? 1u : 0u, castingStateDriftRejected ? 1u : 0u,
         staleSnapshotRejected ? 1u : 0u, replacementPreserved ? 1u : 0u,
         currentSelected ? 1u : 0u, currentCancelled ? 1u : 0u,
         repeatedCancelRejected ? 1u : 0u, noEffects ? 1u : 0u,

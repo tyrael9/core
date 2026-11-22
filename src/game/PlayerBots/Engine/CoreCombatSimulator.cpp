@@ -2380,7 +2380,7 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
     {
         bot->LearnSpell(143, false);
         patient.creature->SetFactionTemplateId(unusedHostileFaction);
-        patient.creature->SetPosition(
+        patient.creature->Relocate(
             24.0f, 6.0f, 0.0f, patient.creature->GetOrientation());
         patient.creature->SetHealth(patient.creature->GetMaxHealth());
 
@@ -2409,9 +2409,13 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
         }
 
         PartySnapshot fireballSnapshot;
-        bool const fireballSnapshotBuilt = fireballDelayedObserved &&
-            PartySnapshotBuilder::Build(
-                bot, fireballSnapshot, 5, WorldTimer::getMSTime());
+        PartySnapshot const* fireballBuilt = fireballDelayedObserved
+            ? PartySnapshotBuilder::GetOrBuild(
+                bot, coordinator, WorldTimer::getMSTime(), 0)
+            : nullptr;
+        if (fireballBuilt)
+            fireballSnapshot = *fireballBuilt;
+        bool const fireballSnapshotBuilt = fireballBuilt != nullptr;
         PartyMemberSnapshot const* fireballMember = fireballSnapshotBuilt
             ? fireballSnapshot.FindMember(botGuid.GetRawValue()) : nullptr;
         if (fireballMember)
@@ -2473,7 +2477,7 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
     if (mindFlayInfo && mindFlayInfo->IsChanneledSpell())
     {
         bot->LearnSpell(15407, false);
-        patient.creature->SetPosition(
+        patient.creature->Relocate(
             8.0f, 6.0f, 0.0f, patient.creature->GetOrientation());
         patient.creature->SetFactionTemplateId(unusedHostileFaction);
         bot->InterruptSpell(CURRENT_GENERIC_SPELL, true);
@@ -2507,9 +2511,13 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
         }
 
         PartySnapshot mindFlaySnapshot;
-        bool const mindFlaySnapshotBuilt = mindFlayChannelStarted &&
-            PartySnapshotBuilder::Build(
-                bot, mindFlaySnapshot, 6, WorldTimer::getMSTime());
+        PartySnapshot const* mindFlayBuilt = mindFlayChannelStarted
+            ? PartySnapshotBuilder::GetOrBuild(
+                bot, coordinator, WorldTimer::getMSTime(), 0)
+            : nullptr;
+        if (mindFlayBuilt)
+            mindFlaySnapshot = *mindFlayBuilt;
+        bool const mindFlaySnapshotBuilt = mindFlayBuilt != nullptr;
         PartyMemberSnapshot const* mindFlayMember = mindFlaySnapshotBuilt
             ? mindFlaySnapshot.FindMember(botGuid.GetRawValue()) : nullptr;
         if (mindFlayMember)

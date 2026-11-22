@@ -8270,6 +8270,21 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         sameChaseNotProposed && staleSelected && staleVictimRejected &&
         pointSelected && pointMovementPreserved;
 
+    // Capture every diagnostic fact while the Player and hostile are still
+    // alive. LogoutPlayer(false) destroys the Player; no raw Player/Unit pointer
+    // may be dereferenced after that boundary.
+    bool const detailVictimMatch = bot->GetVictim() == hostile.creature;
+    bool const detailCanAttack = bot->CanAttack(hostile.creature);
+    bool const detailMeleeReachable =
+        bot->CanReachWithMeleeAutoAttack(hostile.creature);
+    uint32 const detailMovementType = bot->GetMotionMaster()
+        ? static_cast<uint32>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType())
+        : static_cast<uint32>(IDLE_MOTION_TYPE);
+    uint64 const detailVictimGuid = bot->GetVictim()
+        ? bot->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+    bool const detailMounted = bot->IsMounted();
+    bool const detailTaxi = bot->IsTaxiFlying();
+
     bot->SetAI(nullptr);
     actionRuntime.Remove();
     botSession.LogoutPlayer(false);
@@ -8287,14 +8302,11 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         evaluation ? static_cast<uint32>(evaluation->status) : 0xffffffffu,
         evaluation ? static_cast<uint32>(evaluation->actionResult) : 0xffffffffu,
         evaluation ? evaluation->reason.c_str() : "no-evaluation",
-        bot->GetVictim() == hostile.creature ? 1u : 0u,
-        bot->CanAttack(hostile.creature) ? 1u : 0u,
-        bot->CanReachWithMeleeAutoAttack(hostile.creature) ? 1u : 0u,
-        static_cast<uint32>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+        detailVictimMatch ? 1u : 0u, detailCanAttack ? 1u : 0u,
+        detailMeleeReachable ? 1u : 0u, detailMovementType,
         static_cast<unsigned long long>(hostileGuid),
-        static_cast<unsigned long long>(bot->GetVictim()
-            ? bot->GetVictim()->GetObjectGuid().GetRawValue() : 0),
-        bot->IsMounted() ? 1u : 0u, bot->IsTaxiFlying() ? 1u : 0u);
+        static_cast<unsigned long long>(detailVictimGuid),
+        detailMounted ? 1u : 0u, detailTaxi ? 1u : 0u);
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
         "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
         attackStarted ? 1u : 0u, registered ? 1u : 0u, selected ? 1u : 0u,

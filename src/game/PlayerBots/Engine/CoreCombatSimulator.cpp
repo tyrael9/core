@@ -2366,16 +2366,216 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
             bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
     }
 
+
+    // Live Core DELAYED projectile cancellation. Fireball rank 2 (143) is
+    // verified by the simulator DBC fixture as a 2s cast with 24 yd/s speed.
+    // At 24 yards the projectile remains pending long enough to cancel after
+    // Core transitions the Spell to DELAYED but before its impact event.
+    bool fireballDelayedObserved = false;
+    bool fireballThreatRejected = false;
+    bool fireballCancelled = false;
+    bool fireballImpactSuppressed = false;
+    SpellEntry const* fireballInfo = sSpellMgr.GetSpellEntry(143);
+    if (fireballInfo && fireballInfo->speed > 0.0f)
+    {
+        bot->LearnSpell(143, false);
+        patient.creature->SetFactionTemplateId(unusedHostileFaction);
+        patient.creature->SetPosition(
+            24.0f, 6.0f, 0.0f, patient.creature->GetOrientation());
+        patient.creature->SetHealth(patient.creature->GetMaxHealth());
+
+        SpellCastResult const fireballCastResult =
+            bot->CastSpell(patient.creature, 143, false);
+        uint64 const fireballActionId = spellObserver.lastPreparedActionId;
+        bool const fireballPrepared =
+            fireballCastResult == SPELL_CAST_OK &&
+            fireballActionId != 0 &&
+            bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr &&
+            bot->GetCurrentSpell(CURRENT_GENERIC_SPELL)->getState() ==
+                SPELL_STATE_PREPARING;
+
+        for (uint32 tick = 0; fireballPrepared && tick < 40; ++tick)
+        {
+            Spell* current = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            if (!current)
+                break;
+            if (current->getState() == SPELL_STATE_DELAYED)
+            {
+                fireballDelayedObserved = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            map.Update(250);
+        }
+
+        PartySnapshot fireballSnapshot;
+        bool const fireballSnapshotBuilt = fireballDelayedObserved &&
+            PartySnapshotBuilder::Build(
+                bot, fireballSnapshot, 5, WorldTimer::getMSTime());
+        PartyMemberSnapshot const* fireballMember = fireballSnapshotBuilt
+            ? fireballSnapshot.FindMember(botGuid.GetRawValue()) : nullptr;
+        if (fireballMember)
+        {
+            DecisionContext fireballContext(
+                fireballSnapshot, *fireballMember, coordinator,
+                WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+                &actionRuntime);
+            DecisionReport fireballReport = engine.Evaluate(fireballContext);
+            fireballThreatRejected =
+                fireballReport.selectedIndices.empty() &&
+                fireballReport.candidates.size() == 1 &&
+                fireballReport.candidates[0].status ==
+                    CandidateStatus::RejectedThreatUnknown &&
+                fireballReport.candidates[0].reason ==
+                    "threat_impact_estimate_unknown";
+
+            ActionCandidate fireballCancelCandidate;
+            fireballCancelCandidate.actionId = 0xcace1002ull;
+            fireballCancelCandidate.spellId = 143;
+            uint32 const healthAtCancel = patient.creature->GetHealth();
+            ActionExecutionResult const cancelResult =
+                cancelAction->ExecuteDetailed(
+                    fireballContext, fireballCancelCandidate);
+            fireballCancelled =
+                cancelResult.result == ActionResult::Success &&
+                cancelResult.reason ==
+                    "cancel_own_cast_core_interrupted_exact_spell" &&
+                bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+                spellObserver.finishCount == 3 &&
+                spellObserver.lastFinishedActionId == fireballActionId &&
+                spellObserver.lastFinishedSpellId == 143 &&
+                spellObserver.lastFinishedTargetGuid == patientGuid.GetRawValue() &&
+                spellObserver.lastFinishedInterrupted &&
+                !spellObserver.lastFinishedSuccess;
+
+            // Wait beyond Fireball's target-relative travel time. A cancelled
+            // delayed Spell must not deliver its later direct-damage effect.
+            for (uint32 tick = 0; tick < 8; ++tick)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                map.Update(250);
+            }
+            fireballImpactSuppressed =
+                patient.creature->GetHealth() >= healthAtCancel &&
+                !patient.creature->HasAura(143);
+        }
+    }
+
+    // Live Core CHANNELED/CASTING cancellation. Mind Flay (15407) is a
+    // Classic Priest channel. Its normal SpellEvent progression must install
+    // CURRENT_CHANNELED_SPELL and the channel aura before the wrapper acts.
+    bool mindFlayChannelStarted = false;
+    bool mindFlayThreatRejected = false;
+    bool mindFlayCancelled = false;
+    bool mindFlayAuraRemoved = false;
+    bool mindFlayNoFurtherTicks = false;
+    SpellEntry const* mindFlayInfo = sSpellMgr.GetSpellEntry(15407);
+    if (mindFlayInfo && mindFlayInfo->IsChanneledSpell())
+    {
+        bot->LearnSpell(15407, false);
+        patient.creature->SetPosition(
+            8.0f, 6.0f, 0.0f, patient.creature->GetOrientation());
+        patient.creature->SetFactionTemplateId(unusedHostileFaction);
+        bot->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+        bot->InterruptSpell(CURRENT_CHANNELED_SPELL, true);
+
+        for (uint32 tick = 0; tick < 24 &&
+             (!bot->IsSpellReady(mindFlayInfo) ||
+              bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) ||
+              bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL)); ++tick)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            map.Update(250);
+        }
+
+        SpellCastResult const mindFlayCastResult =
+            bot->CastSpell(patient.creature, 15407, false);
+        uint64 const mindFlayActionId = spellObserver.lastPreparedActionId;
+        bool const mindFlayPrepared =
+            mindFlayCastResult == SPELL_CAST_OK && mindFlayActionId != 0;
+        for (uint32 tick = 0; mindFlayPrepared && tick < 12; ++tick)
+        {
+            Spell* current = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+            if (current && current->getState() == SPELL_STATE_CASTING &&
+                current->IsChannelActive())
+            {
+                mindFlayChannelStarted = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            map.Update(250);
+        }
+
+        PartySnapshot mindFlaySnapshot;
+        bool const mindFlaySnapshotBuilt = mindFlayChannelStarted &&
+            PartySnapshotBuilder::Build(
+                bot, mindFlaySnapshot, 6, WorldTimer::getMSTime());
+        PartyMemberSnapshot const* mindFlayMember = mindFlaySnapshotBuilt
+            ? mindFlaySnapshot.FindMember(botGuid.GetRawValue()) : nullptr;
+        if (mindFlayMember)
+        {
+            DecisionContext mindFlayContext(
+                mindFlaySnapshot, *mindFlayMember, coordinator,
+                WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+                &actionRuntime);
+            DecisionReport mindFlayReport = engine.Evaluate(mindFlayContext);
+            mindFlayThreatRejected =
+                mindFlayReport.selectedIndices.empty() &&
+                mindFlayReport.candidates.size() == 1 &&
+                mindFlayReport.candidates[0].status ==
+                    CandidateStatus::RejectedThreatUnknown &&
+                mindFlayReport.candidates[0].reason ==
+                    "threat_impact_estimate_unknown";
+
+            bool const mindFlayAuraWasActive =
+                patient.creature->HasAura(15407);
+            uint32 const healthAtCancel = patient.creature->GetHealth();
+            ActionCandidate mindFlayCancelCandidate;
+            mindFlayCancelCandidate.actionId = 0xcace1003ull;
+            mindFlayCancelCandidate.spellId = 15407;
+            ActionExecutionResult const cancelResult =
+                cancelAction->ExecuteDetailed(
+                    mindFlayContext, mindFlayCancelCandidate);
+            mindFlayCancelled =
+                cancelResult.result == ActionResult::Success &&
+                cancelResult.reason ==
+                    "cancel_own_cast_core_interrupted_exact_spell" &&
+                bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) == nullptr &&
+                bot->GetUInt32Value(UNIT_CHANNEL_SPELL) == 0 &&
+                spellObserver.finishCount == 4 &&
+                spellObserver.lastFinishedActionId == mindFlayActionId &&
+                spellObserver.lastFinishedSpellId == 15407 &&
+                spellObserver.lastFinishedTargetGuid == patientGuid.GetRawValue() &&
+                spellObserver.lastFinishedInterrupted &&
+                !spellObserver.lastFinishedSuccess;
+            mindFlayAuraRemoved = mindFlayAuraWasActive &&
+                !patient.creature->HasAura(15407);
+
+            for (uint32 tick = 0; tick < 8; ++tick)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                map.Update(250);
+            }
+            mindFlayNoFurtherTicks =
+                patient.creature->GetHealth() >= healthAtCancel &&
+                !patient.creature->HasAura(15407);
+        }
+    }
+
     bool const beforeCleanup =
         firstCastCaptured && firstTerminalCaptured && replacementCaptured &&
         registered && preparingNoThreat && delayedFailsClosed &&
         castingFailsClosed && delayedStateDriftRejected &&
         castingStateDriftRejected && staleSnapshotRejected && replacementPreserved &&
-        currentSelected && currentCancelled && repeatedCancelRejected && noEffects;
+        currentSelected && currentCancelled && repeatedCancelRejected && noEffects &&
+        fireballDelayedObserved && fireballThreatRejected && fireballCancelled &&
+        fireballImpactSuppressed && mindFlayChannelStarted &&
+        mindFlayThreatRejected && mindFlayCancelled && mindFlayAuraRemoved &&
+        mindFlayNoFurtherTicks;
     bool const cleaned = cleanup();
 
     sLog.Out(LOG_BASIC, beforeCleanup && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] CancelOwnCastAction: snapshotIdentity=%u firstInterrupted=%u replacementIdentity=%u preparingNoThreat=%u delayedUnknown=%u castingUnknown=%u delayedStateDriftRejected=%u castingStateDriftRejected=%u staleRejected=%u replacementPreserved=%u selected=%u cancelled=%u repeatedRejected=%u noEffects=%u cleanup=%u.",
+        "[PartyBotSimulator] CancelOwnCastAction: snapshotIdentity=%u firstInterrupted=%u replacementIdentity=%u preparingNoThreat=%u delayedUnknown=%u castingUnknown=%u delayedStateDriftRejected=%u castingStateDriftRejected=%u staleRejected=%u replacementPreserved=%u selected=%u cancelled=%u repeatedRejected=%u noEffects=%u fireballDelayed=%u fireballThreatRejected=%u fireballCancelled=%u fireballImpactSuppressed=%u mindFlayChannel=%u mindFlayThreatRejected=%u mindFlayCancelled=%u mindFlayAuraRemoved=%u mindFlayNoFurtherTicks=%u cleanup=%u.",
         firstCastCaptured ? 1u : 0u, firstTerminalCaptured ? 1u : 0u,
         replacementCaptured ? 1u : 0u, preparingNoThreat ? 1u : 0u,
         delayedFailsClosed ? 1u : 0u, castingFailsClosed ? 1u : 0u,
@@ -2383,7 +2583,11 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
         staleSnapshotRejected ? 1u : 0u, replacementPreserved ? 1u : 0u,
         currentSelected ? 1u : 0u, currentCancelled ? 1u : 0u,
         repeatedCancelRejected ? 1u : 0u, noEffects ? 1u : 0u,
-        cleaned ? 1u : 0u);
+        fireballDelayedObserved ? 1u : 0u, fireballThreatRejected ? 1u : 0u,
+        fireballCancelled ? 1u : 0u, fireballImpactSuppressed ? 1u : 0u,
+        mindFlayChannelStarted ? 1u : 0u, mindFlayThreatRejected ? 1u : 0u,
+        mindFlayCancelled ? 1u : 0u, mindFlayAuraRemoved ? 1u : 0u,
+        mindFlayNoFurtherTicks ? 1u : 0u, cleaned ? 1u : 0u);
 
     if (!beforeCleanup || !cleaned)
     {
@@ -2393,7 +2597,7 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-        "[PartyBotSimulator] PASS: CancelOwnCastAction used Core SpellCaster::InterruptSpell to cancel only the exact Engine-owned Player spell, rejected stale/replaced and already-finished spell identities, emitted one Interrupted terminal, and applied no spell effects.");
+        "[PartyBotSimulator] PASS: CancelOwnCastAction cancelled exact Engine-owned PREPARING, DELAYED Fireball and CHANNELED Mind Flay Player spells through Core SpellCaster::InterruptSpell, rejected stale/replaced and unknown-threat dispatch, emitted matching Interrupted terminals, suppressed delayed impacts and removed the channel aura.");
     return true;
 }
 

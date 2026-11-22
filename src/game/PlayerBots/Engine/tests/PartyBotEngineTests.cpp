@@ -420,7 +420,7 @@ void TestItemUseAggregateRecordsMutationSeparately()
     ItemUseMutationEvent stackMutation = mutation;
     stackMutation.itemGuid = 201;
     stackMutation.kind = ItemUseMutationKind::CountChanged;
-    stackMutation.phase = ItemUseMutationPhase::AfterEffects;
+    stackMutation.phase = ItemUseMutationPhase::BeforeEffects;
     stackMutation.beforeCount = 2;
     stackMutation.afterCount = 1;
     stackMutation.itemExistsAfter = true;
@@ -462,7 +462,7 @@ void TestItemUseAggregateRecordsMutationSeparately()
     assert(tracker.PopMutationEvent(emitted));
     assert(emitted.itemGuid == 201);
     assert(emitted.kind == ItemUseMutationKind::CountChanged);
-    assert(emitted.phase == ItemUseMutationPhase::AfterEffects);
+    assert(emitted.phase == ItemUseMutationPhase::BeforeEffects);
     assert(emitted.beforeCount == 2 && emitted.afterCount == 1);
     assert(emitted.itemExistsAfter);
 

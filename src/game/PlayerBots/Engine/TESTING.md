@@ -461,6 +461,6 @@ Matching PR ARM64 build [#45074126327](https://github.com/tyrael9/core/actions/r
 
 ## F45 — count-based item-use mutation coverage (pending trusted runtime)
 
-The Core fixture adds a real stackable Minor Healing Potion item 118 / spell 439 case. It casts from a stack of two and requires successful healing, a surviving one-item stack, and exactly one CountChanged mutation with the same Item GUID, AfterEffects phase and count 2→1.
+The Core fixture adds a real stackable Minor Healing Potion item 118 / spell 439 case. It casts from a stack of two and requires successful healing, a surviving one-item stack, and exactly one CountChanged mutation with the same Item GUID, BeforeEffects phase and count 2→1; the Core fixture's Player heal is delayable under spell batching, so TakeCastItem records the stack decrement before the effect resolves.
 
 A second isolated Player temporarily uses the same spell with item 118 configured as a reagent of count two. Core's cast-item/reagent special case requires three units including the cast item, clears m_CastItem during TakeReagents, consumes the stack 3→0, and must emit one GUID-less ReagentConsumed event in BeforeEffects with no duplicate TakeCastItem event. The fixture restores the SpellEntry reagent arrays and requires session cleanup. Pure C++ tests accept both mutation shapes and reject a GUID-less CountChanged.

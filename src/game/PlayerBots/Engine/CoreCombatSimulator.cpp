@@ -7208,7 +7208,9 @@ bool RunEngineCoreCountBasedItemMutationSmokeTest(Map& map)
                 stackMutation.itemGuid == potionGuid.GetRawValue() &&
                 stackMutation.itemEntry == PotionItemId &&
                 stackMutation.kind == ItemUseMutationKind::CountChanged &&
-                stackMutation.phase == ItemUseMutationPhase::AfterEffects &&
+                // Spell batching marks this Player cast as delayed, so Core
+                // consumes the stack before the batched heal effect resolves.
+                stackMutation.phase == ItemUseMutationPhase::BeforeEffects &&
                 stackMutation.slotIndex == 0xff &&
                 stackMutation.beforeCount == 2 && stackMutation.afterCount == 1 &&
                 stackMutation.beforeCharges == 0 && stackMutation.afterCharges == 0 &&
@@ -7376,7 +7378,7 @@ bool RunEngineCoreCountBasedItemMutationSmokeTest(Map& map)
         reagentPlayerCleaned ? 1u : 0u);
     if (passed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: real Core stackable item use reduced a two-potion stack to one with a CountChanged after-effects record, and using the cast item as its own reagent consumed three items once with a GUID-less ReagentConsumed before-effects record.");
+            "[PartyBotSimulator] PASS: real Core stackable item use reduced a two-potion stack to one with a CountChanged before-effects record, and using the cast item as its own reagent consumed three items once with a GUID-less ReagentConsumed before-effects record.");
     return passed;
 }
 

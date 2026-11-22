@@ -194,6 +194,22 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         MovementGenerator const* currentMovement =
             motionMaster && !motionMaster->empty() ? motionMaster->GetCurrent() : nullptr;
         if (currentMovement &&
+            currentMovement->GetMovementGeneratorType() == CHASE_MOTION_TYPE)
+        {
+            // ChaseMovementGenerator owns a live Core reference. Capture only
+            // the current target GUID for snapshot-only no-op decisions.
+            ChaseMovementGenerator<Player> const* chase =
+                static_cast<ChaseMovementGenerator<Player> const*>(currentMovement);
+            Unit* chaseTarget = chase->GetTarget();
+            if (chaseTarget && chaseTarget->IsInWorld() &&
+                chaseTarget->GetMap() == map &&
+                chaseTarget->GetMapId() == snapshot.mapId &&
+                chaseTarget->GetInstanceId() == snapshot.instanceId)
+                memberData.chaseTargetGuid =
+                    chaseTarget->GetObjectGuid().GetRawValue();
+        }
+
+        if (currentMovement &&
             currentMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE)
         {
             // FollowMovementGenerator<Player> owns a live Core reference.

@@ -8315,12 +8315,8 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     bool const coreMeleeReachable = nearVictimPositioned &&
         bot->CanReachWithMeleeAutoAttack(hostile.creature);
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-        "[PartyBotSimulator] ChaseTargetAction melee-fixture: positioned=%u coreReachable=%u selected=%u dispatched=%u status=%u result=%u reason=%s bot=(%.3f,%.3f,%.3f) hostile=(%.3f,%.3f,%.3f).",
+        "[PartyBotSimulator] ChaseTargetAction melee-fixture: positioned=%u coreReachable=%u bot=(%.3f,%.3f,%.3f) hostile=(%.3f,%.3f,%.3f).",
         nearVictimPositioned ? 1u : 0u, coreMeleeReachable ? 1u : 0u,
-        reachableSelected ? 1u : 0u, reachableEvaluation ? 1u : 0u,
-        reachableEvaluation ? static_cast<uint32>(reachableEvaluation->status) : 0xffffffffu,
-        reachableEvaluation ? static_cast<uint32>(reachableEvaluation->actionResult) : 0xffffffffu,
-        reachableEvaluation ? reachableEvaluation->reason.c_str() : "not-dispatched",
         bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
         hostile.creature->GetPositionX(), hostile.creature->GetPositionY(),
         hostile.creature->GetPositionZ());
@@ -8344,6 +8340,12 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         engine.ExecuteSelected(reachableContext, reachableReport);
     CandidateEvaluation const* reachableEvaluation = reachableSelected
         ? &reachableReport.candidates[reachableReport.selectedIndices[0]] : nullptr;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction melee-dispatch: selected=%u dispatched=%u status=%u result=%u reason=%s.",
+        reachableSelected ? 1u : 0u, reachableEvaluation ? 1u : 0u,
+        reachableEvaluation ? static_cast<uint32>(reachableEvaluation->status) : 0xffffffffu,
+        reachableEvaluation ? static_cast<uint32>(reachableEvaluation->actionResult) : 0xffffffffu,
+        reachableEvaluation ? reachableEvaluation->reason.c_str() : "not-dispatched");
     bool const alreadyReachableNotChased = reachableEvaluation &&
         reachableEvaluation->status == CandidateStatus::ExecutionFailed &&
         reachableEvaluation->actionResult == ActionResult::Useless &&

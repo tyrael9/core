@@ -28,6 +28,7 @@
 #include "PlayerBots/Engine/DismountForCombatAction.h"
 #include "PlayerBots/Engine/MovePointAction.h"
 #include "PlayerBots/Engine/StopPointMovementAction.h"
+#include "PlayerBots/Engine/StopStaleChaseAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
@@ -8537,6 +8538,307 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     return passed;
 }
 
+
+bool RunEngineCoreStopStaleChaseActionSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor staleTarget;
+    SimulatorActor currentVictim;
+    bool const actorsCreated =
+        CreateSimulatorActor(map, *info, hostileFaction, 10.0f, 6.0f, staleTarget) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 18.0f, 6.0f, currentVictim);
+
+    WorldSession botSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* bot = nullptr;
+    bool const botCreated = actorsCreated &&
+        CreateSimulatorPlayer(map, partyFaction, botSession, bot, 0.0f, 6.0f, 4.0f);
+    WorldSession leaderSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* leader = nullptr;
+    bool const leaderCreated = botCreated &&
+        CreateSimulatorPlayer(map, partyFaction, leaderSession, leader,
+                              -3.0f, 6.0f, 4.0f);
+
+    if (!leaderCreated)
+    {
+        if (leaderSession.GetPlayer())
+            leaderSession.LogoutPlayer(false);
+        else if (leader)
+            delete leader;
+        if (botSession.GetPlayer())
+            botSession.LogoutPlayer(false);
+        else if (bot)
+            delete bot;
+        bool cleaned = DestroySimulatorActor(map, currentVictim);
+        cleaned = DestroySimulatorActor(map, staleTarget) && cleaned;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSimulator] StopStaleChaseAction fixture creation failed (cleanup=%u).",
+            cleaned ? 1u : 0u);
+        return false;
+    }
+
+    PartyBotAI actionRuntime(
+        bot, map.GetId(), map.GetInstanceId(),
+        bot->GetPositionX(), bot->GetPositionY(),
+        bot->GetPositionZ(), bot->GetOrientation());
+    actionRuntime.SetPlayer(bot);
+    actionRuntime.m_initialized = true;
+    actionRuntime.m_updateTimer.Reset(600000);
+
+    Guid const staleGuid = staleTarget.creature->GetObjectGuid().GetRawValue();
+    Guid const currentGuid = currentVictim.creature->GetObjectGuid().GetRawValue();
+    MotionMaster* const motion = bot->GetMotionMaster();
+
+    motion->MoveFollow(leader, 2.5f, 3.14159265358979323846f);
+    bool const followStarted =
+        motion->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE;
+    bool const firstAttackStarted = bot->Attack(staleTarget.creature, true);
+    bot->SetInCombatWith(staleTarget.creature);
+    bot->SetSelectionGuid(staleTarget.creature->GetObjectGuid());
+    bot->SetTargetGuid(staleTarget.creature->GetObjectGuid());
+    motion->MoveChase(staleTarget.creature);
+    ChaseMovementGenerator<Player> const* const initialChase =
+        motion->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE
+            ? static_cast<ChaseMovementGenerator<Player> const*>(motion->GetCurrent())
+            : nullptr;
+    bool const initialChaseStarted =
+        initialChase && initialChase->GetTarget() == staleTarget.creature;
+
+    auto makeSnapshot = [&](Guid victimGuid, Guid chaseGuid, uint32 epoch)
+    {
+        PartySnapshot snapshot;
+        snapshot.groupId = 0xF44u;
+        snapshot.mapId = map.GetId();
+        snapshot.instanceId = map.GetInstanceId();
+        snapshot.epoch = epoch;
+        snapshot.capturedAtMs = WorldTimer::getMSTime();
+
+        PartyMemberSnapshot member;
+        member.guid = bot->GetObjectGuid().GetRawValue();
+        member.mapId = map.GetId();
+        member.instanceId = map.GetInstanceId();
+        member.health = bot->GetHealth();
+        member.maxHealth = bot->GetMaxHealth();
+        member.power = bot->GetPower(bot->GetPowerType());
+        member.maxPower = bot->GetMaxPower(bot->GetPowerType());
+        member.online = bot->IsInWorld();
+        member.alive = bot->IsAlive();
+        member.victimGuid = victimGuid;
+        member.chaseTargetGuid = chaseGuid;
+        member.selectionGuid = bot->GetSelectionGuid().GetRawValue();
+        member.inCombat = bot->IsInCombat();
+        snapshot.members.push_back(member);
+        return snapshot;
+    };
+
+    PartyBotEngine engine;
+    std::shared_ptr<StopStaleChaseAction> action(new StopStaleChaseAction());
+    bool const registered = engine.RegisterAction(action);
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_stop_stale_chase"));
+    strategy->AddTrigger(std::make_shared<SimulatorStopStaleChaseTrigger>());
+    engine.AddStrategy(strategy);
+
+    PartySnapshot sameVictimSnapshot = makeSnapshot(staleGuid, staleGuid, 0xF440u);
+    PartyCoordinator sameVictimCoordinator;
+    DecisionContext sameVictimContext(
+        sameVictimSnapshot, sameVictimSnapshot.members[0], sameVictimCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport sameVictimReport = engine.Evaluate(sameVictimContext);
+    bool const sameTargetNotProposed = firstAttackStarted && initialChaseStarted &&
+        sameVictimReport.candidates.empty() &&
+        sameVictimReport.selectedIndices.empty() &&
+        motion->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE;
+
+    bool const switchedToNewVictim = bot->Attack(currentVictim.creature, true);
+    bot->SetInCombatWith(currentVictim.creature);
+    bot->SetSelectionGuid(currentVictim.creature->GetObjectGuid());
+    bot->SetTargetGuid(currentVictim.creature->GetObjectGuid());
+    bool const oldChaseStillCurrent =
+        motion->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE &&
+        static_cast<ChaseMovementGenerator<Player> const*>(motion->GetCurrent())->GetTarget() ==
+            staleTarget.creature;
+    PartySnapshot staleSnapshot = makeSnapshot(currentGuid, staleGuid, 0xF441u);
+    PartyCoordinator staleCoordinator;
+    DecisionContext staleContext(
+        staleSnapshot, staleSnapshot.members[0], staleCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport staleReport = engine.Evaluate(staleContext);
+    bool const staleSelected = registered && switchedToNewVictim &&
+        oldChaseStillCurrent && staleReport.selectedIndices.size() == 1 &&
+        staleReport.candidates[staleReport.selectedIndices[0]].status == CandidateStatus::Selected;
+
+    uint32 const healthBefore = bot->GetHealth();
+    Powers const powerType = bot->GetPowerType();
+    uint32 const powerBefore = bot->GetPower(powerType);
+    uint32 const staleHealthBefore = staleTarget.creature->GetHealth();
+    uint32 const victimHealthBefore = currentVictim.creature->GetHealth();
+    float const staleThreatBefore = staleTarget.creature->GetThreatManager().getThreat(bot);
+    float const victimThreatBefore = currentVictim.creature->GetThreatManager().getThreat(bot);
+    Spell* spellsBefore[CURRENT_MAX_SPELL] = {};
+    for (uint32 spellIndex = 0; spellIndex < CURRENT_MAX_SPELL; ++spellIndex)
+        spellsBefore[spellIndex] = bot->GetCurrentSpell(CurrentSpellTypes(spellIndex));
+
+    if (staleSelected)
+        engine.ExecuteSelected(staleContext, staleReport);
+    CandidateEvaluation const* staleEvaluation = staleSelected
+        ? &staleReport.candidates[staleReport.selectedIndices[0]] : nullptr;
+
+    bool targetedMovementRemains = false;
+    for (MotionMaster::const_iterator it = motion->begin(); it != motion->end(); ++it)
+    {
+        MovementGeneratorType const type = (*it)->GetMovementGeneratorType();
+        if (type == CHASE_MOTION_TYPE || type == FOLLOW_MOTION_TYPE)
+            targetedMovementRemains = true;
+    }
+    bool spellsPreserved = true;
+    for (uint32 spellIndex = 0; spellIndex < CURRENT_MAX_SPELL; ++spellIndex)
+    {
+        if (bot->GetCurrentSpell(CurrentSpellTypes(spellIndex)) != spellsBefore[spellIndex])
+        {
+            spellsPreserved = false;
+            break;
+        }
+    }
+    bool const combatStatePreserved =
+        bot->GetVictim() == currentVictim.creature &&
+        bot->GetSelectionGuid() == currentVictim.creature->GetObjectGuid() &&
+        bot->GetTargetGuid() == currentVictim.creature->GetObjectGuid() &&
+        bot->IsInCombat() && bot->GetHealth() == healthBefore &&
+        bot->GetPower(powerType) == powerBefore && spellsPreserved &&
+        currentVictim.creature->GetHealth() == victimHealthBefore &&
+        staleTarget.creature->GetHealth() == staleHealthBefore &&
+        std::fabs(currentVictim.creature->GetThreatManager().getThreat(bot) -
+                  victimThreatBefore) <= 0.001f &&
+        std::fabs(staleTarget.creature->GetThreatManager().getThreat(bot) -
+                  staleThreatBefore) <= 0.001f;
+    bool const staleAccepted = staleEvaluation &&
+        staleEvaluation->status == CandidateStatus::Executed &&
+        staleEvaluation->actionResult == ActionResult::Success &&
+        staleEvaluation->reason ==
+            "stop_stale_chase_expired_targeted_generators_preserving_combat" &&
+        !targetedMovementRemains &&
+        motion->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE &&
+        combatStatePreserved &&
+        !bot->HasUnitState(UNIT_STATE_CHASE | UNIT_STATE_CHASE_MOVE |
+                           UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
+    bool const followDroppedOnExpiry = staleAccepted &&
+        !bot->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
+
+    // A Point below a stale Chase is unrelated movement; fail closed before
+    // MovementExpired(false) can expose or disturb that Point generator.
+    motion->MovePoint(0xF442u, bot->GetPositionX() + 8.0f,
+                      bot->GetPositionY(), bot->GetPositionZ());
+    MovementGenerator const* const pointBefore = motion->GetCurrent();
+    motion->MoveChase(staleTarget.creature);
+    MovementGenerator const* const stackedChase = motion->GetCurrent();
+    bool const pointChaseStarted = pointBefore &&
+        pointBefore->GetMovementGeneratorType() == POINT_MOTION_TYPE &&
+        stackedChase && stackedChase->GetMovementGeneratorType() == CHASE_MOTION_TYPE;
+    PartySnapshot pointSnapshot = makeSnapshot(currentGuid, staleGuid, 0xF443u);
+    PartyCoordinator pointCoordinator;
+    DecisionContext pointContext(
+        pointSnapshot, pointSnapshot.members[0], pointCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport pointReport = engine.Evaluate(pointContext);
+    bool const pointSelected = pointChaseStarted &&
+        pointReport.selectedIndices.size() == 1 &&
+        pointReport.candidates[pointReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (pointSelected)
+        engine.ExecuteSelected(pointContext, pointReport);
+    CandidateEvaluation const* pointEvaluation = pointSelected
+        ? &pointReport.candidates[pointReport.selectedIndices[0]] : nullptr;
+    bool pointStillStacked = false;
+    for (MotionMaster::const_iterator it = motion->begin(); it != motion->end(); ++it)
+        if (*it == pointBefore)
+            pointStillStacked = true;
+    bool const unrelatedMovementRejected = pointEvaluation &&
+        pointEvaluation->status == CandidateStatus::ExecutionFailed &&
+        pointEvaluation->actionResult == ActionResult::Useless &&
+        pointEvaluation->reason == "stop_stale_chase_unrelated_movement_stacked" &&
+        motion->GetCurrent() == stackedChase &&
+        motion->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE &&
+        pointStillStacked && bot->GetVictim() == currentVictim.creature;
+    motion->MovementExpired(false);
+    bool const pointRestored = motion->GetCurrent() == pointBefore &&
+        motion->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE;
+    motion->MovementExpired(false);
+    bot->StopMoving();
+
+    // Snapshot-to-dispatch race: another system replaces the old Chase with a
+    // current-victim Chase after evaluation. The old candidate must not cancel it.
+    motion->MoveChase(staleTarget.creature);
+    MovementGenerator const* const oldRaceChase = motion->GetCurrent();
+    PartySnapshot raceSnapshot = makeSnapshot(currentGuid, staleGuid, 0xF444u);
+    PartyCoordinator raceCoordinator;
+    DecisionContext raceContext(
+        raceSnapshot, raceSnapshot.members[0], raceCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport raceReport = engine.Evaluate(raceContext);
+    bool const raceSelected = raceReport.selectedIndices.size() == 1 &&
+        raceReport.candidates[raceReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    motion->MoveChase(currentVictim.creature);
+    MovementGenerator const* const replacementChase = motion->GetCurrent();
+    bool const replacementStarted = replacementChase && replacementChase != oldRaceChase &&
+        replacementChase->GetMovementGeneratorType() == CHASE_MOTION_TYPE &&
+        static_cast<ChaseMovementGenerator<Player> const*>(replacementChase)->GetTarget() ==
+            currentVictim.creature;
+    if (raceSelected)
+        engine.ExecuteSelected(raceContext, raceReport);
+    CandidateEvaluation const* raceEvaluation = raceSelected
+        ? &raceReport.candidates[raceReport.selectedIndices[0]] : nullptr;
+    bool const staleSnapshotRejected = raceEvaluation &&
+        raceEvaluation->status == CandidateStatus::ExecutionFailed &&
+        raceEvaluation->actionResult == ActionResult::Impossible &&
+        raceEvaluation->reason == "stop_stale_chase_live_generator_mismatch" &&
+        motion->GetCurrent() == replacementChase &&
+        motion->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE &&
+        bot->GetVictim() == currentVictim.creature;
+
+    motion->MovementExpired(false);
+    bot->StopMoving();
+    bot->AttackStop();
+    bot->CombatStop(false);
+
+    bot->SetAI(nullptr);
+    actionRuntime.Remove();
+    botSession.LogoutPlayer(false);
+    bool const botCleaned = botSession.GetPlayer() == nullptr;
+    leaderSession.LogoutPlayer(false);
+    bool const leaderCleaned = leaderSession.GetPlayer() == nullptr;
+    bool const actorsCleaned =
+        DestroySimulatorActor(map, currentVictim) &&
+        DestroySimulatorActor(map, staleTarget);
+    bool const cleaned = botCleaned && leaderCleaned && actorsCleaned;
+
+    bool const passed = followStarted && firstAttackStarted && initialChaseStarted &&
+        sameTargetNotProposed && switchedToNewVictim && oldChaseStillCurrent &&
+        staleSelected && staleAccepted && followDroppedOnExpiry &&
+        unrelatedMovementRejected && pointRestored && raceSelected &&
+        replacementStarted && staleSnapshotRejected && cleaned;
+    sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] StopStaleChaseAction: registered=%u followStarted=%u firstAttack=%u chaseStarted=%u sameTargetNotProposed=%u switchedVictim=%u oldChaseCurrent=%u staleSelected=%u staleAccepted=%u followDroppedOnExpiry=%u unrelatedMovementRejected=%u pointPreserved=%u raceSelected=%u replacementStarted=%u staleSnapshotRejected=%u cleanup=%u.",
+        registered ? 1u : 0u, followStarted ? 1u : 0u,
+        firstAttackStarted ? 1u : 0u, initialChaseStarted ? 1u : 0u,
+        sameTargetNotProposed ? 1u : 0u, switchedToNewVictim ? 1u : 0u,
+        oldChaseStillCurrent ? 1u : 0u, staleSelected ? 1u : 0u,
+        staleAccepted ? 1u : 0u, followDroppedOnExpiry ? 1u : 0u,
+        unrelatedMovementRejected ? 1u : 0u, pointRestored ? 1u : 0u,
+        raceSelected ? 1u : 0u, replacementStarted ? 1u : 0u,
+        staleSnapshotRejected ? 1u : 0u, cleaned ? 1u : 0u);
+    if (passed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: StopStaleChaseAction expired only a snapshot-matched stale Core Chase, allowed Core to drop its underlying Follow, refused unrelated Point movement, and rejected a stale snapshot after a replacement Chase became current.");
+    return passed;
+}
+
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -11262,6 +11564,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
     bool const selectHostileTargetPassed = RunEngineCoreSelectHostileTargetSmokeTest(*map);
     bool const chaseTargetPassed = RunEngineCoreChaseTargetSmokeTest(*map);
+    bool const stopStaleChasePassed = RunEngineCoreStopStaleChaseActionSmokeTest(*map);
     bool const followPartyMemberPassed = RunEngineCoreFollowPartyMemberActionSmokeTest(*map);
     bool const itemUsePassed = RunEngineCoreItemUseSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
@@ -11280,7 +11583,8 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && periodicManaLeechPassed && periodicLifeLeechPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
-                              selectHostileTargetPassed && chaseTargetPassed && followPartyMemberPassed && itemUsePassed &&
+                              selectHostileTargetPassed && chaseTargetPassed &&
+                              stopStaleChasePassed && followPartyMemberPassed && itemUsePassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&

@@ -7490,6 +7490,14 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     bool const activeCastCleanup = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
     bot->AttackStop();
 
+    // AttackStop deliberately preserves the combat flag. Close the preceding
+    // auto-attack fixture's residual combat timer explicitly so the facing
+    // fixture starts from an isolated out-of-combat baseline; its Unit::Update
+    // advances the facing spline and may also naturally expire combat timers.
+    bot->CombatStop(false);
+    bool const faceFixtureCombatReset =
+        !bot->IsInCombat() && bot->GetVictim() == nullptr;
+
     bool const stopAutoAttackFixturePassed = stopAutoAttackRegistered &&
         stopAutoAttackSelected && stopAutoAttackAccepted && noVictimNotProposed &&
         driftStopRegistered && driftStopSelected && stopAutoAttackVictimDriftRejected &&
@@ -7508,8 +7516,8 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     // explicitly instead of inheriting state from StopAutoAttackAction.
     bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
     bot->SetTargetGuid(hostile.creature->GetObjectGuid());
-    bool const faceFixtureSetupReady =
-        bot->GetVictim() == nullptr &&
+    bool const faceFixtureSetupReady = faceFixtureCombatReset &&
+        bot->GetVictim() == nullptr && !bot->IsInCombat() &&
         bot->GetSelectionGuid() == hostile.creature->GetObjectGuid() &&
         bot->GetTargetGuid() == hostile.creature->GetObjectGuid();
 

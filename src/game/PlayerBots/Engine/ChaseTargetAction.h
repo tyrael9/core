@@ -266,7 +266,9 @@ private:
                 // generators under a completed Chase. The policy must reissue
                 // Follow after combat; only supersede a follow whose live target
                 // still matches this snapshot's same-map party roster.
-                Player* followTarget = currentFollow->GetTarget();
+                Unit* followTargetUnit = currentFollow->GetTarget();
+                Player* followTarget = followTargetUnit
+                    ? followTargetUnit->ToPlayer() : nullptr;
                 Guid const followGuid = followTarget
                     ? followTarget->GetObjectGuid().GetRawValue() : 0;
                 PartyMemberSnapshot const* followMember =

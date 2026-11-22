@@ -10644,6 +10644,7 @@ bool RunEngineCoreDpsAssistGroupSnapshotSmokeTest(Map& map)
     bool groupSnapshotValid = false;
     bool initialMainTankPriorityCorrect = false;
     bool initialCrowdControlExcluded = false;
+    bool healerRoleSnapshotValid = false;
     bool firstSelectionExecuted = false;
     bool firstSelectionInvalidatedCache = false;
     bool firstAttackExecuted = false;
@@ -10733,6 +10734,8 @@ bool RunEngineCoreDpsAssistGroupSnapshotSmokeTest(Map& map)
             firstSnapshot.FindHostile(mainTankTargetGuid);
         HostileSnapshot const* firstHealerPeel =
             firstSnapshot.FindHostile(healerPeelTargetGuid);
+        healerRoleSnapshotValid = firstHealer && firstHealer->isPlayerBot &&
+            firstHealer->roleId == static_cast<uint8>(PartyRole::Healer);
         groupSnapshotValid = selectRegistered && attackRegistered &&
             firstSnapshot.groupId == group->GetId() &&
             firstSnapshot.mapId == map.GetId() &&
@@ -10742,9 +10745,8 @@ bool RunEngineCoreDpsAssistGroupSnapshotSmokeTest(Map& map)
             firstBot->roleId == static_cast<uint8>(PartyRole::RangedDamage) &&
             firstTank && firstTank->isMainTank &&
             firstTank->victimGuid == mainTankTargetGuid &&
-            firstHealer && firstHealer->isPlayerBot &&
-            firstHealer->roleId == static_cast<uint8>(PartyRole::Healer) &&
             firstTankTarget && firstTankTarget->alive &&
+            healerRoleSnapshotValid &&
             firstHealerPeel && firstHealerPeel->alive &&
             firstHealerPeel->victimGuid == healerGuid.GetRawValue() &&
             mainTankTargetStarted && healerPeelStarted;
@@ -10958,11 +10960,11 @@ bool RunEngineCoreDpsAssistGroupSnapshotSmokeTest(Map& map)
         handoffAttackInvalidatedCache && cleaned;
 
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] DpsAssistGroupSnapshot: actors=%u players=%u group=%u members=%u mainTank=%u botRole=%u healerRole=%u firstSelection=%u selectionInvalidated=%u firstAttack=%u attackInvalidated=%u staleCacheObserved=%u explicitRetargetInvalidation=%u handoffSnapshot=%u handoffSelection=%u handoffSelectionInvalidated=%u handoffAttack=%u handoffAttackInvalidated=%u cleanup=%u.",
+        "[PartyBotSimulator] DpsAssistGroupSnapshot: actors=%u players=%u group=%u members=%u mainTank=%u rolesInstalled=%u healerRoleSnapshot=%u firstSelection=%u selectionInvalidated=%u firstAttack=%u attackInvalidated=%u staleCacheObserved=%u explicitRetargetInvalidation=%u handoffSnapshot=%u handoffSelection=%u handoffSelectionInvalidated=%u handoffAttack=%u handoffAttackInvalidated=%u cleanup=%u.",
         actorsCreated ? 1u : 0u, playersCreated ? 1u : 0u,
         groupCreated ? 1u : 0u, groupMembersAdded ? 1u : 0u,
         mainTankAssigned ? 1u : 0u, rolesInstalled ? 1u : 0u,
-        healerRoleAI ? 1u : 0u, firstSelectionExecuted ? 1u : 0u,
+        healerRoleSnapshotValid ? 1u : 0u, firstSelectionExecuted ? 1u : 0u,
         firstSelectionInvalidatedCache ? 1u : 0u,
         firstAttackExecuted ? 1u : 0u, firstAttackInvalidatedCache ? 1u : 0u,
         staleCacheObservedBeforeExplicitInvalidation ? 1u : 0u,

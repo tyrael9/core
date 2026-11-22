@@ -8304,9 +8304,22 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     // require the action's final live preflight to return Useless.
     bot->GetMotionMaster()->MovementExpired(false);
     bot->StopMoving();
+    float const meleeTestX = hostile.creature->GetPositionX() - 0.1f;
+    float const meleeTestY = hostile.creature->GetPositionY();
+    float const meleeTestZ = hostile.creature->GetPositionZ();
     bool const nearVictimPositioned =
-        bot->SetPosition(9.0f, hostile.creature->GetPositionY(),
-                         hostile.creature->GetPositionZ(), bot->GetOrientation());
+        bot->SetPosition(meleeTestX, meleeTestY, meleeTestZ, bot->GetOrientation()) &&
+        std::fabs(bot->GetPositionX() - meleeTestX) < 0.01f &&
+        std::fabs(bot->GetPositionY() - meleeTestY) < 0.01f &&
+        std::fabs(bot->GetPositionZ() - meleeTestZ) < 0.01f;
+    bool const coreMeleeReachable = nearVictimPositioned &&
+        bot->CanReachWithMeleeAutoAttack(hostile.creature);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction melee-fixture: positioned=%u coreReachable=%u bot=(%.3f,%.3f,%.3f) hostile=(%.3f,%.3f,%.3f).",
+        nearVictimPositioned ? 1u : 0u, coreMeleeReachable ? 1u : 0u,
+        bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+        hostile.creature->GetPositionX(), hostile.creature->GetPositionY(),
+        hostile.creature->GetPositionZ());
     PartySnapshot reachableSnapshot = snapshot;
     reachableSnapshot.epoch++;
     reachableSnapshot.members[0].x = bot->GetPositionX();
@@ -8319,7 +8332,7 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
         &actionRuntime);
     DecisionReport reachableReport = engine.Evaluate(reachableContext);
-    bool const alreadyReachableNotChased = nearVictimPositioned &&
+    bool const alreadyReachableNotChased = coreMeleeReachable &&
         reachableReport.selectedIndices.empty() &&
         !reachableReport.candidates.empty() &&
         reachableReport.candidates[0].status == CandidateStatus::RejectedUseless &&

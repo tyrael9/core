@@ -647,6 +647,31 @@ private:
     std::string m_name = "simulator_chase_target";
 };
 
+class SimulatorStopStaleChaseTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.online && context.bot.alive &&
+            context.bot.chaseTargetGuid != 0 &&
+            context.bot.chaseTargetGuid != context.bot.victimGuid;
+    }
+
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_stop_stale_chase";
+        candidate.basePriority = 44.0f;
+        candidate.channel = ActionChannel::Movement;
+        candidates.push_back(candidate);
+    }
+
+private:
+    std::string m_name = "simulator_stop_stale_chase";
+};
+
 class SimulatorDismountForCombatTrigger final : public Trigger
 {
 public:

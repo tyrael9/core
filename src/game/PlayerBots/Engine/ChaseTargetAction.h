@@ -261,10 +261,11 @@ private:
                 GetCurrentFollow(actor);
             if (currentFollow)
             {
-                // Core MoveChase stacks over the existing Follow generator;
-                // after the chase ends, the valid party follow resumes. Only
-                // preserve a follow whose live target still matches this
-                // snapshot's same-map party roster.
+                // Core MoveChase stacks over the existing Follow generator,
+                // but Core's MovementExpired deliberately drops stored targeted
+                // generators under a completed Chase. The policy must reissue
+                // Follow after combat; only supersede a follow whose live target
+                // still matches this snapshot's same-map party roster.
                 Player* followTarget = currentFollow->GetTarget();
                 Guid const followGuid = followTarget
                     ? followTarget->GetObjectGuid().GetRawValue() : 0;

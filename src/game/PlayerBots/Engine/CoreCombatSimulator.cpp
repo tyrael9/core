@@ -9233,6 +9233,24 @@ bool RunEngineCoreMoveDistanceSmokeTest(Map& map)
         member.y = bot->GetPositionY();
         member.z = bot->GetPositionZ();
         value.members.push_back(member);
+
+        // The follow preflight requires the same value-only party-roster fact
+        // PartySnapshotBuilder would copy for a live Group member.
+        PartyMemberSnapshot leaderMember;
+        leaderMember.guid = leader->GetObjectGuid().GetRawValue();
+        leaderMember.mapId = map.GetId();
+        leaderMember.instanceId = map.GetInstanceId();
+        leaderMember.health = leader->GetHealth();
+        leaderMember.maxHealth = leader->GetMaxHealth();
+        leaderMember.power = leader->GetPower(leader->GetPowerType());
+        leaderMember.maxPower = leader->GetMaxPower(leader->GetPowerType());
+        leaderMember.online = leader->IsInWorld();
+        leaderMember.alive = leader->IsAlive();
+        leaderMember.x = leader->GetPositionX();
+        leaderMember.y = leader->GetPositionY();
+        leaderMember.z = leader->GetPositionZ();
+        value.members.push_back(leaderMember);
+
         auto addHostile = [&](Creature* creature)
         {
             HostileSnapshot hostile;
@@ -9274,7 +9292,10 @@ bool RunEngineCoreMoveDistanceSmokeTest(Map& map)
     DecisionContext followContext(followSnapshot, followSnapshot.members[0], followCoordinator,
         WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr, &actionRuntime);
     DecisionReport followReport = engine.Evaluate(followContext);
-    bool const followSelected = registered && followStarted && originalFollow && attackStarted &&
+    bool const followRosterCaptured =
+        followSnapshot.FindMember(followSnapshot.members[0].followTargetGuid) != nullptr;
+    bool const followSelected = registered && followStarted && originalFollow &&
+        attackStarted && followRosterCaptured &&
         followReport.selectedIndices.size() == 1 &&
         followReport.candidates[followReport.selectedIndices[0]].status == CandidateStatus::Selected;
     if (followSelected) engine.ExecuteSelected(followContext, followReport);
@@ -9403,13 +9424,16 @@ bool RunEngineCoreMoveDistanceSmokeTest(Map& map)
         chasePreservedUnderDistance && followStillPresent && chaseRestored &&
         pointRejected && raceSelected && replacementAttack && victimRaceRejected && cleaned;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] MoveDistanceAction: registered=%u followSelected=%u followStarted=%u followPreserved=%u followRestored=%u chaseSelected=%u chaseStarted=%u chasePreserved=%u followStillPresent=%u chaseRestored=%u pointRejected=%u victimRaceRejected=%u cleanup=%u.",
-        registered ? 1u : 0u, followSelected ? 1u : 0u,
+        "[PartyBotSimulator] MoveDistanceAction: registered=%u followStarted=%u followRosterCaptured=%u followSelected=%u followDistanceStarted=%u followPreserved=%u followRestored=%u chaseSelected=%u chaseStarted=%u chasePreserved=%u followStillPresent=%u chaseRestored=%u pointRejected=%u victimRaceRejected=%u cleanup=%u followResult=%s followActionResult=%u.",
+        registered ? 1u : 0u, followStarted ? 1u : 0u,
+        followRosterCaptured ? 1u : 0u, followSelected ? 1u : 0u,
         followDistanceStarted ? 1u : 0u, followPreservedUnderDistance ? 1u : 0u,
         followRestored ? 1u : 0u, chaseSelected ? 1u : 0u,
         chaseDistanceStarted ? 1u : 0u, chasePreservedUnderDistance ? 1u : 0u,
         followStillPresent ? 1u : 0u, chaseRestored ? 1u : 0u,
-        pointRejected ? 1u : 0u, victimRaceRejected ? 1u : 0u, cleaned ? 1u : 0u);
+        pointRejected ? 1u : 0u, victimRaceRejected ? 1u : 0u, cleaned ? 1u : 0u,
+        followResult ? followResult->reason.c_str() : "no-follow-candidate",
+        followResult ? static_cast<uint32>(followResult->actionResult) : 0xffffffffu);
     if (passed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: MoveDistanceAction accepted Core MoveDistance over live Follow and Chase, preserved and restored the underlying targeted movement on Distancing expiry, preserved combat/threat state, and rejected unrelated Point and stale-victim requests.");

@@ -8239,6 +8239,28 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     bot->GetMotionMaster()->MoveFollow(followLeader, 2.5f, 3.14159265358979323846f);
     bool const followStarted =
         bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE;
+    PartySnapshot staleFollowSnapshot = snapshot;
+    staleFollowSnapshot.epoch++;
+    staleFollowSnapshot.members[0].followTargetGuid = 0;
+    PartyCoordinator staleFollowCoordinator;
+    DecisionContext staleFollowContext(
+        staleFollowSnapshot, staleFollowSnapshot.members[0], staleFollowCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport staleFollowReport = engine.Evaluate(staleFollowContext);
+    bool const staleFollowSelected = followStarted &&
+        staleFollowReport.selectedIndices.size() == 1 &&
+        staleFollowReport.candidates[
+            staleFollowReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (staleFollowSelected)
+        engine.ExecuteSelected(staleFollowContext, staleFollowReport);
+    CandidateEvaluation const* staleFollowEvaluation = staleFollowSelected
+        ? &staleFollowReport.candidates[staleFollowReport.selectedIndices[0]] : nullptr;
+    bool const followStaleRejected = staleFollowEvaluation &&
+        staleFollowEvaluation->status == CandidateStatus::ExecutionFailed &&
+        staleFollowEvaluation->actionResult == ActionResult::Useless &&
+        staleFollowEvaluation->reason == "chase_target_follow_target_stale" &&
+        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE;
     PartySnapshot followSnapshot = snapshot;
     followSnapshot.epoch++;
     followSnapshot.members[0].followTargetGuid = followLeaderGuid;
@@ -8367,8 +8389,8 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         "[PartyBotSimulator] ChaseTargetAction stage=point-cleaned.");
 
     bool const fixturePassed = attackStarted && registered && selected && accepted &&
-        sameChaseNotProposed && followStarted && followSelected &&
-        followChaseAccepted && followDroppedOnChaseExpiry && nearVictimPositioned &&
+        sameChaseNotProposed && followStarted && followStaleRejected &&
+        followSelected && followChaseAccepted && followDroppedOnChaseExpiry && nearVictimPositioned &&
         alreadyReachableNotChased && originalPositionRestored &&
         staleSelected && staleVictimRejected && pointSelected &&
         pointMovementPreserved;
@@ -8414,11 +8436,11 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         static_cast<unsigned long long>(detailVictimGuid),
         detailMounted ? 1u : 0u, detailTaxi ? 1u : 0u);
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u followStarted=%u followChaseAccepted=%u followDroppedOnChaseExpiry=%u alreadyReachableNotChased=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
+        "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u followStarted=%u followStaleRejected=%u followChaseAccepted=%u followDroppedOnChaseExpiry=%u alreadyReachableNotChased=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
         attackStarted ? 1u : 0u, registered ? 1u : 0u, selected ? 1u : 0u,
         accepted ? 1u : 0u, sameChaseNotProposed ? 1u : 0u,
-        followStarted ? 1u : 0u, followChaseAccepted ? 1u : 0u,
-        followDroppedOnChaseExpiry ? 1u : 0u, alreadyReachableNotChased ? 1u : 0u,
+        followStarted ? 1u : 0u, followStaleRejected ? 1u : 0u,
+        followChaseAccepted ? 1u : 0u, followDroppedOnChaseExpiry ? 1u : 0u, alreadyReachableNotChased ? 1u : 0u,
         staleSelected ? 1u : 0u, staleVictimRejected ? 1u : 0u,
         pointMovementPreserved ? 1u : 0u, cleaned ? 1u : 0u);
     if (passed)

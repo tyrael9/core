@@ -21,6 +21,7 @@ struct PartyMemberSnapshot {
     bool victimAttackable = false;
     bool isPlayerBot = false;
     bool mounted = false, taxiFlying = false;
+    Guid chaseTargetGuid = 0;
 };
 struct PartyCompanionSnapshot {
     Guid guid = 0, ownerGuid = 0, victimGuid = 0;

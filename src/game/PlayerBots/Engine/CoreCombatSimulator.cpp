@@ -8917,6 +8917,9 @@ bool RunEngineCoreStopChaseSmokeTest(Map& map)
         motion->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE
             ? static_cast<ChaseMovementGenerator<Player> const*>(motion->GetCurrent()) : nullptr;
     bool const chaseStarted = chase && chase->GetTarget() == target.creature;
+    bool followStackedBefore = false;
+    for (MotionMaster::const_iterator it = motion->begin(); it != motion->end(); ++it)
+        followStackedBefore |= (*it)->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE;
 
     auto makeSnapshot = [&](uint32 epoch)
     {
@@ -8967,7 +8970,7 @@ bool RunEngineCoreStopChaseSmokeTest(Map& map)
         WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr, &actionRuntime);
     DecisionReport firstReport = engine.Evaluate(firstContext);
     bool const selected = registered && followStarted && attackStarted && chaseStarted &&
-        firstReport.selectedIndices.size() == 1 &&
+        followStackedBefore && firstReport.selectedIndices.size() == 1 &&
         firstReport.candidates[firstReport.selectedIndices[0]].status == CandidateStatus::Selected;
 
     uint32 const health = bot->GetHealth();
@@ -9107,9 +9110,9 @@ bool RunEngineCoreStopChaseSmokeTest(Map& map)
         staleRejected && pointRejected && pointRestored && raceSelected &&
         replacementAttack && victimRaceRejected && cleaned;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] StopChaseAction: registered=%u selected=%u stopped=%u followDropped=%u statePreserved=%u staleRejected=%u pointRejected=%u pointRestored=%u victimRaceRejected=%u cleanup=%u.",
-        registered ? 1u : 0u, selected ? 1u : 0u, stopped ? 1u : 0u,
-        followDropped ? 1u : 0u, statePreserved ? 1u : 0u,
+        "[PartyBotSimulator] StopChaseAction: registered=%u selected=%u followStackedBefore=%u stopped=%u followDropped=%u statePreserved=%u staleRejected=%u pointRejected=%u pointRestored=%u victimRaceRejected=%u cleanup=%u.",
+        registered ? 1u : 0u, selected ? 1u : 0u, followStackedBefore ? 1u : 0u,
+        stopped ? 1u : 0u, followDropped ? 1u : 0u, statePreserved ? 1u : 0u,
         staleRejected ? 1u : 0u, pointRejected ? 1u : 0u,
         pointRestored ? 1u : 0u, victimRaceRejected ? 1u : 0u, cleaned ? 1u : 0u);
     if (passed)

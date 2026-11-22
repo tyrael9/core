@@ -368,6 +368,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: generic Core target maintenance cleared
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: StopChaseAction expired only a current-victim Core Chase, allowed Core to remove its underlying Follow, preserved victim/selection/combat/melee/spell/health/power/threat state, and rejected stale or unrelated movement before side effects." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The StopChaseAction current-victim cancellation PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Core preflight to reject a stale negative snapshot, then AttackStop detached only the invalid victim while preserving combat state." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F43 unattackable-victim AttackStop PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

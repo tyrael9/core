@@ -8125,6 +8125,7 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         hostile.creature->GetObjectGuid().GetCounter());
 
     bool const attackStarted = bot->Attack(hostile.creature, true);
+    bot->SetSelectionGuid(hostile.creature->GetObjectGuid());
     bot->SetInCombatWith(hostile.creature);
     snapshot.members[0].victimGuid = hostileGuid;
     snapshot.members[0].inCombat = bot->IsInCombat();

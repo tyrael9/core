@@ -8060,11 +8060,21 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     Player* bot = nullptr;
     bool const botCreated = hostileCreated &&
         CreateSimulatorPlayer(map, partyFaction, botSession, bot, 0.0f, 6.0f, 4.0f);
+    WorldSession followLeaderSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* followLeader = nullptr;
+    bool const followLeaderCreated = botCreated &&
+        CreateSimulatorPlayer(map, partyFaction, followLeaderSession, followLeader,
+                              -3.0f, 6.0f, 4.0f);
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-        "[PartyBotSimulator] ChaseTargetAction stage=actors hostileCreated=%u botCreated=%u bot=%p.",
-        hostileCreated ? 1u : 0u, botCreated ? 1u : 0u, static_cast<void*>(bot));
-    if (!botCreated)
+        "[PartyBotSimulator] ChaseTargetAction stage=actors hostileCreated=%u botCreated=%u followLeaderCreated=%u bot=%p.",
+        hostileCreated ? 1u : 0u, botCreated ? 1u : 0u,
+        followLeaderCreated ? 1u : 0u, static_cast<void*>(bot));
+    if (!botCreated || !followLeaderCreated)
     {
+        if (followLeaderSession.GetPlayer())
+            followLeaderSession.LogoutPlayer(false);
+        else if (followLeader)
+            delete followLeader;
         if (botSession.GetPlayer())
             botSession.LogoutPlayer(false);
         else if (bot)
@@ -8108,7 +8118,19 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     member.mounted = bot->IsMounted();
     member.taxiFlying = bot->IsTaxiFlying();
     member.chaseTargetGuid = 0;
+    Guid const followLeaderGuid = followLeader->GetObjectGuid().GetRawValue();
+    member.followTargetGuid = followLeaderGuid;
     snapshot.members.push_back(member);
+
+    PartyMemberSnapshot followLeaderMember;
+    followLeaderMember.guid = followLeaderGuid;
+    followLeaderMember.mapId = map.GetId();
+    followLeaderMember.instanceId = map.GetInstanceId();
+    followLeaderMember.health = followLeader->GetHealth();
+    followLeaderMember.maxHealth = followLeader->GetMaxHealth();
+    followLeaderMember.online = followLeader->IsInWorld();
+    followLeaderMember.alive = followLeader->IsAlive();
+    snapshot.members.push_back(followLeaderMember);
 
     HostileSnapshot hostileSnapshot;
     hostileSnapshot.guid = hostileGuid;
@@ -8208,6 +8230,54 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
             "chase_target_already_chasing_current_victim" &&
         bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE;
 
+    // Combat engagement must be able to supersede a valid party Follow without
+    // destroying it: Core MoveChase stacks above Follow, then Follow resumes
+    // when the chase generator expires.
+    bot->GetMotionMaster()->MovementExpired(false);
+    bot->StopMoving();
+    bot->GetMotionMaster()->MoveFollow(followLeader, 2.5f, 3.14159265358979323846f);
+    bool const followStarted =
+        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE;
+    PartySnapshot followSnapshot = snapshot;
+    followSnapshot.epoch++;
+    followSnapshot.members[0].followTargetGuid = followLeaderGuid;
+    followSnapshot.members[0].chaseTargetGuid = 0;
+    PartyCoordinator followCoordinator;
+    DecisionContext followContext(
+        followSnapshot, followSnapshot.members[0], followCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport followReport = engine.Evaluate(followContext);
+    bool const followSelected = followStarted &&
+        followReport.selectedIndices.size() == 1 &&
+        followReport.candidates[followReport.selectedIndices[0]].status ==
+            CandidateStatus::Selected;
+    if (followSelected)
+        engine.ExecuteSelected(followContext, followReport);
+    CandidateEvaluation const* followEvaluation = followSelected
+        ? &followReport.candidates[followReport.selectedIndices[0]] : nullptr;
+    ChaseMovementGenerator<Player> const* followChase =
+        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE
+            ? static_cast<ChaseMovementGenerator<Player> const*>(
+                bot->GetMotionMaster()->GetCurrent()) : nullptr;
+    bool const followChaseAccepted = followEvaluation &&
+        followEvaluation->status == CandidateStatus::Executed &&
+        followEvaluation->actionResult == ActionResult::Success &&
+        followEvaluation->reason == "chase_target_core_movement_request_accepted" &&
+        followChase && followChase->GetTarget() == hostile.creature;
+    if (followChaseAccepted)
+        bot->GetMotionMaster()->MovementExpired(false);
+    FollowMovementGenerator<Player> const* resumedFollow =
+        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE
+            ? static_cast<FollowMovementGenerator<Player> const*>(
+                bot->GetMotionMaster()->GetCurrent()) : nullptr;
+    bool const followResumed = followChaseAccepted && resumedFollow &&
+        resumedFollow->GetTarget() == followLeader &&
+        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE;
+    if (resumedFollow)
+        bot->GetMotionMaster()->MovementExpired(false);
+    bot->StopMoving();
+
     // A stale snapshot must not restart chasing once live Core geometry says
     // the victim is already in melee reach. Remove only the current Chase
     // generator, move the Player close through the native relocation API, and
@@ -8299,9 +8369,11 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         "[PartyBotSimulator] ChaseTargetAction stage=point-cleaned.");
 
     bool const fixturePassed = attackStarted && registered && selected && accepted &&
-        sameChaseNotProposed && nearVictimPositioned && alreadyReachableNotChased &&
-        originalPositionRestored && staleSelected && staleVictimRejected &&
-        pointSelected && pointMovementPreserved;
+        sameChaseNotProposed && followStarted && followSelected &&
+        followChaseAccepted && followResumed && nearVictimPositioned &&
+        alreadyReachableNotChased && originalPositionRestored &&
+        staleSelected && staleVictimRejected && pointSelected &&
+        pointMovementPreserved;
 
     // Capture every diagnostic fact while the Player and hostile are still
     // alive. LogoutPlayer(false) destroys the Player; no raw Player/Unit pointer
@@ -8322,12 +8394,15 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     actionRuntime.Remove();
     botSession.LogoutPlayer(false);
     bool const playerCleaned = botSession.GetPlayer() == nullptr;
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-        "[PartyBotSimulator] ChaseTargetAction stage=player-logged-out cleaned=%u.",
-        playerCleaned ? 1u : 0u);
     bot = nullptr;
+    followLeaderSession.LogoutPlayer(false);
+    bool const followLeaderCleaned = followLeaderSession.GetPlayer() == nullptr;
+    followLeader = nullptr;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=players-logged-out botCleaned=%u followLeaderCleaned=%u.",
+        playerCleaned ? 1u : 0u, followLeaderCleaned ? 1u : 0u);
     bool const hostileCleaned = DestroySimulatorActor(map, hostile);
-    bool const cleaned = playerCleaned && hostileCleaned;
+    bool const cleaned = playerCleaned && followLeaderCleaned && hostileCleaned;
 
     bool const passed = fixturePassed && cleaned;
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
@@ -8341,15 +8416,16 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         static_cast<unsigned long long>(detailVictimGuid),
         detailMounted ? 1u : 0u, detailTaxi ? 1u : 0u);
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u alreadyReachableNotChased=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
+        "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u followStarted=%u followChaseAccepted=%u followResumed=%u alreadyReachableNotChased=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
         attackStarted ? 1u : 0u, registered ? 1u : 0u, selected ? 1u : 0u,
         accepted ? 1u : 0u, sameChaseNotProposed ? 1u : 0u,
-        alreadyReachableNotChased ? 1u : 0u, staleSelected ? 1u : 0u,
-        staleVictimRejected ? 1u : 0u, pointMovementPreserved ? 1u : 0u,
-        cleaned ? 1u : 0u);
+        followStarted ? 1u : 0u, followChaseAccepted ? 1u : 0u,
+        followResumed ? 1u : 0u, alreadyReachableNotChased ? 1u : 0u,
+        staleSelected ? 1u : 0u, staleVictimRejected ? 1u : 0u,
+        pointMovementPreserved ? 1u : 0u, cleaned ? 1u : 0u);
     if (passed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: ChaseTargetAction used Core MoveChase for the live victim, preserved combat and threat state, skipped same-target and already-melee-reachable chases, rejected a stale victim, and preserved unrelated Point movement.");
+            "[PartyBotSimulator] PASS: ChaseTargetAction used Core MoveChase for the live victim, temporarily superseded and restored a valid party Follow, preserved combat and threat state, skipped redundant chases, rejected a stale victim, and preserved unrelated Point movement.");
     return passed;
 }
 

@@ -7383,6 +7383,181 @@ bool RunEngineCoreCountBasedItemMutationSmokeTest(Map& map)
 }
 
 
+namespace
+{
+bool IsF46UtilitySelfAura(uint32 auraType)
+{
+    switch (auraType)
+    {
+        case SPELL_AURA_MOD_STAT:
+        case SPELL_AURA_MOD_RESISTANCE:
+        case SPELL_AURA_MOD_INCREASE_SPEED:
+        case SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED:
+        case SPELL_AURA_WATER_BREATHING:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// This is deliberately stricter than "a friendly buff". Ordinary non-triggered
+// helpful spells still raise Core helpful-ability proc flags. A utility spell
+// may be considered for a NoThreat action only when both caster and target
+// procs are suppressed, and when it has no ScriptMgr, flat-threat, spell-proc,
+// triggered-child, periodic, healing, damage or area-aura path.
+bool IsF46BoundedSelfUtilitySpell(SpellEntry const& spell)
+{
+    if (!spell.Id || !spell.IsPositiveSpell() || spell.IsPassiveSpell() ||
+        spell.DmgClass != SPELL_DAMAGE_CLASS_NONE || spell.speed > 0.0f ||
+        spell.MaxAffectedTargets || spell.IsAreaOfEffectSpell() ||
+        spell.HasAreaAuraEffect() || spell.ScriptId ||
+        spell.procFlags || spell.procChance || spell.procCharges ||
+        !spell.HasAttribute(SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS) ||
+        !spell.HasAttribute(SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS) ||
+        sSpellMgr.GetSpellThreatEntry(spell.Id) ||
+        sSpellMgr.GetSpellProcEvent(spell.Id))
+        return false;
+
+    SpellScriptTargetBounds const scriptTargets =
+        sSpellMgr.GetSpellScriptTargetBounds(spell.Id);
+    if (scriptTargets.first != scriptTargets.second)
+        return false;
+
+    for (uint32 slot = 0; slot < MAX_SPELL_TOTEMS; ++slot)
+        if (spell.Totem[slot])
+            return false;
+    for (uint32 slot = 0; slot < MAX_SPELL_REAGENTS; ++slot)
+        if (spell.Reagent[slot] || spell.ReagentCount[slot])
+            return false;
+
+    bool hasEffect = false;
+    for (uint32 index = 0; index < MAX_EFFECT_INDEX; ++index)
+    {
+        uint32 const effect = spell.Effect[index];
+        if (!effect)
+        {
+            if (spell.EffectTriggerSpell[index])
+                return false;
+            continue;
+        }
+
+        hasEffect = true;
+        if (effect != SPELL_EFFECT_APPLY_AURA ||
+            !IsF46UtilitySelfAura(spell.EffectApplyAuraName[index]) ||
+            spell.EffectImplicitTargetA[index] != TARGET_UNIT_CASTER ||
+            spell.EffectImplicitTargetB[index] != 0 ||
+            spell.EffectTriggerSpell[index] ||
+            spell.EffectChainTarget[index] ||
+            spell.EffectRadiusIndex[index])
+            return false;
+    }
+    return hasEffect;
+}
+
+bool IsF46PositiveSelfAuraShape(SpellEntry const& spell)
+{
+    if (!spell.Id || !spell.IsPositiveSpell() || spell.IsPassiveSpell() ||
+        spell.DmgClass != SPELL_DAMAGE_CLASS_NONE || spell.speed > 0.0f ||
+        spell.MaxAffectedTargets || spell.IsAreaOfEffectSpell() ||
+        spell.HasAreaAuraEffect() || spell.ScriptId)
+        return false;
+
+    bool hasEffect = false;
+    for (uint32 index = 0; index < MAX_EFFECT_INDEX; ++index)
+    {
+        if (!spell.Effect[index])
+            continue;
+        hasEffect = true;
+        if (spell.Effect[index] != SPELL_EFFECT_APPLY_AURA ||
+            !IsF46UtilitySelfAura(spell.EffectApplyAuraName[index]) ||
+            spell.EffectImplicitTargetA[index] != TARGET_UNIT_CASTER ||
+            spell.EffectImplicitTargetB[index] != 0 ||
+            spell.EffectTriggerSpell[index] ||
+            spell.EffectChainTarget[index] ||
+            spell.EffectRadiusIndex[index])
+            return false;
+    }
+    return hasEffect;
+}
+
+bool RunEngineCoreUtilitySpellAuditSmokeTest(Map& /*map*/)
+{
+    uint32 inspected = 0;
+    uint32 positiveSelfAuraShapes = 0;
+    uint32 missingProcSuppression = 0;
+    uint32 threatOrProcRows = 0;
+    uint32 strictCandidates = 0;
+    uint32 loggedCandidates = 0;
+
+    for (uint32 spellId = 1; spellId < sSpellMgr.GetMaxSpellId(); ++spellId)
+    {
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(spellId);
+        if (!spell || spell->Id != spellId)
+            continue;
+        ++inspected;
+
+        if (!IsF46PositiveSelfAuraShape(*spell))
+            continue;
+        ++positiveSelfAuraShapes;
+
+        bool const bothProcSuppressed =
+            spell->HasAttribute(SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS) &&
+            spell->HasAttribute(SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS);
+        if (!bothProcSuppressed)
+            ++missingProcSuppression;
+
+        bool const threatOrProc =
+            sSpellMgr.GetSpellThreatEntry(spellId) != nullptr ||
+            sSpellMgr.GetSpellProcEvent(spellId) != nullptr ||
+            spell->procFlags || spell->procChance || spell->procCharges;
+        if (threatOrProc)
+            ++threatOrProcRows;
+
+        if (!IsF46BoundedSelfUtilitySpell(*spell))
+            continue;
+
+        ++strictCandidates;
+        if (loggedCandidates < 20)
+        {
+            uint32 auraType = 0;
+            for (uint32 index = 0; index < MAX_EFFECT_INDEX; ++index)
+                if (spell->Effect[index])
+                {
+                    auraType = spell->EffectApplyAuraName[index];
+                    break;
+                }
+            SpellCastTimesEntry const* castTime =
+                sSpellCastTimesStore.LookupEntry(spell->CastingTimeIndex);
+            SpellRangeEntry const* range =
+                sSpellRangeStore.LookupEntry(spell->rangeIndex);
+            uint32 const castTimeMs = castTime ? castTime->CastTime : 0;
+            float const maxRange = range ? GetSpellMaxRange(range) : 0.0f;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] F46 bounded self-utility candidate: spell=%u name=%s class=%u family=%u aura=%u mana=%u powerType=%u castMs=%u rangeIndex=%u maxRange=%.2f recoveryMs=%u categoryRecoveryMs=%u gcdMs=%u script=%u threat=0 procEvent=0 procFields=0 procsSuppressed=1.",
+                spellId, spell->SpellName[0].c_str(), spell->SpellFamilyName,
+                spell->SpellFamilyFlags, auraType, spell->manaCost,
+                spell->powerType, castTimeMs, spell->rangeIndex, maxRange,
+                spell->RecoveryTime, spell->CategoryRecoveryTime,
+                spell->StartRecoveryTime, spell->ScriptId);
+            ++loggedCandidates;
+        }
+    }
+
+    bool const auditRan = inspected > 1000 &&
+        sSpellMgr.GetMaxSpellId() > inspected;
+    sLog.Out(LOG_BASIC, auditRan ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F46 utility spell audit: spellRows=%u positiveSelfAuraShapes=%u missingProcSuppression=%u threatOrProcRows=%u strictCandidates=%u loggedCandidates=%u.",
+        inspected, positiveSelfAuraShapes, missingProcSuppression,
+        threatOrProcRows, strictCandidates, loggedCandidates);
+
+    if (auditRan)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F46 bounded self-utility spell audit scanned the loaded Vanilla 5875 SpellEntry table; only self-aura spells with both caster/target proc suppression and no ScriptMgr, spell-threat, spell-proc, trigger-child, periodic or area path were listed as eligible candidates.");
+    return auditRan;
+}
+} // anonymous namespace
+
+
 
 bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
 {
@@ -13998,6 +14173,8 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const itemUsePassed = RunEngineCoreItemUseSmokeTest(*map);
     bool const countBasedItemMutationPassed =
         RunEngineCoreCountBasedItemMutationSmokeTest(*map);
+    bool const utilitySpellAuditPassed =
+        RunEngineCoreUtilitySpellAuditSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
     bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
     bool const playerFollowCastSafetyPassed = RunEngineCorePlayerFollowCastSafetySmokeTest(*map);
@@ -14019,7 +14196,8 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                               moveDistancePassed && stopStaleChasePassed && stopChasePassed &&
                               dpsAssistPassed && dpsAssistGroupSnapshotPassed &&
                               followPartyMemberPassed && itemUsePassed &&
-                              countBasedItemMutationPassed && movementPassed && followPassed &&
+                              countBasedItemMutationPassed && utilitySpellAuditPassed &&
+                              movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&
                               movePointControlSafetyPassed && movementInterruptPassed &&

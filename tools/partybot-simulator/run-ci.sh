@@ -364,6 +364,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F42 real Core aggregated single-slot us
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F46 bounded self-utility spell audit scanned the loaded Vanilla 5875 SpellEntry table; only self-aura spells with both caster/target proc suppression and no ScriptMgr, spell-threat, spell-proc, trigger-child, periodic or area path were listed as eligible candidates." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F46 bounded self-utility spell audit PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: real Core stackable item use reduced a two-potion stack to one with a CountChanged before-effects record, and using the cast item as its own reagent consumed three items once with a GUID-less ReagentConsumed before-effects record." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F45 real-Core stack-count/item-as-reagent mutation PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

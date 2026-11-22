@@ -2223,6 +2223,49 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
     engine.AddStrategy(strategy);
     SimulatorCoreActionRuntime actionRuntime(map);
 
+    ActionCandidate estimateCandidate;
+    PartyMemberSnapshot delayedEstimateMember = *replacementBot;
+    delayedEstimateMember.currentSpellState = SPELL_STATE_DELAYED;
+    DecisionContext delayedEstimateContext(
+        replacementSnapshot, delayedEstimateMember, coordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+        &actionRuntime);
+    DecisionReport delayedEstimateReport = engine.Evaluate(delayedEstimateContext);
+    bool const delayedFailsClosed =
+        delayedEstimateReport.selectedIndices.empty() &&
+        delayedEstimateReport.candidates.size() == 1 &&
+        delayedEstimateReport.candidates[0].status ==
+            CandidateStatus::RejectedThreatUnknown &&
+        delayedEstimateReport.candidates[0].reason ==
+            "threat_impact_estimate_unknown";
+
+    PartyMemberSnapshot castingEstimateMember = *replacementBot;
+    castingEstimateMember.currentSpellState = SPELL_STATE_CASTING;
+    DecisionContext castingEstimateContext(
+        replacementSnapshot, castingEstimateMember, coordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+        &actionRuntime);
+    DecisionReport castingEstimateReport = engine.Evaluate(castingEstimateContext);
+    bool const castingFailsClosed =
+        castingEstimateReport.selectedIndices.empty() &&
+        castingEstimateReport.candidates.size() == 1 &&
+        castingEstimateReport.candidates[0].status ==
+            CandidateStatus::RejectedThreatUnknown &&
+        castingEstimateReport.candidates[0].reason ==
+            "threat_impact_estimate_unknown";
+
+    PartyMemberSnapshot preparingEstimateMember = *replacementBot;
+    DecisionContext preparingEstimateContext(
+        replacementSnapshot, preparingEstimateMember, coordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+        &actionRuntime);
+    ThreatImpactEstimate const preparingEstimate =
+        cancelAction->EstimateThreatImpact(preparingEstimateContext, estimateCandidate);
+    bool const preparingNoThreat =
+        preparingEstimate.completeness == ThreatImpactCompleteness::NoThreat &&
+        preparingEstimate.reason ==
+            "cancel_own_preparing_cast_has_no_applied_spell_effect";
+
     bool staleSnapshotRejected = false;
     bool replacementPreserved = false;
     if (firstCastCaptured && firstTerminalCaptured && replacementCaptured &&
@@ -2308,17 +2351,20 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
 
     bool const beforeCleanup =
         firstCastCaptured && firstTerminalCaptured && replacementCaptured &&
-        registered && staleSnapshotRejected && replacementPreserved &&
+        registered && preparingNoThreat && delayedFailsClosed &&
+        castingFailsClosed && staleSnapshotRejected && replacementPreserved &&
         currentSelected && currentCancelled && repeatedCancelRejected && noEffects;
     bool const cleaned = cleanup();
 
     sLog.Out(LOG_BASIC, beforeCleanup && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] CancelOwnCastAction: snapshotIdentity=%u firstInterrupted=%u replacementIdentity=%u staleRejected=%u replacementPreserved=%u selected=%u cancelled=%u repeatedRejected=%u noEffects=%u cleanup=%u.",
+        "[PartyBotSimulator] CancelOwnCastAction: snapshotIdentity=%u firstInterrupted=%u replacementIdentity=%u preparingNoThreat=%u delayedUnknown=%u castingUnknown=%u staleRejected=%u replacementPreserved=%u selected=%u cancelled=%u repeatedRejected=%u noEffects=%u cleanup=%u.",
         firstCastCaptured ? 1u : 0u, firstTerminalCaptured ? 1u : 0u,
-        replacementCaptured ? 1u : 0u, staleSnapshotRejected ? 1u : 0u,
-        replacementPreserved ? 1u : 0u, currentSelected ? 1u : 0u,
-        currentCancelled ? 1u : 0u, repeatedCancelRejected ? 1u : 0u,
-        noEffects ? 1u : 0u, cleaned ? 1u : 0u);
+        replacementCaptured ? 1u : 0u, preparingNoThreat ? 1u : 0u,
+        delayedFailsClosed ? 1u : 0u, castingFailsClosed ? 1u : 0u,
+        staleSnapshotRejected ? 1u : 0u, replacementPreserved ? 1u : 0u,
+        currentSelected ? 1u : 0u, currentCancelled ? 1u : 0u,
+        repeatedCancelRejected ? 1u : 0u, noEffects ? 1u : 0u,
+        cleaned ? 1u : 0u);
 
     if (!beforeCleanup || !cleaned)
     {

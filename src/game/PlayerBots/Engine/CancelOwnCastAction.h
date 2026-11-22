@@ -20,12 +20,22 @@ public:
     ThreatImpactEstimate EstimateThreatImpact(
         DecisionContext const& context, ActionCandidate const&) const override
     {
-        // Spell::cancel performs Core-owned cleanup but does not launch a new
-        // damage/heal/threat effect. Existing cast effects remain Core-owned.
+        // PREPARING has not applied a target effect, so cancelling it has no
+        // threat recipients. DELAYED may have partial/immediate impacts and
+        // CASTING cleanup may remove target auras with script/proc side effects;
+        // those states must fail closed until the complete Core aftermath is
+        // audited rather than being treated as a free action.
         ThreatImpactEstimate estimate;
-        estimate.completeness = ThreatImpactCompleteness::NoThreat;
         estimate.snapshotEpoch = context.snapshot.epoch;
-        estimate.reason = "cancel_own_cast_only_cleans_up_the_existing_core_spell";
+        if (context.bot.currentSpellState != SPELL_STATE_PREPARING)
+        {
+            estimate.completeness = ThreatImpactCompleteness::Unknown;
+            estimate.reason = "cancel_own_cast_state_cleanup_threat_not_fully_audited";
+            return estimate;
+        }
+
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "cancel_own_preparing_cast_has_no_applied_spell_effect";
         return estimate;
     }
 

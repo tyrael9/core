@@ -8305,7 +8305,8 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     bot->GetMotionMaster()->MovementExpired(false);
     bot->StopMoving();
     bool const nearVictimPositioned =
-        bot->SetPosition(9.0f, 6.0f, 4.0f, bot->GetOrientation());
+        bot->SetPosition(9.0f, hostile.creature->GetPositionY(),
+                         hostile.creature->GetPositionZ(), bot->GetOrientation());
     PartySnapshot reachableSnapshot = snapshot;
     reachableSnapshot.epoch++;
     reachableSnapshot.members[0].x = bot->GetPositionX();

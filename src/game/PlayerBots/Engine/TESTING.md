@@ -95,7 +95,11 @@ These tests cover pure decision logic only. They do not validate live PartyBotAI
 - Bounded ActionResult/Core Spell terminal listeners; typed AND/alternative dependencies; late event registration; idempotency tombstones; starvation resistance; ready-backlog preservation under queue pressure.
 - Core-backed spell, movement/follow, range/LOS/resource, Group/death recovery and NewEngine authority fixtures.
 
-## F43 CoreAction executor and sixteen generic adapters
+## F43 CoreAction executor and seventeen generic adapters
+
+### F43 exact own-cast cancellation (fixture added; CI pending)
+
+The trusted Core simulator creates a real Player in a one-member Group, starts two successive non-triggered Player spells with the same spell ID and target, and captures unique Engine action/encounter/target identities through PlayerAI::OnSpellCastPreparing. PartySnapshotBuilder must copy those identities as values. A stale first-cast snapshot is then executed while the second cast owns the same Core slot; the action must reject the mismatched action ID and leave the replacement untouched. A fresh snapshot then cancels the replacement through SpellCaster::InterruptSpell, requiring one matching Interrupted Core terminal and no target-health or Player-mana effects. Repeating the old request after cancellation must be rejected. The fixture asserts Group, Player and Creature cleanup. This covers PREPARING; DELAYED and live CHANNELED/CASTING matrices remain open. Nothing is registered in the production NewEngine registry. ARM64 and trusted-runtime CI are pending.
 
 The experimental `DpsAssistTrigger` remains simulator-only and is not registered as a production action/strategy. Trusted runtime [#44992135927](https://github.com/tyrael9/core/actions/runs/44992135927) proves Main Tank target priority, healer-peel comparison, CC exclusion and staged dispatch to the existing Core AttackTargetAction; this does not authorize production NewEngine policy.
 

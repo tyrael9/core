@@ -328,6 +328,14 @@ class Spell
 
         CurrentSpellTypes GetCurrentContainer() const;
 
+        // Stable value-only identity for the PartyBotEngine action that owns
+        // this root Spell. These identifiers are copied into PartySnapshot;
+        // no Spell pointer crosses the map-thread execution boundary.
+        uint64 GetPartyBotTraceActionId() const { return m_partyBotTraceActionId; }
+        uint64 GetPartyBotTraceEncounterId() const { return m_partyBotTraceEncounterId; }
+        uint64 GetPartyBotTraceTargetGuid() const { return m_partyBotTraceTargetGuid; }
+        bool IsPartyBotTraceEngineAction() const { return m_partyBotTraceEngineAction; }
+
         // caster types:
         // formal spell caster, in game source of spell affects cast
         SpellCaster* GetCaster() const { return m_caster; }

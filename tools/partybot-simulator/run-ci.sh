@@ -363,6 +363,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F42 real Core aggregated single-slot us
     echo "[PartyBotSimulator] The F42 real delayed ON_USE cancellation PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
+if ! grep -Fq "[PartyBotSimulator] PASS: CancelOwnCastAction used Core SpellCaster::InterruptSpell to cancel only the exact Engine-owned Player spell, rejected stale/replaced and already-finished spell identities, emitted one Interrupted terminal, and applied no spell effects." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The CancelOwnCastAction identity-safe Core interruption PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: generic Core target maintenance cleared an idle stale selection, selected a live hostile and rejected a stale friendly target without disturbing Player combat state." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F43 generic target-maintenance accepted/rejected/cleanup marker was not found." | tee -a "$LOG_FILE"
     exit 1

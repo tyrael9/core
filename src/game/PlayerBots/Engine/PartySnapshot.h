@@ -16,6 +16,10 @@ struct PartyMemberSnapshot {
     float x = 0.0f, y = 0.0f, z = 0.0f, orientation = 0.0f;
     std::uint32_t currentSpellId = 0, currentSpellState = 0;
     Guid currentSpellTargetGuid = 0;
+    ActionId currentSpellActionId = 0;
+    std::uint64_t currentSpellEncounterId = 0;
+    Guid currentSpellTraceTargetGuid = 0;
+    bool currentSpellEngineAction = false;
     std::uint8_t shapeshiftForm = 0, currentSpellType = 0xff;
     bool online = false, alive = false, inCombat = false, isMainTank = false;
     bool victimAttackable = false;

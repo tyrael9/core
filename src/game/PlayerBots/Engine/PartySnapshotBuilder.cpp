@@ -262,6 +262,15 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
             memberData.currentSpellType = currentSpellType;
             memberData.currentSpellTargetGuid =
                 currentSpell->m_targets.getUnitTargetGuid().GetRawValue();
+            memberData.currentSpellActionId =
+                currentSpell->GetPartyBotTraceActionId();
+            memberData.currentSpellEncounterId =
+                currentSpell->GetPartyBotTraceEncounterId();
+            memberData.currentSpellTraceTargetGuid =
+                currentSpell->GetPartyBotTraceTargetGuid();
+            memberData.currentSpellEngineAction =
+                currentSpell->IsPartyBotTraceEngineAction() &&
+                memberData.currentSpellActionId != 0;
         }
         memberData.online = member->IsInWorld();
         memberData.alive = member->IsAlive();

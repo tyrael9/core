@@ -32,6 +32,7 @@
 #include "PlayerBots/Engine/StopStaleChaseAction.h"
 #include "PlayerBots/Engine/StopChaseAction.h"
 #include "PlayerBots/Engine/MoveDistanceAction.h"
+#include "PlayerBots/Engine/CancelOwnCastAction.h"
 #include "PlayerBots/Engine/PartyBotEngine.h"
 #include "PlayerBots/Engine/ExecutionAuthority.h"
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
@@ -1942,6 +1943,394 @@ private:
     bool m_bound = false;
 };
 
+
+
+class SimulatorOwnCastObserverAI final : public PlayerAI
+{
+public:
+    explicit SimulatorOwnCastObserverAI(Player* player) : PlayerAI(player) {}
+
+    uint64 OnSpellCastPreparing(
+        Spell const* /*spell*/, uint32 /*spellId*/, uint64 coreTargetGuid,
+        uint64& encounterId, uint64& traceTargetGuid,
+        bool& engineAction) override
+    {
+        encounterId = 0x50424f54ull;
+        traceTargetGuid = coreTargetGuid;
+        engineAction = true;
+        ++prepareCount;
+        lastPreparedActionId = nextActionId++;
+        return lastPreparedActionId;
+    }
+
+    void OnSpellCastFinished(
+        Spell const* /*spell*/, uint64 actionId, uint64 encounterId,
+        uint32 spellId, uint64 targetGuid, bool success,
+        bool interrupted, bool /*engineAction*/) override
+    {
+        ++finishCount;
+        lastFinishedActionId = actionId;
+        lastFinishedEncounterId = encounterId;
+        lastFinishedSpellId = spellId;
+        lastFinishedTargetGuid = targetGuid;
+        lastFinishedSuccess = success;
+        lastFinishedInterrupted = interrupted;
+    }
+
+    uint64 nextActionId = 0xabc100ull;
+    uint32 prepareCount = 0;
+    uint32 finishCount = 0;
+    uint64 lastPreparedActionId = 0;
+    uint64 lastFinishedActionId = 0;
+    uint64 lastFinishedEncounterId = 0;
+    uint32 lastFinishedSpellId = 0;
+    uint64 lastFinishedTargetGuid = 0;
+    bool lastFinishedSuccess = false;
+    bool lastFinishedInterrupted = false;
+};
+
+class SimulatorCoreActionRuntime final : public CoreActionRuntime
+{
+public:
+    explicit SimulatorCoreActionRuntime(Map& map) : m_map(map) {}
+
+    CoreActionResolution ResolveUnitContext(
+        DecisionContext const& context, Guid targetGuid) const override
+    {
+        CoreActionResolution result;
+        Unit* actorUnit = m_map.GetUnit(ObjectGuid(context.bot.guid));
+        Player* actor = actorUnit ? actorUnit->ToPlayer() : nullptr;
+        if (!actor || !actor->IsInWorld())
+        {
+            result.status = CoreActionResolveStatus::ActorOutOfWorld;
+            result.reason = "simulator_core_action_actor_missing";
+            return result;
+        }
+        if (context.snapshot.mapId != m_map.GetId() ||
+            context.snapshot.instanceId != m_map.GetInstanceId() ||
+            context.bot.mapId != context.snapshot.mapId ||
+            context.bot.instanceId != context.snapshot.instanceId)
+        {
+            result.status = CoreActionResolveStatus::SnapshotMapMismatch;
+            result.reason = "simulator_core_action_snapshot_mismatch";
+            return result;
+        }
+
+        Unit* target = nullptr;
+        if (targetGuid)
+        {
+            target = m_map.GetUnit(ObjectGuid(targetGuid));
+            if (!target || !target->IsInWorld() ||
+                target->GetMap() != &m_map ||
+                target->GetInstanceId() != m_map.GetInstanceId())
+            {
+                result.status = CoreActionResolveStatus::TargetNotFound;
+                result.reason = "simulator_core_action_target_missing";
+                return result;
+            }
+        }
+
+        result.status = CoreActionResolveStatus::Resolved;
+        result.actor = actor;
+        result.target = target;
+        result.map = &m_map;
+        result.reason = "simulator_core_action_context_resolved";
+        return result;
+    }
+
+private:
+    Map& m_map;
+};
+
+class SimulatorCancelOwnCastTrigger final : public Trigger
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.online && context.bot.alive &&
+            context.bot.currentSpellEngineAction &&
+            context.bot.currentSpellActionId &&
+            context.bot.currentSpellId &&
+            (context.bot.currentSpellType == CURRENT_GENERIC_SPELL ||
+             context.bot.currentSpellType == CURRENT_CHANNELED_SPELL);
+    }
+
+    void CollectCandidates(
+        DecisionContext const& context,
+        std::vector<ActionCandidate>& candidates) const override
+    {
+        if (!IsActive(context))
+            return;
+        ActionCandidate candidate;
+        candidate.actionName = "core_cancel_own_cast";
+        candidate.spellId = context.bot.currentSpellId;
+        candidate.basePriority = 950.0f;
+        candidate.channel = ActionChannel::Utility;
+        candidates.push_back(candidate);
+    }
+
+private:
+    std::string m_name = "simulator_cancel_own_cast";
+};
+
+bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    SimulatorActor patient;
+    if (!CreateSimulatorActor(map, *info, partyFaction, 8.0f, 6.0f, patient))
+        return false;
+    patient.creature->SetHealth(patient.creature->GetMaxHealth() / 2);
+
+    WorldSession botSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* bot = nullptr;
+    bool const botCreated = CreateSimulatorPlayer(
+        map, partyFaction, botSession, bot, 0.0f, 6.0f, 0.0f);
+    if (!botCreated)
+    {
+        if (botSession.GetPlayer())
+            botSession.LogoutPlayer(false);
+        else if (bot)
+            delete bot;
+        DestroySimulatorActor(map, patient);
+        return false;
+    }
+
+    ObjectGuid const botGuid = bot->GetObjectGuid();
+    ObjectGuid const patientGuid = patient.creature->GetObjectGuid();
+    SimulatorOwnCastObserverAI spellObserver(bot);
+    bot->SetAI(&spellObserver);
+
+    std::unique_ptr<Group> group(new Group());
+    bool groupRegistered = false;
+    bool const groupCreated = group->Create(botGuid, bot->GetName());
+    if (groupCreated)
+    {
+        sObjectMgr.AddGroup(group.get());
+        groupRegistered = true;
+    }
+
+    auto cleanup = [&]() -> bool
+    {
+        if (bot)
+        {
+            if (bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+                bot->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+            if (bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+                bot->InterruptSpell(CURRENT_CHANNELED_SPELL, true);
+            bot->SetAI(nullptr);
+        }
+
+        bool ungrouped = true;
+        if (group && group->GetId())
+        {
+            group->UnbindInstance(map.GetId(), false);
+            group->Disband(true, botGuid);
+            ungrouped = !bot || bot->GetGroup() == nullptr;
+            if (groupRegistered)
+            {
+                sObjectMgr.RemoveGroup(group.get());
+                groupRegistered = false;
+            }
+            group.reset();
+        }
+
+        if (botSession.GetPlayer())
+            botSession.LogoutPlayer(false);
+        bool const sessionCleaned = !botSession.GetPlayer();
+        bool const playerDetached = !botGuid || map.GetUnit(botGuid) == nullptr;
+        bot = nullptr;
+        bool const patientCleaned = DestroySimulatorActor(map, patient);
+        return ungrouped && sessionCleaned && playerDetached && patientCleaned;
+    };
+
+    if (!groupCreated || !groupRegistered)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] CancelOwnCast Group setup failed (cleanup=%u).",
+                 cleaned ? 1u : 0u);
+        return false;
+    }
+
+    PartyCoordinator coordinator;
+    uint32 snapshotTime = WorldTimer::getMSTime();
+    PartySnapshot firstCastSnapshot;
+    SpellCastResult const firstCastResult =
+        bot->CastSpell(patient.creature, SIMULATOR_HEAL_SPELL_ID, false);
+    uint64 const firstActionId = spellObserver.lastPreparedActionId;
+    PartySnapshot const* firstBuilt = PartySnapshotBuilder::GetOrBuild(
+        bot, coordinator, snapshotTime + 1, 0);
+    if (firstBuilt)
+        firstCastSnapshot = *firstBuilt;
+    PartyMemberSnapshot const* firstBot =
+        firstCastSnapshot.FindMember(botGuid.GetRawValue());
+    Spell* firstCurrentSpell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    bool const firstCastCaptured = firstCastResult == SPELL_CAST_OK &&
+        spellObserver.prepareCount == 1 && firstActionId &&
+        firstCurrentSpell &&
+        firstCurrentSpell->getState() == SPELL_STATE_PREPARING &&
+        firstBot &&
+        firstBot->currentSpellId == SIMULATOR_HEAL_SPELL_ID &&
+        firstBot->currentSpellType == CURRENT_GENERIC_SPELL &&
+        firstBot->currentSpellActionId == firstActionId &&
+        firstBot->currentSpellEngineAction &&
+        firstBot->currentSpellEncounterId == 0x50424f54ull &&
+        firstBot->currentSpellTargetGuid == patientGuid.GetRawValue() &&
+        firstBot->currentSpellTraceTargetGuid == patientGuid.GetRawValue();
+
+    bot->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+    bool const firstTerminalCaptured = spellObserver.finishCount == 1 &&
+        spellObserver.lastFinishedActionId == firstActionId &&
+        spellObserver.lastFinishedSpellId == SIMULATOR_HEAL_SPELL_ID &&
+        spellObserver.lastFinishedInterrupted && !spellObserver.lastFinishedSuccess &&
+        bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+
+    SpellCastResult const replacementCastResult =
+        bot->CastSpell(patient.creature, SIMULATOR_HEAL_SPELL_ID, false);
+    uint64 const replacementActionId = spellObserver.lastPreparedActionId;
+    snapshotTime += 2;
+    PartySnapshot replacementSnapshot;
+    PartySnapshot const* replacementBuilt = PartySnapshotBuilder::GetOrBuild(
+        bot, coordinator, snapshotTime, 0);
+    if (replacementBuilt)
+        replacementSnapshot = *replacementBuilt;
+    PartyMemberSnapshot const* replacementBot =
+        replacementSnapshot.FindMember(botGuid.GetRawValue());
+    Spell* replacementSpell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    bool const replacementCaptured = replacementCastResult == SPELL_CAST_OK &&
+        spellObserver.prepareCount == 2 && replacementActionId != firstActionId &&
+        replacementSpell &&
+        replacementSpell->getState() == SPELL_STATE_PREPARING &&
+        replacementBot &&
+        replacementBot->currentSpellId == SIMULATOR_HEAL_SPELL_ID &&
+        replacementBot->currentSpellType == CURRENT_GENERIC_SPELL &&
+        replacementBot->currentSpellActionId == replacementActionId &&
+        replacementBot->currentSpellEngineAction;
+
+    PartyBotEngine engine;
+    std::shared_ptr<CancelOwnCastAction> cancelAction(
+        new CancelOwnCastAction());
+    bool const registered = engine.RegisterAction(cancelAction);
+    std::shared_ptr<Strategy> strategy(
+        new Strategy("simulator_cancel_own_cast"));
+    strategy->AddTrigger(std::make_shared<SimulatorCancelOwnCastTrigger>());
+    engine.AddStrategy(strategy);
+    SimulatorCoreActionRuntime actionRuntime(map);
+
+    bool staleSnapshotRejected = false;
+    bool replacementPreserved = false;
+    if (firstCastCaptured && firstTerminalCaptured && replacementCaptured &&
+        firstBot && replacementBot)
+    {
+        DecisionContext staleContext(
+            firstCastSnapshot, *firstBot, coordinator, WorldTimer::getMSTime(),
+            nullptr, nullptr, nullptr, nullptr, &actionRuntime);
+        DecisionReport staleReport = engine.Evaluate(staleContext);
+        bool const staleSelected = staleReport.selectedIndices.size() == 1 &&
+            staleReport.candidates[staleReport.selectedIndices[0]].candidate.actionName ==
+                "core_cancel_own_cast" &&
+            staleReport.candidates[staleReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+        if (staleSelected)
+            engine.ExecuteSelected(staleContext, staleReport);
+        CandidateEvaluation const* staleEvaluation = staleSelected
+            ? &staleReport.candidates[staleReport.selectedIndices[0]] : nullptr;
+        staleSnapshotRejected = staleEvaluation &&
+            staleEvaluation->status == CandidateStatus::ExecutionFailed &&
+            staleEvaluation->actionResult == ActionResult::Impossible &&
+            staleEvaluation->reason ==
+                "cancel_own_cast_live_spell_identity_mismatch" &&
+            spellObserver.finishCount == 1;
+        Spell* currentAfterStale = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        replacementPreserved = currentAfterStale &&
+            currentAfterStale->GetPartyBotTraceActionId() == replacementActionId;
+    }
+
+    bool currentSelected = false;
+    bool currentCancelled = false;
+    bool repeatedCancelRejected = false;
+    bool noEffects = false;
+    if (staleSnapshotRejected && replacementPreserved && replacementBot)
+    {
+        DecisionContext currentContext(
+            replacementSnapshot, *replacementBot, coordinator,
+            WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+            &actionRuntime);
+        DecisionReport currentReport = engine.Evaluate(currentContext);
+        currentSelected = currentReport.selectedIndices.size() == 1 &&
+            currentReport.candidates[currentReport.selectedIndices[0]].candidate.actionName ==
+                "core_cancel_own_cast" &&
+            currentReport.candidates[currentReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+
+        uint32 const patientHealthBefore = patient.creature->GetHealth();
+        uint32 const manaBeforeCancel = bot->GetPower(POWER_MANA);
+        if (currentSelected)
+            engine.ExecuteSelected(currentContext, currentReport);
+        CandidateEvaluation const* currentEvaluation = currentSelected
+            ? &currentReport.candidates[currentReport.selectedIndices[0]] : nullptr;
+        currentCancelled = currentEvaluation &&
+            currentEvaluation->status == CandidateStatus::Executed &&
+            currentEvaluation->actionResult == ActionResult::Success &&
+            bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr &&
+            spellObserver.finishCount == 2 &&
+            spellObserver.lastFinishedActionId == replacementActionId &&
+            spellObserver.lastFinishedEncounterId == 0x50424f54ull &&
+            spellObserver.lastFinishedSpellId == SIMULATOR_HEAL_SPELL_ID &&
+            spellObserver.lastFinishedTargetGuid == patientGuid.GetRawValue() &&
+            spellObserver.lastFinishedInterrupted &&
+            !spellObserver.lastFinishedSuccess;
+        noEffects = patient.creature->GetHealth() == patientHealthBefore &&
+            bot->GetPower(POWER_MANA) == manaBeforeCancel;
+
+        DecisionReport repeatedReport = engine.Evaluate(currentContext);
+        bool const repeatedSelected = repeatedReport.selectedIndices.size() == 1 &&
+            repeatedReport.candidates[repeatedReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+        if (repeatedSelected)
+            engine.ExecuteSelected(currentContext, repeatedReport);
+        CandidateEvaluation const* repeatedEvaluation = repeatedSelected
+            ? &repeatedReport.candidates[repeatedReport.selectedIndices[0]] : nullptr;
+        repeatedCancelRejected = repeatedEvaluation &&
+            repeatedEvaluation->status == CandidateStatus::ExecutionFailed &&
+            repeatedEvaluation->actionResult == ActionResult::Impossible &&
+            repeatedEvaluation->reason ==
+                "cancel_own_cast_live_spell_identity_mismatch" &&
+            spellObserver.finishCount == 2 &&
+            bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+    }
+
+    bool const beforeCleanup =
+        firstCastCaptured && firstTerminalCaptured && replacementCaptured &&
+        registered && staleSnapshotRejected && replacementPreserved &&
+        currentSelected && currentCancelled && repeatedCancelRejected && noEffects;
+    bool const cleaned = cleanup();
+
+    sLog.Out(LOG_BASIC, beforeCleanup && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] CancelOwnCastAction: snapshotIdentity=%u firstInterrupted=%u replacementIdentity=%u staleRejected=%u replacementPreserved=%u selected=%u cancelled=%u repeatedRejected=%u noEffects=%u cleanup=%u.",
+        firstCastCaptured ? 1u : 0u, firstTerminalCaptured ? 1u : 0u,
+        replacementCaptured ? 1u : 0u, staleSnapshotRejected ? 1u : 0u,
+        replacementPreserved ? 1u : 0u, currentSelected ? 1u : 0u,
+        currentCancelled ? 1u : 0u, repeatedCancelRejected ? 1u : 0u,
+        noEffects ? 1u : 0u, cleaned ? 1u : 0u);
+
+    if (!beforeCleanup || !cleaned)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] CancelOwnCastAction Core cancellation fixture failed.");
+        return false;
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] PASS: CancelOwnCastAction used Core SpellCaster::InterruptSpell to cancel only the exact Engine-owned Player spell, rejected stale/replaced and already-finished spell identities, emitted one Interrupted terminal, and applied no spell effects.");
+    return true;
+}
 
 bool RunEngineCoreMovementInterruptSmokeTest(Map& map)
 {
@@ -12488,6 +12877,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const engineExecutorPassed = RunEngineCoreExecutorSmokeTest(*map);
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
+    bool const cancelOwnCastPassed = RunEngineCoreCancelOwnCastActionSmokeTest(*map);
     bool const selectHostileTargetPassed = RunEngineCoreSelectHostileTargetSmokeTest(*map);
     bool const chaseTargetPassed = RunEngineCoreChaseTargetSmokeTest(*map);
     bool const moveDistancePassed = RunEngineCoreMoveDistanceSmokeTest(*map);
@@ -12512,6 +12902,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && periodicManaLeechPassed && periodicLifeLeechPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
+                              cancelOwnCastPassed &&
                               selectHostileTargetPassed && chaseTargetPassed &&
                               moveDistancePassed && stopStaleChasePassed && stopChasePassed && dpsAssistPassed &&
                               followPartyMemberPassed && itemUsePassed &&

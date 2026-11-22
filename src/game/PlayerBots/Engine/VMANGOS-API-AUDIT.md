@@ -92,11 +92,19 @@ DoCastSpell is the existing execution authority. It sets facing/target, removes 
 
 The existing code also uses SpellEntry::IsTargetInRange and Player::IsWithinLOSInMap for specific actions. Include these where appropriate rather than assuming CanTryToCastSpell covers them.
 
-## 5. Movement and attack APIs verified
+## 5. Movement, attack and action-adapter APIs verified
 
 Source files: src/game/Movement/MotionMaster.h and PartyBotAI.cpp.
 
 Existing methods include Player::Attack(Unit*, bool), PartyBotAI::AttackStart(Unit*), MotionMaster::MoveChase, MoveFollow, MovePoint, MoveDistance and MoveIdle, plus Player::StopMoving and MotionMaster::Clear.
+
+### MoveDistanceAction — F43 sixteenth adapter (trusted runtime passed 2026-11-22)
+
+Core MotionMaster::MoveDistance(Unit const*, float) computes a target-relative near point, rejects transport, destinations more than ten yards above the mover, destination LOS failure, zero-distance movement, PathFinder PATHFIND_NOPATH and non-normal shortcuts, then pushes DISTANCING_MOTION_TYPE. Core's MotionMaster stack semantics deliberately preserve a current Chase/Follow under Distancing and restore that exact generator when Distancing expires; this is distinct from ordinary targeted-generator expiry. The generic adapter requires a live current victim and a matching current Chase or party Follow backed by a current online/alive snapshot member. Trusted simulator #44998862867 (https://github.com/tyrael9/core/actions/runs/44998862867) proves Follow and Chase stack preservation/restoration, combat/threat state preservation, unrelated Point and victim-race rejection, cleanup and final Runtime PASS; PR ARM64 build #44998866883 (https://github.com/tyrael9/core/actions/runs/44998866883) passed.
+
+### Next audit candidate — own-cast cancellation
+
+The simulator's Player Spell fixtures already observe Core Spell::prepare/finish terminals and movement-driven interruption, while Spell::cancel() is a public Core method that performs state-dependent cleanup (GCD reset for PREPARING, Player spell-mod restoration/removal, channel update/interrupt messages and delayed/casting cleanup). Before wrapping this as a generic action, trace how the pinned Unit/SpellCaster exposes current-spell slots and interruption APIs, ensure action dispatch cannot retain a Spell pointer across callbacks, determine which states are cancellable, verify PlayerAI terminal delivery order and threat implications, and test PREPARING/DELAYED/CASTING/CHANNELED plus already-finished/no-op and stale-spell-ID races. Direct Spell deletion or custom cancellation bookkeeping is prohibited.
 
 Movement needs its own arbitration lane. A mechanic escape or forced reposition must not be canceled by routine chase/follow/facing behavior. Do not assume a Move* request succeeded merely because it was issued.
 

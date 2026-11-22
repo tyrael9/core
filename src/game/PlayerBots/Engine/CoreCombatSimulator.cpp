@@ -10979,6 +10979,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const creatureHealPassed = RunEngineCoreSpellHealSmokeTest(*map);
     bool const playerHealPassed = RunEngineCorePlayerSpellHealSmokeTest(*map);
     bool const selectHostileTargetPassed = RunEngineCoreSelectHostileTargetSmokeTest(*map);
+    bool const chaseTargetPassed = RunEngineCoreChaseTargetSmokeTest(*map);
     bool const followPartyMemberPassed = RunEngineCoreFollowPartyMemberActionSmokeTest(*map);
     bool const itemUsePassed = RunEngineCoreItemUseSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
@@ -10997,7 +10998,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const combatPassed = registered && mapRetained &&
                               creatureCombatPassed && negativeFlatSpellThreatPassed && periodicDamagePassed && periodicHealingPassed && periodicPowerPassed && periodicManaLeechPassed && periodicLifeLeechPassed && engineExecutorPassed &&
                               creatureHealPassed && playerHealPassed &&
-                              selectHostileTargetPassed && followPartyMemberPassed && itemUsePassed &&
+                              selectHostileTargetPassed && chaseTargetPassed && followPartyMemberPassed && itemUsePassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&

@@ -10431,6 +10431,555 @@ bool RunEngineCoreDpsAssistSmokeTest(Map& map)
 }
 
 
+bool RunEngineCoreDpsAssistGroupSnapshotSmokeTest(Map& map)
+{
+    CreatureInfo const* info = FindSafeCreatureTemplate();
+    uint32 partyFaction = 0, hostileFaction = 0;
+    if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
+        return false;
+
+    SimulatorActor mainTankTarget;
+    SimulatorActor nextMainTankTarget;
+    SimulatorActor healerPeelTarget;
+    SimulatorActor crowdControlTarget;
+    bool const actorsCreated =
+        CreateSimulatorActor(map, *info, hostileFaction, 12.0f, 6.0f,
+                             mainTankTarget) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 15.0f, 10.0f,
+                             nextMainTankTarget) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 18.0f, 6.0f,
+                             healerPeelTarget) &&
+        CreateSimulatorActor(map, *info, hostileFaction, 24.0f, 6.0f,
+                             crowdControlTarget);
+
+    WorldSession botSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    WorldSession mainTankSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    WorldSession healerSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    WorldSession memberFourSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    WorldSession memberFiveSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* bot = nullptr;
+    Player* mainTank = nullptr;
+    Player* healer = nullptr;
+    Player* memberFour = nullptr;
+    Player* memberFive = nullptr;
+
+    bool playersCreated = actorsCreated &&
+        CreateSimulatorPlayer(map, partyFaction, botSession, bot,
+                              0.0f, 6.0f, 4.0f) &&
+        CreateSimulatorPlayer(map, partyFaction, mainTankSession, mainTank,
+                              -3.0f, 6.0f, 4.0f) &&
+        CreateSimulatorPlayer(map, partyFaction, healerSession, healer,
+                              -5.0f, 6.0f, 4.0f) &&
+        CreateSimulatorPlayer(map, partyFaction, memberFourSession, memberFour,
+                              -7.0f, 6.0f, 4.0f) &&
+        CreateSimulatorPlayer(map, partyFaction, memberFiveSession, memberFive,
+                              -9.0f, 6.0f, 4.0f);
+
+    Player* roster[MAX_GROUP_SIZE] = {
+        bot, mainTank, healer, memberFour, memberFive
+    };
+    ObjectGuid const botGuid = bot ? bot->GetObjectGuid() : ObjectGuid();
+    ObjectGuid const mainTankGuid = mainTank ? mainTank->GetObjectGuid() : ObjectGuid();
+    ObjectGuid const healerGuid = healer ? healer->GetObjectGuid() : ObjectGuid();
+    ObjectGuid const memberFourGuid = memberFour
+        ? memberFour->GetObjectGuid() : ObjectGuid();
+    ObjectGuid const memberFiveGuid = memberFive
+        ? memberFive->GetObjectGuid() : ObjectGuid();
+    Guid const mainTankTargetGuid = mainTankTarget.creature
+        ? mainTankTarget.creature->GetObjectGuid().GetRawValue() : 0;
+    Guid const nextMainTankTargetGuid = nextMainTankTarget.creature
+        ? nextMainTankTarget.creature->GetObjectGuid().GetRawValue() : 0;
+    Guid const healerPeelTargetGuid = healerPeelTarget.creature
+        ? healerPeelTarget.creature->GetObjectGuid().GetRawValue() : 0;
+    Guid const crowdControlTargetGuid = crowdControlTarget.creature
+        ? crowdControlTarget.creature->GetObjectGuid().GetRawValue() : 0;
+
+    std::unique_ptr<Group> group(new Group());
+    bool groupRegistered = false;
+    std::unique_ptr<PartyBotAI> actionRuntime;
+    std::unique_ptr<PartyBotAI> healerRoleAI;
+    PlayerAI* previousBotAI = nullptr;
+    PlayerAI* previousHealerAI = nullptr;
+
+    auto cleanup = [&]() -> bool
+    {
+        if (bot)
+        {
+            bot->AttackStop();
+            bot->CombatStop(false);
+        }
+        if (mainTank)
+        {
+            mainTank->AttackStop();
+            mainTank->CombatStop(false);
+        }
+        if (healer)
+        {
+            healer->AttackStop();
+            healer->CombatStop(false);
+        }
+        if (healerPeelTarget.creature)
+        {
+            healerPeelTarget.creature->AttackStop();
+            healerPeelTarget.creature->CombatStop(false);
+        }
+
+        // Restore borrowed PlayerAI pointers before their owned adapters die.
+        if (actionRuntime && bot)
+            bot->SetAI(previousBotAI);
+        if (healerRoleAI && healer)
+            healer->SetAI(previousHealerAI);
+        actionRuntime.reset();
+        healerRoleAI.reset();
+
+        bool ungrouped = true;
+        if (group && group->GetId())
+        {
+            // Remove Group::Create's synthetic instance bind before Disband so
+            // later simulator fixtures can continue using this same test Map.
+            group->UnbindInstance(map.GetId(), false);
+            group->Disband(true, botGuid);
+            for (Player* member : roster)
+                if (member && member->GetGroup())
+                    ungrouped = false;
+            if (groupRegistered)
+            {
+                sObjectMgr.RemoveGroup(group.get());
+                groupRegistered = false;
+            }
+            group.reset();
+        }
+
+        bool actorsCleaned = DestroySimulatorActor(map, crowdControlTarget);
+        actorsCleaned = DestroySimulatorActor(map, healerPeelTarget) && actorsCleaned;
+        actorsCleaned = DestroySimulatorActor(map, nextMainTankTarget) && actorsCleaned;
+        actorsCleaned = DestroySimulatorActor(map, mainTankTarget) && actorsCleaned;
+
+        if (botSession.GetPlayer())
+            botSession.LogoutPlayer(false);
+        if (mainTankSession.GetPlayer())
+            mainTankSession.LogoutPlayer(false);
+        if (healerSession.GetPlayer())
+            healerSession.LogoutPlayer(false);
+        if (memberFourSession.GetPlayer())
+            memberFourSession.LogoutPlayer(false);
+        if (memberFiveSession.GetPlayer())
+            memberFiveSession.LogoutPlayer(false);
+
+        bool const sessionsCleaned =
+            !botSession.GetPlayer() && !mainTankSession.GetPlayer() &&
+            !healerSession.GetPlayer() && !memberFourSession.GetPlayer() &&
+            !memberFiveSession.GetPlayer();
+        bool const playersDetached =
+            (!botGuid || !map.GetUnit(botGuid)) &&
+            (!mainTankGuid || !map.GetUnit(mainTankGuid)) &&
+            (!healerGuid || !map.GetUnit(healerGuid)) &&
+            (!memberFourGuid || !map.GetUnit(memberFourGuid)) &&
+            (!memberFiveGuid || !map.GetUnit(memberFiveGuid));
+        bot = nullptr;
+        mainTank = nullptr;
+        healer = nullptr;
+        memberFour = nullptr;
+        memberFive = nullptr;
+        return ungrouped && actorsCleaned && sessionsCleaned && playersDetached;
+    };
+
+    bool groupCreated = false;
+    bool groupMembersAdded = false;
+    bool mainTankAssigned = false;
+    if (playersCreated && bot && mainTank && healer && memberFour && memberFive)
+    {
+        groupCreated = group->Create(botGuid, bot->GetName());
+        if (groupCreated)
+        {
+            sObjectMgr.AddGroup(group.get());
+            groupRegistered = true;
+            groupMembersAdded = group->GetMembersCount() == 1;
+            for (uint32 index = 1; index < MAX_GROUP_SIZE; ++index)
+            {
+                Player* member = roster[index];
+                bool const added = member && group->AddMember(
+                    member->GetObjectGuid(), member->GetName());
+                groupMembersAdded = groupMembersAdded && added;
+            }
+            if (groupMembersAdded)
+            {
+                group->ConvertToRaid();
+                group->SetMainTank(mainTankGuid);
+                mainTankAssigned = group->GetMainTankGuid() == mainTankGuid;
+            }
+        }
+    }
+
+    bool rolesInstalled = false;
+    if (groupMembersAdded && mainTankAssigned)
+    {
+        previousBotAI = bot->AI();
+        previousHealerAI = healer->AI();
+        actionRuntime.reset(new PartyBotAI(
+            bot, nullptr, ROLE_RANGE_DPS, bot->GetRace(), bot->GetClass(),
+            bot->GetLevel(), map.GetId(), map.GetInstanceId(),
+            bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+            bot->GetOrientation()));
+        actionRuntime->SetPlayer(bot);
+        actionRuntime->m_initialized = true;
+        actionRuntime->m_updateTimer.Reset(600000);
+        bot->SetAI(actionRuntime.get());
+
+        healerRoleAI.reset(new PartyBotAI(
+            bot, nullptr, ROLE_HEALER, healer->GetRace(), healer->GetClass(),
+            healer->GetLevel(), map.GetId(), map.GetInstanceId(),
+            healer->GetPositionX(), healer->GetPositionY(), healer->GetPositionZ(),
+            healer->GetOrientation()));
+        healerRoleAI->SetPlayer(healer);
+        healer->SetAI(healerRoleAI.get());
+
+        rolesInstalled =
+            dynamic_cast<CombatBotBaseAI*>(bot->AI()) == actionRuntime.get() &&
+            dynamic_cast<CombatBotBaseAI*>(healer->AI()) == healerRoleAI.get();
+    }
+
+    bool mainTankTargetStarted = false;
+    bool healerPeelStarted = false;
+    bool groupSnapshotValid = false;
+    bool initialMainTankPriorityCorrect = false;
+    bool initialCrowdControlExcluded = false;
+    bool firstSelectionExecuted = false;
+    bool firstSelectionInvalidatedCache = false;
+    bool firstAttackExecuted = false;
+    bool firstAttackInvalidatedCache = false;
+    bool staleCacheObservedBeforeExplicitInvalidation = false;
+    bool mainTankRetargeted = false;
+    bool explicitRetargetInvalidationWorked = false;
+    bool freshHandoffSnapshotValid = false;
+    bool handoffSelectionExecuted = false;
+    bool handoffSelectionInvalidatedCache = false;
+    bool handoffAttackExecuted = false;
+    bool handoffAttackInvalidatedCache = false;
+
+    if (rolesInstalled)
+    {
+        mainTankTargetStarted = mainTank->Attack(mainTankTarget.creature, true) &&
+            mainTank->GetVictim() == mainTankTarget.creature;
+        healerPeelTarget.creature->AI()->AttackStart(healer);
+        healerPeelStarted = healerPeelTarget.creature->GetVictim() == healer;
+
+        PartyCoordinator coordinator;
+        PartyBotEngine engine;
+        std::shared_ptr<SelectHostileTargetAction> selectAction(
+            new SelectHostileTargetAction());
+        std::shared_ptr<AttackTargetAction> attackAction(
+            new AttackTargetAction());
+        bool const selectRegistered = engine.RegisterAction(selectAction);
+        bool const attackRegistered = engine.RegisterAction(attackAction);
+        std::shared_ptr<Strategy> strategy(new Strategy("dps_assist_group_snapshot"));
+        strategy->AddTrigger(std::make_shared<DpsAssistTrigger>());
+        engine.AddStrategy(strategy);
+
+        auto buildPolicySnapshot = [&](uint32 nowMs) -> PartySnapshot
+        {
+            PartySnapshot snapshot;
+            PartySnapshot const* built = PartySnapshotBuilder::GetOrBuild(
+                bot, coordinator, nowMs, 250);
+            if (!built)
+                return snapshot;
+
+            snapshot = *built;
+            // Builder does not yet infer CC ownership from live auras. Keep
+            // one transparent CC veto row as a test-only policy overlay; the
+            // roster and assist targets below are all real Core snapshot data.
+            HostileSnapshot ccProtected;
+            ccProtected.guid = crowdControlTargetGuid;
+            ccProtected.entry = crowdControlTarget.creature->GetEntry();
+            ccProtected.health = crowdControlTarget.creature->GetHealth();
+            ccProtected.maxHealth = crowdControlTarget.creature->GetMaxHealth();
+            ccProtected.x = crowdControlTarget.creature->GetPositionX();
+            ccProtected.y = crowdControlTarget.creature->GetPositionY();
+            ccProtected.z = crowdControlTarget.creature->GetPositionZ();
+            ccProtected.positionValid = true;
+            ccProtected.alive = crowdControlTarget.creature->IsAlive();
+            ccProtected.crowdControlProtected = true;
+            snapshot.hostiles.push_back(ccProtected);
+            return snapshot;
+        };
+
+        auto findCandidate = [](DecisionReport const& report, Guid targetGuid,
+                                char const* actionName) -> std::size_t
+        {
+            for (std::size_t index = 0; index < report.candidates.size(); ++index)
+            {
+                ActionCandidate const& candidate = report.candidates[index].candidate;
+                if (candidate.targetGuid == targetGuid &&
+                    candidate.actionName == actionName)
+                    return index;
+            }
+            return report.candidates.size();
+        };
+
+        auto hasCandidateForTarget = [](DecisionReport const& report,
+                                        Guid targetGuid) -> bool
+        {
+            for (CandidateEvaluation const& evaluation : report.candidates)
+                if (evaluation.candidate.targetGuid == targetGuid)
+                    return true;
+            return false;
+        };
+
+        PartySnapshot firstSnapshot = buildPolicySnapshot(WorldTimer::getMSTime());
+        PartyMemberSnapshot const* firstBot = firstSnapshot.FindMember(botGuid.GetRawValue());
+        PartyMemberSnapshot const* firstTank = firstSnapshot.FindMember(mainTankGuid.GetRawValue());
+        PartyMemberSnapshot const* firstHealer = firstSnapshot.FindMember(healerGuid.GetRawValue());
+        HostileSnapshot const* firstTankTarget =
+            firstSnapshot.FindHostile(mainTankTargetGuid);
+        HostileSnapshot const* firstHealerPeel =
+            firstSnapshot.FindHostile(healerPeelTargetGuid);
+        groupSnapshotValid = selectRegistered && attackRegistered &&
+            firstSnapshot.groupId == group->GetId() &&
+            firstSnapshot.mapId == map.GetId() &&
+            firstSnapshot.instanceId == map.GetInstanceId() &&
+            firstSnapshot.members.size() == MAX_GROUP_SIZE &&
+            firstBot && firstBot->isPlayerBot &&
+            firstBot->roleId == static_cast<uint8>(PartyRole::RangedDamage) &&
+            firstTank && firstTank->isMainTank &&
+            firstTank->victimGuid == mainTankTargetGuid &&
+            firstHealer && firstHealer->isPlayerBot &&
+            firstHealer->roleId == static_cast<uint8>(PartyRole::Healer) &&
+            firstTankTarget && firstTankTarget->alive &&
+            firstHealerPeel && firstHealerPeel->alive &&
+            firstHealerPeel->victimGuid == healerGuid.GetRawValue() &&
+            mainTankTargetStarted && healerPeelStarted;
+
+        if (groupSnapshotValid)
+        {
+            DecisionContext firstContext(
+                firstSnapshot, *firstBot, coordinator, WorldTimer::getMSTime(),
+                nullptr, nullptr, actionRuntime.get(), nullptr, actionRuntime.get());
+            DecisionReport firstReport = engine.Evaluate(firstContext);
+            std::size_t const mainTankSelectIndex = findCandidate(
+                firstReport, mainTankTargetGuid, "core_select_hostile_target");
+            std::size_t const healerPeelIndex = findCandidate(
+                firstReport, healerPeelTargetGuid, "core_select_hostile_target");
+            initialMainTankPriorityCorrect =
+                mainTankSelectIndex < firstReport.candidates.size() &&
+                healerPeelIndex < firstReport.candidates.size() &&
+                firstReport.candidates[mainTankSelectIndex].candidate.basePriority >
+                    firstReport.candidates[healerPeelIndex].candidate.basePriority;
+            initialCrowdControlExcluded =
+                !hasCandidateForTarget(firstReport, crowdControlTargetGuid);
+
+            bool const chosen = initialMainTankPriorityCorrect &&
+                initialCrowdControlExcluded &&
+                firstReport.selectedIndices.size() == 1 &&
+                firstReport.selectedIndices[0] == mainTankSelectIndex;
+            if (chosen)
+                engine.ExecuteSelected(firstContext, firstReport);
+            firstSelectionExecuted = chosen &&
+                firstReport.candidates[mainTankSelectIndex].status == CandidateStatus::Executed &&
+                firstReport.candidates[mainTankSelectIndex].actionResult == ActionResult::Success &&
+                firstReport.candidates[mainTankSelectIndex].reason == "select_hostile_target_selected" &&
+                bot->GetSelectionGuid() == ObjectGuid(mainTankTargetGuid) &&
+                bot->GetTargetGuid() == ObjectGuid(mainTankTargetGuid) &&
+                bot->GetVictim() == nullptr;
+            firstSelectionInvalidatedCache =
+                coordinator.GetSnapshotIfFresh(firstContext.nowMs, 250) == nullptr;
+
+            if (firstSelectionExecuted && firstSelectionInvalidatedCache)
+            {
+                PartySnapshot selectedSnapshot =
+                    buildPolicySnapshot(WorldTimer::getMSTime());
+                PartyMemberSnapshot const* selectedBot =
+                    selectedSnapshot.FindMember(botGuid.GetRawValue());
+                bool const selectionCaptured = selectedBot &&
+                    selectedSnapshot.epoch != firstSnapshot.epoch &&
+                    selectedBot->selectionGuid == mainTankTargetGuid &&
+                    selectedSnapshot.members.size() == MAX_GROUP_SIZE;
+                if (selectionCaptured)
+                {
+                    DecisionContext selectedContext(
+                        selectedSnapshot, *selectedBot, coordinator,
+                        WorldTimer::getMSTime(), nullptr, nullptr,
+                        actionRuntime.get(), nullptr, actionRuntime.get());
+                    DecisionReport attackReport = engine.Evaluate(selectedContext);
+                    std::size_t const mainTankAttackIndex = findCandidate(
+                        attackReport, mainTankTargetGuid, "core_attack_target");
+                    std::size_t const peelIndex = findCandidate(
+                        attackReport, healerPeelTargetGuid, "core_select_hostile_target");
+                    bool const chosenAttack =
+                        mainTankAttackIndex < attackReport.candidates.size() &&
+                        peelIndex < attackReport.candidates.size() &&
+                        attackReport.selectedIndices.size() == 1 &&
+                        attackReport.selectedIndices[0] == mainTankAttackIndex;
+                    if (chosenAttack)
+                        engine.ExecuteSelected(selectedContext, attackReport);
+                    firstAttackExecuted = chosenAttack &&
+                        attackReport.candidates[mainTankAttackIndex].status == CandidateStatus::Executed &&
+                        attackReport.candidates[mainTankAttackIndex].actionResult == ActionResult::Success &&
+                        bot->GetVictim() == mainTankTarget.creature;
+                    firstAttackInvalidatedCache =
+                        coordinator.GetSnapshotIfFresh(selectedContext.nowMs, 250) == nullptr;
+                }
+            }
+
+            if (firstAttackExecuted && firstAttackInvalidatedCache)
+            {
+                PartySnapshot cachedBeforeRetarget =
+                    buildPolicySnapshot(WorldTimer::getMSTime());
+                PartyMemberSnapshot const* cachedTank =
+                    cachedBeforeRetarget.FindMember(mainTankGuid.GetRawValue());
+                PartyMemberSnapshot const* cachedBot =
+                    cachedBeforeRetarget.FindMember(botGuid.GetRawValue());
+                PartySnapshot const* cachedPointer = coordinator.GetSnapshotIfFresh(
+                    cachedBeforeRetarget.capturedAtMs, 250);
+                bool const capturedOldTarget = cachedPointer && cachedTank && cachedBot &&
+                    cachedTank->victimGuid == mainTankTargetGuid &&
+                    cachedBot->victimGuid == mainTankTargetGuid;
+
+                mainTankRetargeted = mainTank->Attack(nextMainTankTarget.creature, true) &&
+                    mainTank->GetVictim() == nextMainTankTarget.creature &&
+                    bot->GetVictim() == mainTankTarget.creature;
+                PartySnapshot const* stillCached = coordinator.GetSnapshotIfFresh(
+                    cachedBeforeRetarget.capturedAtMs, 250);
+                PartyMemberSnapshot const* stillCachedTank = stillCached
+                    ? stillCached->FindMember(mainTankGuid.GetRawValue()) : nullptr;
+                staleCacheObservedBeforeExplicitInvalidation =
+                    capturedOldTarget && stillCached == cachedPointer &&
+                    stillCachedTank && stillCachedTank->victimGuid == mainTankTargetGuid;
+
+                // Human Main Tank target changes do not pass through these
+                // Engine actions. Simulate the host's explicit invalidation
+                // signal; otherwise the normal 250ms freshness limit bounds it.
+                coordinator.InvalidateSnapshot();
+                explicitRetargetInvalidationWorked =
+                    coordinator.GetSnapshotIfFresh(cachedBeforeRetarget.capturedAtMs, 250) == nullptr;
+
+                if (mainTankRetargeted && explicitRetargetInvalidationWorked)
+                {
+                    PartySnapshot handoffSnapshot =
+                        buildPolicySnapshot(WorldTimer::getMSTime());
+                    PartyMemberSnapshot const* handoffBot =
+                        handoffSnapshot.FindMember(botGuid.GetRawValue());
+                    PartyMemberSnapshot const* handoffTank =
+                        handoffSnapshot.FindMember(mainTankGuid.GetRawValue());
+                    HostileSnapshot const* oldHostile =
+                        handoffSnapshot.FindHostile(mainTankTargetGuid);
+                    HostileSnapshot const* nextHostile =
+                        handoffSnapshot.FindHostile(nextMainTankTargetGuid);
+                    freshHandoffSnapshotValid = handoffSnapshot.epoch !=
+                            cachedBeforeRetarget.epoch &&
+                        handoffSnapshot.members.size() == MAX_GROUP_SIZE &&
+                        handoffBot && handoffTank &&
+                        handoffTank->isMainTank &&
+                        handoffTank->victimGuid == nextMainTankTargetGuid &&
+                        handoffBot->victimGuid == mainTankTargetGuid &&
+                        handoffBot->selectionGuid == mainTankTargetGuid &&
+                        oldHostile && nextHostile && nextHostile->alive;
+
+                    if (freshHandoffSnapshotValid)
+                    {
+                        DecisionContext handoffContext(
+                            handoffSnapshot, *handoffBot, coordinator,
+                            WorldTimer::getMSTime(), nullptr, nullptr,
+                            actionRuntime.get(), nullptr, actionRuntime.get());
+                        DecisionReport handoffReport = engine.Evaluate(handoffContext);
+                        std::size_t const newTankSelectIndex = findCandidate(
+                            handoffReport, nextMainTankTargetGuid,
+                            "core_select_hostile_target");
+                        std::size_t const handoffPeelIndex = findCandidate(
+                            handoffReport, healerPeelTargetGuid,
+                            "core_select_hostile_target");
+                        bool const chosenHandoff = newTankSelectIndex <
+                                handoffReport.candidates.size() &&
+                            handoffPeelIndex < handoffReport.candidates.size() &&
+                            handoffReport.candidates[newTankSelectIndex].candidate.basePriority >
+                                handoffReport.candidates[handoffPeelIndex].candidate.basePriority &&
+                            handoffReport.selectedIndices.size() == 1 &&
+                            handoffReport.selectedIndices[0] == newTankSelectIndex;
+                        if (chosenHandoff)
+                            engine.ExecuteSelected(handoffContext, handoffReport);
+                        handoffSelectionExecuted = chosenHandoff &&
+                            handoffReport.candidates[newTankSelectIndex].status == CandidateStatus::Executed &&
+                            handoffReport.candidates[newTankSelectIndex].actionResult == ActionResult::Success &&
+                            bot->GetSelectionGuid() == ObjectGuid(nextMainTankTargetGuid);
+                        handoffSelectionInvalidatedCache =
+                            coordinator.GetSnapshotIfFresh(handoffContext.nowMs, 250) == nullptr;
+
+                        if (handoffSelectionExecuted && handoffSelectionInvalidatedCache)
+                        {
+                            PartySnapshot retargetSelectedSnapshot =
+                                buildPolicySnapshot(WorldTimer::getMSTime());
+                            PartyMemberSnapshot const* retargetBot =
+                                retargetSelectedSnapshot.FindMember(botGuid.GetRawValue());
+                            bool const targetSelectionCaptured = retargetBot &&
+                                retargetSelectedSnapshot.epoch != handoffSnapshot.epoch &&
+                                retargetBot->selectionGuid == nextMainTankTargetGuid &&
+                                retargetBot->victimGuid == mainTankTargetGuid;
+                            if (targetSelectionCaptured)
+                            {
+                                DecisionContext retargetContext(
+                                    retargetSelectedSnapshot, *retargetBot, coordinator,
+                                    WorldTimer::getMSTime(), nullptr, nullptr,
+                                    actionRuntime.get(), nullptr, actionRuntime.get());
+                                DecisionReport retargetReport = engine.Evaluate(retargetContext);
+                                std::size_t const retargetAttackIndex = findCandidate(
+                                    retargetReport, nextMainTankTargetGuid,
+                                    "core_attack_target");
+                                bool const chosenRetargetAttack =
+                                    retargetAttackIndex < retargetReport.candidates.size() &&
+                                    retargetReport.selectedIndices.size() == 1 &&
+                                    retargetReport.selectedIndices[0] == retargetAttackIndex;
+                                if (chosenRetargetAttack)
+                                    engine.ExecuteSelected(retargetContext, retargetReport);
+                                handoffAttackExecuted = chosenRetargetAttack &&
+                                    retargetReport.candidates[retargetAttackIndex].status == CandidateStatus::Executed &&
+                                    retargetReport.candidates[retargetAttackIndex].actionResult == ActionResult::Success &&
+                                    bot->GetVictim() == nextMainTankTarget.creature &&
+                                    bot->GetSelectionGuid() == ObjectGuid(nextMainTankTargetGuid) &&
+                                    mainTank->GetVictim() == nextMainTankTarget.creature;
+                                handoffAttackInvalidatedCache =
+                                    coordinator.GetSnapshotIfFresh(retargetContext.nowMs, 250) == nullptr;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    bool const cleaned = cleanup();
+    bool const passed = actorsCreated && playersCreated && groupCreated &&
+        groupMembersAdded && mainTankAssigned && rolesInstalled &&
+        groupSnapshotValid && initialMainTankPriorityCorrect &&
+        initialCrowdControlExcluded && firstSelectionExecuted &&
+        firstSelectionInvalidatedCache && firstAttackExecuted &&
+        firstAttackInvalidatedCache && staleCacheObservedBeforeExplicitInvalidation &&
+        mainTankRetargeted && explicitRetargetInvalidationWorked &&
+        freshHandoffSnapshotValid && handoffSelectionExecuted &&
+        handoffSelectionInvalidatedCache && handoffAttackExecuted &&
+        handoffAttackInvalidatedCache && cleaned;
+
+    sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] DpsAssistGroupSnapshot: actors=%u players=%u group=%u members=%u mainTank=%u botRole=%u healerRole=%u firstSelection=%u selectionInvalidated=%u firstAttack=%u attackInvalidated=%u staleCacheObserved=%u explicitRetargetInvalidation=%u handoffSnapshot=%u handoffSelection=%u handoffSelectionInvalidated=%u handoffAttack=%u handoffAttackInvalidated=%u cleanup=%u.",
+        actorsCreated ? 1u : 0u, playersCreated ? 1u : 0u,
+        groupCreated ? 1u : 0u, groupMembersAdded ? 1u : 0u,
+        mainTankAssigned ? 1u : 0u, rolesInstalled ? 1u : 0u,
+        healerRoleAI ? 1u : 0u, firstSelectionExecuted ? 1u : 0u,
+        firstSelectionInvalidatedCache ? 1u : 0u,
+        firstAttackExecuted ? 1u : 0u, firstAttackInvalidatedCache ? 1u : 0u,
+        staleCacheObservedBeforeExplicitInvalidation ? 1u : 0u,
+        explicitRetargetInvalidationWorked ? 1u : 0u,
+        freshHandoffSnapshotValid ? 1u : 0u,
+        handoffSelectionExecuted ? 1u : 0u,
+        handoffSelectionInvalidatedCache ? 1u : 0u,
+        handoffAttackExecuted ? 1u : 0u,
+        handoffAttackInvalidatedCache ? 1u : 0u,
+        cleaned ? 1u : 0u);
+    if (passed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: real five-Player Group PartySnapshotBuilder drove DPS Main Tank assist, healer peel priority and CC veto; Core selection and attack invalidated the shared cache, and a Main Tank target handoff refreshed the five-member snapshot and retargeted the DPS bot from its old victim to the new target with complete Group/session cleanup.");
+    return passed;
+}
+
+
 bool RunEngineCorePlayerSpellHealSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -13161,6 +13710,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const stopStaleChasePassed = RunEngineCoreStopStaleChaseActionSmokeTest(*map);
     bool const stopChasePassed = RunEngineCoreStopChaseSmokeTest(*map);
     bool const dpsAssistPassed = RunEngineCoreDpsAssistSmokeTest(*map);
+    bool const dpsAssistGroupSnapshotPassed = RunEngineCoreDpsAssistGroupSnapshotSmokeTest(*map);
     bool const followPartyMemberPassed = RunEngineCoreFollowPartyMemberActionSmokeTest(*map);
     bool const itemUsePassed = RunEngineCoreItemUseSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
@@ -13181,7 +13731,8 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                               creatureHealPassed && playerHealPassed &&
                               cancelOwnCastPassed &&
                               selectHostileTargetPassed && chaseTargetPassed &&
-                              moveDistancePassed && stopStaleChasePassed && stopChasePassed && dpsAssistPassed &&
+                              moveDistancePassed && stopStaleChasePassed && stopChasePassed &&
+                              dpsAssistPassed && dpsAssistGroupSnapshotPassed &&
                               followPartyMemberPassed && itemUsePassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&

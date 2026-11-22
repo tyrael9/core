@@ -93,7 +93,7 @@ protected:
     }
 
     ActionExecutionResult ExecuteCore(
-        DecisionContext&, ActionCandidate const& candidate,
+        DecisionContext& context, ActionCandidate const& candidate,
         CoreActionResolution const& resolved) override
     {
         ActionExecutionResult result;
@@ -115,6 +115,10 @@ protected:
         result.reason = selected
             ? "select_hostile_target_selected"
             : "select_hostile_target_selection_update_failed";
+        // Selection is shared PartySnapshot state. Invalidate immediately so
+        // the next bot can observe the target and advance to Core auto-attack.
+        if (selected)
+            context.coordinator.InvalidateSnapshot();
         return result;
     }
 

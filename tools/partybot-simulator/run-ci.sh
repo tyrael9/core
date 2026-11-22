@@ -388,6 +388,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F43 StopUnattackableTarget used live Co
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: real five-Player Group PartySnapshotBuilder drove DPS Main Tank assist, healer peel priority and CC veto; Core selection and attack invalidated the shared cache, and a Main Tank target handoff refreshed the five-member snapshot and retargeted the DPS bot from its old victim to the new target with complete Group/session cleanup." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F44 five-Player Group DPS assist/target-handoff/cache-invalidation PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: real five-Player Group PartySnapshotBuilder copied Engine point action/encounter/point correlation from the current Core generator, retained legacy point IDs without Engine ownership, and left idle member movement IDs empty." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The Group PartySnapshotBuilder point-movement integration PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

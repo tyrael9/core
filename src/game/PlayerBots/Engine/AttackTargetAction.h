@@ -108,6 +108,10 @@ protected:
         result.reason = started
             ? "attack_target_auto_attack_request_accepted"
             : "attack_target_core_attack_postcondition_failed";
+        // Victim/attacker relationships are shared snapshot state. Do not let
+        // another party bot consume the pre-attack view after a retarget.
+        if (started)
+            context.coordinator.InvalidateSnapshot();
         return result;
     }
 

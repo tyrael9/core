@@ -3,11 +3,11 @@
 
 #include "CoreAction.h"
 #include "PartySnapshot.h"
-#include "MotionMaster.h"
-#include "MovementGenerator.h"
+#include "Movement/MotionMaster.h"
+#include "Movement/MovementGenerator.h"
 #include "Player.h"
 #include "Spell.h"
-#include "TargetedMovementGenerator.h"
+#include "Movement/TargetedMovementGenerator.h"
 #include "Unit.h"
 
 #include <algorithm>

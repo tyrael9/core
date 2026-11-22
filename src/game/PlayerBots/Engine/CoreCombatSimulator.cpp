@@ -1038,6 +1038,10 @@ bool RunEngineCoreSpellHealSmokeTest(Map& map)
     engine.AddStrategy(strategy);
 
     DecisionReport report = engine.Evaluate(context);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=evaluated candidates=%u selected=%u.",
+        static_cast<uint32>(report.candidates.size()),
+        static_cast<uint32>(report.selectedIndices.size()));
     bool const selected = report.selectedIndices.size() == 1 &&
         report.candidates[report.selectedIndices[0]].candidate.targetGuid == patientMember.guid &&
         report.candidates[report.selectedIndices[0]].candidate.spellId == SIMULATOR_HEAL_SPELL_ID &&
@@ -6821,6 +6825,9 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     if (!info || !FindMutuallyHostileFactions(partyFaction, hostileFaction))
         return false;
 
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=begin template=%u.", info->Entry);
+
     SimulatorActor hostile;
     SimulatorActor friendly;
     bool const actorsCreated =
@@ -7997,6 +8004,9 @@ bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
     actionRuntime.Remove();
     botSession.LogoutPlayer(false);
     bool const playerCleaned = botSession.GetPlayer() == nullptr;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=player-logged-out cleaned=%u.",
+        playerCleaned ? 1u : 0u);
     bot = nullptr;
     bool const friendlyCleaned = DestroySimulatorActor(map, friendly);
     bool const hostileCleaned = DestroySimulatorActor(map, hostile);
@@ -8056,6 +8066,9 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     Player* bot = nullptr;
     bool const botCreated = hostileCreated &&
         CreateSimulatorPlayer(map, partyFaction, botSession, bot, 0.0f, 6.0f, 4.0f);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=actors hostileCreated=%u botCreated=%u bot=%p.",
+        hostileCreated ? 1u : 0u, botCreated ? 1u : 0u, static_cast<void*>(bot));
     if (!botCreated)
     {
         if (botSession.GetPlayer())
@@ -8075,6 +8088,9 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     actionRuntime.SetPlayer(bot);
     actionRuntime.m_initialized = true;
     actionRuntime.m_updateTimer.Reset(600000);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=runtime-ready player=%u map=%u instance=%u.",
+        bot->GetObjectGuid().GetCounter(), map.GetId(), map.GetInstanceId());
 
     Guid const hostileGuid = hostile.creature->GetObjectGuid().GetRawValue();
     PartySnapshot snapshot;
@@ -8110,11 +8126,18 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     hostileSnapshot.positionValid = true;
     hostileSnapshot.alive = hostile.creature->IsAlive();
     snapshot.hostiles.push_back(hostileSnapshot);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=snapshot-ready target=%u.",
+        hostile.creature->GetObjectGuid().GetCounter());
 
     bool const attackStarted = bot->Attack(hostile.creature, true);
     bot->SetInCombatWith(hostile.creature);
     snapshot.members[0].victimGuid = hostileGuid;
     snapshot.members[0].inCombat = bot->IsInCombat();
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=attack-started=%u victim=%u targetGuid=%llu.",
+        attackStarted ? 1u : 0u, bot->GetVictim() == hostile.creature ? 1u : 0u,
+        static_cast<unsigned long long>(bot->GetTargetGuid().GetRawValue()));
 
     PartyCoordinator coordinator;
     DecisionContext context(
@@ -8138,6 +8161,12 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         report.candidates[report.selectedIndices[0]].status == CandidateStatus::Selected;
     if (selected)
         engine.ExecuteSelected(context, report);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=dispatched selected=%u status=%u result=%u reason=%s.",
+        selected ? 1u : 0u,
+        selected ? static_cast<uint32>(report.candidates[report.selectedIndices[0]].status) : 0xffffffffu,
+        selected ? static_cast<uint32>(report.candidates[report.selectedIndices[0]].actionResult) : 0xffffffffu,
+        selected ? report.candidates[report.selectedIndices[0]].reason.c_str() : "not-selected");
     CandidateEvaluation const* evaluation = selected
         ? &report.candidates[report.selectedIndices[0]] : nullptr;
     ChaseMovementGenerator<Player> const* activeChase =
@@ -8169,6 +8198,10 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
         &actionRuntime);
     DecisionReport sameReport = engine.Evaluate(sameContext);
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=same-chase-evaluated candidates=%u selected=%u.",
+        static_cast<uint32>(sameReport.candidates.size()),
+        static_cast<uint32>(sameReport.selectedIndices.size()));
     bool const sameChaseNotProposed =
         sameReport.selectedIndices.empty() && !sameReport.candidates.empty() &&
         sameReport.candidates[0].status == CandidateStatus::RejectedUseless &&
@@ -8184,6 +8217,9 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     bot->GetMotionMaster()->MovementExpired(false);
     bot->StopMoving();
     bot->AttackStop();
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=stale-attack-stopped selected=%u.",
+        staleSelected ? 1u : 0u);
     if (staleSelected)
         engine.ExecuteSelected(context, staleReport);
     CandidateEvaluation const* staleEvaluation = staleSelected
@@ -8229,6 +8265,8 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     bot->GetMotionMaster()->MovementExpired(false);
     bot->StopMoving();
     bot->AttackStop();
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction stage=point-cleaned.");
 
     bool const fixturePassed = attackStarted && registered && selected && accepted &&
         sameChaseNotProposed && staleSelected && staleVictimRejected &&

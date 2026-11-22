@@ -95,7 +95,7 @@ These tests cover pure decision logic only. They do not validate live PartyBotAI
 - Bounded ActionResult/Core Spell terminal listeners; typed AND/alternative dependencies; late event registration; idempotency tombstones; starvation resistance; ready-backlog preservation under queue pressure.
 - Core-backed spell, movement/follow, range/LOS/resource, Group/death recovery and NewEngine authority fixtures.
 
-## F43 CoreAction executor and twelve generic adapters
+## F43 CoreAction executor and thirteen generic adapters
 
 The common CoreAction wrapper requires a nonzero action ID, fresh map-thread actor/target/map resolution and a concrete ValidateCoreAction pass before ExecuteCore. ActionExecutionResult and ExecuteDetailed preserve exact validation/execution reasons in candidate state and traces. Pure C++14 regression coverage proves immediate and pending dispatch both use the action-specific preflight, a veto prevents ExecuteCore, and the exact veto reason survives into the candidate result.
 
@@ -173,7 +173,7 @@ Current-head validation:
 - PR CI [#44874582915](https://github.com/tyrael9/core/actions/runs/44874582915) passed pure tests, report collector, configure, full Linux ARM64 Core build and harness syntax.
 - Trusted push [#44874579164](https://github.com/tyrael9/core/actions/runs/44874579164) passed the same stages and the complete fixture-backed Vanilla 5875 simulator through final `Runtime PASS`. FaceTarget reported `requestAccepted=1 facingComplete=1 positionPreserved=1 targetStatePreserved=1 alreadyFacingNoOp=1 staleFriendlyRejected=1 movingRejected=1`; the enclosing target fixture reported `cleanup=1`.
 - Artifact [partybot-simulator-f6986c8](https://github.com/tyrael9/core/actions/runs/44874579164/artifacts/14695646802) contains the complete trusted runtime logs.
-All twelve adapters remain deliberately unregistered in the production NewEngine registry. They demonstrate narrow generic operations, not a complete target policy or playable combat AI.
+All thirteen adapters remain deliberately unregistered in the production NewEngine registry. They demonstrate narrow generic operations, not a complete target policy or playable combat AI.
 ## Production action readiness — still open
 
 - Register audited production generic/class/role Core adapters with structured outcomes.
@@ -424,4 +424,4 @@ Remaining optional item-use coverage: a separate count-based stackable consumabl
 
 ## Production action readiness — still open
 
-Twelve reusable generic adapters are implemented and have real-Core accepted/rejected/cleanup coverage, including the FaceTarget orientation matrix, AttackTargetAction request matrix, StopAutoAttackAction exact-victim stop matrix and MovePointAction correlated movement terminal and StopPointMovementAction stack/cancellation matrix validated by trusted pushes [#44874579164](https://github.com/tyrael9/core/actions/runs/44874579164) and [#44886268553](https://github.com/tyrael9/core/actions/runs/44886268553), but are intentionally not registered in NewEngine. No production generic, class or role action is enabled. Every additional adapter still needs its own action-specific target/relation/range/LOS/spell/resource/cooldown/GCD/movement/control checks and Core-backed accepted/rejected/terminal matrix. NewEngine remains an explicit no-fallback mode; Legacy is still the default.
+Thirteen reusable generic adapters are implemented and have action-specific Core preflight plus accepted/rejected/cleanup simulator coverage. The first twelve have trusted push Runtime PASS evidence. ChaseTargetAction is the thirteenth: its matrix covers live-victim MoveChase acceptance, same-target suppression, stale Follow rejection, valid Follow supersession, Core's Chase-expiry cleanup of the prior Follow, already-melee-reachable no-op, stale-victim rejection and unrelated Point preservation. Its PR build [#44977390131](https://github.com/tyrael9/core/actions/runs/44977390131) passed the full Linux ARM64 / Vanilla 5875 build; the PR runtime fixture was skipped because secrets are unavailable to PR jobs. A trusted push Runtime PASS for this Chase matrix is still an explicit open validation gate. All thirteen remain intentionally unregistered in NewEngine. No production generic, class or role action is enabled. Every future adapter still needs its own action-specific target/relation/range/LOS/spell/resource/cooldown/GCD/movement/control checks and Core-backed accepted/rejected/terminal matrix. NewEngine remains an explicit no-fallback mode; Legacy is still the default.

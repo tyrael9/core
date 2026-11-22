@@ -9186,14 +9186,17 @@ bool RunEngineCoreMoveDistanceSmokeTest(Map& map)
     actionRuntime.m_updateTimer.Reset(600000);
     MotionMaster* const motion = bot->GetMotionMaster();
 
-    motion->MoveFollow(leader, 2.5f, 3.14159265358979323846f);
-    bool const followStarted = motion->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE;
-    FollowMovementGenerator<Player> const* const originalFollow = followStarted
-        ? static_cast<FollowMovementGenerator<Player> const*>(motion->GetCurrent()) : nullptr;
+    // Establish the victim first. Unit::Attack may start a Chase; explicitly
+    // issue Follow afterwards so this first matrix exercises the current
+    // FOLLOW generator under Distancing, not a Follow hidden under Chase.
     bool const attackStarted = bot->Attack(target.creature, true);
     bot->SetInCombatWith(target.creature);
     bot->SetSelectionGuid(target.creature->GetObjectGuid());
     bot->SetTargetGuid(target.creature->GetObjectGuid());
+    motion->MoveFollow(leader, 2.5f, 3.14159265358979323846f);
+    bool const followStarted = motion->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE;
+    FollowMovementGenerator<Player> const* const originalFollow = followStarted
+        ? static_cast<FollowMovementGenerator<Player> const*>(motion->GetCurrent()) : nullptr;
 
     auto makeSnapshot = [&](uint32 epoch)
     {
@@ -9296,7 +9299,7 @@ bool RunEngineCoreMoveDistanceSmokeTest(Map& map)
         target.creature->GetHealth() == targetHealthBefore &&
         std::fabs(target.creature->GetThreatManager().getThreat(bot) -
                   targetThreatBefore) <= 0.001f;
-    motion->MovementExpired(false);
+    motion->MovementExpired(true);
     bool const followRestored = motion->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE &&
         motion->GetCurrent() == originalFollow && originalFollow->GetTarget() == leader;
     bot->StopMoving();
@@ -9326,7 +9329,7 @@ bool RunEngineCoreMoveDistanceSmokeTest(Map& map)
         chasePreservedUnderDistance |= *it == originalChase;
         followStillPresent |= *it == originalFollow;
     }
-    motion->MovementExpired(false);
+    motion->MovementExpired(true);
     bool const chaseRestored = motion->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE &&
         motion->GetCurrent() == originalChase && originalChase->GetTarget() == target.creature;
 

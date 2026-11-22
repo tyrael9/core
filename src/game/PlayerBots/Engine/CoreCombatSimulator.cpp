@@ -8329,6 +8329,33 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     bool const originalPositionRestored =
         bot->SetPosition(0.0f, 6.0f, 4.0f, bot->GetOrientation());
 
+    // The snapshot can remain positive while Core movement/control state
+    // changes after evaluation. The final adapter preflight must veto Chase.
+    bot->AddUnitState(UNIT_STATE_CAN_NOT_MOVE);
+    PartySnapshot immobileSnapshot = snapshot;
+    immobileSnapshot.epoch++;
+    immobileSnapshot.members[0].chaseTargetGuid = 0;
+    PartyCoordinator immobileCoordinator;
+    DecisionContext immobileContext(
+        immobileSnapshot, immobileSnapshot.members[0], immobileCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport immobileReport = engine.Evaluate(immobileContext);
+    bool const immobileSelected = immobileReport.selectedIndices.size() == 1 &&
+        immobileReport.candidates[
+            immobileReport.selectedIndices[0]].status == CandidateStatus::Selected;
+    if (immobileSelected)
+        engine.ExecuteSelected(immobileContext, immobileReport);
+    CandidateEvaluation const* immobileEvaluation = immobileSelected
+        ? &immobileReport.candidates[immobileReport.selectedIndices[0]] : nullptr;
+    bool const immobileRejected = immobileEvaluation &&
+        immobileEvaluation->status == CandidateStatus::ExecutionFailed &&
+        immobileEvaluation->actionResult == ActionResult::Useless &&
+        immobileEvaluation->reason == "chase_target_actor_cannot_move_or_react" &&
+        bot->GetVictim() == hostile.creature &&
+        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE;
+    bot->ClearUnitState(UNIT_STATE_CAN_NOT_MOVE);
+
     // Evaluate against a stale victim snapshot, then stop the real Core attack.
     DecisionReport staleReport = engine.Evaluate(context);
     bool const staleSelected = staleReport.selectedIndices.size() == 1 &&
@@ -8392,6 +8419,7 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         sameChaseNotProposed && followStarted && followStaleRejected &&
         followSelected && followChaseAccepted && followDroppedOnChaseExpiry && nearVictimPositioned &&
         alreadyReachableNotChased && originalPositionRestored &&
+        immobileSelected && immobileRejected &&
         staleSelected && staleVictimRejected && pointSelected &&
         pointMovementPreserved;
 
@@ -8436,11 +8464,12 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         static_cast<unsigned long long>(detailVictimGuid),
         detailMounted ? 1u : 0u, detailTaxi ? 1u : 0u);
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u followStarted=%u followStaleRejected=%u followChaseAccepted=%u followDroppedOnChaseExpiry=%u alreadyReachableNotChased=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
+        "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u followStarted=%u followStaleRejected=%u followChaseAccepted=%u followDroppedOnChaseExpiry=%u alreadyReachableNotChased=%u immobileSelected=%u immobileRejected=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
         attackStarted ? 1u : 0u, registered ? 1u : 0u, selected ? 1u : 0u,
         accepted ? 1u : 0u, sameChaseNotProposed ? 1u : 0u,
         followStarted ? 1u : 0u, followStaleRejected ? 1u : 0u,
         followChaseAccepted ? 1u : 0u, followDroppedOnChaseExpiry ? 1u : 0u, alreadyReachableNotChased ? 1u : 0u,
+        immobileSelected ? 1u : 0u, immobileRejected ? 1u : 0u,
         staleSelected ? 1u : 0u, staleVictimRejected ? 1u : 0u,
         pointMovementPreserved ? 1u : 0u, cleaned ? 1u : 0u);
     if (passed)

@@ -8243,6 +8243,19 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
     bool const cleaned = playerCleaned && hostileCleaned;
 
     bool const passed = fixturePassed && cleaned;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] ChaseTargetAction detail: result=%u actionResult=%u reason=%s victimMatch=%u canAttack=%u meleeReachable=%u movementType=%u targetGuid=%llu victimGuid=%llu mounted=%u taxi=%u.",
+        evaluation ? static_cast<uint32>(evaluation->status) : 0xffffffffu,
+        evaluation ? static_cast<uint32>(evaluation->actionResult) : 0xffffffffu,
+        evaluation ? evaluation->reason.c_str() : "no-evaluation",
+        bot->GetVictim() == hostile.creature ? 1u : 0u,
+        bot->CanAttack(hostile.creature) ? 1u : 0u,
+        bot->CanReachWithMeleeAutoAttack(hostile.creature) ? 1u : 0u,
+        static_cast<uint32>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+        static_cast<unsigned long long>(hostileGuid),
+        static_cast<unsigned long long>(bot->GetVictim()
+            ? bot->GetVictim()->GetObjectGuid().GetRawValue() : 0),
+        bot->IsMounted() ? 1u : 0u, bot->IsTaxiFlying() ? 1u : 0u);
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
         "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
         attackStarted ? 1u : 0u, registered ? 1u : 0u, selected ? 1u : 0u,

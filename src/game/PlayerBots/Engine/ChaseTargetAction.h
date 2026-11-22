@@ -222,10 +222,10 @@ private:
             return result;
         }
 
-        if (HasNonMeleeSpell(actor) && actor->IsNoMovementSpellCasted())
+        if (HasNonMeleeSpell(actor))
         {
             result.result = ActionResult::Useless;
-            result.reason = "chase_target_actor_locked_by_non_movement_spell";
+            result.reason = "chase_target_non_melee_spell_in_progress";
             return result;
         }
 

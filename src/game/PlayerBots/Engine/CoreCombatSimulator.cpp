@@ -23,6 +23,7 @@
 #include "PlayerBots/Engine/FaceTargetAction.h"
 #include "PlayerBots/Engine/StopFollowingAction.h"
 #include "PlayerBots/Engine/AttackTargetAction.h"
+#include "PlayerBots/Engine/ChaseTargetAction.h"
 #include "PlayerBots/Engine/StopAutoAttackAction.h"
 #include "PlayerBots/Engine/DismountForCombatAction.h"
 #include "PlayerBots/Engine/MovePointAction.h"
@@ -616,6 +617,34 @@ public:
 private:
     Guid m_targetGuid = 0;
     std::string m_name = "simulator_attack_target";
+};
+
+class SimulatorChaseTargetTrigger final : public Trigger
+{
+public:
+    explicit SimulatorChaseTargetTrigger(Guid targetGuid)
+        : m_targetGuid(targetGuid) {}
+
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const& context) const override
+    {
+        return context.bot.alive && m_targetGuid != 0 &&
+               context.bot.victimGuid == m_targetGuid;
+    }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override
+    {
+        ActionCandidate candidate;
+        candidate.actionName = "core_chase_target";
+        candidate.targetGuid = m_targetGuid;
+        candidate.basePriority = 34.0f;
+        candidate.channel = ActionChannel::Movement;
+        candidates.push_back(candidate);
+    }
+
+private:
+    Guid m_targetGuid = 0;
+    std::string m_name = "simulator_chase_target";
 };
 
 class SimulatorDismountForCombatTrigger final : public Trigger

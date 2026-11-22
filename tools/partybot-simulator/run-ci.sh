@@ -368,6 +368,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: generic Core target maintenance cleared
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: MoveDistanceAction accepted Core MoveDistance over live Follow and Chase, preserved and restored the underlying targeted movement on Distancing expiry, preserved combat/threat state, and rejected unrelated Point and stale-victim requests." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The MoveDistanceAction Core Distancing lifecycle PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: StopChaseAction expired only a current-victim Core Chase, allowed Core to remove its underlying Follow, preserved victim/selection/combat/melee/spell/health/power/threat state, and rejected stale or unrelated movement before side effects." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopChaseAction current-victim cancellation PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

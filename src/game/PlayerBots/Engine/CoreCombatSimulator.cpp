@@ -8208,6 +8208,37 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
             "chase_target_already_chasing_current_victim" &&
         bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE;
 
+    // A stale snapshot must not restart chasing once live Core geometry says
+    // the victim is already in melee reach. Remove only the current Chase
+    // generator, move the Player close through the native relocation API, and
+    // require the action's final live preflight to return Useless.
+    bot->GetMotionMaster()->MovementExpired(false);
+    bot->StopMoving();
+    bool const nearVictimPositioned =
+        bot->SetPosition(9.0f, 6.0f, 4.0f, bot->GetOrientation());
+    PartySnapshot reachableSnapshot = snapshot;
+    reachableSnapshot.epoch++;
+    reachableSnapshot.members[0].x = bot->GetPositionX();
+    reachableSnapshot.members[0].y = bot->GetPositionY();
+    reachableSnapshot.members[0].z = bot->GetPositionZ();
+    reachableSnapshot.members[0].chaseTargetGuid = 0;
+    PartyCoordinator reachableCoordinator;
+    DecisionContext reachableContext(
+        reachableSnapshot, reachableSnapshot.members[0], reachableCoordinator,
+        WorldTimer::getMSTime(), nullptr, nullptr, &actionRuntime, nullptr,
+        &actionRuntime);
+    DecisionReport reachableReport = engine.Evaluate(reachableContext);
+    bool const alreadyReachableNotChased = nearVictimPositioned &&
+        reachableReport.selectedIndices.empty() &&
+        !reachableReport.candidates.empty() &&
+        reachableReport.candidates[0].status == CandidateStatus::RejectedUseless &&
+        reachableReport.candidates[0].reason ==
+            "chase_target_already_melee_reachable" &&
+        bot->GetVictim() == hostile.creature &&
+        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE;
+    bool const originalPositionRestored =
+        bot->SetPosition(0.0f, 6.0f, 4.0f, bot->GetOrientation());
+
     // Evaluate against a stale victim snapshot, then stop the real Core attack.
     DecisionReport staleReport = engine.Evaluate(context);
     bool const staleSelected = staleReport.selectedIndices.size() == 1 &&
@@ -8268,7 +8299,8 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         "[PartyBotSimulator] ChaseTargetAction stage=point-cleaned.");
 
     bool const fixturePassed = attackStarted && registered && selected && accepted &&
-        sameChaseNotProposed && staleSelected && staleVictimRejected &&
+        sameChaseNotProposed && nearVictimPositioned && alreadyReachableNotChased &&
+        originalPositionRestored && staleSelected && staleVictimRejected &&
         pointSelected && pointMovementPreserved;
 
     // Capture every diagnostic fact while the Player and hostile are still
@@ -8309,14 +8341,15 @@ bool RunEngineCoreChaseTargetSmokeTest(Map& map)
         static_cast<unsigned long long>(detailVictimGuid),
         detailMounted ? 1u : 0u, detailTaxi ? 1u : 0u);
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
+        "[PartyBotSimulator] ChaseTargetAction: attackStarted=%u registered=%u selected=%u accepted=%u sameChaseNotProposed=%u alreadyReachableNotChased=%u staleSelected=%u staleVictimRejected=%u pointMovementPreserved=%u cleanup=%u.",
         attackStarted ? 1u : 0u, registered ? 1u : 0u, selected ? 1u : 0u,
         accepted ? 1u : 0u, sameChaseNotProposed ? 1u : 0u,
-        staleSelected ? 1u : 0u, staleVictimRejected ? 1u : 0u,
-        pointMovementPreserved ? 1u : 0u, cleaned ? 1u : 0u);
+        alreadyReachableNotChased ? 1u : 0u, staleSelected ? 1u : 0u,
+        staleVictimRejected ? 1u : 0u, pointMovementPreserved ? 1u : 0u,
+        cleaned ? 1u : 0u);
     if (passed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: ChaseTargetAction used Core MoveChase for the live victim, preserved combat and threat state, skipped an existing same-target chase, rejected a stale victim, and preserved unrelated Point movement.");
+            "[PartyBotSimulator] PASS: ChaseTargetAction used Core MoveChase for the live victim, preserved combat and threat state, skipped same-target and already-melee-reachable chases, rejected a stale victim, and preserved unrelated Point movement.");
     return passed;
 }
 

@@ -477,6 +477,11 @@ for expected in encounterStarted=1 reservationsSeeded=1 partialDeathSafe=1 wipeC
         exit 1
     fi
 done
+party_wipe_end_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=encounter_end .*reason=party_wipe([^[:alnum:]_]|$)' "$LOG_FILE" || true)"
+if [[ "$party_wipe_end_count" != "1" ]]; then
+    echo "[PartyBotSimulator] Expected exactly one Core encounter_end terminal with reason=party_wipe, found $party_wipe_end_count." | tee -a "$LOG_FILE"
+    exit 1
+fi
 
 if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"

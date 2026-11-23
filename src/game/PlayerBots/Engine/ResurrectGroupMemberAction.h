@@ -3,7 +3,6 @@
 
 #include "CoreAction.h"
 
-#include "../CombatBotBaseAI.h"
 #include "Group.h"
 #include "Player.h"
 #include "Spell.h"
@@ -88,9 +87,7 @@ protected:
 
         Player* const actor = resolved.actor;
         Player* const target = resolved.target->ToPlayer();
-        CombatBotBaseAI* const combatAI =
-            dynamic_cast<CombatBotBaseAI*>(actor->AI());
-        SpellEntry const* const spell = combatAI ? combatAI->m_resurrectionSpell : nullptr;
+        SpellEntry const* const spell = sSpellMgr.GetSpellEntry(candidate.spellId);
         Guid const ownerGuid = actor->GetObjectGuid().GetRawValue();
 
         Reservation reservation;
@@ -152,10 +149,8 @@ private:
     {
         Player* const actor = resolved.actor;
         Player* const target = resolved.target ? resolved.target->ToPlayer() : nullptr;
-        CombatBotBaseAI* const combatAI =
-            actor ? dynamic_cast<CombatBotBaseAI*>(actor->AI()) : nullptr;
         Group* const group = actor ? actor->GetGroup() : nullptr;
-        SpellEntry const* const spell = combatAI ? combatAI->m_resurrectionSpell : nullptr;
+        SpellEntry const* const spell = sSpellMgr.GetSpellEntry(candidate.spellId);
 
         if (!actor || !target || resolved.target != target || !resolved.map ||
             !candidate.targetGuid || candidate.targetGuid == context.bot.guid ||
@@ -164,9 +159,12 @@ private:
             !actor->IsAlive() || target->IsAlive() ||
             actor->GetDeathState() != ALIVE || target->GetDeathState() != CORPSE ||
             actor->InBattleGround() || actor->IsMounted() ||
-            !combatAI || !spell || spell->Id != candidate.spellId ||
+            !spell || spell->Id != candidate.spellId ||
             context.bot.resurrectionSpellId != candidate.spellId ||
-            combatAI->IsInDuel() ||
+            !context.coreActionRuntime ||
+            context.coreActionRuntime->GetResurrectionSpellId() != candidate.spellId ||
+            !context.coreActionRuntime->CanCastGroupResurrection(
+                context, target, candidate.spellId) ||
             actor->IsInCombat() || actor->GetVictim() || HasNonMeleeSpell(actor) ||
             actor->GetMap() != resolved.map || target->GetMap() != resolved.map ||
             actor->GetMapId() != context.snapshot.mapId ||

@@ -9096,6 +9096,293 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
     return true;
 }
 
+
+bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
+{
+    uint32 partyFaction = 0, unusedHostileFaction = 0;
+    if (!FindMutuallyHostileFactions(partyFaction, unusedHostileFaction))
+        return false;
+
+    std::vector<std::unique_ptr<WorldSession>> sessions;
+    std::vector<Player*> players;
+    std::vector<ObjectGuid> playerGuids;
+    sessions.reserve(5);
+    players.reserve(5);
+    playerGuids.reserve(5);
+
+    std::unique_ptr<Group> group(new Group());
+    bool groupRegistered = false;
+    std::vector<std::unique_ptr<PartyBotAI>> botAIs;
+    botAIs.reserve(4);
+
+    auto cleanup = [&]() -> bool
+    {
+        for (std::size_t index = 0; index < botAIs.size(); ++index)
+        {
+            if (index + 1 < players.size() && players[index + 1])
+            {
+                players[index + 1]->GetMotionMaster()->MoveIdle();
+                players[index + 1]->SetAI(nullptr);
+            }
+        }
+        botAIs.clear();
+
+        bool ungrouped = true;
+        if (group && group->GetId())
+        {
+            // Group::Create converts the leader's temporary solo instance bind
+            // into a group bind. Remove only that synthetic bind before Disband
+            // so the shared simulator Map remains available to later fixtures.
+            group->UnbindInstance(map.GetId(), false);
+            group->Disband(true, group->GetLeaderGuid());
+            for (Player* player : players)
+                if (player && player->GetGroup())
+                    ungrouped = false;
+            if (groupRegistered)
+            {
+                sObjectMgr.RemoveGroup(group.get());
+                groupRegistered = false;
+            }
+            group.reset();
+        }
+
+        bool sessionsCleaned = true;
+        for (std::unique_ptr<WorldSession>& session : sessions)
+        {
+            if (session && session->GetPlayer())
+                session->LogoutPlayer(false);
+            if (session && session->GetPlayer())
+                sessionsCleaned = false;
+        }
+
+        bool playersDetached = true;
+        for (ObjectGuid const& guid : playerGuids)
+            if (map.GetUnit(guid))
+                playersDetached = false;
+
+        players.clear();
+        sessions.clear();
+        return ungrouped && sessionsCleaned && playersDetached;
+    };
+
+    bool playersCreated = true;
+    for (uint32 index = 0; index < 5; ++index)
+    {
+        std::unique_ptr<WorldSession> session(
+            new WorldSession(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS));
+        Player* player = nullptr;
+        bool const created = CreateSimulatorPlayer(
+            map, partyFaction, *session, player,
+            static_cast<float>(index) * 2.5f, 34.0f, 0.0f);
+        sessions.push_back(std::move(session));
+        if (player)
+        {
+            players.push_back(player);
+            playerGuids.push_back(player->GetObjectGuid());
+        }
+        playersCreated = playersCreated && created && player && player->IsInWorld();
+        if (!playersCreated)
+            break;
+    }
+
+    if (!playersCreated || players.size() != 5)
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSimulator] F52c five-Player creation failed (created=%u count=%u cleanup=%u).",
+            playersCreated ? 1u : 0u, static_cast<uint32>(players.size()),
+            cleaned ? 1u : 0u);
+        return false;
+    }
+
+    bool const groupCreated = group->Create(
+        players[0]->GetObjectGuid(), players[0]->GetName());
+    if (groupCreated)
+    {
+        sObjectMgr.AddGroup(group.get());
+        groupRegistered = true;
+    }
+    bool membersAdded = groupCreated && group->GetMembersCount() == 1 &&
+        players[0]->GetGroup() == group.get();
+    for (std::size_t index = 1; index < players.size() && membersAdded; ++index)
+        membersAdded = group->AddMember(
+            players[index]->GetObjectGuid(), players[index]->GetName()) &&
+            players[index]->GetGroup() == group.get();
+
+    if (!membersAdded || group->GetMembersCount() != 5 ||
+        group->GetLeaderGuid() != players[0]->GetObjectGuid())
+    {
+        bool const cleaned = cleanup();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSimulator] F52c five-Player Group setup failed (created=%u members=%u cleanup=%u).",
+            groupCreated ? 1u : 0u, group ? group->GetMembersCount() : 0u,
+            cleaned ? 1u : 0u);
+        return false;
+    }
+
+    Player* const leader = players[0];
+    for (std::size_t index = 1; index < players.size(); ++index)
+    {
+        Player* const bot = players[index];
+        std::unique_ptr<PartyBotAI> ai(new PartyBotAI(
+            leader, map.GetId(), map.GetInstanceId(),
+            bot->GetPositionX(), bot->GetPositionY(),
+            bot->GetPositionZ(), bot->GetOrientation()));
+        ai->SetPlayer(bot);
+        ai->m_initialized = true;
+        ai->m_updateTimer.Reset(600000);
+        ai->m_simulatorExecutionAuthorityOverride =
+            static_cast<int32>(ExecutionAuthorityMode::NewEngine);
+        bot->SetAI(ai.get());
+        botAIs.push_back(std::move(ai));
+    }
+
+    bool usedSlots[MaxPartyFormationSlots] = {};
+    std::uint8_t slotByBot[4] = {
+        InvalidFormationSlot, InvalidFormationSlot,
+        InvalidFormationSlot, InvalidFormationSlot
+    };
+    std::shared_ptr<PartyCoordinator> sharedCoordinator;
+    bool sharedCoordinatorForAll = true;
+    bool allBotsStartedFollow = true;
+    bool allSlotsUnique = true;
+    bool allOffsetsMatch = true;
+    bool allNewEngineOnly = true;
+    bool allSnapshotsAreFiveMembers = true;
+
+    // First pass in roster order. All four AIs already exist before the first
+    // snapshot, so the shared coordinator assigns the complete five-member roster.
+    for (std::size_t index = 0; index < botAIs.size(); ++index)
+    {
+        PartyBotAI& ai = *botAIs[index];
+        Player* const bot = players[index + 1];
+        ai.m_updateTimer.Reset(1000);
+        ai.UpdateAI(1000);
+
+        std::shared_ptr<PartyCoordinator> coordinator = ai.m_partyCoordinator;
+        if (!sharedCoordinator)
+            sharedCoordinator = coordinator;
+        else
+            sharedCoordinatorForAll = sharedCoordinatorForAll &&
+                coordinator && coordinator.get() == sharedCoordinator.get();
+
+        if (!coordinator)
+        {
+            allBotsStartedFollow = false;
+            allSlotsUnique = false;
+            allOffsetsMatch = false;
+            allNewEngineOnly = false;
+            allSnapshotsAreFiveMembers = false;
+            continue;
+        }
+
+        Guid const botGuid = bot->GetObjectGuid().GetRawValue();
+        std::uint8_t const slot = coordinator->GetFormationSlot(botGuid);
+        slotByBot[index] = slot;
+        bool const slotValid = slot < MaxPartyFormationSlots;
+        if (slotValid)
+        {
+            if (usedSlots[slot])
+                allSlotsUnique = false;
+            usedSlots[slot] = true;
+        }
+        else
+            allSlotsUnique = false;
+
+        MovementGenerator const* current =
+            bot->GetMotionMaster()->GetCurrent();
+        FollowMovementGenerator<Player> const* follow =
+            current && current->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                ? static_cast<FollowMovementGenerator<Player> const*>(current)
+                : nullptr;
+        allBotsStartedFollow = allBotsStartedFollow && follow &&
+            follow->GetTarget() == leader &&
+            bot->HasUnitState(UNIT_STATE_FOLLOW);
+
+        if (follow && slotValid)
+        {
+            FollowFormationOffset const expected = GetFollowFormationOffset(slot);
+            allOffsetsMatch = allOffsetsMatch &&
+                std::fabs(follow->GetFollowDistance() - expected.distance) < 0.0001f &&
+                std::fabs(follow->GetFollowAngle() - expected.angle) < 0.0001f;
+        }
+        else
+            allOffsetsMatch = false;
+
+        allNewEngineOnly = allNewEngineOnly &&
+            ai.m_simulatorNewEngineTickCount == 1 &&
+            ai.m_simulatorEngineDecisionCycleCount == 1 &&
+            ai.m_simulatorEngineCandidateCount == 1 &&
+            ai.m_simulatorLegacyPolicyEntryCount == 0 &&
+            ai.m_simulatorLegacyPolicyDispatchCount == 0 &&
+            ai.m_newEngineStrategiesRegistered &&
+            !ai.m_engineShadowStrategiesRegistered;
+
+        PartySnapshot const* snapshot = coordinator->GetSnapshotIfFresh(
+            WorldTimer::getMSTime(), 1000);
+        allSnapshotsAreFiveMembers = allSnapshotsAreFiveMembers &&
+            snapshot && snapshot->groupId == group->GetId() &&
+            snapshot->groupLeaderGuid == leader->GetObjectGuid().GetRawValue() &&
+            snapshot->members.size() == 5;
+    }
+
+    bool const allFourSlotsOccupied =
+        usedSlots[0] && usedSlots[1] && usedSlots[2] && usedSlots[3];
+
+    // Second pass in reverse Bot order. Each Bot must observe the same stable
+    // assignment and leave its already-correct native Follow generator untouched.
+    bool reverseTickNoOps = sharedCoordinatorForAll && sharedCoordinator;
+    for (std::size_t offset = 0; offset < botAIs.size(); ++offset)
+    {
+        std::size_t const index = botAIs.size() - 1 - offset;
+        PartyBotAI& ai = *botAIs[index];
+        Player* const bot = players[index + 1];
+        sharedCoordinator->InvalidateSnapshot();
+        MovementGenerator const* before = bot->GetMotionMaster()->GetCurrent();
+        std::uint8_t const slotBefore = sharedCoordinator->GetFormationSlot(
+            bot->GetObjectGuid().GetRawValue());
+        ai.m_updateTimer.Reset(1000);
+        ai.UpdateAI(1000);
+        MovementGenerator const* after = bot->GetMotionMaster()->GetCurrent();
+        FollowMovementGenerator<Player> const* follow =
+            after && after->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                ? static_cast<FollowMovementGenerator<Player> const*>(after)
+                : nullptr;
+        reverseTickNoOps = reverseTickNoOps &&
+            ai.m_partyCoordinator &&
+            ai.m_partyCoordinator.get() == sharedCoordinator.get() &&
+            ai.m_simulatorNewEngineTickCount == 2 &&
+            ai.m_simulatorEngineDecisionCycleCount == 2 &&
+            ai.m_simulatorEngineCandidateCount == 0 &&
+            ai.m_simulatorLegacyPolicyEntryCount == 0 &&
+            ai.m_simulatorLegacyPolicyDispatchCount == 0 &&
+            before == after && slotBefore == slotByBot[index] &&
+            follow && follow->GetTarget() == leader &&
+            bot->HasUnitState(UNIT_STATE_FOLLOW);
+    }
+
+    bool const passed = groupCreated && membersAdded &&
+        sharedCoordinatorForAll && allSnapshotsAreFiveMembers &&
+        allBotsStartedFollow && allFourSlotsOccupied && allSlotsUnique &&
+        allOffsetsMatch && allNewEngineOnly && reverseTickNoOps;
+
+    bool const cleaned = cleanup();
+    sLog.Out(LOG_BASIC, passed && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F52c five-Bot formation: group=%u members=%u sharedCoordinator=%u snapshots=%u follows=%u occupiedSlots=%u uniqueSlots=%u offsets=%u newEngineOnly=%u reverseTickNoOps=%u cleanup=%u slots=%u/%u/%u/%u.",
+        groupCreated ? 1u : 0u, membersAdded ? 1u : 0u,
+        sharedCoordinatorForAll ? 1u : 0u, allSnapshotsAreFiveMembers ? 1u : 0u,
+        allBotsStartedFollow ? 1u : 0u, allFourSlotsOccupied ? 1u : 0u,
+        allSlotsUnique ? 1u : 0u, allOffsetsMatch ? 1u : 0u,
+        allNewEngineOnly ? 1u : 0u, reverseTickNoOps ? 1u : 0u,
+        cleaned ? 1u : 0u,
+        static_cast<unsigned>(slotByBot[0]), static_cast<unsigned>(slotByBot[1]),
+        static_cast<unsigned>(slotByBot[2]), static_cast<unsigned>(slotByBot[3]));
+    if (passed && cleaned)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F52c created one real human Group Leader and four real PartyBotAI Players; all Bots shared one PartyCoordinator, received unique stable Formation slots 0-3, followed the real leader with matching native Core Follow distances/angles, and reverse-order NewEngine ticks preserved the same generators and slots with zero Legacy policy entry/dispatch.");
+    return passed && cleaned;
+}
+
 bool RunEngineCoreSelectHostileTargetSmokeTest(Map& map)
 {
     CreatureInfo const* info = FindSafeCreatureTemplate();
@@ -15255,6 +15542,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
     bool const dpsAssistPassed = RunEngineCoreDpsAssistSmokeTest(*map);
     bool const dpsAssistGroupSnapshotPassed = RunEngineCoreDpsAssistGroupSnapshotSmokeTest(*map);
     bool const followPartyMemberPassed = RunEngineCoreFollowPartyMemberActionSmokeTest(*map);
+    bool const fiveBotFormationPassed = RunEngineCoreFiveBotFormationSmokeTest(*map);
     bool const itemUsePassed = RunEngineCoreItemUseSmokeTest(*map);
     bool const countBasedItemMutationPassed =
         RunEngineCoreCountBasedItemMutationSmokeTest(*map);
@@ -15286,7 +15574,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                               selectHostileTargetPassed && chaseTargetPassed &&
                               moveDistancePassed && stopStaleChasePassed && stopChasePassed &&
                               dpsAssistPassed && dpsAssistGroupSnapshotPassed &&
-                              followPartyMemberPassed && itemUsePassed &&
+                              followPartyMemberPassed && fiveBotFormationPassed && itemUsePassed &&
                               countBasedItemMutationPassed && utilitySpellAuditPassed &&
                               itemUtilityAuditPassed &&
                               itemUtilityUsePassed && itemUtilityActionPassed &&

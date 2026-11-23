@@ -461,6 +461,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F52b retargeted an existing Bot followe
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F52c created one real human Group Leader and four real PartyBotAI Players; all Bots shared one PartyCoordinator, received unique stable Formation slots 0-3, followed the real leader with matching native Core Follow distances/angles, and reverse-order NewEngine ticks preserved the same generators and slots with zero Legacy policy entry/dispatch." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52c production five-Bot Formation Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

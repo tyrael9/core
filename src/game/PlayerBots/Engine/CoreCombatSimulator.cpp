@@ -9394,6 +9394,11 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             departingBot->GetGroup() == group.get() && group->GetMembersCount() == 5;
         if (addedBack)
         {
+            // Group roster mutations do not directly notify this shared cache.
+            // Force the next NewEngine tick to build a fresh five-member snapshot;
+            // otherwise the 250 ms cache can still contain the just-built
+            // four-member roster inside this synchronous simulator fixture.
+            sharedCoordinator->InvalidateSnapshot();
             PartyBotAI& returningAI = *botAIs[0];
             returningAI.m_updateTimer.Reset(1000);
             returningAI.UpdateAI(1000);

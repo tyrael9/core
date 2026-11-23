@@ -24,6 +24,7 @@
 #include "Engine/DecisionTrace.h"
 #include "Engine/PartyBotEngine.h"
 #include "Engine/PartyCoordinator.h"
+#include "Engine/BotBehaviorState.h"
 #include "Engine/CoreActionRuntime.h"
 
 class PartyBotAI : public CombatBotBaseAI, public PartyBotEngine::EngineActionObserver,
@@ -153,6 +154,7 @@ public:
     // Party/map/instance shard and per-bot decision engine; shard mutation stays map-thread confined.
     std::shared_ptr<PartyBotEngine::PartyCoordinator> m_partyCoordinator;
     PartyBotEngine::PartyBotEngine m_partyBotEngine;
+    PartyBotEngine::BotBehaviorStateMachine m_botBehaviorStateMachine;
     uint32 m_partyCoordinatorMapId = 0;
     uint32 m_partyCoordinatorInstanceId = 0;
     uint32 m_engineShadowTraceMs = 0;

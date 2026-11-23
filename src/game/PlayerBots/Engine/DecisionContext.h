@@ -2,6 +2,7 @@
 #define MANGOS_PARTYBOT_DECISION_CONTEXT_H
 #include "PartyCoordinator.h"
 #include "PartySnapshot.h"
+#include "BotBehaviorState.h"
 #include "CoreActionRuntime.h"
 namespace PartyBotEngine {
 struct DecisionContext;
@@ -77,11 +78,16 @@ struct DecisionContext {
                     ValueCache* decisionValueCache = nullptr,
                     EngineActionObserver* actionObserver = nullptr,
                     ActionContinuationSink const* continuationSink = nullptr,
-                    CoreActionRuntime* actionRuntime = nullptr)
+                    CoreActionRuntime* actionRuntime = nullptr,
+                    BotBehaviorState resolvedBehaviorState = BotBehaviorState::Unknown,
+                    std::uint32_t resolvedBehaviorStateElapsedMs = 0)
         : snapshot(partySnapshot), bot(botSnapshot), coordinator(partyCoordinator),
           nowMs(timeMs), reservationTrace(traceSink), valueCache(decisionValueCache),
           engineActionObserver(actionObserver), continuationSink(continuationSink),
-          coreActionRuntime(actionRuntime) {}
+          coreActionRuntime(actionRuntime),
+          botBehaviorState(resolvedBehaviorState == BotBehaviorState::Unknown
+              ? ResolveBotBehaviorState(partySnapshot, botSnapshot) : resolvedBehaviorState),
+          botBehaviorStateElapsedMs(resolvedBehaviorStateElapsedMs) {}
     PartySnapshot const& snapshot;
     PartyMemberSnapshot const& bot;
     PartyCoordinator& coordinator;
@@ -92,6 +98,8 @@ struct DecisionContext {
     ActionContinuationSink const* continuationSink;
     // Map-thread host resolver. Core object pointers are never stored in snapshots/queues.
     CoreActionRuntime* coreActionRuntime;
+    BotBehaviorState botBehaviorState;
+    std::uint32_t botBehaviorStateElapsedMs;
 };
 }
 #endif

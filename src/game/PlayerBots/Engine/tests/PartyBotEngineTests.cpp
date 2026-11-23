@@ -6,6 +6,8 @@
 #include "ShadowStrategies.h"
 #include "DpsAssistTrigger.h"
 #include "FollowPartyLeaderTrigger.h"
+#include "BotBehaviorState.h"
+#include "StopFollowingUnsafeTrigger.h"
 #include "ThreatBudget.h"
 #include "ThreatBudgetPolicy.h"
 #include <cassert>
@@ -5085,10 +5087,124 @@ void TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader() {
     assert(candidates.empty());
 }
 
+
+void TestBotBehaviorStateMachineTransitionsAndTimeoutClockWrap() {
+    PartySnapshot snapshot;
+    snapshot.groupId = 21; snapshot.mapId = 33; snapshot.instanceId = 101;
+    snapshot.groupLeaderGuid = 22;
+    PartyMemberSnapshot bot;
+    bot.guid = 11; bot.mapId = snapshot.mapId; bot.instanceId = snapshot.instanceId;
+    bot.online = true; bot.alive = true; snapshot.members.push_back(bot);
+    PartyMemberSnapshot leader;
+    leader.guid = 22; leader.mapId = snapshot.mapId; leader.instanceId = snapshot.instanceId;
+    leader.online = true; leader.alive = true; snapshot.members.push_back(leader);
+
+    BotBehaviorStateMachine machine;
+    BotBehaviorStateObservation state = machine.Observe(snapshot, snapshot.members[0], 0xfffffff0u);
+    assert(state.changed && state.state == BotBehaviorState::Idle);
+    assert(state.previousState == BotBehaviorState::Unknown);
+    assert(state.reason == std::string("initial_state_observed"));
+
+    snapshot.members[0].followTargetGuid = snapshot.groupLeaderGuid;
+    state = machine.Observe(snapshot, snapshot.members[0], 0xfffffff8u);
+    assert(state.changed && state.state == BotBehaviorState::FollowingLeader);
+    assert(state.reason == std::string("following_group_leader"));
+    state = machine.Observe(snapshot, snapshot.members[0], 0x20u);
+    assert(!state.changed && state.elapsedMs == 0x28u);
+
+    snapshot.members[0].inCombat = true;
+    state = machine.Observe(snapshot, snapshot.members[0], 0x40u);
+    assert(state.changed && state.state == BotBehaviorState::Combat);
+    assert(state.reason == std::string("combat_entered"));
+    snapshot.members[0].inCombat = false;
+    snapshot.members[0].followTargetGuid = 0;
+    state = machine.Observe(snapshot, snapshot.members[0], 0x50u);
+    assert(state.changed && state.state == BotBehaviorState::Idle);
+    assert(state.reason == std::string("combat_ended"));
+
+    snapshot.members[0].followTargetGuid = 99;
+    state = machine.Observe(snapshot, snapshot.members[0], 0x60u);
+    assert(state.changed && state.state == BotBehaviorState::FollowingUnavailableTarget);
+    assert(state.reason == std::string("follow_target_unavailable"));
+    state = machine.Observe(snapshot, snapshot.members[0],
+        0x60u + InvalidFollowTargetTimeoutMs - 1);
+    assert(!state.changed && !state.HasTimedOut(InvalidFollowTargetTimeoutMs));
+    state = machine.Observe(snapshot, snapshot.members[0],
+        0x60u + InvalidFollowTargetTimeoutMs);
+    assert(state.HasTimedOut(InvalidFollowTargetTimeoutMs));
+    assert(state.elapsedMs == InvalidFollowTargetTimeoutMs);
+
+    snapshot.groupId = 22;
+    state = machine.Observe(snapshot, snapshot.members[0],
+        0x60u + InvalidFollowTargetTimeoutMs + 1);
+    assert(state.changed && state.reason == std::string("party_context_changed"));
+    assert(state.elapsedMs == 0);
+}
+
+void TestProductionFollowTriggersRetargetStopAndRecover() {
+    PartySnapshot snapshot;
+    snapshot.groupId = 31; snapshot.mapId = 33; snapshot.instanceId = 101;
+    snapshot.epoch = 9; snapshot.groupLeaderGuid = 22;
+    PartyMemberSnapshot bot;
+    bot.guid = 11; bot.mapId = snapshot.mapId; bot.instanceId = snapshot.instanceId;
+    bot.online = true; bot.alive = true; snapshot.members.push_back(bot);
+    PartyMemberSnapshot leader;
+    leader.guid = 22; leader.mapId = snapshot.mapId; leader.instanceId = snapshot.instanceId;
+    leader.online = true; leader.alive = true; snapshot.members.push_back(leader);
+
+    PartyCoordinator coordinator;
+    FollowPartyLeaderTrigger follow;
+    StopFollowingUnsafeTrigger stop;
+    std::vector<ActionCandidate> candidates;
+    DecisionContext idle(snapshot, snapshot.members[0], coordinator, 1000);
+    follow.CollectCandidates(idle, candidates);
+    assert(candidates.size() == 1 && candidates[0].actionName == "core_follow_party_member");
+
+    snapshot.members[0].followTargetGuid = snapshot.groupLeaderGuid;
+    DecisionContext following(snapshot, snapshot.members[0], coordinator, 2000);
+    candidates.clear(); follow.CollectCandidates(following, candidates);
+    assert(candidates.empty() && !stop.IsActive(following));
+
+    snapshot.members[0].inCombat = true;
+    DecisionContext combat(snapshot, snapshot.members[0], coordinator, 3000);
+    assert(!follow.IsActive(combat) && stop.IsActive(combat));
+    candidates.clear(); stop.CollectCandidates(combat, candidates);
+    assert(candidates.size() == 1 && candidates[0].actionName == "core_stop_following");
+    assert(candidates[0].channel == ActionChannel::Movement);
+
+    snapshot.members[0].inCombat = false;
+    snapshot.members[0].followTargetGuid = 0;
+    DecisionContext recovered(snapshot, snapshot.members[0], coordinator, 4000);
+    candidates.clear(); follow.CollectCandidates(recovered, candidates);
+    assert(candidates.size() == 1 && candidates[0].targetGuid == snapshot.groupLeaderGuid);
+
+    snapshot.members[0].followTargetGuid = 99;
+    DecisionContext staleMember(snapshot, snapshot.members[0], coordinator, 5000,
+        nullptr, nullptr, nullptr, nullptr, nullptr,
+        BotBehaviorState::FollowingUnavailableTarget, 1000);
+    candidates.clear(); follow.CollectCandidates(staleMember, candidates);
+    assert(candidates.size() == 1 && candidates[0].targetGuid == snapshot.groupLeaderGuid);
+    assert(!stop.IsActive(staleMember));
+
+    snapshot.members[1].online = false;
+    DecisionContext noLeaderBeforeTimeout(snapshot, snapshot.members[0], coordinator, 6000,
+        nullptr, nullptr, nullptr, nullptr, nullptr,
+        BotBehaviorState::FollowingUnavailableTarget, InvalidFollowTargetTimeoutMs - 1);
+    assert(!follow.IsActive(noLeaderBeforeTimeout) && !stop.IsActive(noLeaderBeforeTimeout));
+    DecisionContext noLeaderTimedOut(snapshot, snapshot.members[0], coordinator, 7000,
+        nullptr, nullptr, nullptr, nullptr, nullptr,
+        BotBehaviorState::FollowingUnavailableTarget, InvalidFollowTargetTimeoutMs);
+    assert(!follow.IsActive(noLeaderTimedOut) && stop.IsActive(noLeaderTimedOut));
+    candidates.clear(); stop.CollectCandidates(noLeaderTimedOut, candidates);
+    assert(candidates.size() == 1 && candidates[0].actionName == "core_stop_following");
+}
+
 int main() {
     TestActionCandidatePreservesStableItemIdentity();
     TestClearPoliciesRemovesStrategiesActionsAndPendingWork();
     TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader();
+    TestBotBehaviorStateMachineTransitionsAndTimeoutClockWrap();
+    TestProductionFollowTriggersRetargetStopAndRecover();
     TestExecutionAuthorityModesAreExplicitAndFailSafe();
     TestValueCacheEpochExpiryInvalidationAndTypeSafety();
     TestValueCacheCapacityFailsOpenWithoutEvictingLiveEntries();

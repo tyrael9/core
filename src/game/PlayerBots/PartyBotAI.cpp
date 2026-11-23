@@ -1918,6 +1918,7 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
 
     if (!enabled)
     {
+        m_botBehaviorStateMachine.Reset();
         if (m_engineShadowStrategiesRegistered || m_newEngineStrategiesRegistered)
         {
             m_partyBotEngine.ClearPolicies();
@@ -1999,6 +2000,7 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         m_partyCoordinator.reset();
         m_partyCoordinatorMapId = 0;
         m_partyCoordinatorInstanceId = 0;
+        m_botBehaviorStateMachine.Reset();
         traceStatus("no_supported_group", 0);
         return;
     }
@@ -2069,9 +2071,18 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         return;
     }
 
+    PartyBotEngine::BotBehaviorStateObservation const behaviorState =
+        m_botBehaviorStateMachine.Observe(*snapshot, *botSnapshot, nowMs);
+    if (behaviorState.changed)
+        m_decisionTrace.Record(me, "engine_state_transition", nullptr, nullptr,
+            behaviorState.reason,
+            (static_cast<uint32>(behaviorState.previousState) << 8) |
+                static_cast<uint32>(behaviorState.state));
+
     PartyBotEngine::DecisionContext context(*snapshot, *botSnapshot, *m_partyCoordinator,
                                                nowMs, &m_decisionTrace, nullptr, this,
-                                               &m_partyBotEngine, this);
+                                               &m_partyBotEngine, this,
+                                               behaviorState.state, behaviorState.elapsedMs);
     PartyBotEngine::DecisionReport report = m_partyBotEngine.Evaluate(context);
     if (authority == PartyBotEngine::ExecutionAuthorityMode::NewEngine)
         m_partyBotEngine.ExecuteDecisionCycle(context, report);

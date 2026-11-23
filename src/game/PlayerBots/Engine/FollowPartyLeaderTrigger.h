@@ -1,16 +1,21 @@
 #ifndef MANGOS_PARTYBOT_FOLLOW_PARTY_LEADER_TRIGGER_H
 #define MANGOS_PARTYBOT_FOLLOW_PARTY_LEADER_TRIGGER_H
 #include "Trigger.h"
+#include "BotBehaviorState.h"
 namespace PartyBotEngine
 {
 class FollowPartyLeaderTrigger final : public Trigger
 {
 public:
     std::string const& GetName() const override { return m_name; }
-    std::uint32_t GetCheckIntervalMs() const override { return 2000; }
+    std::uint32_t GetCheckIntervalMs() const override { return 0; }
     bool IsActive(DecisionContext const& context) const override
     {
-        return context.bot.online && context.bot.alive &&
+        bool const stateAllowsFollow =
+            context.botBehaviorState == BotBehaviorState::Idle ||
+            context.botBehaviorState == BotBehaviorState::FollowingPartyMember ||
+            context.botBehaviorState == BotBehaviorState::FollowingUnavailableTarget;
+        return stateAllowsFollow && context.bot.online && context.bot.alive &&
             !context.bot.inCombat && !context.bot.victimGuid &&
             !context.bot.currentSpellId;
     }

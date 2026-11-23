@@ -7685,10 +7685,10 @@ bool RunEngineCoreItemUtilityAuditSmokeTest()
         ++eligibleItems;
         eligibleOnUseSlots += safeOnUseSlots;
 
-        if (loggedCandidates < 16)
+        if (loggedCandidates < 64)
         {
             for (uint32 slotIndex = 0;
-                 slotIndex < MAX_ITEM_PROTO_SPELLS && loggedCandidates < 16;
+                 slotIndex < MAX_ITEM_PROTO_SPELLS && loggedCandidates < 64;
                  ++slotIndex)
             {
                 _ItemSpell const& itemSpell = item.Spells[slotIndex];
@@ -7709,12 +7709,14 @@ bool RunEngineCoreItemUtilityAuditSmokeTest()
                     }
 
                 sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                    "[PartyBotSimulator] F47 bounded item-utility candidate: item=%u name=%s class=%u subclass=%u stackable=%u slot=%u spell=%u spellName=%s aura=%u charges=%d itemCooldown=%d categoryCooldown=%d procFlags=%u procChance=%u procCharges=%u.",
+                    "[PartyBotSimulator] F47 bounded item-utility candidate: item=%u name=%s class=%u subclass=%u stackable=%u slot=%u spell=%u spellName=%s family=%u aura=%u charges=%d itemCategory=%u spellCategory=%u itemCooldown=%d categoryCooldown=%d spellRecovery=%u gcdMs=%u procFlags=%u procChance=%u procCharges=%u.",
                     item.ItemId, item.Name1 ? item.Name1 : "",
                     item.Class, item.SubClass, item.Stackable, slotIndex,
-                    spell->Id, spell->SpellName[0].c_str(), auraType,
-                    itemSpell.SpellCharges, itemSpell.SpellCooldown,
-                    itemSpell.SpellCategoryCooldown, spell->procFlags,
+                    spell->Id, spell->SpellName[0].c_str(), spell->SpellFamilyName,
+                    auraType, itemSpell.SpellCharges, itemSpell.SpellCategory,
+                    spell->Category, itemSpell.SpellCooldown,
+                    itemSpell.SpellCategoryCooldown, spell->RecoveryTime,
+                    spell->StartRecoveryTime, spell->procFlags,
                     spell->procChance, spell->procCharges);
                 ++loggedCandidates;
             }
@@ -7732,6 +7734,235 @@ bool RunEngineCoreItemUtilityAuditSmokeTest()
             "[PartyBotSimulator] PASS: F47 audited loaded Vanilla item prototypes and every ON_USE spell slot; only items whose complete ON_USE fan-out consists of positive bounded self-aura spells outside Core's item-proc exception families were listed as candidates.");
     return auditRan;
 }
+
+bool RunEngineCoreItemUtilityUseSmokeTest(Map& map)
+{
+    static uint32 const ItemId = 2457; // Elixir of Minor Agility
+    static uint32 const SpellId = 2374; // Lesser Agility
+
+    ItemPrototype const* prototype = sObjectMgr.GetItemPrototype(ItemId);
+    SpellEntry const* spell = sSpellMgr.GetSpellEntry(SpellId);
+    uint8 spellSlot = 0xff;
+    uint32 useSlots = 0;
+    bool everyUseSlotSafe = true;
+    if (prototype)
+    {
+        for (uint8 slot = 0; slot < MAX_ITEM_PROTO_SPELLS; ++slot)
+        {
+            _ItemSpell const& itemSpell = prototype->Spells[slot];
+            if (!itemSpell.SpellId ||
+                itemSpell.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+                continue;
+            ++useSlots;
+            if (itemSpell.SpellId == SpellId && spellSlot == 0xff)
+                spellSlot = slot;
+            SpellEntry const* slotSpell = sSpellMgr.GetSpellEntry(itemSpell.SpellId);
+            if (!slotSpell || !IsF47BoundedItemUtilitySpell(*slotSpell))
+                everyUseSlotSafe = false;
+        }
+    }
+
+    bool const prototypeValid = prototype && spell &&
+        prototype->ItemId == ItemId &&
+        prototype->Class == ITEM_CLASS_CONSUMABLE &&
+        prototype->Stackable >= 2 &&
+        useSlots == 1 && spellSlot < MAX_ITEM_PROTO_SPELLS &&
+        prototype->Spells[spellSlot].SpellId == SpellId &&
+        prototype->Spells[spellSlot].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE &&
+        prototype->Spells[spellSlot].SpellCharges < 0 &&
+        prototype->Spells[spellSlot].SpellCategoryCooldown > 0 &&
+        everyUseSlotSafe &&
+        spell->IsPositiveSpell() &&
+        spell->Effect[0] == SPELL_EFFECT_APPLY_AURA &&
+        spell->EffectApplyAuraName[0] == SPELL_AURA_MOD_STAT &&
+        spell->EffectImplicitTargetA[0] == TARGET_UNIT_CASTER &&
+        spell->EffectImplicitTargetB[0] == 0 &&
+        IsF47BoundedItemUtilitySpell(*spell);
+    if (!prototypeValid)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSimulator] F48 item-backed utility prototype invalid (prototype=%u spell=%u slot=%u useSlots=%u safe=%u).",
+            prototype ? 1u : 0u, spell ? 1u : 0u, spellSlot, useSlots,
+            everyUseSlotSafe ? 1u : 0u);
+        return false;
+    }
+
+    class SimulatorItemUtilityCapture final : public ItemUseTerminalListener
+    {
+    public:
+        void OnItemUseTerminal(ItemUseTerminalEvent const& event) override
+        {
+            events.push_back(event);
+        }
+        std::vector<ItemUseTerminalEvent> events;
+    };
+
+    WorldSession session(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* player = nullptr;
+    if (!CreateSimulatorPlayer(map, 1, session, player, 0.0f, 9.0f, 4.0f))
+    {
+        if (session.GetPlayer())
+            session.LogoutPlayer(false);
+        else if (player)
+            delete player;
+        return false;
+    }
+
+    PartyBotAI itemAI(player, map.GetId(), map.GetInstanceId(),
+                      player->GetPositionX(), player->GetPositionY(),
+                      player->GetPositionZ(), player->GetOrientation());
+    itemAI.SetPlayer(player);
+    player->SetAI(&itemAI);
+    std::shared_ptr<SimulatorItemUtilityCapture> capture(
+        new SimulatorItemUtilityCapture());
+    bool const listenerAdded =
+        itemAI.m_partyBotEngine.AddItemUseTerminalListener(capture);
+
+    Item* item = player->StoreNewItemInInventorySlot(ItemId, 2);
+    ObjectGuid const itemGuid = item ? item->GetObjectGuid() : ObjectGuid();
+    uint32 const initialCount = player->GetItemCount(ItemId);
+    float const agilityBefore = player->GetStat(STAT_AGILITY);
+    bool const itemUsable = item && player->CanUseItem(item) == EQUIP_ERR_OK &&
+        item->GetCount() == 2 &&
+        item->GetSpellCharges(spellSlot) < 0;
+    bool const initiallyReady = player->IsSpellReady(spell, prototype);
+    SpellCastTargets targets;
+    targets.PrepareForSpellSystem(player);
+
+    ItemUseId const firstUseId = itemUsable
+        ? player->CastItemUseSpell(item, targets) : 0;
+
+    for (uint32 tick = 0; tick < 8 &&
+         (itemAI.m_partyBotEngine.GetPendingItemUseCount() != 0 ||
+          player->GetCurrentSpell(CURRENT_GENERIC_SPELL)); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    uint32 const countAfterFirst = player->GetItemCount(ItemId);
+    float const agilityAfterFirst = player->GetStat(STAT_AGILITY);
+    bool const auraApplied = player->HasAura(SpellId);
+    Item* const remainingItem = itemGuid ? player->GetItemByGuid(itemGuid) : nullptr;
+
+    ItemUseMutationEvent firstMutation;
+    std::vector<ItemUseMutationEvent> firstMutations;
+    while (itemAI.m_partyBotEngine.PopItemUseMutationEvent(firstMutation))
+        firstMutations.push_back(firstMutation);
+
+    bool const firstTerminalValid = listenerAdded && firstUseId &&
+        capture->events.size() == 1 &&
+        capture->events[0].itemUseId == firstUseId &&
+        capture->events[0].actorGuid == player->GetObjectGuid().GetRawValue() &&
+        capture->events[0].itemGuid == itemGuid.GetRawValue() &&
+        capture->events[0].itemEntry == ItemId &&
+        capture->events[0].status == ItemUseAggregateStatus::AllSucceeded &&
+        capture->events[0].childCount == 1 &&
+        capture->events[0].completedChildCount == 1 &&
+        capture->events[0].succeededChildCount == 1 &&
+        capture->events[0].observedMutationCount == 1 &&
+        capture->events[0].children[0].slotIndex == spellSlot &&
+        capture->events[0].children[0].spellId == SpellId &&
+        !capture->events[0].children[0].triggered &&
+        capture->events[0].children[0].status == ItemUseChildStatus::Succeeded;
+    bool const firstMutationValid = capture->events.size() == 1 &&
+        firstMutations.size() == 1 &&
+        firstMutations[0].itemUseId == firstUseId &&
+        firstMutations[0].childId == capture->events[0].children[0].childId &&
+        firstMutations[0].itemGuid == itemGuid.GetRawValue() &&
+        firstMutations[0].itemEntry == ItemId &&
+        firstMutations[0].kind == ItemUseMutationKind::CountChanged &&
+        firstMutations[0].phase != ItemUseMutationPhase::Unknown &&
+        firstMutations[0].slotIndex == 0xff &&
+        firstMutations[0].beforeCount == 2 &&
+        firstMutations[0].afterCount == 1 &&
+        firstMutations[0].itemExistsAfter;
+
+    // Remove only the GCD before testing the second request. The item/spell
+    // cooldown remains owned by Core's cooldown map and must still reject it.
+    player->ResetGCD(spell);
+    bool const cooldownBlocked = !player->IsSpellReady(spell, prototype);
+    uint64 repeatUseId = 0;
+    if (cooldownBlocked && remainingItem == item &&
+        item->GetCount() == 1)
+        repeatUseId = player->CastItemUseSpell(item, targets);
+
+    for (uint32 tick = 0; tick < 4 &&
+         (itemAI.m_partyBotEngine.GetPendingItemUseCount() != 0 ||
+          player->GetCurrentSpell(CURRENT_GENERIC_SPELL)); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    bool const repeatTerminalValid = repeatUseId &&
+        capture->events.size() == 2 &&
+        capture->events[1].itemUseId == repeatUseId &&
+        capture->events[1].actorGuid == player->GetObjectGuid().GetRawValue() &&
+        capture->events[1].itemGuid == itemGuid.GetRawValue() &&
+        capture->events[1].itemEntry == ItemId &&
+        capture->events[1].status == ItemUseAggregateStatus::AllFailed &&
+        capture->events[1].childCount == 1 &&
+        capture->events[1].completedChildCount == 1 &&
+        capture->events[1].failedChildCount == 1 &&
+        capture->events[1].observedMutationCount == 0 &&
+        capture->events[1].children[0].spellId == SpellId &&
+        capture->events[1].children[0].status == ItemUseChildStatus::Failed;
+
+    ItemUseMutationEvent repeatMutation;
+    bool const unexpectedRepeatMutation =
+        itemAI.m_partyBotEngine.PopItemUseMutationEvent(repeatMutation);
+
+    uint32 const countAfterRepeat = player->GetItemCount(ItemId);
+    float const agilityAfterRepeat = player->GetStat(STAT_AGILITY);
+    Item* const itemAfterRepeat = itemGuid ? player->GetItemByGuid(itemGuid) : nullptr;
+    bool const firstUseSucceeded = firstTerminalValid && firstMutationValid &&
+        initiallyReady && itemUsable &&
+        initialCount == 2 && countAfterFirst == 1 &&
+        remainingItem && remainingItem == item &&
+        auraApplied && agilityAfterFirst > agilityBefore &&
+        player->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+    bool const cooldownRejectedRepeat = cooldownBlocked && repeatTerminalValid &&
+        !unexpectedRepeatMutation && countAfterRepeat == 1 &&
+        itemAfterRepeat == item && itemAfterRepeat->GetCount() == 1 &&
+        player->HasAura(SpellId) &&
+        agilityAfterRepeat == agilityAfterFirst;
+    bool const pendingCleared =
+        itemAI.m_partyBotEngine.GetPendingItemUseCount() == 0;
+
+    sLog.Out(LOG_BASIC,
+        firstUseSucceeded && cooldownRejectedRepeat && pendingCleared
+            ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F48 real item utility: prototype=%u listener=%u canUse=%u initiallyReady=%u useSlots=%u slot=%u spell=%u positive=%u auraApplied=%u agility=%.1f>%.1f count=%u>%u mutation=%u mutationKind=%u mutationPhase=%u root=%u child=%u cooldownBlocked=%u repeatTerminal=%u repeatMutation=%u repeatCount=%u pendingCleared=%u.",
+        prototypeValid ? 1u : 0u, listenerAdded ? 1u : 0u,
+        itemUsable ? 1u : 0u, initiallyReady ? 1u : 0u, useSlots,
+        spellSlot, SpellId, spell->IsPositiveSpell() ? 1u : 0u,
+        auraApplied ? 1u : 0u, agilityBefore, agilityAfterFirst,
+        initialCount, countAfterFirst, static_cast<uint32>(firstMutations.size()),
+        firstMutations.empty() ? 0u : static_cast<uint32>(firstMutations[0].kind),
+        firstMutations.empty() ? 0u : static_cast<uint32>(firstMutations[0].phase),
+        firstTerminalValid ? 1u : 0u, firstUseId ? 1u : 0u,
+        cooldownBlocked ? 1u : 0u, repeatTerminalValid ? 1u : 0u,
+        unexpectedRepeatMutation ? 1u : 0u, countAfterRepeat,
+        pendingCleared ? 1u : 0u);
+
+    bool const passed = firstUseSucceeded && cooldownRejectedRepeat &&
+        pendingCleared && player->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+    if (passed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F48 used the real Vanilla Elixir of Minor Agility ON_USE item through Player::CastItemUseSpell; Core applied the self-targeted Lesser Agility aura/stat change, aggregated its successful child and CountChanged stack mutation, then rejected an immediate repeat on the item's cooldown without consuming another item or applying a second effect.");
+
+    if (player->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        player->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+    player->SetAI(nullptr);
+    session.LogoutPlayer(false);
+    bool const playerCleaned = session.GetPlayer() == nullptr;
+    if (!playerCleaned)
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSimulator] F48 item utility Player cleanup failed.");
+    return passed && playerCleaned;
+}
+
 } // anonymous namespace
 
 
@@ -14354,6 +14585,8 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
         RunEngineCoreUtilitySpellAuditSmokeTest(*map);
     bool const itemUtilityAuditPassed =
         RunEngineCoreItemUtilityAuditSmokeTest();
+    bool const itemUtilityUsePassed =
+        RunEngineCoreItemUtilityUseSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
     bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
     bool const playerFollowCastSafetyPassed = RunEngineCorePlayerFollowCastSafetySmokeTest(*map);
@@ -14377,6 +14610,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                               followPartyMemberPassed && itemUsePassed &&
                               countBasedItemMutationPassed && utilitySpellAuditPassed &&
                               itemUtilityAuditPassed &&
+                              itemUtilityUsePassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&

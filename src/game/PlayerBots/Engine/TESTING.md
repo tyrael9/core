@@ -472,4 +472,17 @@ Trusted Push [#45076438039](https://github.com/tyrael9/core/actions/runs/4507643
 
 The trusted Core simulator now enumerates the loaded Vanilla 5875 SpellEntry table and emits only positive, non-passive, self-targeted aura spells that satisfy the strict audit profile: safe stat/resistance/speed/water-breathing aura types only; target A is caster and target B is empty; both caster and target procs are suppressed; no SpellScript/ScriptMgr entry or spell-script-target row; no SpellThreatEntry or SpellProcEvent; no proc fields; no trigger-child spell; no periodic damage/healing aura; no area/chained targets; no reagents or totems. Each candidate includes Core spell ID/name, family, aura type, mana/power, cast time, range, GCD and recovery fields.
 
-This is a discovery/audit gate only, not a playable Engine action. Core's ordinary non-triggered positive spells may set helpful-ability proc flags, so F46 does not infer NoThreat from a positive aura by itself. The next gate is to choose one emitted spell and prove real Player::CastSpell / Spell::prepare / Core finish and action-ID terminal correlation, plus insufficient-resource, cooldown and range outcomes, before adding an Engine adapter.
+This is a discovery/audit gate only, not a playable Engine action. Trusted push [#45092309299](https://github.com/tyrael9/core/actions/runs/45092309299) scanned 22,424 SpellEntry rows and found 140 positive self-aura shapes, but `casterProcSuppressed=0`, `targetProcSuppressed=0` and `strictCandidates=0`. Core's ordinary non-triggered positive casts may set helpful-ability proc flags; F46 therefore records a legitimate zero-candidate outcome and does not infer NoThreat from positive aura metadata. The item-backed path is audited separately in F47.
+
+
+## F47 — bounded item-backed utility discovery audit (trusted-runtime validated)
+
+Core's `Spell::prepareDataForTriggerSystem` takes a different proc path when the spell carries `m_CastItem`: a positive item spell sets `m_canTrigger=false`. Core contains narrow family-specific exceptions, so the audit explicitly excludes Mage, Warlock, Hunter, Paladin and Priest rather than assuming every positive item spell is proc-free.
+
+The trusted simulator enumerates the loaded `ItemPrototypeMap`, inspects every ON_USE slot and accepts an item only when its complete ON_USE fan-out consists of positive, non-passive caster-only safe aura spells with no ScriptMgr/script-target rows, spell-threat/proc-event rows, proc fields, trigger children, periodic paths, reagents, totems, area or chained targets. Trusted push [#45094674738](https://github.com/tyrael9/core/actions/runs/45094674738) passed the full simulator through final Runtime PASS: 17,707 item prototypes, 3,609 items with ON_USE slots, 3,609 ON_USE slots inspected, 29 eligible item prototypes. Artifact [partybot-simulator-83b1541](https://github.com/tyrael9/core/actions/runs/45094674738/artifacts/14781869809).
+
+This is still candidate discovery, not a production item action. It deliberately preserves the ordinary spell-path zero-candidate result from F46 and does not relax the threat/proc gate.
+
+## F48 — real item-backed utility execution (fixture in progress)
+
+The next fixture uses the native Vanilla Elixir of Minor Agility (item 2457) and Lesser Agility spell (2374). It must call the real Core `Player::CastItemUseSpell` path with a Player-owned item, and prove the real aura/stat delta, one successful ItemUseTerminal child, the independent CountChanged stack mutation, the item's actual cooldown rejection on an immediate repeat, unchanged remaining item count and complete Player/session/AI cleanup. This remains test-only; it is not an Engine adapter or production registration.

@@ -374,6 +374,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F47 audited loaded Vanilla item prototy
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F48 used the real Vanilla Elixir of Minor Agility ON_USE item through Player::CastItemUseSpell; Core applied the self-targeted Lesser Agility aura/stat change, aggregated its successful child and CountChanged stack mutation, then rejected an immediate repeat on the item's cooldown without consuming another item or applying a second effect." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F48 real item-backed self-utility Core execution PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: real Core stackable item use reduced a two-potion stack to one with a CountChanged before-effects record, and using the cast item as its own reagent consumed three items once with a GUID-less ReagentConsumed before-effects record." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F45 real-Core stack-count/item-as-reagent mutation PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

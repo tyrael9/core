@@ -5190,11 +5190,17 @@ void TestProductionFollowTriggersRetargetStopAndRecover() {
     DecisionContext noLeaderBeforeTimeout(snapshot, snapshot.members[0], coordinator, 6000,
         nullptr, nullptr, nullptr, nullptr, nullptr,
         BotBehaviorState::FollowingUnavailableTarget, InvalidFollowTargetTimeoutMs - 1);
-    assert(!follow.IsActive(noLeaderBeforeTimeout) && !stop.IsActive(noLeaderBeforeTimeout));
+    assert(follow.IsActive(noLeaderBeforeTimeout) && !stop.IsActive(noLeaderBeforeTimeout));
+    candidates.clear();
+    follow.CollectCandidates(noLeaderBeforeTimeout, candidates);
+    assert(candidates.empty());
     DecisionContext noLeaderTimedOut(snapshot, snapshot.members[0], coordinator, 7000,
         nullptr, nullptr, nullptr, nullptr, nullptr,
         BotBehaviorState::FollowingUnavailableTarget, InvalidFollowTargetTimeoutMs);
-    assert(!follow.IsActive(noLeaderTimedOut) && stop.IsActive(noLeaderTimedOut));
+    assert(follow.IsActive(noLeaderTimedOut) && stop.IsActive(noLeaderTimedOut));
+    candidates.clear();
+    follow.CollectCandidates(noLeaderTimedOut, candidates);
+    assert(candidates.empty());
     candidates.clear(); stop.CollectCandidates(noLeaderTimedOut, candidates);
     assert(candidates.size() == 1 && candidates[0].actionName == "core_stop_following");
 }

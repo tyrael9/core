@@ -677,13 +677,79 @@ std::uint32_t PartyBotAI::GetResurrectionSpellId() const
     return m_resurrectionSpell ? m_resurrectionSpell->Id : 0;
 }
 
-bool PartyBotAI::CanCastGroupResurrection(
-    PartyBotEngine::DecisionContext const& /*context*/, Player* target,
-    std::uint32_t spellId) const
+bool PartyBotAI::CanResurrectGroupMember(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const
 {
-    return me && target && m_resurrectionSpell &&
-        m_resurrectionSpell->Id == spellId && !IsInDuel() &&
-        CanTryToCastSpell(target, m_resurrectionSpell);
+    if (!me || !me->IsInWorld() || !me->IsAlive() || !targetGuid ||
+        targetGuid == me->GetObjectGuid().GetRawValue() ||
+        !m_resurrectionSpell || m_resurrectionSpell->Id != spellId ||
+        context.bot.guid != me->GetObjectGuid().GetRawValue() ||
+        context.bot.resurrectionSpellId != spellId ||
+        context.snapshot.mapId != me->GetMapId() ||
+        context.snapshot.instanceId != me->GetInstanceId() ||
+        !me->GetMap() || context.snapshot.mapId != me->GetMap()->GetId() ||
+        context.snapshot.instanceId != me->GetMap()->GetInstanceId() ||
+        IsInDuel() || me->InBattleGround() || me->IsInCombat() ||
+        me->GetVictim() || me->IsNonMeleeSpellCasted())
+        return false;
+
+    Group* const group = me->GetGroup();
+    Unit* const targetUnit = me->GetMap()->GetUnit(ObjectGuid(targetGuid));
+    Player* const target = targetUnit ? targetUnit->ToPlayer() : nullptr;
+    if (!group || group->isBGGroup() || group->GetId() != context.snapshot.groupId ||
+        !group->IsMember(me->GetObjectGuid()) ||
+        !target || targetUnit != target || !target->IsInWorld() ||
+        target->IsAlive() || target->GetDeathState() != CORPSE ||
+        target->IsRessurectRequested() || target->GetGroup() != group ||
+        !group->IsMember(target->GetObjectGuid()) ||
+        target->GetMap() != me->GetMap() ||
+        target->GetMapId() != context.snapshot.mapId ||
+        target->GetInstanceId() != context.snapshot.instanceId ||
+        !me->IsWithinLOSInMap(target) ||
+        !m_resurrectionSpell->IsTargetInRange(me, target) ||
+        !CanTryToCastSpell(target, m_resurrectionSpell) ||
+        context.coordinator.HasReservation(
+            PartyBotEngine::ReservationType::Resurrection, targetGuid, 0,
+            context.nowMs))
+        return false;
+
+    return true;
+}
+
+bool PartyBotAI::StartGroupResurrection(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid, std::uint32_t spellId)
+{
+    if (!CanResurrectGroupMember(context, targetGuid, spellId))
+        return false;
+
+    Player* const target = me->GetMap()->GetUnit(ObjectGuid(targetGuid))->ToPlayer();
+    Reservation reservation;
+    reservation.type = PartyBotEngine::ReservationType::Resurrection;
+    reservation.targetGuid = targetGuid;
+    reservation.ownerGuid = me->GetObjectGuid().GetRawValue();
+    reservation.spellId = spellId;
+    reservation.expiresAtMs = context.nowMs + 60000u;
+    if (!context.coordinator.TryReserve(reservation, context.nowMs))
+        return false;
+
+    // Match the established Bot spell helper's dismount/facing/target behavior,
+    // while retaining Engine action correlation through Core Spell prepare/finish.
+    me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
+    me->SetFacingToObject(target);
+    me->SetTargetGuid(target->GetObjectGuid());
+    SpellCastResult const castResult = me->CastSpell(target, m_resurrectionSpell, false);
+    if (castResult != SPELL_CAST_OK)
+    {
+        context.coordinator.ReleaseReservation(
+            PartyBotEngine::ReservationType::Resurrection, targetGuid,
+            me->GetObjectGuid().GetRawValue());
+        return false;
+    }
+
+    context.coordinator.InvalidateSnapshot();
+    return true;
 }
 
 PartyBotEngine::CoreActionResolution PartyBotAI::ResolveUnitContext(

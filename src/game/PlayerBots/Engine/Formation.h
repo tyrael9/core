@@ -17,10 +17,11 @@ enum : std::uint8_t
     MaxPartyFormationSlots = 4
 };
 
+// Keep this a C++14 aggregate so offset tables stay allocation-free.
 struct FollowFormationOffset
 {
-    float distance = 2.5f;
-    float angle = 3.14159265358979323846f;
+    float distance;
+    float angle;
 };
 
 inline FollowFormationOffset GetFollowFormationOffset(std::uint8_t slot)

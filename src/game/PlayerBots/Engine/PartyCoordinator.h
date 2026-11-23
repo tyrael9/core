@@ -75,6 +75,7 @@ public:
     bool HasReservation(ReservationType type, Guid targetGuid, Guid exceptOwner, std::uint32_t nowMs);
     std::uint32_t GetReservedAmount(ReservationType type, Guid targetGuid, Guid exceptOwner, std::uint32_t nowMs);
     void ReleaseOwner(Guid ownerGuid);
+    bool ReleaseReservation(ReservationType type, Guid targetGuid, Guid ownerGuid);
 
     // Stable, value-only formation slots shared by every Bot in this party shard.
     void ReconcileFormationAssignments(PartySnapshot const& snapshot)

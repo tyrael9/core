@@ -10068,7 +10068,6 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         Player* const ghostTarget = players[0];
         Player* const corpseTarget = players[2];
         Guid const casterGuid = caster->GetObjectGuid().GetRawValue();
-        Guid const ghostTargetGuid = ghostTarget->GetObjectGuid().GetRawValue();
         Guid const corpseTargetGuid = corpseTarget->GetObjectGuid().GetRawValue();
         uint32 const legacyEntriesBefore = resurrectionAI.m_simulatorLegacyPolicyEntryCount;
         uint32 const legacyDispatchesBefore = resurrectionAI.m_simulatorLegacyPolicyDispatchCount;
@@ -10120,8 +10119,8 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             selectedIndex = report.candidates.size();
             for (std::size_t index : report.selectedIndices)
                 if (index < report.candidates.size() &&
-                    report.candidates[index].actionName == "core_resurrect_group_member" &&
-                    report.candidates[index].targetGuid ==
+                    report.candidates[index].candidate.actionName == "core_resurrect_group_member" &&
+                    report.candidates[index].candidate.targetGuid ==
                         expectedTarget->GetObjectGuid().GetRawValue())
                 {
                     selectedIndex = index;

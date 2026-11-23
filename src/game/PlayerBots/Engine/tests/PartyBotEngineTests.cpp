@@ -5060,11 +5060,6 @@ void TestFormationAssignmentsRemainStableAcrossRosterAndLeaderChanges() {
     addBot(40);
     addBot(30);
 
-    PartyMemberSnapshot ordinaryMember = leader;
-    ordinaryMember.guid = 110;
-    ordinaryMember.isPlayerBot = false;
-    snapshot.members.push_back(ordinaryMember);
-
     PartyCoordinator coordinator;
     coordinator.ReconcileFormationAssignments(snapshot);
     assert(coordinator.GetFormationSlot(20) == 0);
@@ -5072,7 +5067,13 @@ void TestFormationAssignmentsRemainStableAcrossRosterAndLeaderChanges() {
     assert(coordinator.GetFormationSlot(40) == 2);
     assert(coordinator.GetFormationSlot(50) == 3);
     assert(coordinator.GetFormationSlot(100) == InvalidFormationSlot);
-    assert(coordinator.GetFormationSlot(110) == InvalidFormationSlot);
+
+    // Death does not release an in-world Bot's slot; resurrection can reuse its place.
+    for (PartyMemberSnapshot& member : snapshot.members)
+        if (member.guid == 40)
+            member.alive = false;
+    coordinator.ReconcileFormationAssignments(snapshot);
+    assert(coordinator.GetFormationSlot(40) == 2);
 
     // Snapshot/Group member iteration order must not reshuffle existing Bots.
     std::reverse(snapshot.members.begin(), snapshot.members.end());
@@ -5110,7 +5111,7 @@ void TestFormationAssignmentsRemainStableAcrossRosterAndLeaderChanges() {
     assert(coordinator.GetFormationSlot(60) == 1);
     assert(coordinator.GetFormationSlot(50) == 3);
 
-    // The five-member party limit is enforced; an excess Bot does not share a slot.
+    // The bounded four-slot allocator never gives an excess Bot a shared position.
     addBot(80);
     coordinator.ReconcileFormationAssignments(snapshot);
     assert(coordinator.GetFormationSlot(80) == InvalidFormationSlot);

@@ -725,7 +725,7 @@ bool PartyBotAI::StartGroupResurrection(
         return false;
 
     Player* const target = me->GetMap()->GetUnit(ObjectGuid(targetGuid))->ToPlayer();
-    Reservation reservation;
+    PartyBotEngine::Reservation reservation;
     reservation.type = PartyBotEngine::ReservationType::Resurrection;
     reservation.targetGuid = targetGuid;
     reservation.ownerGuid = me->GetObjectGuid().GetRawValue();

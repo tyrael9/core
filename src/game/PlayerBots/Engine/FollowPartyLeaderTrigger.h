@@ -17,6 +17,8 @@ public:
     void CollectCandidates(DecisionContext const& context,
                            std::vector<ActionCandidate>& candidates) const override
     {
+        if (!IsActive(context))
+            return;
         Guid const leaderGuid = context.snapshot.groupLeaderGuid;
         if (!leaderGuid || leaderGuid == context.bot.guid ||
             leaderGuid == context.bot.followTargetGuid)

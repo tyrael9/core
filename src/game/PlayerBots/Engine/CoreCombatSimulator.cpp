@@ -9361,25 +9361,83 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             bot->HasUnitState(UNIT_STATE_FOLLOW);
     }
 
+    // F52d: exercise real Group departure/rejoin against the shared production
+    // coordinator. Removing one Bot must release only its slot; the remaining
+    // three assignments survive. Re-adding that same Player must reclaim the
+    // lowest vacant slot on the next NewEngine snapshot.
+    bool departureReleasedSlot = false;
+    bool incumbentsKeptSlots = false;
+    bool rejoinReclaimedSlot = false;
+    Player* const departingBot = players[1];
+    ObjectGuid const departingGuid = departingBot->GetObjectGuid();
+    std::uint8_t const departingSlot = slotByBot[0];
+    bool const removedFromGroup = departingSlot == 0 &&
+        group->RemoveMember(departingGuid, 0) == 4 &&
+        departingBot->GetGroup() == nullptr;
+    if (removedFromGroup)
+    {
+        sharedCoordinator->InvalidateSnapshot();
+        PartyBotAI& remainingAI = *botAIs[1];
+        remainingAI.m_updateTimer.Reset(1000);
+        remainingAI.UpdateAI(1000);
+        departureReleasedSlot =
+            sharedCoordinator->GetFormationSlot(departingGuid.GetRawValue()) ==
+                InvalidFormationSlot;
+        incumbentsKeptSlots =
+            sharedCoordinator->GetFormationSlot(players[2]->GetObjectGuid().GetRawValue()) == slotByBot[1] &&
+            sharedCoordinator->GetFormationSlot(players[3]->GetObjectGuid().GetRawValue()) == slotByBot[2] &&
+            sharedCoordinator->GetFormationSlot(players[4]->GetObjectGuid().GetRawValue()) == slotByBot[3] &&
+            remainingAI.m_simulatorLegacyPolicyEntryCount == 0 &&
+            remainingAI.m_simulatorLegacyPolicyDispatchCount == 0;
+
+        bool const addedBack = group->AddMember(departingGuid, departingBot->GetName()) &&
+            departingBot->GetGroup() == group.get() && group->GetMembersCount() == 5;
+        if (addedBack)
+        {
+            PartyBotAI& returningAI = *botAIs[0];
+            returningAI.m_updateTimer.Reset(1000);
+            returningAI.UpdateAI(1000);
+            MovementGenerator const* current = departingBot->GetMotionMaster()->GetCurrent();
+            FollowMovementGenerator<Player> const* follow =
+                current && current->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                    ? static_cast<FollowMovementGenerator<Player> const*>(current)
+                    : nullptr;
+            rejoinReclaimedSlot =
+                returningAI.m_partyCoordinator &&
+                returningAI.m_partyCoordinator.get() == sharedCoordinator.get() &&
+                sharedCoordinator->GetFormationSlot(departingGuid.GetRawValue()) == departingSlot &&
+                sharedCoordinator->GetFormationSlot(players[2]->GetObjectGuid().GetRawValue()) == slotByBot[1] &&
+                sharedCoordinator->GetFormationSlot(players[3]->GetObjectGuid().GetRawValue()) == slotByBot[2] &&
+                sharedCoordinator->GetFormationSlot(players[4]->GetObjectGuid().GetRawValue()) == slotByBot[3] &&
+                follow && follow->GetTarget() == leader &&
+                returningAI.m_simulatorLegacyPolicyEntryCount == 0 &&
+                returningAI.m_simulatorLegacyPolicyDispatchCount == 0;
+        }
+    }
+
     bool const passed = groupCreated && membersAdded &&
         sharedCoordinatorForAll && allSnapshotsAreFiveMembers &&
         allBotsStartedFollow && allFourSlotsOccupied && allSlotsUnique &&
-        allOffsetsMatch && allNewEngineOnly && reverseTickNoOps;
+        allOffsetsMatch && allNewEngineOnly && reverseTickNoOps &&
+        removedFromGroup && departureReleasedSlot && incumbentsKeptSlots &&
+        rejoinReclaimedSlot;
 
     bool const cleaned = cleanup();
     sLog.Out(LOG_BASIC, passed && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F52c five-Bot formation: group=%u members=%u sharedCoordinator=%u snapshots=%u follows=%u occupiedSlots=%u uniqueSlots=%u offsets=%u newEngineOnly=%u reverseTickNoOps=%u cleanup=%u slots=%u/%u/%u/%u.",
+        "[PartyBotSimulator] F52c/F52d five-Bot formation: group=%u members=%u sharedCoordinator=%u snapshots=%u follows=%u occupiedSlots=%u uniqueSlots=%u offsets=%u newEngineOnly=%u reverseTickNoOps=%u removed=%u departureReleased=%u incumbentsStable=%u rejoinReclaimed=%u cleanup=%u slots=%u/%u/%u/%u.",
         groupCreated ? 1u : 0u, membersAdded ? 1u : 0u,
         sharedCoordinatorForAll ? 1u : 0u, allSnapshotsAreFiveMembers ? 1u : 0u,
         allBotsStartedFollow ? 1u : 0u, allFourSlotsOccupied ? 1u : 0u,
         allSlotsUnique ? 1u : 0u, allOffsetsMatch ? 1u : 0u,
         allNewEngineOnly ? 1u : 0u, reverseTickNoOps ? 1u : 0u,
+        removedFromGroup ? 1u : 0u, departureReleasedSlot ? 1u : 0u,
+        incumbentsKeptSlots ? 1u : 0u, rejoinReclaimedSlot ? 1u : 0u,
         cleaned ? 1u : 0u,
         static_cast<unsigned>(slotByBot[0]), static_cast<unsigned>(slotByBot[1]),
         static_cast<unsigned>(slotByBot[2]), static_cast<unsigned>(slotByBot[3]));
     if (passed && cleaned)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: F52c created one real human Group Leader and four real PartyBotAI Players; all Bots shared one PartyCoordinator, received unique stable Formation slots 0-3, followed the real leader with matching native Core Follow distances/angles, and reverse-order NewEngine ticks preserved the same generators and slots with zero Legacy policy entry/dispatch.");
+            "[PartyBotSimulator] PASS: F52d removed and re-added a real PartyBot Player through Group::RemoveMember/AddMember; the shared production snapshot released only its slot, preserved the other three assignments, and the returning Bot reclaimed the vacant slot and resumed native Follow through NewEngine with zero Legacy policy entry/dispatch.");
     return passed && cleaned;
 }
 

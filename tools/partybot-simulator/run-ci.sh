@@ -461,8 +461,8 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F52b retargeted an existing Bot followe
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: F52c created one real human Group Leader and four real PartyBotAI Players; all Bots shared one PartyCoordinator, received unique stable Formation slots 0-3, followed the real leader with matching native Core Follow distances/angles, and reverse-order NewEngine ticks preserved the same generators and slots with zero Legacy policy entry/dispatch." "$LOG_FILE"; then
-    echo "[PartyBotSimulator] The F52c production five-Bot Formation Core PASS marker was not found." | tee -a "$LOG_FILE"
+if ! grep -Fq "[PartyBotSimulator] PASS: F52d removed and re-added a real PartyBot Player through Group::RemoveMember/AddMember; the shared production snapshot released only its slot, preserved the other three assignments, and the returning Bot reclaimed the vacant slot and resumed native Follow through NewEngine with zero Legacy policy entry/dispatch." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52d production Group departure/rejoin Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 

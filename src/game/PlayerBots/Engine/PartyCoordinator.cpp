@@ -106,6 +106,20 @@ std::uint32_t PartyCoordinator::GetReservedAmount(ReservationType type, Guid tar
     return total;
 }
 
+bool PartyCoordinator::ReleaseReservation(ReservationType type, Guid targetGuid,
+                                                Guid ownerGuid) {
+    if (!targetGuid || !ownerGuid)
+        return false;
+    std::size_t const originalSize = m_reservations.size();
+    m_reservations.erase(std::remove_if(m_reservations.begin(), m_reservations.end(),
+        [type, targetGuid, ownerGuid](Reservation const& reservation)
+        {
+            return reservation.type == type && reservation.targetGuid == targetGuid &&
+                reservation.ownerGuid == ownerGuid;
+        }), m_reservations.end());
+    return m_reservations.size() != originalSize;
+}
+
 void PartyCoordinator::ReleaseOwner(Guid ownerGuid) {
     m_reservations.erase(std::remove_if(m_reservations.begin(), m_reservations.end(),
         [ownerGuid](Reservation const& reservation) { return reservation.ownerGuid == ownerGuid; }),

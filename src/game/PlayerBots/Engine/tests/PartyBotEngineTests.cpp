@@ -5014,7 +5014,7 @@ void TestClearPoliciesRemovesStrategiesActionsAndPendingWork() {
     PartyCoordinator coordinator;
     DecisionContext context(snapshot, snapshot.members[0], coordinator, 1000);
 
-    PartyBotEngine engine;
+    PartyBotEngine::PartyBotEngine engine;
     assert(engine.RegisterAction(std::make_shared<TestAction>("clear_policy_test_action")));
     std::shared_ptr<Strategy> strategy(new Strategy("clear_policy_test"));
     strategy->AddTrigger(std::make_shared<SingleCandidateTestTrigger>());

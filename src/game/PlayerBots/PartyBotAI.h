@@ -92,6 +92,10 @@ public:
     PartyBotEngine::CoreActionResolution ResolveUnitContext(
         PartyBotEngine::DecisionContext const& context,
         PartyBotEngine::Guid targetGuid) const final;
+    std::uint32_t GetResurrectionSpellId() const final;
+    bool CanCastGroupResurrection(
+        PartyBotEngine::DecisionContext const& context, Player* target,
+        std::uint32_t spellId) const final;
     Player* GetPartyLeader() const;
     bool IsPartyInCombat() const;
     bool AttackStart(Unit* pVictim);

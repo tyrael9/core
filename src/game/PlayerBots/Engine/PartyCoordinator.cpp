@@ -207,6 +207,20 @@ EncounterTransition PartyCoordinator::ObserveEncounter(PartySnapshot const& snap
     if (!snapshot.groupId || !snapshot.epoch)
         return transition;
 
+    // A wipe is a party-wide state, not the death of one Bot. Require at least
+    // one online roster member and no online living members; offline members
+    // do not keep an in-world group alive, while an empty snapshot is unknown.
+    std::uint32_t onlineMembers = 0;
+    std::uint32_t livingMembers = 0;
+    for (PartyMemberSnapshot const& member : snapshot.members)
+    {
+        if (!member.guid || !member.online)
+            continue;
+        ++onlineMembers;
+        if (member.alive)
+            ++livingMembers;
+    }
+
     // An active coordinator is owned by one (group, map, instance) shard.
     // A stale snapshot from another shard must never refresh this encounter's
     // quiet-settle clock or close it from a different Map update thread.
@@ -215,6 +229,16 @@ EncounterTransition PartyCoordinator::ObserveEncounter(PartySnapshot const& snap
          snapshot.mapId != m_encounterMapId ||
          snapshot.instanceId != m_encounterInstanceId))
         return transition;
+
+    if (m_encounterActive && onlineMembers && !livingMembers)
+    {
+        // Wipe is an immediate encounter terminal. Repeated dead snapshots are
+        // naturally idempotent because CloseEncounter clears the active ID.
+        EncounterTransition wiped = CloseEncounter(nowMs, "party_wipe");
+        m_reservations.clear();
+        m_threatReservations.clear();
+        return wiped;
+    }
 
     bool combatObserved = false;
     for (PartyMemberSnapshot const& member : snapshot.members)

@@ -10066,6 +10066,15 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     uint32 f52gBActionResult =
         static_cast<uint32>(ActionResult::NotAttempted);
     std::string f52gBActionReason = "not_executed";
+    bool f52gCPassed = false;
+    bool f52gCListenerAdded = false;
+    bool f52gCActionSelected = false;
+    bool f52gCCastStarted = false;
+    bool f52gCInterruptedTerminalMatched = false;
+    bool f52gCReservationReleased = false;
+    bool f52gCNoOfferCreated = false;
+    bool f52gCUnrelatedReservationPreserved = false;
+    ActionId f52gCActionId = 0;
     if (f52gSelfResurrectionPassed && botAIs.size() == 4 && players.size() == 5)
     {
         PartyBotAI& resurrectionAI = *botAIs[0];
@@ -10505,15 +10514,6 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             resurrectionAI.m_simulatorEngineDecisionCycleCount == cyclesBefore &&
             wipeCoordinator && !wipeCoordinator->HasActiveEncounter();
     }
-    bool f52gCPassed = false;
-    bool f52gCListenerAdded = false;
-    bool f52gCActionSelected = false;
-    bool f52gCCastStarted = false;
-    bool f52gCInterruptedTerminalMatched = false;
-    bool f52gCReservationReleased = false;
-    bool f52gCNoOfferCreated = false;
-    bool f52gCUnrelatedReservationPreserved = false;
-    ActionId f52gCActionId = 0;
     bool const f52gBPassed =
         f52gBSpellAvailable && f52gBTerminalListenerAdded &&
         f52gBGhostRejected && f52gBForeignGroupRejected &&

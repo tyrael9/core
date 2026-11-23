@@ -10044,13 +10044,345 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F52g Core created a real resurrectable corpse and released ghost; NewEngine selected its self-resurrection action, Core Player::ResurrectPlayer restored the Bot and converted the corpse to bones, then NewEngine restored the original formation Follow without Legacy policy entry/dispatch.");
 
+    // F52g-B: run the production group-resurrection Strategy/CoreAction path
+    // against a real five-Player Group. Vanilla resurrection is a two-step
+    // lifecycle: Spell::finish creates an offer; the recipient accepts later.
+    bool f52gBSpellAvailable = false;
+    bool f52gBTerminalListenerAdded = false;
+    bool f52gBGhostRejected = false;
+    bool f52gBForeignGroupRejected = false;
+    bool f52gBOutOfRangeRejected = false;
+    bool f52gBActionSelected = false;
+    bool f52gBCastStarted = false;
+    bool f52gBRequestPending = false;
+    bool f52gBTerminalMatched = false;
+    bool f52gBReservationReleased = false;
+    bool f52gBTargetAccepted = false;
+    bool f52gBNewEngineOnly = false;
+    uint32 f52gBSpellId = 0;
+    ActionId f52gBActionId = 0;
+    if (f52gSelfResurrectionPassed && botAIs.size() == 4 && players.size() == 5)
+    {
+        PartyBotAI& resurrectionAI = *botAIs[0];
+        Player* const caster = players[1];
+        Player* const ghostTarget = players[0];
+        Player* const corpseTarget = players[2];
+        Guid const casterGuid = caster->GetObjectGuid().GetRawValue();
+        Guid const ghostTargetGuid = ghostTarget->GetObjectGuid().GetRawValue();
+        Guid const corpseTargetGuid = corpseTarget->GetObjectGuid().GetRawValue();
+        uint32 const legacyEntriesBefore = resurrectionAI.m_simulatorLegacyPolicyEntryCount;
+        uint32 const legacyDispatchesBefore = resurrectionAI.m_simulatorLegacyPolicyDispatchCount;
+        uint32 const ticksBefore = resurrectionAI.m_simulatorNewEngineTickCount;
+        uint32 const cyclesBefore = resurrectionAI.m_simulatorEngineDecisionCycleCount;
+
+        // Simulator Players start with only their minimal default spell set.
+        // Learn the real Vanilla Priest Resurrection chain through Core, then
+        // let the production CombatBotBaseAI spell scanner choose its best rank.
+        caster->LearnSpellHighRank(2006); // Priest Resurrection, Rank 1
+        resurrectionAI.PopulateSpellData();
+        SpellEntry const* const resurrectionSpell = resurrectionAI.m_resurrectionSpell;
+        if (resurrectionSpell)
+        {
+            for (uint32 effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
+                if (resurrectionSpell->Effect[effect] == SPELL_EFFECT_RESURRECT ||
+                    resurrectionSpell->Effect[effect] == SPELL_EFFECT_RESURRECT_NEW)
+                    f52gBSpellAvailable = true;
+            if (f52gBSpellAvailable)
+                f52gBSpellId = resurrectionSpell->Id;
+        }
+
+        std::shared_ptr<CaptureCoreSpellTerminalListener> resurrectionTerminal(
+            new CaptureCoreSpellTerminalListener());
+        f52gBTerminalListenerAdded =
+            resurrectionAI.m_partyBotEngine.AddCoreSpellTerminalListener(resurrectionTerminal);
+
+        auto captureGroupResurrectionDecision =
+            [&](Player* expectedTarget, PartySnapshot& capturedSnapshot,
+                DecisionReport& report, std::size_t& selectedIndex) -> bool
+        {
+            if (!wipeCoordinator || !expectedTarget)
+                return false;
+            wipeCoordinator->InvalidateSnapshot();
+            PartySnapshot const* const fresh = PartySnapshotBuilder::GetOrBuild(
+                caster, *wipeCoordinator, WorldTimer::getMSTime(), 0);
+            if (!fresh)
+                return false;
+            capturedSnapshot = *fresh;
+            PartyMemberSnapshot const* const botSnapshot =
+                capturedSnapshot.FindMember(casterGuid);
+            if (!botSnapshot)
+                return false;
+            DecisionContext context(
+                capturedSnapshot, *botSnapshot, *wipeCoordinator,
+                WorldTimer::getMSTime(), nullptr, nullptr,
+                &resurrectionAI, nullptr, &resurrectionAI);
+            report = resurrectionAI.m_partyBotEngine.Evaluate(context);
+            selectedIndex = report.candidates.size();
+            for (std::size_t index : report.selectedIndices)
+                if (index < report.candidates.size() &&
+                    report.candidates[index].actionName == "core_resurrect_group_member" &&
+                    report.candidates[index].targetGuid ==
+                        expectedTarget->GetObjectGuid().GetRawValue())
+                {
+                    selectedIndex = index;
+                    break;
+                }
+            return selectedIndex < report.candidates.size();
+        };
+
+        // Build a valid Corpse candidate first, then advance the real Core
+        // target to ReleasedGhost. Executing the stale decision must fail closed.
+        if (f52gBSpellAvailable && f52gBTerminalListenerAdded &&
+            caster->IsAlive() && caster->GetGroup() == group.get())
+        {
+            ghostTarget->SetHealth(0);
+            ghostTarget->SetDeathState(JUST_DIED);
+            ghostTarget->KillPlayer();
+            bool const ghostCorpseCreated =
+                ghostTarget->GetDeathState() == CORPSE && !ghostTarget->IsAlive();
+            PartySnapshot staleGhostSnapshot;
+            DecisionReport staleGhostReport;
+            std::size_t staleGhostIndex = 0;
+            bool const staleGhostSelected = ghostCorpseCreated &&
+                captureGroupResurrectionDecision(
+                    ghostTarget, staleGhostSnapshot, staleGhostReport, staleGhostIndex);
+            if (staleGhostSelected)
+            {
+                ghostTarget->BuildPlayerRepop();
+                bool const releasedGhost =
+                    ghostTarget->GetDeathState() == DEAD && !ghostTarget->IsAlive();
+                PartyMemberSnapshot const* const botSnapshot =
+                    staleGhostSnapshot.FindMember(casterGuid);
+                DecisionContext staleGhostContext(
+                    staleGhostSnapshot, *botSnapshot, *wipeCoordinator,
+                    WorldTimer::getMSTime(), nullptr, nullptr,
+                    &resurrectionAI, nullptr, &resurrectionAI);
+                resurrectionAI.m_partyBotEngine.ExecuteSelected(
+                    staleGhostContext, staleGhostReport);
+                CandidateEvaluation const& evaluation =
+                    staleGhostReport.candidates[staleGhostIndex];
+                f52gBGhostRejected = releasedGhost &&
+                    evaluation.status == CandidateStatus::ExecutionFailed &&
+                    evaluation.actionResult == ActionResult::Impossible &&
+                    wipeCoordinator->GetReservations().empty() &&
+                    caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+            }
+
+            // Restore the Group leader through Core before the other stale
+            // target races; no network/client action is implied by this fixture.
+            if (!ghostTarget->IsAlive())
+            {
+                ghostTarget->ResurrectPlayer(0.5f, false);
+                ghostTarget->SpawnCorpseBones();
+                ghostTarget->ClearResurrectRequestData();
+            }
+
+            // Create a second valid snapshot, then remove the target from its
+            // Group before dispatch. Core's live Group check must veto it.
+            if (f52gBGhostRejected && ghostTarget->IsAlive())
+            {
+                corpseTarget->SetHealth(0);
+                corpseTarget->SetDeathState(JUST_DIED);
+                corpseTarget->KillPlayer();
+                bool const groupCorpseCreated =
+                    corpseTarget->GetDeathState() == CORPSE && !corpseTarget->IsAlive();
+                PartySnapshot staleGroupSnapshot;
+                DecisionReport staleGroupReport;
+                std::size_t staleGroupIndex = 0;
+                bool const staleGroupSelected = groupCorpseCreated &&
+                    captureGroupResurrectionDecision(
+                        corpseTarget, staleGroupSnapshot, staleGroupReport, staleGroupIndex);
+                if (staleGroupSelected)
+                {
+                    group->RemoveMember(corpseTarget->GetObjectGuid(), GROUP_LEAVE);
+                    bool const removedFromGroup =
+                        corpseTarget->GetGroup() != group.get() &&
+                        group->GetMembersCount() == 4;
+                    PartyMemberSnapshot const* const botSnapshot =
+                        staleGroupSnapshot.FindMember(casterGuid);
+                    DecisionContext staleGroupContext(
+                        staleGroupSnapshot, *botSnapshot, *wipeCoordinator,
+                        WorldTimer::getMSTime(), nullptr, nullptr,
+                        &resurrectionAI, nullptr, &resurrectionAI);
+                    resurrectionAI.m_partyBotEngine.ExecuteSelected(
+                        staleGroupContext, staleGroupReport);
+                    CandidateEvaluation const& evaluation =
+                        staleGroupReport.candidates[staleGroupIndex];
+                    f52gBForeignGroupRejected = removedFromGroup &&
+                        evaluation.status == CandidateStatus::ExecutionFailed &&
+                        evaluation.actionResult == ActionResult::Impossible &&
+                        wipeCoordinator->GetReservations().empty() &&
+                        caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+                    bool const rejoined =
+                        group->AddMember(corpseTarget->GetObjectGuid(), corpseTarget->GetName()) &&
+                        corpseTarget->GetGroup() == group.get() &&
+                        group->GetMembersCount() == 5;
+                    f52gBForeignGroupRejected =
+                        f52gBForeignGroupRejected && rejoined;
+                }
+
+                // Build another fresh decision, move the still-live Corpse
+                // beyond the actual spell range, and dispatch the stale data.
+                if (f52gBForeignGroupRejected)
+                {
+                    PartySnapshot staleRangeSnapshot;
+                    DecisionReport staleRangeReport;
+                    std::size_t staleRangeIndex = 0;
+                    bool const staleRangeSelected = captureGroupResurrectionDecision(
+                        corpseTarget, staleRangeSnapshot, staleRangeReport, staleRangeIndex);
+                    if (staleRangeSelected)
+                    {
+                        float const targetX = corpseTarget->GetPositionX();
+                        float const targetY = corpseTarget->GetPositionY();
+                        float const targetZ = corpseTarget->GetPositionZ();
+                        float const targetO = corpseTarget->GetOrientation();
+                        corpseTarget->Relocate(1000.0f, targetY, targetZ, targetO);
+                        bool const outsideSpellRange =
+                            !resurrectionSpell->IsTargetInRange(caster, corpseTarget);
+                        PartyMemberSnapshot const* const botSnapshot =
+                            staleRangeSnapshot.FindMember(casterGuid);
+                        DecisionContext staleRangeContext(
+                            staleRangeSnapshot, *botSnapshot, *wipeCoordinator,
+                            WorldTimer::getMSTime(), nullptr, nullptr,
+                            &resurrectionAI, nullptr, &resurrectionAI);
+                        resurrectionAI.m_partyBotEngine.ExecuteSelected(
+                            staleRangeContext, staleRangeReport);
+                        CandidateEvaluation const& evaluation =
+                            staleRangeReport.candidates[staleRangeIndex];
+                        f52gBOutOfRangeRejected = outsideSpellRange &&
+                            evaluation.status == CandidateStatus::ExecutionFailed &&
+                            evaluation.actionResult == ActionResult::Impossible &&
+                            wipeCoordinator->GetReservations().empty() &&
+                            caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+                        corpseTarget->Relocate(targetX, targetY, targetZ, targetO);
+                    }
+                }
+
+                // Finally, select and execute against the fresh real Corpse.
+                if (f52gBOutOfRangeRejected)
+                {
+                    PartySnapshot liveSnapshot;
+                    DecisionReport liveReport;
+                    std::size_t liveIndex = 0;
+                    bool const selected = captureGroupResurrectionDecision(
+                        corpseTarget, liveSnapshot, liveReport, liveIndex);
+                    if (selected)
+                    {
+                        f52gBActionSelected = true;
+                        f52gBActionId = liveReport.candidates[liveIndex].actionId;
+                        PartyMemberSnapshot const* const botSnapshot =
+                            liveSnapshot.FindMember(casterGuid);
+                        DecisionContext liveContext(
+                            liveSnapshot, *botSnapshot, *wipeCoordinator,
+                            WorldTimer::getMSTime(), nullptr, nullptr,
+                            &resurrectionAI, nullptr, &resurrectionAI);
+                        resurrectionAI.m_partyBotEngine.ExecuteSelected(
+                            liveContext, liveReport);
+                        CandidateEvaluation const& evaluation =
+                            liveReport.candidates[liveIndex];
+                        f52gBCastStarted =
+                            evaluation.status == CandidateStatus::Executed &&
+                            evaluation.actionResult == ActionResult::Success &&
+                            f52gBActionId != 0 &&
+                            caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr &&
+                            std::any_of(
+                                wipeCoordinator->GetReservations().begin(),
+                                wipeCoordinator->GetReservations().end(),
+                                [casterGuid, corpseTargetGuid](Reservation const& row)
+                                {
+                                    return row.type == ReservationType::Resurrection &&
+                                        row.targetGuid == corpseTargetGuid &&
+                                        row.ownerGuid == casterGuid;
+                                });
+                    }
+
+                    // Freeze all Bot decision timers while the real Core Spell
+                    // cast advances; Map::Update still delivers Spell terminals.
+                    for (std::unique_ptr<PartyBotAI> const& botAI : botAIs)
+                        botAI->m_updateTimer.Reset(600000);
+                    for (uint32 tick = 0; tick < 60 &&
+                        (resurrectionTerminal->events.empty() ||
+                         caster->GetCurrentSpell(CURRENT_GENERIC_SPELL)); ++tick)
+                        map.Update(250);
+
+                    f52gBRequestPending = f52gBCastStarted &&
+                        corpseTarget->IsRessurectRequested() &&
+                        corpseTarget->GetResurrector() == caster->GetObjectGuid();
+                    f52gBTerminalMatched = f52gBCastStarted &&
+                        resurrectionTerminal->events.size() == 1 &&
+                        resurrectionTerminal->events[0].actionId == f52gBActionId &&
+                        resurrectionTerminal->events[0].targetGuid == corpseTargetGuid &&
+                        resurrectionTerminal->events[0].spellId == f52gBSpellId &&
+                        resurrectionTerminal->events[0].status ==
+                            CoreSpellTerminalStatus::Succeeded;
+                    f52gBReservationReleased = f52gBTerminalMatched &&
+                        std::none_of(
+                            wipeCoordinator->GetReservations().begin(),
+                            wipeCoordinator->GetReservations().end(),
+                            [casterGuid, corpseTargetGuid](Reservation const& row)
+                            {
+                                return row.type == ReservationType::Resurrection &&
+                                    row.targetGuid == corpseTargetGuid &&
+                                    row.ownerGuid == casterGuid;
+                            });
+                    if (f52gBRequestPending && f52gBTerminalMatched &&
+                        f52gBReservationReleased)
+                    {
+                        // No simulator client can send SMSG_RESURRECT_RESPONSE.
+                        // Model explicit recipient consent at Core Player level,
+                        // then verify Core's normal resurrection/corpse cleanup.
+                        corpseTarget->ResurrectPlayer(0.5f, false);
+                        corpseTarget->SpawnCorpseBones();
+                        corpseTarget->ClearResurrectRequestData();
+                        f52gBTargetAccepted = corpseTarget->IsAlive() &&
+                            corpseTarget->GetDeathState() == ALIVE &&
+                            corpseTarget->GetCorpse() == nullptr &&
+                            !corpseTarget->IsRessurectRequested();
+                    }
+                }
+            }
+        }
+
+        f52gBNewEngineOnly =
+            resurrectionAI.m_newEngineStrategiesRegistered &&
+            !resurrectionAI.m_engineShadowStrategiesRegistered &&
+            resurrectionAI.m_simulatorLegacyPolicyEntryCount == legacyEntriesBefore &&
+            resurrectionAI.m_simulatorLegacyPolicyDispatchCount == legacyDispatchesBefore &&
+            resurrectionAI.m_simulatorNewEngineTickCount == ticksBefore &&
+            resurrectionAI.m_simulatorEngineDecisionCycleCount == cyclesBefore &&
+            wipeCoordinator && !wipeCoordinator->HasActiveEncounter();
+    }
+    bool const f52gBPassed =
+        f52gBSpellAvailable && f52gBTerminalListenerAdded &&
+        f52gBGhostRejected && f52gBForeignGroupRejected &&
+        f52gBOutOfRangeRejected && f52gBActionSelected &&
+        f52gBCastStarted && f52gBRequestPending &&
+        f52gBTerminalMatched && f52gBReservationReleased &&
+        f52gBTargetAccepted && f52gBNewEngineOnly;
+    sLog.Out(LOG_BASIC, f52gBPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F52g-B group resurrection: spellAvailable=%u spellId=%u ghostRejected=%u foreignGroupRejected=%u outOfRangeRejected=%u selected=%u castStarted=%u actionId=%llu requestPending=%u terminalMatched=%u reservationReleased=%u targetAccepted=%u newEngineOnly=%u.",
+        f52gBSpellAvailable ? 1u : 0u, f52gBSpellId,
+        f52gBGhostRejected ? 1u : 0u,
+        f52gBForeignGroupRejected ? 1u : 0u,
+        f52gBOutOfRangeRejected ? 1u : 0u,
+        f52gBActionSelected ? 1u : 0u, f52gBCastStarted ? 1u : 0u,
+        static_cast<unsigned long long>(f52gBActionId),
+        f52gBRequestPending ? 1u : 0u,
+        f52gBTerminalMatched ? 1u : 0u,
+        f52gBReservationReleased ? 1u : 0u,
+        f52gBTargetAccepted ? 1u : 0u,
+        f52gBNewEngineOnly ? 1u : 0u);
+    if (f52gBPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F52g-B NewEngine selected a same-Group corpse, Core Spell::finish created one resurrection offer and emitted the matching Engine action terminal, and the exact reservation was released; live released-ghost, departed-member and out-of-range snapshots were rejected before casting.");
+
     bool const passed = groupCreated && membersAdded &&
         sharedCoordinatorForAll && allSnapshotsAreFiveMembers &&
         allBotsStartedFollow && allFourSlotsOccupied && allSlotsUnique &&
         allOffsetsMatch && allNewEngineOnly && reverseTickNoOps &&
         removedFromGroup && departureReleasedSlot && incumbentsKeptSlots &&
         rejoinReclaimedSlot && f52ePassed && f52fPassed &&
-        f52gSelfResurrectionPassed;
+        f52gSelfResurrectionPassed && f52gBPassed;
 
     bool const cleaned = cleanup();
     sLog.Out(LOG_BASIC, passed && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,

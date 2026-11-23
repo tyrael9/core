@@ -7596,6 +7596,142 @@ bool RunEngineCoreUtilitySpellAuditSmokeTest(Map& /*map*/)
             "[PartyBotSimulator] PASS: F46 bounded self-utility spell audit scanned the loaded Vanilla 5875 SpellEntry table; only self-aura spells with both caster/target proc suppression and no ScriptMgr, spell-threat, spell-proc, trigger-child, periodic or area path were listed as eligible candidates.");
     return auditRan;
 }
+
+
+// Positive item-backed spells take a distinct Core proc path: Spell::prepareDataForTriggerSystem
+// disables proc triggering when m_CastItem is present and the spell is positive.
+// It has a small set of family-specific exceptions, so this audit excludes those
+// families rather than assuming every positive item spell is proc-free.
+bool IsF47BoundedItemUtilitySpell(SpellEntry const& spell)
+{
+    if (!IsF46PositiveSelfAuraShape(spell) ||
+        spell.procFlags || spell.procCharges ||
+        sSpellMgr.GetSpellThreatEntry(spell.Id) ||
+        sSpellMgr.GetSpellProcEvent(spell.Id))
+        return false;
+
+    switch (spell.SpellFamilyName)
+    {
+        case SPELLFAMILY_MAGE:
+        case SPELLFAMILY_WARLOCK:
+        case SPELLFAMILY_HUNTER:
+        case SPELLFAMILY_PALADIN:
+        case SPELLFAMILY_PRIEST:
+            return false;
+        default:
+            break;
+    }
+
+    SpellScriptTargetBounds const scriptTargets =
+        sSpellMgr.GetSpellScriptTargetBounds(spell.Id);
+    if (scriptTargets.first != scriptTargets.second)
+        return false;
+
+    for (uint32 slot = 0; slot < MAX_SPELL_TOTEMS; ++slot)
+        if (spell.Totem[slot])
+            return false;
+    for (uint32 slot = 0; slot < MAX_SPELL_REAGENTS; ++slot)
+        if (spell.Reagent[slot] || spell.ReagentCount[slot])
+            return false;
+
+    return true;
+}
+
+bool RunEngineCoreItemUtilityAuditSmokeTest()
+{
+    uint32 itemPrototypeRows = 0;
+    uint32 itemsWithOnUse = 0;
+    uint32 eligibleItems = 0;
+    uint32 inspectedOnUseSlots = 0;
+    uint32 eligibleOnUseSlots = 0;
+    uint32 loggedCandidates = 0;
+
+    for (auto const& itemRow : sObjectMgr.GetItemPrototypeMap())
+    {
+        ItemPrototype const& item = itemRow.second;
+        ++itemPrototypeRows;
+
+        uint32 onUseSlots = 0;
+        uint32 safeOnUseSlots = 0;
+        bool allOnUseSlotsSafe = true;
+
+        for (uint32 slotIndex = 0; slotIndex < MAX_ITEM_PROTO_SPELLS; ++slotIndex)
+        {
+            _ItemSpell const& itemSpell = item.Spells[slotIndex];
+            if (!itemSpell.SpellId ||
+                itemSpell.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+                continue;
+
+            ++onUseSlots;
+            ++inspectedOnUseSlots;
+
+            SpellEntry const* spell = sSpellMgr.GetSpellEntry(itemSpell.SpellId);
+            if (!spell || !IsF47BoundedItemUtilitySpell(*spell))
+            {
+                allOnUseSlotsSafe = false;
+                continue;
+            }
+
+            ++safeOnUseSlots;
+        }
+
+        if (!onUseSlots)
+            continue;
+
+        ++itemsWithOnUse;
+        if (!allOnUseSlotsSafe || safeOnUseSlots != onUseSlots)
+            continue;
+
+        ++eligibleItems;
+        eligibleOnUseSlots += safeOnUseSlots;
+
+        if (loggedCandidates < 16)
+        {
+            for (uint32 slotIndex = 0;
+                 slotIndex < MAX_ITEM_PROTO_SPELLS && loggedCandidates < 16;
+                 ++slotIndex)
+            {
+                _ItemSpell const& itemSpell = item.Spells[slotIndex];
+                if (!itemSpell.SpellId ||
+                    itemSpell.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+                    continue;
+
+                SpellEntry const* spell = sSpellMgr.GetSpellEntry(itemSpell.SpellId);
+                if (!spell || !IsF47BoundedItemUtilitySpell(*spell))
+                    continue;
+
+                uint32 auraType = 0;
+                for (uint32 effectIndex = 0; effectIndex < MAX_EFFECT_INDEX; ++effectIndex)
+                    if (spell->Effect[effectIndex])
+                    {
+                        auraType = spell->EffectApplyAuraName[effectIndex];
+                        break;
+                    }
+
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                    "[PartyBotSimulator] F47 bounded item-utility candidate: item=%u name=%s class=%u subclass=%u stackable=%u slot=%u spell=%u spellName=%s aura=%u charges=%d itemCooldown=%d categoryCooldown=%d procFlags=%u procChance=%u procCharges=%u.",
+                    item.ItemId, item.Name1 ? item.Name1 : "",
+                    item.Class, item.SubClass, item.Stackable, slotIndex,
+                    spell->Id, spell->SpellName[0].c_str(), auraType,
+                    itemSpell.SpellCharges, itemSpell.SpellCooldown,
+                    itemSpell.SpellCategoryCooldown, spell->procFlags,
+                    spell->procChance, spell->procCharges);
+                ++loggedCandidates;
+            }
+        }
+    }
+
+    bool const auditRan = itemPrototypeRows > 1000 && itemsWithOnUse > 0;
+    sLog.Out(LOG_BASIC, auditRan ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F47 item utility audit: itemPrototypeRows=%u itemsWithOnUse=%u inspectedOnUseSlots=%u eligibleItems=%u eligibleOnUseSlots=%u loggedCandidates=%u.",
+        itemPrototypeRows, itemsWithOnUse, inspectedOnUseSlots,
+        eligibleItems, eligibleOnUseSlots, loggedCandidates);
+
+    if (auditRan)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F47 audited loaded Vanilla item prototypes and every ON_USE spell slot; only items whose complete ON_USE fan-out consists of positive bounded self-aura spells outside Core's item-proc exception families were listed as candidates.");
+    return auditRan;
+}
 } // anonymous namespace
 
 
@@ -14216,6 +14352,8 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
         RunEngineCoreCountBasedItemMutationSmokeTest(*map);
     bool const utilitySpellAuditPassed =
         RunEngineCoreUtilitySpellAuditSmokeTest(*map);
+    bool const itemUtilityAuditPassed =
+        RunEngineCoreItemUtilityAuditSmokeTest();
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
     bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
     bool const playerFollowCastSafetyPassed = RunEngineCorePlayerFollowCastSafetySmokeTest(*map);
@@ -14238,6 +14376,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                               dpsAssistPassed && dpsAssistGroupSnapshotPassed &&
                               followPartyMemberPassed && itemUsePassed &&
                               countBasedItemMutationPassed && utilitySpellAuditPassed &&
+                              itemUtilityAuditPassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&

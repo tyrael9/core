@@ -1,5 +1,7 @@
 #include "ProductionStrategies.h"
 #include "FollowPartyLeaderTrigger.h"
+#include "AutoResurrectSelfTrigger.h"
+#include "AutoResurrectSelfAction.h"
 #include "FollowPartyMemberAction.h"
 #include "StopFollowingAction.h"
 #include "StopFollowingUnsafeTrigger.h"
@@ -13,9 +15,12 @@ bool RegisterInitialNewEngineStrategies(PartyBotEngine& engine)
         return false;
     if (!engine.RegisterAction(std::shared_ptr<Action>(new StopFollowingAction())))
         return false;
+    if (!engine.RegisterAction(std::shared_ptr<Action>(new AutoResurrectSelfAction())))
+        return false;
     std::shared_ptr<Strategy> strategy(new Strategy("new_engine_party_movement"));
     strategy->AddTrigger(std::shared_ptr<Trigger>(new FollowPartyLeaderTrigger()));
     strategy->AddTrigger(std::shared_ptr<Trigger>(new StopFollowingUnsafeTrigger()));
+    strategy->AddTrigger(std::shared_ptr<Trigger>(new AutoResurrectSelfTrigger()));
     engine.AddStrategy(strategy);
     return true;
 }

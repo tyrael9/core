@@ -9681,7 +9681,10 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             break;
         }
 
-        // A real active party encounter starts from the owner's Core combat bit.
+        // Retain the source coordinator while every Bot reacquires it after
+        // the cross-map transfer, then drive the encounter using a Bot other
+        // than the selected death victim.
+        wipeCoordinator = sharedCoordinator;
         leader->SetInCombatState();
         bool allSourceCoordinatorsReacquired = deadBotAI && driverAI && driverBot;
         for (std::size_t index = 0; index < botAIs.size(); ++index)
@@ -9695,8 +9698,6 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 ai.m_partyCoordinator.get() == sharedCoordinator.get() &&
                 ai.m_partyCoordinatorMapId == map.GetId() &&
                 ai.m_partyCoordinatorInstanceId == map.GetInstanceId();
-            if (!wipeCoordinator)
-                wipeCoordinator = ai.m_partyCoordinator;
         }
         f52fEncounterStarted = allSourceCoordinatorsReacquired && wipeCoordinator &&
             wipeCoordinator.get() == sharedCoordinator.get() &&
@@ -9717,7 +9718,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             reservation.ownerGuid = deadBotGuid;
             reservation.expiresAtMs = nowMs + 60000u;
             ordinaryReserved = wipeCoordinator->TryReserve(reservation, nowMs) && ordinaryReserved;
-            reservation.targetGuid = leaderGuid;
+            reservation.targetGuid = players[2]->GetObjectGuid().GetRawValue();
             reservation.ownerGuid = survivorGuid;
             ordinaryReserved = wipeCoordinator->TryReserve(reservation, nowMs) && ordinaryReserved;
             reservation.targetGuid = players[3]->GetObjectGuid().GetRawValue();
@@ -9796,8 +9797,8 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             bool allDead = std::all_of(players.begin(), players.end(),
                 [](Player const* member) { return member && !member->IsAlive(); });
             wipeCoordinator->InvalidateSnapshot();
-            driverAI.m_updateTimer.Reset(1000);
-            driverAI.UpdateAI(1000);
+            driverAI->m_updateTimer.Reset(1000);
+            driverAI->UpdateAI(1000);
             f52fWipeClosed = allDead && !wipeCoordinator->HasActiveEncounter();
             f52fReservationsCleared = f52fWipeClosed &&
                 wipeCoordinator->GetReservations().empty() &&

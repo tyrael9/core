@@ -5325,6 +5325,22 @@ void TestProductionFollowTriggersRetargetStopAndRecover() {
     candidates.clear(); follow.CollectCandidates(following, candidates);
     assert(candidates.empty() && !stop.IsActive(following));
 
+    Guid const previousLeaderGuid = snapshot.groupLeaderGuid;
+    snapshot.groupLeaderGuid = snapshot.members[0].guid;
+    DecisionContext promoted(snapshot, snapshot.members[0], coordinator, 2500);
+    assert(promoted.botBehaviorState == BotBehaviorState::FollowingPartyMember);
+    // The promoted Bot must not follow itself, and must stop following the
+    // still-valid previous leader immediately (no unavailable-target timeout).
+    candidates.clear();
+    follow.CollectCandidates(promoted, candidates);
+    assert(candidates.empty());
+    assert(stop.IsActive(promoted));
+    stop.CollectCandidates(promoted, candidates);
+    assert(candidates.size() == 1 &&
+           candidates[0].actionName == "core_stop_following");
+    assert(candidates[0].basePriority == 90.0f);
+    snapshot.groupLeaderGuid = previousLeaderGuid;
+
     snapshot.members[0].inCombat = true;
     DecisionContext combat(snapshot, snapshot.members[0], coordinator, 3000);
     assert(!follow.IsActive(combat) && stop.IsActive(combat));

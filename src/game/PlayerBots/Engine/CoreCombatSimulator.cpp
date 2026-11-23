@@ -8590,6 +8590,7 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
     bool productionFollowPassed = false;
     bool f51CombatFollowStopped = false;
     bool f51CombatFollowResumed = false;
+    bool f52bLeaderPromotionFollowStopped = false;
 
     if (observedSnapshot && observedBot)
     {
@@ -8752,6 +8753,49 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
                     follower->HasUnitState(UNIT_STATE_FOLLOW);
             }
 
+            follower->GetMotionMaster()->MoveFollow(
+                nextLeader, 2.5f, 3.14159265358979323846f);
+        }
+
+        // F52b: promote the currently-following Bot to Group Leader while
+        // its old Follow target is still an available Group member. Production
+        // NewEngine must stop that native Follow immediately, without relying
+        // on the unavailable-target timeout or entering Legacy policy.
+        if (productionFollowPassed && f51CombatFollowStopped &&
+            f51CombatFollowResumed)
+        {
+            group->ChangeLeader(followerGuid);
+            bool const promotedToLeader =
+                group->GetLeaderGuid() == followerGuid;
+            if (promotedToLeader)
+            {
+                if (actionRuntime->m_partyCoordinator)
+                    actionRuntime->m_partyCoordinator->InvalidateSnapshot();
+                actionRuntime->m_updateTimer.Reset(1000);
+                actionRuntime->UpdateAI(1000);
+
+                MovementGenerator const* promotedMovement =
+                    follower->GetMotionMaster()->GetCurrent();
+                FollowMovementGenerator<Player> const* promotedFollow =
+                    promotedMovement &&
+                    promotedMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                        ? static_cast<FollowMovementGenerator<Player> const*>(promotedMovement)
+                        : nullptr;
+                f52bLeaderPromotionFollowStopped =
+                    actionRuntime->m_simulatorNewEngineTickCount == 4 &&
+                    actionRuntime->m_simulatorEngineDecisionCycleCount == 4 &&
+                    actionRuntime->m_simulatorEngineCandidateCount == 1 &&
+                    actionRuntime->m_simulatorLegacyPolicyEntryCount == 0 &&
+                    actionRuntime->m_simulatorLegacyPolicyDispatchCount == 0 &&
+                    !promotedFollow &&
+                    !follower->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
+            }
+
+            // Restore the fixture's original leader and current Follow so the
+            // existing stale-Group target test keeps its independent preconditions.
+            group->ChangeLeader(firstLeaderGuid);
+            if (actionRuntime->m_partyCoordinator)
+                actionRuntime->m_partyCoordinator->InvalidateSnapshot();
             follower->GetMotionMaster()->MoveFollow(
                 nextLeader, 2.5f, 3.14159265358979323846f);
         }
@@ -8948,6 +8992,17 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         actionRuntime->m_simulatorNewEngineTickCount,
         actionRuntime->m_simulatorLegacyPolicyEntryCount,
         actionRuntime->m_simulatorLegacyPolicyDispatchCount);
+    sLog.Out(LOG_BASIC, f52bLeaderPromotionFollowStopped ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F52b leader promotion: followStopped=%u newEngineTicks=%u decisionCycles=%u candidates=%u legacyEntries=%u legacyDispatches=%u.",
+        f52bLeaderPromotionFollowStopped ? 1u : 0u,
+        actionRuntime->m_simulatorNewEngineTickCount,
+        actionRuntime->m_simulatorEngineDecisionCycleCount,
+        actionRuntime->m_simulatorEngineCandidateCount,
+        actionRuntime->m_simulatorLegacyPolicyEntryCount,
+        actionRuntime->m_simulatorLegacyPolicyDispatchCount);
+    if (f52bLeaderPromotionFollowStopped)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F52b stopped a Bot's native Follow immediately after Group::ChangeLeader promoted that Bot, even while its previous leader remained a valid Group member, using only NewEngine with zero Legacy policy entry/dispatch.");
     if (f51CombatFollowStopped && f51CombatFollowResumed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F51 production state transitions stopped the native Follow when combat began and resumed Group-leader Follow after combat ended, using only NewEngine actions with zero Legacy policy entry/dispatch.");
@@ -8965,14 +9020,16 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         sameTargetNotRestarted && sameTargetFormationReapplied &&
         retargetRegistered && retargeted &&
         productionFollowPassed && f51CombatFollowStopped && f51CombatFollowResumed &&
+        f52bLeaderPromotionFollowStopped &&
         firstLeaderRemoved && staleSelected && staleGroupRejected &&
         stopFollowingPassed;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] Core FollowPartyMember action: registered=%u firstStarted=%u followTargetCaptured=%u sameTargetNotRestarted=%u sameTargetFormationReapplied=%u retargetRegistered=%u retargeted=%u firstLeaderRemoved=%u staleSelected=%u staleGroupRejected=%u.",
+        "[PartyBotSimulator] Core FollowPartyMember action: registered=%u firstStarted=%u followTargetCaptured=%u sameTargetNotRestarted=%u sameTargetFormationReapplied=%u retargetRegistered=%u retargeted=%u leaderPromotionFollowStopped=%u firstLeaderRemoved=%u staleSelected=%u staleGroupRejected=%u.",
         registered ? 1u : 0u, firstStarted ? 1u : 0u,
         followTargetCaptured ? 1u : 0u, sameTargetNotRestarted ? 1u : 0u,
         sameTargetFormationReapplied ? 1u : 0u,
         retargetRegistered ? 1u : 0u, retargeted ? 1u : 0u,
+        f52bLeaderPromotionFollowStopped ? 1u : 0u,
         firstLeaderRemoved ? 1u : 0u, staleSelected ? 1u : 0u,
         staleGroupRejected ? 1u : 0u);
 

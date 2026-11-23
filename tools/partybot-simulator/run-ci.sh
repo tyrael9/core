@@ -456,6 +456,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F52a reapplied the native FollowMovemen
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F52b stopped a Bot's native Follow immediately after Group::ChangeLeader promoted that Bot, even while its previous leader remained a valid Group member, using only NewEngine with zero Legacy policy entry/dispatch." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52b promoted-Leader Follow cleanup Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

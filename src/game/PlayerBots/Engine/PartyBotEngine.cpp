@@ -143,6 +143,10 @@ bool PartyBotEngine::ReleaseReadyActionDependencies(
         return left.actionName == right.actionName &&
             left.targetGuid == right.targetGuid &&
             left.spellId == right.spellId &&
+            left.itemGuid == right.itemGuid &&
+            left.itemEntry == right.itemEntry &&
+            left.itemPosition == right.itemPosition &&
+            left.itemSpellSlot == right.itemSpellSlot &&
             left.channel == right.channel &&
             left.hasDestination == right.hasDestination &&
             (!left.hasDestination ||
@@ -838,6 +842,10 @@ PendingActionDispatchSummary PartyBotEngine::ExecuteDecisionCycle(
         return left.actionName == right.actionName &&
             left.targetGuid == right.targetGuid &&
             left.spellId == right.spellId &&
+            left.itemGuid == right.itemGuid &&
+            left.itemEntry == right.itemEntry &&
+            left.itemPosition == right.itemPosition &&
+            left.itemSpellSlot == right.itemSpellSlot &&
             left.channel == right.channel &&
             left.hasDestination == right.hasDestination &&
             (!left.hasDestination ||

@@ -3,7 +3,7 @@
 
 #include "CoreAction.h"
 
-#include "PlayerBots/CombatBotBaseAI.h"
+#include "../CombatBotBaseAI.h"
 #include "Group.h"
 #include "Player.h"
 #include "Spell.h"

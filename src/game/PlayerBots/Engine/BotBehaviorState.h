@@ -76,6 +76,7 @@ inline char const* BotBehaviorStateTransitionReason(
     if (current == BotBehaviorState::Resurrecting) return "resurrection_started";
     if (previous == BotBehaviorState::ReleasedGhost) return "ghost_resurrected";
     if (previous == BotBehaviorState::Corpse) return "corpse_resurrected";
+    if (previous == BotBehaviorState::Resurrecting) return "resurrected";
     if (current == BotBehaviorState::Dead) return "became_dead";
     if (previous == BotBehaviorState::Dead) return "revived";
     if (current == BotBehaviorState::Combat) return "combat_entered";

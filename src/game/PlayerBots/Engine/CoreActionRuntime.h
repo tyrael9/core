@@ -50,8 +50,10 @@ public:
     // Optional host capability used by the Engine's generic group-resurrection
     // action. Core/PartyBotAI owns spellbook and class-specific cast checks.
     virtual std::uint32_t GetResurrectionSpellId() const { return 0; }
-    virtual bool CanCastGroupResurrection(
-        DecisionContext const&, Player*, std::uint32_t) const { return false; }
+    virtual bool CanResurrectGroupMember(
+        DecisionContext const&, Guid, std::uint32_t) const { return false; }
+    virtual bool StartGroupResurrection(
+        DecisionContext const&, Guid, std::uint32_t) { return false; }
 };
 }
 

@@ -8775,6 +8775,7 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
                 group->ChangeLeader(followerGuid);
             bool const promotedToLeader =
                 group->GetLeaderGuid() == followerGuid;
+            bool leaderRetainedAfterTickForLog = false;
 
             if (promotedToLeader)
             {
@@ -8792,6 +8793,7 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
                         : nullptr;
                 bool const leaderRetainedAfterTick =
                     group->GetLeaderGuid() == followerGuid;
+                leaderRetainedAfterTickForLog = leaderRetainedAfterTick;
                 bool const nativeFollowStopped =
                     !promotedFollow &&
                     !follower->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
@@ -8819,7 +8821,7 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
                 "[PartyBotSimulator] F52b Group leader identity: before=%u follower=%u promotionRequested=%u promoted=%u afterTick=%u restoreRequested=%u restored=%u.",
                 leaderBeforePromotion, followerGuid.GetCounter(),
                 promotionRequested ? 1u : 0u, promotedToLeader ? 1u : 0u,
-                group->GetLeaderGuid() == firstLeaderGuid ? 1u : 0u,
+                leaderRetainedAfterTickForLog ? 1u : 0u,
                 restoreRequested ? 1u : 0u, leaderRestored ? 1u : 0u);
 
             if (leaderRestored)

@@ -5402,7 +5402,7 @@ void TestBotBehaviorStateMachineTransitionsAndTimeoutClockWrap() {
     snapshot.members[0].alive = true;
     state = machine.Observe(snapshot, snapshot.members[0], 0xa0u);
     assert(state.changed && state.state == BotBehaviorState::Idle);
-    assert(state.reason == std::string("ghost_resurrected"));
+    assert(state.reason == std::string("resurrected"));
     state = machine.Observe(snapshot, snapshot.members[0],
         0x60u + InvalidFollowTargetTimeoutMs - 1);
     assert(!state.changed && !state.HasTimedOut(InvalidFollowTargetTimeoutMs));

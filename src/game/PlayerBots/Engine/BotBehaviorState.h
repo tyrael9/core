@@ -5,8 +5,8 @@ namespace PartyBotEngine
 {
 enum class BotBehaviorState : std::uint8_t
 {
-    Unknown = 0, Dead, Combat, FollowingLeader, FollowingPartyMember,
-    FollowingUnavailableTarget, Idle
+    Unknown = 0, Dead, Corpse, ReleasedGhost, Resurrecting, Combat,
+    FollowingLeader, FollowingPartyMember, FollowingUnavailableTarget, Idle
 };
 static std::uint32_t const InvalidFollowTargetTimeoutMs = 4000;
 inline char const* BotBehaviorStateName(BotBehaviorState state)
@@ -14,6 +14,9 @@ inline char const* BotBehaviorStateName(BotBehaviorState state)
     switch (state)
     {
         case BotBehaviorState::Dead: return "dead";
+        case BotBehaviorState::Corpse: return "corpse";
+        case BotBehaviorState::ReleasedGhost: return "released_ghost";
+        case BotBehaviorState::Resurrecting: return "resurrecting";
         case BotBehaviorState::Combat: return "combat";
         case BotBehaviorState::FollowingLeader: return "following_leader";
         case BotBehaviorState::FollowingPartyMember: return "following_party_member";
@@ -25,7 +28,25 @@ inline char const* BotBehaviorStateName(BotBehaviorState state)
 inline BotBehaviorState ResolveBotBehaviorState(
     PartySnapshot const& snapshot, PartyMemberSnapshot const& bot)
 {
-    if (!bot.online || !bot.alive) return BotBehaviorState::Dead;
+    if (!bot.online) return BotBehaviorState::Dead;
+    if (!bot.alive)
+    {
+        switch (bot.deathState)
+        {
+            case PartyMemberDeathState::Dying:
+            case PartyMemberDeathState::Corpse:
+            case PartyMemberDeathState::CorpseFalling:
+                return BotBehaviorState::Corpse;
+            case PartyMemberDeathState::ReleasedGhost:
+                return BotBehaviorState::ReleasedGhost;
+            case PartyMemberDeathState::Resurrecting:
+                return BotBehaviorState::Resurrecting;
+            default:
+                // Preserve the original unknown/dead fallback for value-only
+                // callers that have not populated the new Core death-state field.
+                return BotBehaviorState::Dead;
+        }
+    }
     if (bot.inCombat || bot.victimGuid) return BotBehaviorState::Combat;
     if (!bot.followTargetGuid) return BotBehaviorState::Idle;
     PartyMemberSnapshot const* target = snapshot.FindMember(bot.followTargetGuid);
@@ -50,6 +71,11 @@ struct BotBehaviorStateObservation
 inline char const* BotBehaviorStateTransitionReason(
     BotBehaviorState previous, BotBehaviorState current)
 {
+    if (current == BotBehaviorState::ReleasedGhost) return "spirit_released";
+    if (current == BotBehaviorState::Corpse) return "became_corpse";
+    if (current == BotBehaviorState::Resurrecting) return "resurrection_started";
+    if (previous == BotBehaviorState::ReleasedGhost) return "ghost_resurrected";
+    if (previous == BotBehaviorState::Corpse) return "corpse_resurrected";
     if (current == BotBehaviorState::Dead) return "became_dead";
     if (previous == BotBehaviorState::Dead) return "revived";
     if (current == BotBehaviorState::Combat) return "combat_entered";

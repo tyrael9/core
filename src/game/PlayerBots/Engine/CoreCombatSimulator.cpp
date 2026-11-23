@@ -9663,22 +9663,50 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     if (f52fSourceReady && sharedCoordinator &&
         !sharedCoordinator->HasActiveEncounter())
     {
+        // Resolve the actual AI attached to the selected death victim and
+        // choose a different living Bot as the observer/driver. After the
+        // cross-map fixture, every AI must reacquire the source shard first;
+        // a single driver tick must not be mistaken for party-wide ownership.
+        Player* const deadBot = players[4];
+        PartyBotAI* const deadBotAI =
+            deadBot ? dynamic_cast<PartyBotAI*>(deadBot->AI()) : nullptr;
+        PartyBotAI* driverAI = nullptr;
+        Player* driverBot = nullptr;
+        for (std::size_t index = 0; index < botAIs.size(); ++index)
+        {
+            if (botAIs[index].get() == deadBotAI)
+                continue;
+            driverAI = botAIs[index].get();
+            driverBot = players[index + 1];
+            break;
+        }
+
         // A real active party encounter starts from the owner's Core combat bit.
-        sharedCoordinator->InvalidateSnapshot();
         leader->SetInCombatState();
-        PartyBotAI& driverAI = *botAIs[0];
-        driverAI.m_updateTimer.Reset(1000);
-        driverAI.UpdateAI(1000);
-        wipeCoordinator = driverAI.m_partyCoordinator;
-        f52fEncounterStarted = wipeCoordinator &&
+        bool allSourceCoordinatorsReacquired = deadBotAI && driverAI && driverBot;
+        for (std::size_t index = 0; index < botAIs.size(); ++index)
+        {
+            PartyBotAI& ai = *botAIs[index];
+            wipeCoordinator->InvalidateSnapshot();
+            ai.m_updateTimer.Reset(1000);
+            ai.UpdateAI(1000);
+            allSourceCoordinatorsReacquired = allSourceCoordinatorsReacquired &&
+                ai.m_partyCoordinator &&
+                ai.m_partyCoordinator.get() == sharedCoordinator.get() &&
+                ai.m_partyCoordinatorMapId == map.GetId() &&
+                ai.m_partyCoordinatorInstanceId == map.GetInstanceId();
+            if (!wipeCoordinator)
+                wipeCoordinator = ai.m_partyCoordinator;
+        }
+        f52fEncounterStarted = allSourceCoordinatorsReacquired && wipeCoordinator &&
             wipeCoordinator.get() == sharedCoordinator.get() &&
             wipeCoordinator->HasActiveEncounter();
 
         if (f52fEncounterStarted)
         {
             uint32 const nowMs = WorldTimer::getMSTime();
-            Guid const ownerGuid = players[1]->GetObjectGuid().GetRawValue();
-            Guid const deadBotGuid = players[4]->GetObjectGuid().GetRawValue();
+            Guid const survivorGuid = driverBot->GetObjectGuid().GetRawValue();
+            Guid const deadBotGuid = deadBot->GetObjectGuid().GetRawValue();
             Guid const leaderGuid = leader->GetObjectGuid().GetRawValue();
             bool ordinaryReserved = true;
             // Seed one reservation for the Bot about to die, one for a survivor,
@@ -9689,8 +9717,8 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             reservation.ownerGuid = deadBotGuid;
             reservation.expiresAtMs = nowMs + 60000u;
             ordinaryReserved = wipeCoordinator->TryReserve(reservation, nowMs) && ordinaryReserved;
-            reservation.targetGuid = players[2]->GetObjectGuid().GetRawValue();
-            reservation.ownerGuid = ownerGuid;
+            reservation.targetGuid = leaderGuid;
+            reservation.ownerGuid = survivorGuid;
             ordinaryReserved = wipeCoordinator->TryReserve(reservation, nowMs) && ordinaryReserved;
             reservation.targetGuid = players[3]->GetObjectGuid().GetRawValue();
             reservation.ownerGuid = leaderGuid;
@@ -9709,17 +9737,17 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 return wipeCoordinator->TryReserveThreatImpact(threatReservation, nowMs);
             };
             threatReserved = reserveThreat(deadBotGuid, deadBotGuid) && threatReserved;
-            threatReserved = reserveThreat(ownerGuid, ownerGuid) && threatReserved;
+            threatReserved = reserveThreat(survivorGuid, survivorGuid) && threatReserved;
             threatReserved = reserveThreat(leaderGuid, leaderGuid) && threatReserved;
             f52fReservationsSeeded = ordinaryReserved && threatReserved &&
                 wipeCoordinator->GetReservations().size() == 3 &&
                 wipeCoordinator->GetThreatReservationCount() == 3;
 
             // One dead Bot is not a wipe: the other four online members live.
-            players[4]->SetDeathState(JUST_DIED);
+            deadBot->SetDeathState(JUST_DIED);
             wipeCoordinator->InvalidateSnapshot();
-            driverAI.m_updateTimer.Reset(1000);
-            driverAI.UpdateAI(1000);
+            driverAI->m_updateTimer.Reset(1000);
+            driverAI->UpdateAI(1000);
             PartySnapshot const* partialSnapshot = wipeCoordinator->GetSnapshotIfFresh(
                 WorldTimer::getMSTime(), 1000);
             uint32 partialOnline = 0, partialLiving = 0;
@@ -9732,11 +9760,15 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                     if (member.alive)
                         ++partialLiving;
                 }
+            uint32 const partialNormalReservationCount =
+                static_cast<uint32>(wipeCoordinator->GetReservations().size());
+            uint32 const partialThreatReservationCount =
+                static_cast<uint32>(wipeCoordinator->GetThreatReservationCount());
             bool const survivingReservationPresent =
                 wipeCoordinator->GetReservations().size() == 2 &&
                 std::any_of(wipeCoordinator->GetReservations().begin(),
                     wipeCoordinator->GetReservations().end(),
-                    [ownerGuid](Reservation const& row) { return row.ownerGuid == ownerGuid; }) &&
+                    [survivorGuid](Reservation const& row) { return row.ownerGuid == survivorGuid; }) &&
                 std::any_of(wipeCoordinator->GetReservations().begin(),
                     wipeCoordinator->GetReservations().end(),
                     [leaderGuid](Reservation const& row) { return row.ownerGuid == leaderGuid; }) &&
@@ -9746,7 +9778,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             uint32 const nowAfterPartial = WorldTimer::getMSTime();
             bool const survivingThreatReservationPresent =
                 wipeCoordinator->GetThreatReservationCount() == 2 &&
-                wipeCoordinator->GetReservedThreatImpact(leaderGuid, ownerGuid, 0,
+                wipeCoordinator->GetReservedThreatImpact(leaderGuid, survivorGuid, 0,
                     nowAfterPartial) > 0.0f &&
                 wipeCoordinator->GetReservedThreatImpact(leaderGuid, leaderGuid, 0,
                     nowAfterPartial) > 0.0f &&
@@ -9887,9 +9919,11 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         f52fDeadStateObserved && f52fResurrectionRecovered &&
         f52fNoFalseEncounterRestart;
     sLog.Out(LOG_BASIC, f52fPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F52f five-Player wipe recovery: encounterStarted=%u reservationsSeeded=%u partialDeathSafe=%u wipeClosed=%u reservationsCleared=%u repeatedWipeIdempotent=%u followStoppedOnDeath=%u deadStateObserved=%u resurrectionRecovered=%u noFalseEncounterRestart=%u.",
+        "[PartyBotSimulator] F52f five-Player wipe recovery: encounterStarted=%u reservationsSeeded=%u partialDeathSafe=%u partialSnapshot=%u partialOnline=%u partialLiving=%u partialNormalReservations=%u partialThreatReservations=%u wipeClosed=%u reservationsCleared=%u repeatedWipeIdempotent=%u followStoppedOnDeath=%u deadStateObserved=%u resurrectionRecovered=%u noFalseEncounterRestart=%u.",
         f52fEncounterStarted ? 1u : 0u, f52fReservationsSeeded ? 1u : 0u,
-        f52fPartialDeathSafe ? 1u : 0u, f52fWipeClosed ? 1u : 0u,
+        f52fPartialDeathSafe ? 1u : 0u, partialSnapshot ? 1u : 0u,
+        partialOnline, partialLiving, partialNormalReservationCount,
+        partialThreatReservationCount, f52fWipeClosed ? 1u : 0u,
         f52fReservationsCleared ? 1u : 0u,
         f52fRepeatedWipeIdempotent ? 1u : 0u,
         f52fFollowStoppedOnDeath ? 1u : 0u,

@@ -93,9 +93,12 @@ public:
         PartyBotEngine::DecisionContext const& context,
         PartyBotEngine::Guid targetGuid) const final;
     std::uint32_t GetResurrectionSpellId() const final;
-    bool CanCastGroupResurrection(
-        PartyBotEngine::DecisionContext const& context, Player* target,
-        std::uint32_t spellId) const final;
+    bool CanResurrectGroupMember(
+        PartyBotEngine::DecisionContext const& context,
+        PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const final;
+    bool StartGroupResurrection(
+        PartyBotEngine::DecisionContext const& context,
+        PartyBotEngine::Guid targetGuid, std::uint32_t spellId) final;
     Player* GetPartyLeader() const;
     bool IsPartyInCombat() const;
     bool AttackStart(Unit* pVictim);

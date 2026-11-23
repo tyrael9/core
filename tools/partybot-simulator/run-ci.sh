@@ -495,6 +495,18 @@ for expected in corpseCreated=1 ghostReleased=1 actionCandidate=1 selfResurrecte
     fi
 done
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F52g-B NewEngine selected a same-Group corpse, Core Spell::finish created one resurrection offer and emitted the matching Engine action terminal, and the exact reservation was released; live released-ghost, departed-member and out-of-range snapshots were rejected before casting." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52g-B group-resurrection Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f52g_b_state_line="$(grep -F '[PartyBotSimulator] F52g-B group resurrection:' "$LOG_FILE" | tail -n 1)"
+for expected in spellAvailable=1 ghostRejected=1 foreignGroupRejected=1 outOfRangeRejected=1 selected=1 castStarted=1 requestPending=1 terminalMatched=1 reservationReleased=1 targetAccepted=1 newEngineOnly=1; do
+    if [[ "$f52g_b_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F52g-B group-resurrection assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
 if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

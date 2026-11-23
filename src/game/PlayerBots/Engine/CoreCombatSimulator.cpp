@@ -10268,7 +10268,6 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                     if (selected)
                     {
                         f52gBActionSelected = true;
-                        f52gBActionId = liveReport.candidates[liveIndex].actionId;
                         PartyMemberSnapshot const* const botSnapshot =
                             liveSnapshot.FindMember(casterGuid);
                         DecisionContext liveContext(
@@ -10279,6 +10278,9 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                             liveContext, liveReport);
                         CandidateEvaluation const& evaluation =
                             liveReport.candidates[liveIndex];
+                        // ExecuteSelected allocates the logical Engine ActionId
+                        // and writes it back to CandidateEvaluation.
+                        f52gBActionId = evaluation.actionId;
                         f52gBCastStarted =
                             evaluation.status == CandidateStatus::Executed &&
                             evaluation.actionResult == ActionResult::Success &&
@@ -10359,13 +10361,19 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         f52gBTerminalMatched && f52gBReservationReleased &&
         f52gBTargetAccepted && f52gBNewEngineOnly;
     sLog.Out(LOG_BASIC, f52gBPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F52g-B group resurrection: spellAvailable=%u spellId=%u ghostRejected=%u foreignGroupRejected=%u outOfRangeRejected=%u selected=%u castStarted=%u actionId=%llu requestPending=%u terminalMatched=%u reservationReleased=%u targetAccepted=%u newEngineOnly=%u.",
+        "[PartyBotSimulator] F52g-B group resurrection: spellAvailable=%u spellId=%u ghostRejected=%u foreignGroupRejected=%u outOfRangeRejected=%u selected=%u castStarted=%u actionId=%llu candidateStatus=%u actionResult=%u actionReason=%s requestPending=%u terminalMatched=%u reservationReleased=%u targetAccepted=%u newEngineOnly=%u.",
         f52gBSpellAvailable ? 1u : 0u, f52gBSpellId,
         f52gBGhostRejected ? 1u : 0u,
         f52gBForeignGroupRejected ? 1u : 0u,
         f52gBOutOfRangeRejected ? 1u : 0u,
         f52gBActionSelected ? 1u : 0u, f52gBCastStarted ? 1u : 0u,
         static_cast<unsigned long long>(f52gBActionId),
+        static_cast<unsigned int>(liveIndex < liveReport.candidates.size()
+            ? liveReport.candidates[liveIndex].status : CandidateStatus::NotSelected),
+        static_cast<unsigned int>(liveIndex < liveReport.candidates.size()
+            ? liveReport.candidates[liveIndex].actionResult : ActionResult::NotAttempted),
+        liveIndex < liveReport.candidates.size()
+            ? liveReport.candidates[liveIndex].reason.c_str() : "no_candidate",
         f52gBRequestPending ? 1u : 0u,
         f52gBTerminalMatched ? 1u : 0u,
         f52gBReservationReleased ? 1u : 0u,

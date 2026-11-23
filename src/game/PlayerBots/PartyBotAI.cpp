@@ -922,7 +922,16 @@ void PartyBotAI::OnAliveStateChanged(bool wasAlive, bool isAlive)
     if (isAlive)
         m_partyBotEngine.InvalidateDecisionState();
     else
+    {
         m_partyBotEngine.ResetDecisionState();
+        // Release this Bot's own reservations immediately on its map thread.
+        // Do not mutate a retained coordinator from a different Map after a
+        // teleport; the destination shard will be reacquired on its next tick.
+        if (m_partyCoordinator &&
+            m_partyCoordinatorMapId == me->GetMapId() &&
+            m_partyCoordinatorInstanceId == me->GetInstanceId())
+            m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+    }
 
     if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
         !m_partyCoordinator->HasActiveEncounter())

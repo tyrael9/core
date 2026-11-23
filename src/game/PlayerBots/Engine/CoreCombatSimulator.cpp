@@ -10597,7 +10597,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             f52gC2FailedTerminalMatched && f52gC2ReservationReleased &&
             f52gC2NoOfferCreated;
         f52gCPassed = f52gC1Passed && f52gC2Passed;
-        sLog.Out(LOG_BASIC, f52gCPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        sLog.Out(LOG_BASIC, f52gC1Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
             "[PartyBotSimulator] F52g-C1 interrupted group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu interruptedTerminal=%u reservationReleased=%u noOffer=%u unrelatedReservationPreserved=%u.",
             f52gCListenerAdded ? 1u : 0u, f52gCActionSelected ? 1u : 0u,
             f52gCCastStarted ? 1u : 0u,
@@ -10606,7 +10606,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             f52gCReservationReleased ? 1u : 0u,
             f52gCNoOfferCreated ? 1u : 0u,
             f52gCUnrelatedReservationPreserved ? 1u : 0u);
-        if (f52gCPassed)
+        if (f52gC1Passed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F52g-C1 interrupted a real Core resurrection cast; the matching Engine terminal released only its exact corpse reservation, preserved another Bot's reservation, and created no resurrection offer.");
         sLog.Out(LOG_BASIC, f52gC2Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,

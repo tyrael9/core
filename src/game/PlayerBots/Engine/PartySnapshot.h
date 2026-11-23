@@ -51,6 +51,7 @@ struct HostileSnapshot {
 // Immutable-by-convention value data. Never store live Core object pointers here.
 struct PartySnapshot {
     std::uint32_t groupId = 0, mapId = 0, instanceId = 0, epoch = 0, capturedAtMs = 0;
+    Guid groupLeaderGuid = 0;
     std::vector<PartyMemberSnapshot> members;
     std::vector<PartyCompanionSnapshot> companions;
     std::vector<HostileSnapshot> hostiles;

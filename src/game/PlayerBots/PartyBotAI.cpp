@@ -31,6 +31,7 @@
 #include "Utilities/Random.h"
 #include "Engine/PartySnapshotBuilder.h"
 #include "Engine/ShadowStrategies.h"
+#include "Engine/ProductionStrategies.h"
 #include "Engine/ExecutionAuthority.h"
 #include "Timer.h"
 
@@ -1917,7 +1918,14 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
 
     if (!enabled)
     {
-        m_partyBotEngine.ResetDecisionState();
+        if (m_engineShadowStrategiesRegistered || m_newEngineStrategiesRegistered)
+        {
+            m_partyBotEngine.ClearPolicies();
+            m_engineShadowStrategiesRegistered = false;
+            m_newEngineStrategiesRegistered = false;
+        }
+        else
+            m_partyBotEngine.ResetDecisionState();
         // A bot can change maps before its next AI tick. Never mutate a shard owned by another map thread.
         if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
             m_partyCoordinatorInstanceId == instanceId)
@@ -1930,16 +1938,6 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         m_partyCoordinatorInstanceId = 0;
         m_engineShadowTraceMs = 0;
         return;
-    }
-
-    // These strategies intentionally emit candidate-only Shadow observations;
-    // they are not real Engine execution adapters and must never be registered
-    // as NewEngine policy. Exclusive mode starts empty until real adapters exist.
-    if (authority != PartyBotEngine::ExecutionAuthorityMode::NewEngine &&
-        !m_engineShadowStrategiesRegistered)
-    {
-        PartyBotEngine::RegisterDefaultShadowStrategies(m_partyBotEngine);
-        m_engineShadowStrategiesRegistered = true;
     }
 
     // Share the same per-bot ten-second rate limit between successful summaries
@@ -1956,7 +1954,37 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     };
 
     if (authority == PartyBotEngine::ExecutionAuthorityMode::NewEngine)
+    {
+        if (!m_newEngineStrategiesRegistered)
+        {
+            // Shadow policies are candidate-only. Clear them before installing
+            // the exclusive CoreAction-backed NewEngine policy.
+            m_partyBotEngine.ClearPolicies();
+            m_engineShadowStrategiesRegistered = false;
+            m_newEngineStrategiesRegistered =
+                PartyBotEngine::RegisterInitialNewEngineStrategies(m_partyBotEngine);
+        }
+        if (!m_newEngineStrategiesRegistered)
+        {
+            traceStatus("new_engine_policy_registration_failed", 0);
+            return;
+        }
         traceStatus("new_engine_authoritative_no_legacy_fallback", 0);
+    }
+    else
+    {
+        if (m_newEngineStrategiesRegistered)
+        {
+            m_partyBotEngine.ClearPolicies();
+            m_newEngineStrategiesRegistered = false;
+            m_engineShadowStrategiesRegistered = false;
+        }
+        if (!m_engineShadowStrategiesRegistered)
+        {
+            PartyBotEngine::RegisterDefaultShadowStrategies(m_partyBotEngine);
+            m_engineShadowStrategiesRegistered = true;
+        }
+    }
 
     Group* group = me->GetGroup();
     if (!group || group->isBGGroup() || group->GetId() == 0)

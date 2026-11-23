@@ -36,6 +36,8 @@ class PartyBotEngine : public ActionContinuationSink {
 public:
     void AddStrategy(std::shared_ptr<Strategy> strategy);
     bool RegisterAction(std::shared_ptr<Action> action);
+    // Drop installed policy registrations while preserving Core lifecycle listeners.
+    void ClearPolicies();
     bool AddActionResultListener(std::shared_ptr<ActionResultListener> listener);
     bool AddCoreSpellTerminalListener(std::shared_ptr<CoreSpellTerminalListener> listener);
     std::size_t GetCoreSpellTerminalListenerCount() const { return m_coreSpellTerminalListeners.size(); }

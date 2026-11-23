@@ -14,6 +14,13 @@ bool PartyBotEngine::RegisterAction(std::shared_ptr<Action> action) {
     std::string const name = action->GetName();
     return m_actions.insert(std::make_pair(name, std::move(action))).second;
 }
+
+void PartyBotEngine::ClearPolicies() {
+    m_strategies.clear();
+    m_actions.clear();
+    m_multipliers.clear();
+    ResetDecisionState();
+}
 bool PartyBotEngine::AddActionResultListener(
     std::shared_ptr<ActionResultListener> listener) {
     if (!listener || m_actionResultListeners.size() >= 32)

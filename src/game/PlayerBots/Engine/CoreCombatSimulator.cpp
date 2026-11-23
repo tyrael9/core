@@ -8428,7 +8428,7 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
             // Group::Disband otherwise resets the shared test map, preventing
             // later Core Player fixtures from being created on the same instance.
             group->UnbindInstance(map.GetId(), false);
-            group->Disband(true, followerGuid);
+            group->Disband(true, group->GetLeaderGuid());
             for (Player* player : {follower, firstLeader, nextLeader})
                 if (player && player->GetGroup())
                     ungrouped = false;
@@ -8472,14 +8472,14 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
     }
 
     bool const groupCreated = group->Create(
-        follower->GetObjectGuid(), follower->GetName());
+        firstLeader->GetObjectGuid(), firstLeader->GetName());
     if (groupCreated)
     {
         sObjectMgr.AddGroup(group.get());
         groupRegistered = true;
     }
     bool const membersAdded = groupCreated &&
-        group->AddMember(firstLeader->GetObjectGuid(), firstLeader->GetName()) &&
+        group->AddMember(follower->GetObjectGuid(), follower->GetName()) &&
         group->AddMember(nextLeader->GetObjectGuid(), nextLeader->GetName());
     if (!membersAdded)
     {
@@ -8491,7 +8491,7 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
     }
 
     actionRuntime.reset(new PartyBotAI(
-        follower, map.GetId(), map.GetInstanceId(),
+        firstLeader, map.GetId(), map.GetInstanceId(),
         follower->GetPositionX(), follower->GetPositionY(),
         follower->GetPositionZ(), follower->GetOrientation()));
     actionRuntime->SetPlayer(follower);
@@ -8505,6 +8505,7 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
     PartyMemberSnapshot const* initialBot =
         initialSnapshot ? initialSnapshot->FindMember(followerGuid.GetRawValue()) : nullptr;
     bool const rosterValid = initialSnapshot &&
+        initialSnapshot->groupLeaderGuid == firstLeaderGuid.GetRawValue() &&
         initialSnapshot->members.size() == 3 && initialBot &&
         initialSnapshot->FindMember(firstLeaderGuid.GetRawValue()) &&
         initialSnapshot->FindMember(nextLeaderGuid.GetRawValue());
@@ -8576,6 +8577,7 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
     bool staleStopTargetRejected = false;
     bool stoppedFollowing = false;
     bool pointMovementPreserved = false;
+    bool productionFollowPassed = false;
 
     if (observedSnapshot && observedBot)
     {
@@ -8621,6 +8623,37 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
             retargetReport.candidates[retargetReport.selectedIndices[0]].actionResult ==
                 ActionResult::Success &&
             retargetFollow && retargetFollow->GetTarget() == nextLeader;
+
+        // F50: run the real PartyBotAI::UpdateAI under explicit NewEngine
+        // authority and require the production policy to select the Group leader.
+        if (retargeted)
+        {
+            follower->GetMotionMaster()->MoveIdle();
+            actionRuntime->m_simulatorExecutionAuthorityOverride =
+                static_cast<int32>(ExecutionAuthorityMode::NewEngine);
+            actionRuntime->m_updateTimer.Reset(1000);
+            actionRuntime->UpdateAI(1000);
+
+            MovementGenerator const* productionMovement =
+                follower->GetMotionMaster()->GetCurrent();
+            FollowMovementGenerator<Player> const* productionFollow =
+                productionMovement &&
+                productionMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                    ? static_cast<FollowMovementGenerator<Player> const*>(productionMovement)
+                    : nullptr;
+            productionFollowPassed =
+                actionRuntime->m_simulatorNewEngineTickCount == 1 &&
+                actionRuntime->m_simulatorLegacyPolicyEntryCount == 0 &&
+                actionRuntime->m_simulatorLegacyPolicyDispatchCount == 0 &&
+                actionRuntime->m_simulatorEngineDecisionCycleCount == 1 &&
+                actionRuntime->m_simulatorEngineCandidateCount == 1 &&
+                actionRuntime->m_newEngineStrategiesRegistered &&
+                !actionRuntime->m_engineShadowStrategiesRegistered &&
+                productionFollow && productionFollow->GetTarget() == firstLeader &&
+                follower->HasUnitState(UNIT_STATE_FOLLOW);
+            follower->GetMotionMaster()->MoveFollow(
+                nextLeader, 2.5f, 3.14159265358979323846f);
+        }
 
         // The old snapshot still includes firstLeader, but the live Group no longer does.
         firstLeaderRemoved =
@@ -8794,6 +8827,21 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         }
     }
 
+    sLog.Out(LOG_BASIC, productionFollowPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] NewEngine production follow: leaderSnapshot=%u newEngineTicks=%u legacyEntries=%u legacyDispatches=%u decisionCycles=%u candidates=%u policiesRegistered=%u shadowPolicies=%u followStarted=%u.",
+        rosterValid && initialSnapshot->groupLeaderGuid == firstLeaderGuid.GetRawValue() ? 1u : 0u,
+        actionRuntime->m_simulatorNewEngineTickCount,
+        actionRuntime->m_simulatorLegacyPolicyEntryCount,
+        actionRuntime->m_simulatorLegacyPolicyDispatchCount,
+        actionRuntime->m_simulatorEngineDecisionCycleCount,
+        actionRuntime->m_simulatorEngineCandidateCount,
+        actionRuntime->m_newEngineStrategiesRegistered ? 1u : 0u,
+        actionRuntime->m_engineShadowStrategiesRegistered ? 1u : 0u,
+        productionFollowPassed ? 1u : 0u);
+    if (productionFollowPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F50 real PartyBotAI::UpdateAI registered the production FollowPartyLeader strategy, selected the value-only Group leader GUID, and executed the Core FollowMovementGenerator without entering Legacy policy or registering Shadow strategies.");
+
     bool const stopFollowingPassed = stopFollowingSnapshotCaptured &&
         stopFollowingRegistered && staleStopTargetRejected &&
         stoppedFollowing && pointMovementPreserved;
@@ -8805,6 +8853,7 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
 
     bool const passed = registered && firstStarted && followTargetCaptured &&
         sameTargetNotRestarted && retargetRegistered && retargeted &&
+        productionFollowPassed &&
         firstLeaderRemoved && staleSelected && staleGroupRejected &&
         stopFollowingPassed;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,

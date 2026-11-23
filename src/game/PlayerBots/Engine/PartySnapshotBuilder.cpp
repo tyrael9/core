@@ -54,6 +54,7 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         return false;
 
     snapshot.groupId = group->GetId();
+    snapshot.groupLeaderGuid = group->GetLeaderGuid().GetRawValue();
     snapshot.mapId = bot->GetMapId();
     snapshot.instanceId = bot->GetInstanceId();
     snapshot.epoch = epoch;

@@ -38,7 +38,7 @@ public:
     {
         PartyMemberSnapshot const* target =
             context.snapshot.FindMember(candidate.targetGuid);
-        if (!context.bot.alive || context.bot.victimGuid ||
+        if (!context.bot.alive || context.bot.inCombat || context.bot.victimGuid ||
             context.bot.currentSpellId || !candidate.targetGuid ||
             candidate.targetGuid == context.bot.guid ||
             !target || !target->online || !target->alive ||
@@ -143,6 +143,7 @@ private:
             target->GetInstanceId() != context.snapshot.instanceId ||
             !actorGroup || actorGroup->isBGGroup() ||
             actorGroup->GetId() != context.snapshot.groupId ||
+            !actorGroup->IsMember(actor->GetObjectGuid()) ||
             target->GetGroup() != actorGroup ||
             !actorGroup->IsMember(target->GetObjectGuid()) ||
             !actor->IsFriendlyTo(target))
@@ -161,12 +162,14 @@ private:
             return result;
         }
 
-        if (actor->GetVictim() || HasNonMeleeSpell(actor))
+        if (actor->IsInCombat() || actor->GetVictim() || HasNonMeleeSpell(actor))
         {
             result.result = ActionResult::Useless;
-            result.reason = actor->GetVictim()
-                ? "follow_party_member_actor_has_combat_victim"
-                : "follow_party_member_actor_casting";
+            result.reason = actor->IsInCombat()
+                ? "follow_party_member_actor_in_combat"
+                : (actor->GetVictim()
+                    ? "follow_party_member_actor_has_combat_victim"
+                    : "follow_party_member_actor_casting");
             return result;
         }
 

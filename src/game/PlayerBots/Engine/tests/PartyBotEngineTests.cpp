@@ -5,6 +5,7 @@
 #include "Value.h"
 #include "ShadowStrategies.h"
 #include "DpsAssistTrigger.h"
+#include "FollowPartyLeaderTrigger.h"
 #include "ThreatBudget.h"
 #include "ThreatBudgetPolicy.h"
 #include <cassert>
@@ -4981,8 +4982,113 @@ void TestActionCandidatePreservesStableItemIdentity() {
 }
 
 
+
+class SingleCandidateTestTrigger final : public Trigger {
+public:
+    std::string const& GetName() const override { return m_name; }
+    bool IsActive(DecisionContext const&) const override { return true; }
+    void CollectCandidates(DecisionContext const&, std::vector<ActionCandidate>& candidates) const override {
+        ActionCandidate candidate;
+        candidate.actionName = "clear_policy_test_action";
+        candidate.basePriority = 1.0f;
+        candidate.channel = ActionChannel::Utility;
+        candidates.push_back(candidate);
+    }
+private:
+    std::string m_name = "single_candidate_test";
+};
+
+void TestClearPoliciesRemovesStrategiesActionsAndPendingWork() {
+    PartySnapshot snapshot;
+    snapshot.groupId = 1;
+    snapshot.mapId = 33;
+    snapshot.instanceId = 101;
+    snapshot.epoch = 1;
+    PartyMemberSnapshot bot;
+    bot.guid = 10;
+    bot.mapId = snapshot.mapId;
+    bot.instanceId = snapshot.instanceId;
+    bot.online = true;
+    bot.alive = true;
+    snapshot.members.push_back(bot);
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator, 1000);
+
+    PartyBotEngine engine;
+    assert(engine.RegisterAction(std::make_shared<TestAction>("clear_policy_test_action")));
+    std::shared_ptr<Strategy> strategy(new Strategy("clear_policy_test"));
+    strategy->AddTrigger(std::make_shared<SingleCandidateTestTrigger>());
+    engine.AddStrategy(strategy);
+    assert(engine.Evaluate(context).candidates.size() == 1);
+
+    engine.ClearPolicies();
+    DecisionReport const cleared = engine.Evaluate(context);
+    assert(cleared.candidates.empty());
+    assert(engine.GetPendingActionCount() == 0);
+}
+
+void TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader() {
+    PartySnapshot snapshot;
+    snapshot.groupId = 2;
+    snapshot.mapId = 33;
+    snapshot.instanceId = 101;
+    snapshot.epoch = 7;
+    snapshot.groupLeaderGuid = 22;
+
+    PartyMemberSnapshot bot;
+    bot.guid = 11;
+    bot.mapId = snapshot.mapId;
+    bot.instanceId = snapshot.instanceId;
+    bot.online = true;
+    bot.alive = true;
+    snapshot.members.push_back(bot);
+
+    PartyMemberSnapshot leader;
+    leader.guid = 22;
+    leader.mapId = snapshot.mapId;
+    leader.instanceId = snapshot.instanceId;
+    leader.online = true;
+    leader.alive = true;
+    snapshot.members.push_back(leader);
+
+    PartyCoordinator coordinator;
+    FollowPartyLeaderTrigger trigger;
+    DecisionContext idleContext(snapshot, snapshot.members[0], coordinator, 1000);
+    assert(trigger.IsActive(idleContext));
+    std::vector<ActionCandidate> candidates;
+    trigger.CollectCandidates(idleContext, candidates);
+    assert(candidates.size() == 1);
+    assert(candidates[0].actionName == "core_follow_party_member");
+    assert(candidates[0].targetGuid == snapshot.groupLeaderGuid);
+    assert(candidates[0].channel == ActionChannel::Movement);
+
+    snapshot.members[0].followTargetGuid = snapshot.groupLeaderGuid;
+    DecisionContext followingContext(snapshot, snapshot.members[0], coordinator, 2000);
+    candidates.clear();
+    trigger.CollectCandidates(followingContext, candidates);
+    assert(candidates.empty());
+
+    snapshot.members[0].followTargetGuid = 0;
+    snapshot.members[0].inCombat = true;
+    DecisionContext combatContext(snapshot, snapshot.members[0], coordinator, 3000);
+    assert(!trigger.IsActive(combatContext));
+    candidates.clear();
+    trigger.CollectCandidates(combatContext, candidates);
+    assert(candidates.empty());
+
+    snapshot.members[0].inCombat = false;
+    snapshot.members[1].online = false;
+    DecisionContext offlineLeaderContext(snapshot, snapshot.members[0], coordinator, 4000);
+    assert(trigger.IsActive(offlineLeaderContext));
+    candidates.clear();
+    trigger.CollectCandidates(offlineLeaderContext, candidates);
+    assert(candidates.empty());
+}
+
 int main() {
     TestActionCandidatePreservesStableItemIdentity();
+    TestClearPoliciesRemovesStrategiesActionsAndPendingWork();
+    TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader();
     TestExecutionAuthorityModesAreExplicitAndFailSafe();
     TestValueCacheEpochExpiryInvalidationAndTypeSafety();
     TestValueCacheCapacityFailsOpenWithoutEvictingLiveEntries();

@@ -193,6 +193,7 @@ set (game_SRCS
     PlayerBots/Engine/DecisionTrace.cpp
     PlayerBots/Engine/PartyCoordinator.cpp
     PlayerBots/Engine/PartyBotEngine.cpp
+    PlayerBots/Engine/ProductionStrategies.cpp
     PlayerBots/Engine/ShadowStrategies.cpp
     PlayerBots/Engine/PartySnapshotBuilder.cpp
     PlayerBots/Engine/CoreCombatSimulator.cpp

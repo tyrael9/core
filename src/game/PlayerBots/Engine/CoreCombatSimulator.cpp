@@ -8985,8 +8985,11 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         return false;
     }
 
+    // Preserve the F43/F50 legacy marker consumed by the established CI harness.
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-        "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-only current-follow snapshot to avoid restarting an unchanged target/slot, reapplied the native FollowMovementGenerator when the same target required a new formation slot, retargeted to a new group member, and rejected stale live-Group membership.");
+        "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-only current-follow snapshot to avoid restarting the same target, retargeted the native Player FollowMovementGenerator to a new group member, and rejected stale live-Group membership without disturbing movement.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSimulator] PASS: F52a reapplied the native FollowMovementGenerator when the same live Group leader required a different stable formation slot and verified the new Core offset/angle.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
         "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator.");
     return true;

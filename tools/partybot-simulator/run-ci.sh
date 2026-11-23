@@ -451,6 +451,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-onl
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F52a reapplied the native FollowMovementGenerator when the same live Group leader required a different stable formation slot and verified the new Core offset/angle." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52a same-target formation-update Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

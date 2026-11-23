@@ -2,6 +2,7 @@
 #define MANGOS_PARTYBOT_AUTO_RESURRECT_SELF_ACTION_H
 
 #include "CoreAction.h"
+#include "PlayerBots/CombatBotBaseAI.h"
 #include "ResurrectionPolicy.h"
 
 #include "Group.h"

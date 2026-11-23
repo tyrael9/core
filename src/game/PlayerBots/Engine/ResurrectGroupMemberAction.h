@@ -176,8 +176,7 @@ private:
             target->GetGroup() != group || !group->IsMember(target->GetObjectGuid()) ||
             target->IsRessurectRequested() ||
             !actor->IsWithinLOSInMap(target) ||
-            !spell->IsTargetInRange(actor, target) ||
-            !combatAI->CanTryToCastSpell(target, spell))
+            !spell->IsTargetInRange(actor, target))
             return Reject("resurrect_group_member_live_preflight_rejected");
 
         ActionExecutionResult result;

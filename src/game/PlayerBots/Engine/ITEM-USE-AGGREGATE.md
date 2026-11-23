@@ -118,3 +118,9 @@ The real-Core delayed fixture logs `preInterrupted=1 preUnmutated=1 preCharge=-5
 ## Non-goals for F42
 
 F42 does not register NewEngine class rotations, infer item success from a single child, alter the underlying Vanilla ON_USE fan-out, or implement generic inventory optimization. A production item-use action adapter remains future work. F45 adds trusted count-based stack and cast-item-as-reagent fixture coverage only; it does not implement an inventory policy or enable production item-use execution.
+
+## F48/F49 integration evidence
+
+F48 trusted runtime used Vanilla Elixir of Minor Agility (item 2457 / spell 2374) through the real Core Player item-use path. It observed the self aura/stat effect, one successful root child, a separate CountChanged event for the same Item GUID with stack 2→1, and a failed immediate repeat after clearing only GCD because Core's item cooldown remained active. Trusted push [#45097019380](https://github.com/tyrael9/core/actions/runs/45097019380) reached final `Runtime PASS`; matching PR build [#45097024271](https://github.com/tyrael9/core/actions/runs/45097024271) passed.
+
+F49 adds a simulator-only Engine action contract. The selected candidate carries Item GUID, entry, encoded inventory position and requested ON_USE slot as scalar values. Live Core preflight must re-resolve the exact inventory item, ownership, entry, position, use slot, entire bounded ON_USE fan-out, current CanUseItem state and spell/item cooldown before execution. The action then calls the native `Player::CastItemUseSpell`; the PartyBotAI observer supplies the nonzero Engine action ID to the aggregate root. A stale-item race must fail without opening a root or emitting mutation. F49 remains unregistered and its trusted runtime gate is pending.

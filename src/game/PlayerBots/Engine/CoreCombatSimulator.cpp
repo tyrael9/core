@@ -9127,6 +9127,15 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         }
         botAIs.clear();
 
+        // A failed lifecycle assertion must not leave a simulator Player as a
+        // corpse/ghost in the shared Map or leak a resurrectable Corpse object.
+        for (Player* player : players)
+            if (player && !player->IsAlive())
+            {
+                player->ResurrectPlayer(1.0f, false);
+                player->SpawnCorpseBones();
+            }
+
         bool ungrouped = true;
         if (group && group->GetId())
         {
@@ -9940,12 +9949,108 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F52f closed a real five-Player Group encounter immediately on a full wipe, preserved it through a single Bot death, cleared encounter reservations once, verified Core death cleanup and Dead-state observation, then resurrected all members and restored four unique native NewEngine Follow offsets without restarting combat or entering Legacy policy.");
 
+    // F52g-A: exercise the NewEngine self-resurrection action against a
+    // real Core corpse/ghost transition. The existing Core repop lifecycle
+    // creates the corpse and released-ghost state; the Engine only decides
+    // when to invoke Player::ResurrectPlayer and then restores native Follow.
+    bool f52gCorpseCreated = false;
+    bool f52gGhostReleased = false;
+    bool f52gActionCandidate = false;
+    bool f52gSelfResurrected = false;
+    bool f52gCorpseConvertedToBones = false;
+    bool f52gFollowRestored = false;
+    bool f52gNewEngineOnly = false;
+    if (f52fPassed && !botAIs.empty() && players.size() == 5)
+    {
+        PartyBotAI& reviveAI = *botAIs[0];
+        Player* const reviveBot = players[1];
+        uint32 const ticksBefore = reviveAI.m_simulatorNewEngineTickCount;
+        uint32 const cyclesBefore = reviveAI.m_simulatorEngineDecisionCycleCount;
+        uint32 const legacyEntriesBefore = reviveAI.m_simulatorLegacyPolicyEntryCount;
+        uint32 const legacyDispatchesBefore = reviveAI.m_simulatorLegacyPolicyDispatchCount;
+
+        // Match the real lethal transition before the native corpse/repop path.
+        reviveBot->SetHealth(0);
+        reviveBot->SetDeathState(JUST_DIED);
+        reviveBot->KillPlayer();
+        f52gCorpseCreated = reviveBot->GetDeathState() == CORPSE &&
+            !reviveBot->IsAlive();
+
+        if (f52gCorpseCreated)
+            reviveBot->BuildPlayerRepop();
+        f52gGhostReleased = f52gCorpseCreated &&
+            reviveBot->GetDeathState() == DEAD && !reviveBot->IsAlive() &&
+            reviveBot->GetCorpse() != nullptr;
+
+        if (f52gGhostReleased)
+        {
+            wipeCoordinator->InvalidateSnapshot();
+            reviveAI.m_updateTimer.Reset(1000);
+            reviveAI.UpdateAI(1000);
+
+            f52gActionCandidate =
+                reviveAI.m_simulatorEngineDecisionCycleCount == cyclesBefore + 1 &&
+                reviveAI.m_simulatorNewEngineTickCount == ticksBefore + 1 &&
+                reviveAI.m_simulatorEngineCandidateCount == 1;
+            f52gSelfResurrected = reviveBot->IsAlive() &&
+                reviveBot->GetDeathState() == ALIVE;
+            f52gCorpseConvertedToBones =
+                f52gSelfResurrected && reviveBot->GetCorpse() == nullptr;
+
+            // The next tick chooses the native Follow again; a further tick
+            // observes the resulting generator and settles at FollowingLeader.
+            for (uint32 tick = 0; tick < 2; ++tick)
+            {
+                wipeCoordinator->InvalidateSnapshot();
+                reviveAI.m_updateTimer.Reset(1000);
+                reviveAI.UpdateAI(1000);
+            }
+            MovementGenerator const* recoveredMovement =
+                reviveBot->GetMotionMaster()->GetCurrent();
+            FollowMovementGenerator<Player> const* recoveredFollow =
+                recoveredMovement &&
+                recoveredMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                    ? static_cast<FollowMovementGenerator<Player> const*>(recoveredMovement)
+                    : nullptr;
+            uint8 const recoveredSlot = wipeCoordinator->GetFormationSlot(
+                reviveBot->GetObjectGuid().GetRawValue());
+            f52gFollowRestored = recoveredFollow &&
+                recoveredFollow->GetTarget() == leader &&
+                reviveBot->HasUnitState(UNIT_STATE_FOLLOW) &&
+                recoveredSlot == slotByBot[0] &&
+                reviveAI.m_botBehaviorStateMachine.GetState() ==
+                    BotBehaviorState::FollowingLeader;
+        }
+
+        f52gNewEngineOnly =
+            reviveAI.m_simulatorNewEngineTickCount == ticksBefore + 3 &&
+            reviveAI.m_simulatorLegacyPolicyEntryCount == legacyEntriesBefore &&
+            reviveAI.m_simulatorLegacyPolicyDispatchCount == legacyDispatchesBefore &&
+            reviveAI.m_newEngineStrategiesRegistered &&
+            !reviveAI.m_engineShadowStrategiesRegistered &&
+            !wipeCoordinator->HasActiveEncounter();
+    }
+    bool const f52gSelfResurrectionPassed =
+        f52gCorpseCreated && f52gGhostReleased && f52gActionCandidate &&
+        f52gSelfResurrected && f52gCorpseConvertedToBones &&
+        f52gFollowRestored && f52gNewEngineOnly;
+    sLog.Out(LOG_BASIC, f52gSelfResurrectionPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F52g NewEngine ghost self-resurrection: corpseCreated=%u ghostReleased=%u actionCandidate=%u selfResurrected=%u corpseConvertedToBones=%u followRestored=%u newEngineOnly=%u.",
+        f52gCorpseCreated ? 1u : 0u, f52gGhostReleased ? 1u : 0u,
+        f52gActionCandidate ? 1u : 0u, f52gSelfResurrected ? 1u : 0u,
+        f52gCorpseConvertedToBones ? 1u : 0u,
+        f52gFollowRestored ? 1u : 0u, f52gNewEngineOnly ? 1u : 0u);
+    if (f52gSelfResurrectionPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F52g Core created a real resurrectable corpse and released ghost; NewEngine selected its self-resurrection action, Core Player::ResurrectPlayer restored the Bot and converted the corpse to bones, then NewEngine restored the original formation Follow without Legacy policy entry/dispatch.");
+
     bool const passed = groupCreated && membersAdded &&
         sharedCoordinatorForAll && allSnapshotsAreFiveMembers &&
         allBotsStartedFollow && allFourSlotsOccupied && allSlotsUnique &&
         allOffsetsMatch && allNewEngineOnly && reverseTickNoOps &&
         removedFromGroup && departureReleasedSlot && incumbentsKeptSlots &&
-        rejoinReclaimedSlot && f52ePassed && f52fPassed;
+        rejoinReclaimedSlot && f52ePassed && f52fPassed &&
+        f52gSelfResurrectionPassed;
 
     bool const cleaned = cleanup();
     sLog.Out(LOG_BASIC, passed && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,

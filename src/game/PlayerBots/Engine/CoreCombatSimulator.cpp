@@ -8568,7 +8568,8 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
     PartyMemberSnapshot const* observedBot = observedSnapshot
         ? observedSnapshot->FindMember(botGuid) : nullptr;
     bool const followTargetCaptured = observedBot &&
-        observedBot->followTargetGuid == firstGuid;
+        observedBot->followTargetGuid == firstGuid &&
+        observedBot->followFormationSlot == 0;
 
     bool sameTargetNotRestarted = false;
     bool retargeted = false;

@@ -223,8 +223,20 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
                 followTarget->GetMap() == map &&
                 followTarget->GetMapId() == snapshot.mapId &&
                 followTarget->GetInstanceId() == snapshot.instanceId)
+            {
                 memberData.followTargetGuid =
                     followTarget->GetObjectGuid().GetRawValue();
+                for (std::uint8_t slot = 0; slot < MaxPartyFormationSlots; ++slot)
+                {
+                    FollowFormationOffset const expected = GetFollowFormationOffset(slot);
+                    if (follow->GetFollowDistance() == expected.distance &&
+                        follow->GetFollowAngle() == expected.angle)
+                    {
+                        memberData.followFormationSlot = slot;
+                        break;
+                    }
+                }
+            }
         }
 
         if (currentMovement &&

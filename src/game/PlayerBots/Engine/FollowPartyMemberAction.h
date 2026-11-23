@@ -56,8 +56,14 @@ public:
                   ActionCandidate const& candidate,
                   std::string& reason) const override
     {
-        if (!candidate.targetGuid ||
-            candidate.targetGuid == context.bot.followTargetGuid)
+        if (!candidate.targetGuid)
+        {
+            reason = "follow_party_member_missing_target";
+            return false;
+        }
+        if (candidate.formationSlot != InvalidFormationSlot &&
+            candidate.targetGuid == context.bot.followTargetGuid &&
+            candidate.formationSlot == context.bot.followFormationSlot)
         {
             reason = "follow_party_member_already_following_target";
             return false;
@@ -177,12 +183,18 @@ private:
         }
 
         FollowMovementGenerator<Player> const* currentFollow = GetCurrentFollow(actor);
-        if (currentFollow && currentFollow->GetTarget() == target)
+        FollowFormationOffset const desiredOffset =
+            GetFollowFormationOffset(candidate.formationSlot);
+        if (currentFollow && currentFollow->GetTarget() == target &&
+            currentFollow->GetFollowDistance() == desiredOffset.distance &&
+            currentFollow->GetFollowAngle() == desiredOffset.angle)
         {
             result.result = ActionResult::Useless;
             result.reason = "follow_party_member_same_target_already_active";
             return result;
         }
+        // The target is unchanged but its assigned formation slot differs.
+        // MoveFollow below safely replaces only this current Follow generator.
 
         if (!currentFollow && !actor->GetMotionMaster()->IsUsingIdleOrDefaultMovement())
         {

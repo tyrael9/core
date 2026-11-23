@@ -26,8 +26,7 @@ public:
         if (!IsActive(context))
             return;
         Guid const leaderGuid = context.snapshot.groupLeaderGuid;
-        if (!leaderGuid || leaderGuid == context.bot.guid ||
-            leaderGuid == context.bot.followTargetGuid)
+        if (!leaderGuid || leaderGuid == context.bot.guid)
             return;
         PartyMemberSnapshot const* leader = context.snapshot.FindMember(leaderGuid);
         if (!leader || !leader->online || !leader->alive ||
@@ -36,7 +35,9 @@ public:
             return;
         std::uint8_t const formationSlot =
             context.coordinator.GetFormationSlot(context.bot.guid);
-        if (formationSlot == InvalidFormationSlot)
+        if (formationSlot == InvalidFormationSlot ||
+            (leaderGuid == context.bot.followTargetGuid &&
+             context.bot.followFormationSlot == formationSlot))
             return;
 
         ActionCandidate candidate;

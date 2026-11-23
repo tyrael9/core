@@ -5205,10 +5205,19 @@ void TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader() {
     assert(candidates[0].formationSlot == 0);
 
     snapshot.members[0].followTargetGuid = snapshot.groupLeaderGuid;
+    snapshot.members[0].followFormationSlot = 0;
     DecisionContext followingContext(snapshot, snapshot.members[0], coordinator, 2000);
     candidates.clear();
     trigger.CollectCandidates(followingContext, candidates);
     assert(candidates.empty());
+
+    snapshot.members[0].followFormationSlot = 1;
+    DecisionContext wrongFormationContext(snapshot, snapshot.members[0], coordinator, 2500);
+    candidates.clear();
+    trigger.CollectCandidates(wrongFormationContext, candidates);
+    assert(candidates.size() == 1);
+    assert(candidates[0].targetGuid == snapshot.groupLeaderGuid);
+    assert(candidates[0].formationSlot == 0);
 
     snapshot.members[0].followTargetGuid = 0;
     snapshot.members[0].inCombat = true;
@@ -5303,6 +5312,7 @@ void TestProductionFollowTriggersRetargetStopAndRecover() {
     assert(candidates[0].formationSlot == 0);
 
     snapshot.members[0].followTargetGuid = snapshot.groupLeaderGuid;
+    snapshot.members[0].followFormationSlot = 0;
     DecisionContext following(snapshot, snapshot.members[0], coordinator, 2000);
     candidates.clear(); follow.CollectCandidates(following, candidates);
     assert(candidates.empty() && !stop.IsActive(following));

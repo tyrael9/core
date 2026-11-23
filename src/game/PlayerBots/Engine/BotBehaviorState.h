@@ -90,6 +90,8 @@ public:
         observation.elapsedMs = nowMs - m_stateSinceMs;
         return observation;
     }
+    BotBehaviorState GetState() const { return m_state; }
+
     void Reset()
     {
         m_initialized = false;

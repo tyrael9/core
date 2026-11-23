@@ -489,7 +489,9 @@ Trusted push [#45097019380](https://github.com/tyrael9/core/actions/runs/4509701
 
 F48 remains Core runtime evidence only: it did not add a production item-use action or strategy.
 
-## F49 — Engine-selected item-backed utility action contract (implementation in progress)
+## F49
+
+Implementation follow-up `2db0af075dc5ccb66ef561f927e6cf559befaa34` also extends both `PartyBotEngine.cpp` candidate identity comparisons with item GUID, entry, inventory position and requested ON_USE slot. This preserves distinct value-only inventory requests during continuation matching and pending-dispatch reconciliation. Trusted runtime validation remains pending. — Engine-selected item-backed utility action contract (implementation in progress)
 
 The simulator-only `CoreAction` adds stable value-only item identity to `ActionCandidate`: item GUID, item entry, encoded inventory position and requested ON_USE slot. Evaluation resolves the current Player-owned item and requires the exact inventory identity, Core `CanUseItem`, a fully bounded ON_USE fan-out, no current combat/cast and current Core spell readiness. The `NoThreat` estimate is available only for the F47 positive item-cast path; ordinary positive non-triggered spells remain excluded by F46. The final CoreAction preflight repeats item identity, ownership, position, slot, fan-out and cooldown checks on the map thread before calling `Player::CastItemUseSpell`.
 

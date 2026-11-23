@@ -119,7 +119,9 @@ The real-Core delayed fixture logs `preInterrupted=1 preUnmutated=1 preCharge=-5
 
 F42 does not register NewEngine class rotations, infer item success from a single child, alter the underlying Vanilla ON_USE fan-out, or implement generic inventory optimization. A production item-use action adapter remains future work. F45 adds trusted count-based stack and cast-item-as-reagent fixture coverage only; it does not implement an inventory policy or enable production item-use execution.
 
-## F48/F49 integration evidence
+## F48/F49
+
+Implementation follow-up `2db0af075dc5ccb66ef561f927e6cf559befaa34` also extends both `PartyBotEngine.cpp` candidate identity comparisons with item GUID, entry, inventory position and requested ON_USE slot. This preserves distinct value-only inventory requests during continuation matching and pending-dispatch reconciliation. Trusted runtime validation remains pending. integration evidence
 
 F48 trusted runtime used Vanilla Elixir of Minor Agility (item 2457 / spell 2374) through the real Core Player item-use path. It observed the self aura/stat effect, one successful root child, a separate CountChanged event for the same Item GUID with stack 2→1, and a failed immediate repeat after clearing only GCD because Core's item cooldown remained active. Trusted push [#45097019380](https://github.com/tyrael9/core/actions/runs/45097019380) reached final `Runtime PASS`; matching PR build [#45097024271](https://github.com/tyrael9/core/actions/runs/45097024271) passed.
 

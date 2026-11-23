@@ -10061,6 +10061,11 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52gBNewEngineOnly = false;
     uint32 f52gBSpellId = 0;
     ActionId f52gBActionId = 0;
+    uint32 f52gBCandidateStatus =
+        static_cast<uint32>(CandidateStatus::NotSelected);
+    uint32 f52gBActionResult =
+        static_cast<uint32>(ActionResult::NotAttempted);
+    std::string f52gBActionReason = "not_executed";
     if (f52gSelfResurrectionPassed && botAIs.size() == 4 && players.size() == 5)
     {
         PartyBotAI& resurrectionAI = *botAIs[0];
@@ -10281,6 +10286,11 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                         // ExecuteSelected allocates the logical Engine ActionId
                         // and writes it back to CandidateEvaluation.
                         f52gBActionId = evaluation.actionId;
+                        f52gBCandidateStatus =
+                            static_cast<uint32>(evaluation.status);
+                        f52gBActionResult =
+                            static_cast<uint32>(evaluation.actionResult);
+                        f52gBActionReason = evaluation.reason;
                         f52gBCastStarted =
                             evaluation.status == CandidateStatus::Executed &&
                             evaluation.actionResult == ActionResult::Success &&
@@ -10368,12 +10378,8 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         f52gBOutOfRangeRejected ? 1u : 0u,
         f52gBActionSelected ? 1u : 0u, f52gBCastStarted ? 1u : 0u,
         static_cast<unsigned long long>(f52gBActionId),
-        static_cast<unsigned int>(liveIndex < liveReport.candidates.size()
-            ? liveReport.candidates[liveIndex].status : CandidateStatus::NotSelected),
-        static_cast<unsigned int>(liveIndex < liveReport.candidates.size()
-            ? liveReport.candidates[liveIndex].actionResult : ActionResult::NotAttempted),
-        liveIndex < liveReport.candidates.size()
-            ? liveReport.candidates[liveIndex].reason.c_str() : "no_candidate",
+        f52gBCandidateStatus, f52gBActionResult,
+        f52gBActionReason.c_str(),
         f52gBRequestPending ? 1u : 0u,
         f52gBTerminalMatched ? 1u : 0u,
         f52gBReservationReleased ? 1u : 0u,

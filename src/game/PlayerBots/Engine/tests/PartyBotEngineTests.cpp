@@ -3222,6 +3222,49 @@ void TestReservationOwnershipAndExpiry() {
     assert(!coordinator.HasReservation(ReservationType::CrowdControl, 101, 202, 1500));
     assert(coordinator.GetReservations().empty());
 }
+void TestResurrectionReservationOwnershipExpiryAndCompetition()
+{
+    PartyCoordinator coordinator;
+    Reservation first;
+    first.type = ReservationType::Resurrection;
+    first.targetGuid = 7001;
+    first.ownerGuid = 8001;
+    first.spellId = 2010;
+    first.expiresAtMs = 5000;
+    assert(coordinator.TryReserve(first, 1000));
+    assert(coordinator.HasReservation(ReservationType::Resurrection, 7001, 8002, 1100));
+
+    // A second Bot cannot reserve the same corpse while the first cast is pending.
+    Reservation competing = first;
+    competing.ownerGuid = 8002;
+    assert(!coordinator.TryReserve(competing, 1200));
+    assert(!coordinator.ReleaseReservation(
+        ReservationType::Resurrection, 7001, 8002));
+    assert(coordinator.HasReservation(ReservationType::Resurrection, 7001, 8002, 1300));
+
+    // Exact terminal cleanup for the first Bot leaves unrelated resurrection work intact.
+    Reservation unrelated = first;
+    unrelated.targetGuid = 7002;
+    unrelated.ownerGuid = 8002;
+    unrelated.expiresAtMs = 6000;
+    assert(coordinator.TryReserve(unrelated, 1300));
+    assert(coordinator.ReleaseReservation(
+        ReservationType::Resurrection, 7001, 8001));
+    assert(!coordinator.HasReservation(ReservationType::Resurrection, 7001, 0, 1400));
+    assert(coordinator.HasReservation(ReservationType::Resurrection, 7002, 8001, 1400));
+    assert(coordinator.GetReservations().size() == 1);
+
+    // Missing Core terminal cannot strand a corpse indefinitely: the bounded
+    // reservation expires and another Bot can claim it at the deadline.
+    Reservation expiring = first;
+    expiring.expiresAtMs = 2000;
+    assert(coordinator.TryReserve(expiring, 1500));
+    coordinator.PruneExpired(2000);
+    assert(coordinator.GetReservations().size() == 1);
+    assert(coordinator.TryReserve(competing, 2000));
+    assert(coordinator.HasReservation(ReservationType::Resurrection, 7001, 8001, 2000));
+}
+
 void TestThreatReservationAggregationAndActionRelease() {
     PartyCoordinator coordinator;
     ThreatActionId const actionOne = coordinator.NextThreatActionId();
@@ -5831,6 +5874,7 @@ int main() {
     TestExecuteSelectedDispatchesByPriorityWithStableTies();    TestExecuteSelectedHonorsPerDispatchLimit();
     TestPriorityAndChannelArbitration(); TestEligibilityRejections();
     TestReservationOwnershipAndExpiry();
+    TestResurrectionReservationOwnershipExpiryAndCompetition();
     TestThreatReservationAggregationAndActionRelease();
     TestThreatReservationExpiryAndClockWrap();
     TestThreatReservationValidationAndBoundedCapacity();

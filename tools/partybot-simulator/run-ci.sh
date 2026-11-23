@@ -507,6 +507,18 @@ for expected in spellAvailable=1 ghostRejected=1 foreignGroupRejected=1 outOfRan
     fi
 done
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C1 interrupted a real Core resurrection cast;" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52g-C1 interrupted group-resurrection Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f52g_c1_state_line="$(grep -F '[PartyBotSimulator] F52g-C1 interrupted group resurrection:' "$LOG_FILE" | tail -n 1)"
+for expected in listener=1 selected=1 castStarted=1 interruptedTerminal=1 reservationReleased=1 noOffer=1 unrelatedReservationPreserved=1; do
+    if [[ "$f52g_c1_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F52g-C1 interruption assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
 if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

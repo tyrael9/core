@@ -4768,6 +4768,104 @@ void TestEncounterLifecycleCompanionWrapAndExplicitClose()
 }
 
 
+void TestEncounterWipeClosesImmediatelyAndClearsReservations()
+{
+    PartyCoordinator coordinator;
+    PartySnapshot snapshot;
+    snapshot.groupId = 899;
+    snapshot.mapId = 33;
+    snapshot.instanceId = 7;
+    snapshot.epoch = 1;
+
+    for (Guid guid = 1; guid <= 5; ++guid)
+    {
+        PartyMemberSnapshot member;
+        member.guid = guid;
+        member.online = true;
+        member.alive = true;
+        member.inCombat = guid == 1;
+        member.isPlayerBot = guid != 1;
+        snapshot.members.push_back(member);
+    }
+
+    EncounterTransition started = coordinator.ObserveEncounter(snapshot, 1000, 30000);
+    assert(started.kind == EncounterTransitionKind::Started);
+    assert(coordinator.HasActiveEncounter());
+
+    Reservation reservation;
+    reservation.targetGuid = 77;
+    reservation.ownerGuid = 2;
+    reservation.expiresAtMs = 60000;
+    assert(coordinator.TryReserve(reservation, 1000));
+    ThreatReservation threat;
+    threat.ownerGuid = 2;
+    threat.threatOwnerGuid = 2;
+    threat.hostileGuid = 88;
+    threat.actionId = 1;
+    threat.threatPoints = 25.0f;
+    threat.expiresAtMs = 60000;
+    assert(coordinator.TryReserveThreatImpact(threat, 1000));
+    assert(coordinator.GetReservations().size() == 1);
+    assert(coordinator.GetThreatReservationCount() == 1);
+
+    // One death is not a wipe while any online party member remains alive.
+    snapshot.epoch = 2;
+    snapshot.members[0].alive = false;
+    snapshot.members[0].inCombat = false;
+    EncounterTransition partialDeath = coordinator.ObserveEncounter(snapshot, 2000, 30000);
+    assert(partialDeath.kind == EncounterTransitionKind::None);
+    assert(coordinator.HasActiveEncounter());
+    assert(coordinator.GetReservations().size() == 1);
+    assert(coordinator.GetThreatReservationCount() == 1);
+
+    // A complete online-roster wipe closes immediately, not after quiet-settle.
+    snapshot.epoch = 3;
+    for (PartyMemberSnapshot& member : snapshot.members)
+        member.alive = false;
+    EncounterTransition wiped = coordinator.ObserveEncounter(snapshot, 2500, 30000);
+    assert(wiped.kind == EncounterTransitionKind::Ended);
+    assert(wiped.reason && wiped.reason[0] == 'p');
+    assert(!coordinator.HasActiveEncounter());
+    assert(coordinator.GetReservations().empty());
+    assert(coordinator.GetThreatReservationCount() == 0);
+
+    // Repeated dead snapshots cannot emit a second terminal or mutate state.
+    snapshot.epoch = 4;
+    EncounterTransition repeatedWipe = coordinator.ObserveEncounter(snapshot, 3000, 30000);
+    assert(repeatedWipe.kind == EncounterTransitionKind::None);
+    assert(coordinator.GetReservations().empty());
+    assert(coordinator.GetThreatReservationCount() == 0);
+
+    // A resurrected member alone does not reopen combat; new combat does.
+    snapshot.epoch = 5;
+    snapshot.members[0].alive = true;
+    EncounterTransition resurrected = coordinator.ObserveEncounter(snapshot, 4000, 30000);
+    assert(resurrected.kind == EncounterTransitionKind::None);
+    snapshot.epoch = 6;
+    snapshot.members[0].inCombat = true;
+    EncounterTransition restarted = coordinator.ObserveEncounter(snapshot, 5000, 30000);
+    assert(restarted.kind == EncounterTransitionKind::Started);
+    assert(restarted.encounterId != started.encounterId);
+
+    // An empty online roster is unknown, not a wipe.
+    PartyCoordinator offlineCoordinator;
+    snapshot.epoch = 1;
+    snapshot.members[0].alive = true;
+    snapshot.members[0].online = true;
+    snapshot.members[0].inCombat = true;
+    EncounterTransition offlineStart =
+        offlineCoordinator.ObserveEncounter(snapshot, 1000, 30000);
+    assert(offlineStart.kind == EncounterTransitionKind::Started);
+    snapshot.epoch = 2;
+    for (PartyMemberSnapshot& member : snapshot.members)
+        member.online = false;
+    EncounterTransition allOffline =
+        offlineCoordinator.ObserveEncounter(snapshot, 2000, 30000);
+    assert(allOffline.kind == EncounterTransitionKind::None);
+    assert(offlineCoordinator.HasActiveEncounter());
+}
+
+
 void TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe()
 {
     PartyCoordinator coordinator;
@@ -5467,6 +5565,7 @@ int main() {
     TestEncounterLifecycleStartSettleAndSequence();
     TestEncounterLifecycleRejectsForeignShardSnapshots();
     TestEncounterLifecycleCompanionWrapAndExplicitClose();
+    TestEncounterWipeClosesImmediatelyAndClearsReservations();
     TestEncounterHeartbeatIsSharedThrottledSequencedAndWrapSafe();
     TestEncounterTraceBudgetIsPartyWideBoundedAndTerminalReserved();
     TestEncounterTraceBudgetConfigurationIsClampedAndBounded();

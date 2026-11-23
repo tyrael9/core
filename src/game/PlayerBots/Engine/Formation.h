@@ -24,6 +24,18 @@ struct FollowFormationOffset
     float angle;
 };
 
+// A slotless generic request preserves the historical same-target no-op.
+// A production request with a different valid slot is a deliberate reformation.
+inline bool IsSameTargetFollowRequestNoOp(
+    Guid requestedTargetGuid, std::uint8_t requestedSlot,
+    Guid currentFollowTargetGuid, std::uint8_t currentFollowSlot)
+{
+    return requestedTargetGuid &&
+        requestedTargetGuid == currentFollowTargetGuid &&
+        (requestedSlot == InvalidFormationSlot ||
+         requestedSlot == currentFollowSlot);
+}
+
 inline FollowFormationOffset GetFollowFormationOffset(std::uint8_t slot)
 {
     static float const Pi = 3.14159265358979323846f;

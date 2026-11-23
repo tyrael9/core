@@ -5164,6 +5164,14 @@ void TestFormationAssignmentsRemainStableAcrossRosterAndLeaderChanges() {
     assert(slot2.distance == 3.25f && slot2.angle > slot0.angle);
     assert(slot3.distance == 4.75f && slot3.angle == slot0.angle);
     assert(invalid.distance == slot0.distance && invalid.angle == slot0.angle);
+
+    // Generic slotless requests retain the old same-target no-op contract.
+    assert(IsSameTargetFollowRequestNoOp(123, InvalidFormationSlot, 123, 0));
+    // Production requests are no-ops only when both target and slot match.
+    assert(IsSameTargetFollowRequestNoOp(123, 0, 123, 0));
+    assert(!IsSameTargetFollowRequestNoOp(123, 1, 123, 0));
+    assert(!IsSameTargetFollowRequestNoOp(124, 1, 123, 0));
+    assert(!IsSameTargetFollowRequestNoOp(0, InvalidFormationSlot, 0, 0));
 }
 
 void TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader() {

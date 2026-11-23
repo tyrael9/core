@@ -64,9 +64,9 @@ public:
         // Generic callers without a formation slot retain the original
         // same-target no-op contract. Production formation policy supplies a
         // valid slot, allowing only a genuine same-target slot correction.
-        if (candidate.targetGuid == context.bot.followTargetGuid &&
-            (candidate.formationSlot == InvalidFormationSlot ||
-             candidate.formationSlot == context.bot.followFormationSlot))
+        if (IsSameTargetFollowRequestNoOp(
+                candidate.targetGuid, candidate.formationSlot,
+                context.bot.followTargetGuid, context.bot.followFormationSlot))
         {
             reason = "follow_party_member_already_following_target";
             return false;

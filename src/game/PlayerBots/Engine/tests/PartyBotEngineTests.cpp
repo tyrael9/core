@@ -4824,7 +4824,7 @@ void TestEncounterWipeClosesImmediatelyAndClearsReservations()
         member.alive = false;
     EncounterTransition wiped = coordinator.ObserveEncounter(snapshot, 2500, 30000);
     assert(wiped.kind == EncounterTransitionKind::Ended);
-    assert(wiped.reason && wiped.reason[0] == 'p');
+    assert(wiped.reason && std::string(wiped.reason) == "party_wipe");
     assert(!coordinator.HasActiveEncounter());
     assert(coordinator.GetReservations().empty());
     assert(coordinator.GetThreatReservationCount() == 0);

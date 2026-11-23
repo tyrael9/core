@@ -10314,7 +10314,14 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                     for (uint32 tick = 0; tick < 60 &&
                         (resurrectionTerminal->events.empty() ||
                          caster->GetCurrentSpell(CURRENT_GENERIC_SPELL)); ++tick)
-                        map.Update(250);
+                    {
+                        // Map::UpdatePlayers is wall-clock paced, so tight
+                        // synthetic Map::Update calls can be skipped entirely.
+                        // Advance the real Core Player/Unit event path directly
+                        // with a deterministic diff; this runs SpellEvent and
+                        // eventually Core Spell::finish without faking a result.
+                        caster->Update(250, 250);
+                    }
 
                     f52gBRequestPending = f52gBCastStarted &&
                         corpseTarget->IsRessurectRequested() &&

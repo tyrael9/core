@@ -2,6 +2,16 @@
 #define MANGOS_PARTYBOT_PARTY_SNAPSHOT_H
 #include "DecisionTypes.h"
 namespace PartyBotEngine {
+enum class PartyMemberDeathState : std::uint8_t
+{
+    Alive = 0,
+    Dying,
+    Corpse,
+    ReleasedGhost,
+    Resurrecting,
+    CorpseFalling,
+    Unknown
+};
 struct PartyMemberSnapshot {
     Guid guid = 0;
     std::uint8_t classId = 0, roleId = 0, level = 0, powerType = 0;
@@ -22,6 +32,7 @@ struct PartyMemberSnapshot {
     Guid currentSpellTraceTargetGuid = 0;
     bool currentSpellEngineAction = false;
     std::uint8_t shapeshiftForm = 0, currentSpellType = 0xff;
+    PartyMemberDeathState deathState = PartyMemberDeathState::Alive;
     bool online = false, alive = false, inCombat = false, isMainTank = false;
     bool victimAttackable = false;
     bool isPlayerBot = false;

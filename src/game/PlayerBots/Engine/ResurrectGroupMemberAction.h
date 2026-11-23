@@ -3,10 +3,6 @@
 
 #include "CoreAction.h"
 
-#include "Group.h"
-#include "Player.h"
-#include "Spell.h"
-#include "SpellMgr.h"
 
 namespace PartyBotEngine
 {
@@ -85,39 +81,17 @@ protected:
         if (result.result != ActionResult::Success)
             return result;
 
-        Player* const actor = resolved.actor;
-        Player* const target = resolved.target->ToPlayer();
-        SpellEntry const* const spell = sSpellMgr.GetSpellEntry(candidate.spellId);
-        Guid const ownerGuid = actor->GetObjectGuid().GetRawValue();
-
-        Reservation reservation;
-        reservation.type = ReservationType::Resurrection;
-        reservation.targetGuid = candidate.targetGuid;
-        reservation.ownerGuid = ownerGuid;
-        reservation.spellId = candidate.spellId;
-        reservation.expiresAtMs = context.nowMs + 60000u;
-        if (!context.coordinator.TryReserve(reservation, context.nowMs))
+        if (!context.coreActionRuntime ||
+            !context.coreActionRuntime->StartGroupResurrection(
+                context, candidate.targetGuid, candidate.spellId))
         {
-            result.result = ActionResult::Useless;
-            result.reason = "resurrect_group_member_reservation_race";
-            return result;
-        }
-
-        actor->SetFacingToObject(target);
-        actor->SetTargetGuid(target->GetObjectGuid());
-        SpellCastResult const castResult = actor->CastSpell(target, spell, false);
-        if (castResult != SPELL_CAST_OK)
-        {
-            context.coordinator.ReleaseReservation(
-                ReservationType::Resurrection, candidate.targetGuid, ownerGuid);
             result.result = ActionResult::Failed;
             result.reason = "resurrect_group_member_core_cast_rejected";
             return result;
         }
 
-        // The exact (caster,target) reservation stays until Core's Spell
-        // terminal callback; a 60-second expiry bounds missing/cancelled events.
-        context.coordinator.InvalidateSnapshot();
+        // The host keeps the exact (caster,target) reservation until Core's
+        // Spell terminal callback; a 60-second expiry bounds missing events.
         result.result = ActionResult::Success;
         result.reason = "resurrect_group_member_core_cast_started";
         return result;
@@ -163,20 +137,8 @@ private:
             context.bot.resurrectionSpellId != candidate.spellId ||
             !context.coreActionRuntime ||
             context.coreActionRuntime->GetResurrectionSpellId() != candidate.spellId ||
-            !context.coreActionRuntime->CanCastGroupResurrection(
-                context, target, candidate.spellId) ||
-            actor->IsInCombat() || actor->GetVictim() || HasNonMeleeSpell(actor) ||
-            actor->GetMap() != resolved.map || target->GetMap() != resolved.map ||
-            actor->GetMapId() != context.snapshot.mapId ||
-            target->GetMapId() != context.snapshot.mapId ||
-            actor->GetInstanceId() != context.snapshot.instanceId ||
-            target->GetInstanceId() != context.snapshot.instanceId ||
-            !group || group->isBGGroup() || group->GetId() != context.snapshot.groupId ||
-            !group->IsMember(actor->GetObjectGuid()) ||
-            target->GetGroup() != group || !group->IsMember(target->GetObjectGuid()) ||
-            target->IsRessurectRequested() ||
-            !actor->IsWithinLOSInMap(target) ||
-            !spell->IsTargetInRange(actor, target))
+            !context.coreActionRuntime->CanResurrectGroupMember(
+                context, candidate.targetGuid, candidate.spellId))
             return Reject("resurrect_group_member_live_preflight_rejected");
 
         ActionExecutionResult result;

@@ -8590,7 +8590,8 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
     bool productionFollowPassed = false;
     bool f51CombatFollowStopped = false;
     bool f51CombatFollowResumed = false;
-    bool f52bLeaderPromotionFollowStopped = false;
+    bool f52bLeaderHandoffRetargeted = false;
+    bool f52bOwnerLeaderRestored = false;
 
     if (observedSnapshot && observedBot)
     {
@@ -8753,84 +8754,90 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
                     follower->HasUnitState(UNIT_STATE_FOLLOW);
             }
 
+            // Start F52b from the original owner/Group Leader. The Bot follows
+            // this target before another live member takes Group leadership.
             follower->GetMotionMaster()->MoveFollow(
-                nextLeader, 2.5f, 3.14159265358979323846f);
+                firstLeader, 2.5f, 3.14159265358979323846f);
         }
 
-        // F52b: promote the currently-following Bot to Group Leader while
-        // its old Follow target is still an available Group member. Production
-        // NewEngine must stop that native Follow immediately, without relying
-        // on the unavailable-target timeout or entering Legacy policy.
+        // F52b: another live Group member becomes leader while the Bot
+        // still follows the original owner. Production NewEngine must retarget
+        // the existing follower on its next map-thread decision cycle.
         if (productionFollowPassed && f51CombatFollowStopped &&
             f51CombatFollowResumed)
         {
-            // Group::ChangeLeader asserts when asked to set the current leader
-            // again. Guard both the promotion and restoration requests, and
-            // make the fixture require a real leader transition in both directions.
-            uint32 const leaderBeforePromotion = group->GetLeaderGuid().GetCounter();
+            bool const handoffRequested =
+                group->IsMember(nextLeaderGuid) &&
+                group->GetLeaderGuid() != nextLeaderGuid;
+            if (handoffRequested)
+                group->ChangeLeader(nextLeaderGuid);
+            bool const handedOff = group->GetLeaderGuid() == nextLeaderGuid;
+            if (handedOff)
+            {
+                if (actionRuntime->m_partyCoordinator)
+                    actionRuntime->m_partyCoordinator->InvalidateSnapshot();
+                actionRuntime->m_updateTimer.Reset(1000);
+                actionRuntime->UpdateAI(1000);
+            }
+
+            MovementGenerator const* handoffMovement =
+                follower->GetMotionMaster()->GetCurrent();
+            FollowMovementGenerator<Player> const* handoffFollow =
+                handoffMovement &&
+                handoffMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                    ? static_cast<FollowMovementGenerator<Player> const*>(handoffMovement)
+                    : nullptr;
+            f52bLeaderHandoffRetargeted =
+                handoffRequested && handedOff &&
+                actionRuntime->m_simulatorNewEngineTickCount == 4 &&
+                actionRuntime->m_simulatorEngineDecisionCycleCount == 4 &&
+                actionRuntime->m_simulatorEngineCandidateCount == 1 &&
+                actionRuntime->m_simulatorLegacyPolicyEntryCount == 0 &&
+                actionRuntime->m_simulatorLegacyPolicyDispatchCount == 0 &&
+                handoffFollow && handoffFollow->GetTarget() == nextLeader;
+
+            // Now promote the Bot itself. Its original owner is online and
+            // remains in the Group, so PartyBotAI::GetPartyLeader restores that
+            // owner as Group Leader before the NewEngine decision cycle.
             bool const promotionRequested =
                 group->IsMember(followerGuid) &&
                 group->GetLeaderGuid() != followerGuid;
             if (promotionRequested)
                 group->ChangeLeader(followerGuid);
-            bool const promotedToLeader =
-                group->GetLeaderGuid() == followerGuid;
-            bool leaderRetainedAfterTickForLog = false;
-
+            bool const promotedToLeader = group->GetLeaderGuid() == followerGuid;
             if (promotedToLeader)
             {
                 if (actionRuntime->m_partyCoordinator)
                     actionRuntime->m_partyCoordinator->InvalidateSnapshot();
                 actionRuntime->m_updateTimer.Reset(1000);
                 actionRuntime->UpdateAI(1000);
-
-                MovementGenerator const* promotedMovement =
-                    follower->GetMotionMaster()->GetCurrent();
-                FollowMovementGenerator<Player> const* promotedFollow =
-                    promotedMovement &&
-                    promotedMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
-                        ? static_cast<FollowMovementGenerator<Player> const*>(promotedMovement)
-                        : nullptr;
-                bool const leaderRetainedAfterTick =
-                    group->GetLeaderGuid() == followerGuid;
-                leaderRetainedAfterTickForLog = leaderRetainedAfterTick;
-                bool const nativeFollowStopped =
-                    !promotedFollow &&
-                    !follower->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
-                f52bLeaderPromotionFollowStopped =
-                    promotionRequested && leaderRetainedAfterTick &&
-                    actionRuntime->m_simulatorNewEngineTickCount == 4 &&
-                    actionRuntime->m_simulatorEngineDecisionCycleCount == 4 &&
-                    actionRuntime->m_simulatorEngineCandidateCount == 1 &&
-                    actionRuntime->m_simulatorLegacyPolicyEntryCount == 0 &&
-                    actionRuntime->m_simulatorLegacyPolicyDispatchCount == 0 &&
-                    nativeFollowStopped;
             }
 
-            // Restore the fixture's original leader only when it is not already
-            // current; then retain the old Follow precondition for the stale-target test.
-            bool const restoreRequested =
-                group->IsMember(firstLeaderGuid) &&
-                group->GetLeaderGuid() != firstLeaderGuid;
-            if (restoreRequested)
+            MovementGenerator const* ownerRestoreMovement =
+                follower->GetMotionMaster()->GetCurrent();
+            FollowMovementGenerator<Player> const* ownerRestoreFollow =
+                ownerRestoreMovement &&
+                ownerRestoreMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                    ? static_cast<FollowMovementGenerator<Player> const*>(ownerRestoreMovement)
+                    : nullptr;
+            f52bOwnerLeaderRestored =
+                promotionRequested && promotedToLeader &&
+                group->GetLeaderGuid() == firstLeaderGuid &&
+                actionRuntime->m_simulatorNewEngineTickCount == 5 &&
+                actionRuntime->m_simulatorEngineDecisionCycleCount == 5 &&
+                actionRuntime->m_simulatorEngineCandidateCount == 1 &&
+                actionRuntime->m_simulatorLegacyPolicyEntryCount == 0 &&
+                actionRuntime->m_simulatorLegacyPolicyDispatchCount == 0 &&
+                ownerRestoreFollow && ownerRestoreFollow->GetTarget() == firstLeader;
+
+            // Restore fixture state for the following stale-Group target test.
+            if (group->IsMember(firstLeaderGuid) &&
+                group->GetLeaderGuid() != firstLeaderGuid)
                 group->ChangeLeader(firstLeaderGuid);
-            bool const leaderRestored = group->GetLeaderGuid() == firstLeaderGuid;
-            sLog.Out(LOG_BASIC,
-                promotionRequested && promotedToLeader && leaderRestored
-                    ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-                "[PartyBotSimulator] F52b Group leader identity: before=%u follower=%u promotionRequested=%u promoted=%u afterTick=%u restoreRequested=%u restored=%u.",
-                leaderBeforePromotion, followerGuid.GetCounter(),
-                promotionRequested ? 1u : 0u, promotedToLeader ? 1u : 0u,
-                leaderRetainedAfterTickForLog ? 1u : 0u,
-                restoreRequested ? 1u : 0u, leaderRestored ? 1u : 0u);
-
-            if (leaderRestored)
-            {
-                if (actionRuntime->m_partyCoordinator)
-                    actionRuntime->m_partyCoordinator->InvalidateSnapshot();
-                follower->GetMotionMaster()->MoveFollow(
-                    nextLeader, 2.5f, 3.14159265358979323846f);
-            }
+            if (actionRuntime->m_partyCoordinator)
+                actionRuntime->m_partyCoordinator->InvalidateSnapshot();
+            follower->GetMotionMaster()->MoveFollow(
+                nextLeader, 2.5f, 3.14159265358979323846f);
         }
 
         // The old snapshot still includes firstLeader, but the live Group no longer does.
@@ -9025,17 +9032,20 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         actionRuntime->m_simulatorNewEngineTickCount,
         actionRuntime->m_simulatorLegacyPolicyEntryCount,
         actionRuntime->m_simulatorLegacyPolicyDispatchCount);
-    sLog.Out(LOG_BASIC, f52bLeaderPromotionFollowStopped ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F52b leader promotion: followStopped=%u newEngineTicks=%u decisionCycles=%u candidates=%u legacyEntries=%u legacyDispatches=%u.",
-        f52bLeaderPromotionFollowStopped ? 1u : 0u,
+    sLog.Out(LOG_BASIC,
+        f52bLeaderHandoffRetargeted && f52bOwnerLeaderRestored
+            ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F52b leader handoff: retargeted=%u ownerLeaderRestored=%u newEngineTicks=%u decisionCycles=%u candidates=%u legacyEntries=%u legacyDispatches=%u.",
+        f52bLeaderHandoffRetargeted ? 1u : 0u,
+        f52bOwnerLeaderRestored ? 1u : 0u,
         actionRuntime->m_simulatorNewEngineTickCount,
         actionRuntime->m_simulatorEngineDecisionCycleCount,
         actionRuntime->m_simulatorEngineCandidateCount,
         actionRuntime->m_simulatorLegacyPolicyEntryCount,
         actionRuntime->m_simulatorLegacyPolicyDispatchCount);
-    if (f52bLeaderPromotionFollowStopped)
+    if (f52bLeaderHandoffRetargeted && f52bOwnerLeaderRestored)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: F52b stopped a Bot's native Follow immediately after Group::ChangeLeader promoted that Bot, even while its previous leader remained a valid Group member, using only NewEngine with zero Legacy policy entry/dispatch.");
+            "[PartyBotSimulator] PASS: F52b retargeted an existing Bot follower after Group::ChangeLeader handed leadership to another live member, then restored the original owner as Group Leader when the Bot itself was promoted and followed the restored leader through NewEngine with zero Legacy policy entry/dispatch.");
     if (f51CombatFollowStopped && f51CombatFollowResumed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F51 production state transitions stopped the native Follow when combat began and resumed Group-leader Follow after combat ended, using only NewEngine actions with zero Legacy policy entry/dispatch.");
@@ -9053,16 +9063,17 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         sameTargetNotRestarted && sameTargetFormationReapplied &&
         retargetRegistered && retargeted &&
         productionFollowPassed && f51CombatFollowStopped && f51CombatFollowResumed &&
-        f52bLeaderPromotionFollowStopped &&
+        f52bLeaderHandoffRetargeted && f52bOwnerLeaderRestored &&
         firstLeaderRemoved && staleSelected && staleGroupRejected &&
         stopFollowingPassed;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] Core FollowPartyMember action: registered=%u firstStarted=%u followTargetCaptured=%u sameTargetNotRestarted=%u sameTargetFormationReapplied=%u retargetRegistered=%u retargeted=%u leaderPromotionFollowStopped=%u firstLeaderRemoved=%u staleSelected=%u staleGroupRejected=%u.",
+        "[PartyBotSimulator] Core FollowPartyMember action: registered=%u firstStarted=%u followTargetCaptured=%u sameTargetNotRestarted=%u sameTargetFormationReapplied=%u retargetRegistered=%u retargeted=%u leaderHandoffRetargeted=%u ownerLeaderRestored=%u firstLeaderRemoved=%u staleSelected=%u staleGroupRejected=%u.",
         registered ? 1u : 0u, firstStarted ? 1u : 0u,
         followTargetCaptured ? 1u : 0u, sameTargetNotRestarted ? 1u : 0u,
         sameTargetFormationReapplied ? 1u : 0u,
         retargetRegistered ? 1u : 0u, retargeted ? 1u : 0u,
-        f52bLeaderPromotionFollowStopped ? 1u : 0u,
+        f52bLeaderHandoffRetargeted ? 1u : 0u,
+        f52bOwnerLeaderRestored ? 1u : 0u,
         firstLeaderRemoved ? 1u : 0u, staleSelected ? 1u : 0u,
         staleGroupRejected ? 1u : 0u);
 

@@ -4,9 +4,8 @@
 #include "BotBehaviorState.h"
 namespace PartyBotEngine
 {
-// Stop native Follow on combat entry or when this Bot is promoted to Group Leader.
-// If the current target left the party and no usable leader can be followed,
-// allow a short grace interval before cleanup.
+// Stop native Follow on combat entry. If the current target left the party and
+// no usable leader can be followed, allow a short grace interval before cleanup.
 class StopFollowingUnsafeTrigger final : public Trigger
 {
 public:
@@ -16,11 +15,6 @@ public:
     {
         if (!context.bot.online || !context.bot.alive || !context.bot.followTargetGuid)
             return false;
-        // A promoted leader must not keep following the previous leader (or
-        // another party member). Remaining followers independently retarget
-        // through FollowPartyLeaderTrigger on their next decision cycle.
-        if (context.snapshot.groupLeaderGuid == context.bot.guid)
-            return true;
         if (context.botBehaviorState == BotBehaviorState::Combat)
             return true;
         if (context.botBehaviorState != BotBehaviorState::FollowingUnavailableTarget ||
@@ -40,8 +34,7 @@ public:
         ActionCandidate candidate;
         candidate.actionName = "core_stop_following";
         candidate.basePriority = context.botBehaviorState == BotBehaviorState::Combat
-            ? 100.0f
-            : (context.snapshot.groupLeaderGuid == context.bot.guid ? 90.0f : 80.0f);
+            ? 100.0f : 80.0f;
         candidate.channel = ActionChannel::Movement;
         candidates.push_back(candidate);
     }

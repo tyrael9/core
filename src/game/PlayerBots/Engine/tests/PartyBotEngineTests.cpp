@@ -5325,21 +5325,34 @@ void TestProductionFollowTriggersRetargetStopAndRecover() {
     candidates.clear(); follow.CollectCandidates(following, candidates);
     assert(candidates.empty() && !stop.IsActive(following));
 
-    Guid const previousLeaderGuid = snapshot.groupLeaderGuid;
-    snapshot.groupLeaderGuid = snapshot.members[0].guid;
-    DecisionContext promoted(snapshot, snapshot.members[0], coordinator, 2500);
-    assert(promoted.botBehaviorState == BotBehaviorState::FollowingPartyMember);
-    // The promoted Bot must not follow itself, and must stop following the
-    // still-valid previous leader immediately (no unavailable-target timeout).
+    PartyMemberSnapshot nextLeader;
+    nextLeader.guid = 33;
+    nextLeader.mapId = snapshot.mapId;
+    nextLeader.instanceId = snapshot.instanceId;
+    nextLeader.online = true;
+    nextLeader.alive = true;
+    snapshot.members.push_back(nextLeader);
+
+    // The original leader remains online/in-group, but another live member is
+    // elected. Existing followers retarget immediately to the new leader.
+    snapshot.groupLeaderGuid = nextLeader.guid;
+    coordinator.ReconcileFormationAssignments(snapshot);
+    DecisionContext leaderHandoff(snapshot, snapshot.members[0], coordinator, 2500);
+    assert(leaderHandoff.botBehaviorState == BotBehaviorState::FollowingPartyMember);
     candidates.clear();
-    follow.CollectCandidates(promoted, candidates);
-    assert(candidates.empty());
-    assert(stop.IsActive(promoted));
-    stop.CollectCandidates(promoted, candidates);
-    assert(candidates.size() == 1 &&
-           candidates[0].actionName == "core_stop_following");
-    assert(candidates[0].basePriority == 90.0f);
-    snapshot.groupLeaderGuid = previousLeaderGuid;
+    follow.CollectCandidates(leaderHandoff, candidates);
+    assert(candidates.size() == 1);
+    assert(candidates[0].actionName == "core_follow_party_member");
+    assert(candidates[0].targetGuid == nextLeader.guid);
+    assert(candidates[0].formationSlot == 0);
+    assert(!stop.IsActive(leaderHandoff));
+
+    snapshot.members[0].followTargetGuid = nextLeader.guid;
+    snapshot.members[0].followFormationSlot = 0;
+    DecisionContext followingNewLeader(snapshot, snapshot.members[0], coordinator, 2750);
+    candidates.clear();
+    follow.CollectCandidates(followingNewLeader, candidates);
+    assert(candidates.empty() && !stop.IsActive(followingNewLeader));
 
     snapshot.members[0].inCombat = true;
     DecisionContext combat(snapshot, snapshot.members[0], coordinator, 3000);
@@ -5362,7 +5375,7 @@ void TestProductionFollowTriggersRetargetStopAndRecover() {
     assert(candidates.size() == 1 && candidates[0].targetGuid == snapshot.groupLeaderGuid);
     assert(!stop.IsActive(staleMember));
 
-    snapshot.members[1].online = false;
+    snapshot.members[2].online = false;
     DecisionContext noLeaderBeforeTimeout(snapshot, snapshot.members[0], coordinator, 6000,
         nullptr, nullptr, nullptr, nullptr, nullptr,
         BotBehaviorState::FollowingUnavailableTarget, InvalidFollowTargetTimeoutMs - 1);

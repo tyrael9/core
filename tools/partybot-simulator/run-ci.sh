@@ -456,8 +456,8 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F52a reapplied the native FollowMovemen
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: F52b stopped a Bot's native Follow immediately after Group::ChangeLeader promoted that Bot, even while its previous leader remained a valid Group member, using only NewEngine with zero Legacy policy entry/dispatch." "$LOG_FILE"; then
-    echo "[PartyBotSimulator] The F52b promoted-Leader Follow cleanup Core PASS marker was not found." | tee -a "$LOG_FILE"
+if ! grep -Fq "[PartyBotSimulator] PASS: F52b retargeted an existing Bot follower after Group::ChangeLeader handed leadership to another live member, then restored the original owner as Group Leader when the Bot itself was promoted and followed the restored leader through NewEngine with zero Legacy policy entry/dispatch." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52b Group-leader handoff/owner restoration Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 

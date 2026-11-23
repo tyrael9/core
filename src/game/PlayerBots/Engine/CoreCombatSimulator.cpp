@@ -9677,24 +9677,43 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         if (f52fEncounterStarted)
         {
             uint32 const nowMs = WorldTimer::getMSTime();
+            Guid const ownerGuid = players[1]->GetObjectGuid().GetRawValue();
+            Guid const deadBotGuid = players[4]->GetObjectGuid().GetRawValue();
+            Guid const leaderGuid = leader->GetObjectGuid().GetRawValue();
+            bool ordinaryReserved = true;
+            // Seed one reservation for the Bot about to die, one for a survivor,
+            // and one orphaned logical owner which only the party-wide wipe may
+            // remove. This distinguishes per-Bot death cleanup from shard wipe.
             Reservation reservation;
-            reservation.targetGuid = leader->GetObjectGuid().GetRawValue();
-            reservation.ownerGuid = players[1]->GetObjectGuid().GetRawValue();
+            reservation.targetGuid = leaderGuid;
+            reservation.ownerGuid = deadBotGuid;
             reservation.expiresAtMs = nowMs + 60000u;
-            bool const ordinaryReserved = wipeCoordinator->TryReserve(reservation, nowMs);
+            ordinaryReserved = wipeCoordinator->TryReserve(reservation, nowMs) && ordinaryReserved;
+            reservation.targetGuid = players[2]->GetObjectGuid().GetRawValue();
+            reservation.ownerGuid = ownerGuid;
+            ordinaryReserved = wipeCoordinator->TryReserve(reservation, nowMs) && ordinaryReserved;
+            reservation.targetGuid = players[3]->GetObjectGuid().GetRawValue();
+            reservation.ownerGuid = leaderGuid;
+            ordinaryReserved = wipeCoordinator->TryReserve(reservation, nowMs) && ordinaryReserved;
 
-            ThreatReservation threatReservation;
-            threatReservation.ownerGuid = players[1]->GetObjectGuid().GetRawValue();
-            threatReservation.threatOwnerGuid = players[1]->GetObjectGuid().GetRawValue();
-            threatReservation.hostileGuid = leader->GetObjectGuid().GetRawValue();
-            threatReservation.actionId = wipeCoordinator->NextActionId();
-            threatReservation.threatPoints = 25.0f;
-            threatReservation.expiresAtMs = nowMs + 60000u;
-            bool const threatReserved =
-                wipeCoordinator->TryReserveThreatImpact(threatReservation, nowMs);
+            bool threatReserved = true;
+            auto reserveThreat = [&](Guid actionOwner, Guid threatOwner)
+            {
+                ThreatReservation threatReservation;
+                threatReservation.ownerGuid = actionOwner;
+                threatReservation.threatOwnerGuid = threatOwner;
+                threatReservation.hostileGuid = leaderGuid;
+                threatReservation.actionId = wipeCoordinator->NextActionId();
+                threatReservation.threatPoints = 25.0f;
+                threatReservation.expiresAtMs = nowMs + 60000u;
+                return wipeCoordinator->TryReserveThreatImpact(threatReservation, nowMs);
+            };
+            threatReserved = reserveThreat(deadBotGuid, deadBotGuid) && threatReserved;
+            threatReserved = reserveThreat(ownerGuid, ownerGuid) && threatReserved;
+            threatReserved = reserveThreat(leaderGuid, leaderGuid) && threatReserved;
             f52fReservationsSeeded = ordinaryReserved && threatReserved &&
-                wipeCoordinator->GetReservations().size() == 1 &&
-                wipeCoordinator->GetThreatReservationCount() == 1;
+                wipeCoordinator->GetReservations().size() == 3 &&
+                wipeCoordinator->GetThreatReservationCount() == 3;
 
             // One dead Bot is not a wipe: the other four online members live.
             players[4]->SetDeathState(JUST_DIED);
@@ -9713,10 +9732,29 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                     if (member.alive)
                         ++partialLiving;
                 }
+            bool const survivingReservationPresent =
+                wipeCoordinator->GetReservations().size() == 2 &&
+                std::any_of(wipeCoordinator->GetReservations().begin(),
+                    wipeCoordinator->GetReservations().end(),
+                    [ownerGuid](Reservation const& row) { return row.ownerGuid == ownerGuid; }) &&
+                std::any_of(wipeCoordinator->GetReservations().begin(),
+                    wipeCoordinator->GetReservations().end(),
+                    [leaderGuid](Reservation const& row) { return row.ownerGuid == leaderGuid; }) &&
+                std::none_of(wipeCoordinator->GetReservations().begin(),
+                    wipeCoordinator->GetReservations().end(),
+                    [deadBotGuid](Reservation const& row) { return row.ownerGuid == deadBotGuid; });
+            uint32 const nowAfterPartial = WorldTimer::getMSTime();
+            bool const survivingThreatReservationPresent =
+                wipeCoordinator->GetThreatReservationCount() == 2 &&
+                wipeCoordinator->GetReservedThreatImpact(leaderGuid, ownerGuid, 0,
+                    nowAfterPartial) > 0.0f &&
+                wipeCoordinator->GetReservedThreatImpact(leaderGuid, leaderGuid, 0,
+                    nowAfterPartial) > 0.0f &&
+                wipeCoordinator->GetReservedThreatImpact(leaderGuid, deadBotGuid, 0,
+                    nowAfterPartial) == 0.0f;
             f52fPartialDeathSafe = partialSnapshot && partialOnline == 5 &&
                 partialLiving == 4 && wipeCoordinator->HasActiveEncounter() &&
-                wipeCoordinator->GetReservations().size() == 1 &&
-                wipeCoordinator->GetThreatReservationCount() == 1;
+                survivingReservationPresent && survivingThreatReservationPresent;
 
             // The remaining four deaths create a true party wipe. Core's
             // JUST_DIED transition also clears every bot's native movement.

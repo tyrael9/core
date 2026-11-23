@@ -915,7 +915,15 @@ void PartyBotAI::OnAliveStateChanged(bool wasAlive, bool isAlive)
 {
     if (!me || wasAlive == isAlive)
         return;
-    m_partyBotEngine.InvalidateDecisionState();
+    // Death invalidates every deferred intent owned by this Bot, not just
+    // cached values. Another party member may be the first AI to observe the
+    // shared wipe transition, so each Bot must clear its own pending queue and
+    // asynchronous continuations from the Core alive-state callback.
+    if (isAlive)
+        m_partyBotEngine.InvalidateDecisionState();
+    else
+        m_partyBotEngine.ResetDecisionState();
+
     if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
         !m_partyCoordinator->HasActiveEncounter())
         return;

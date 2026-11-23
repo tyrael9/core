@@ -9420,12 +9420,230 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         }
     }
 
+    // F52e: move the same real five-Player Group to a different Vanilla
+    // dungeon Map and drive all four production NewEngine PartyBotAI ticks.
+    // This is deliberately stronger than the older F27 Shadow regroup fixture:
+    // every Bot must discard its source shard, share one fresh destination
+    // coordinator/snapshot, receive a unique slot and resume native Follow.
+    static uint32 constexpr F52E_DESTINATION_MAP_ID = 34; // Stockades.
+    MapEntry const* regroupEntry =
+        sMapStorage.LookupEntry<MapEntry>(F52E_DESTINATION_MAP_ID);
+    bool const regroupMapAvailable = regroupEntry && regroupEntry->IsDungeon() &&
+        group->GetBoundInstance(F52E_DESTINATION_MAP_ID) == nullptr;
+    Map* regroupMap = regroupMapAvailable
+        ? sMapMgr.CreateTestMap(F52E_DESTINATION_MAP_ID, true, 0.0f, 0.0f)
+        : nullptr;
+    bool regroupSourceReleased = false;
+    bool regroupDestinationReady = false;
+    bool regroupSharedCoordinator = false;
+    bool regroupFreshSnapshot = false;
+    bool regroupSlotsUnique = false;
+    bool regroupFollowsRestored = false;
+    bool regroupNewEngineOnly = false;
+    bool regroupPlayersRestored = false;
+    bool regroupBindReleased = false;
+    if (regroupMap && regroupMap->GetId() != map.GetId() &&
+        regroupMap->GetInstanceId() && regroupMap->GetInstanceId() != map.GetInstanceId())
+    {
+        bool allOnSource = std::all_of(players.begin(), players.end(),
+            [&map](Player const* member)
+            {
+                return member && member->IsInWorld() && member->GetMap() == &map;
+            });
+        if (allOnSource)
+        {
+            for (Player* member : players)
+                map.Remove(member, false);
+            bool allDetached = std::all_of(players.begin(), players.end(),
+                [](Player const* member) { return member && !member->IsInWorld(); });
+            regroupSourceReleased = allDetached;
+            for (std::size_t index = 0; index < botAIs.size(); ++index)
+                regroupSourceReleased = regroupSourceReleased &&
+                    !botAIs[index]->m_partyCoordinator &&
+                    botAIs[index]->m_partyCoordinatorMapId == 0 &&
+                    botAIs[index]->m_partyCoordinatorInstanceId == 0;
+
+            bool allAdded = allDetached;
+            if (allDetached)
+                for (Player* member : players)
+                    if (!regroupMap->Add(member))
+                        allAdded = false;
+            regroupDestinationReady = allAdded &&
+                std::all_of(players.begin(), players.end(),
+                    [regroupMap](Player const* member)
+                    {
+                        return member && member->IsInWorld() &&
+                            member->GetMap() == regroupMap &&
+                            member->GetMapId() == regroupMap->GetId() &&
+                            member->GetInstanceId() == regroupMap->GetInstanceId();
+                    });
+
+            std::shared_ptr<PartyCoordinator> destinationCoordinator;
+            bool usedDestinationSlots[MaxPartyFormationSlots] = {};
+            regroupSharedCoordinator = regroupDestinationReady;
+            regroupFollowsRestored = regroupDestinationReady;
+            regroupNewEngineOnly = regroupDestinationReady;
+            if (regroupDestinationReady)
+            {
+                for (std::size_t index = 0; index < botAIs.size(); ++index)
+                {
+                    PartyBotAI& ai = *botAIs[index];
+                    Player* const bot = players[index + 1];
+                    ai.m_updateTimer.Reset(1000);
+                    ai.UpdateAI(1000);
+                    if (!destinationCoordinator)
+                        destinationCoordinator = ai.m_partyCoordinator;
+                    regroupSharedCoordinator = regroupSharedCoordinator &&
+                        ai.m_partyCoordinator &&
+                        ai.m_partyCoordinator.get() == destinationCoordinator.get() &&
+                        destinationCoordinator.get() != sharedCoordinator.get() &&
+                        ai.m_partyCoordinatorMapId == regroupMap->GetId() &&
+                        ai.m_partyCoordinatorInstanceId == regroupMap->GetInstanceId();
+
+                    std::uint8_t const slot = destinationCoordinator
+                        ? destinationCoordinator->GetFormationSlot(
+                            bot->GetObjectGuid().GetRawValue())
+                        : InvalidFormationSlot;
+                    bool const slotValid = slot < MaxPartyFormationSlots;
+                    if (slotValid)
+                    {
+                        if (usedDestinationSlots[slot])
+                            regroupSlotsUnique = false;
+                        usedDestinationSlots[slot] = true;
+                    }
+                    else
+                        regroupSlotsUnique = false;
+
+                    MovementGenerator const* current = bot->GetMotionMaster()->GetCurrent();
+                    FollowMovementGenerator<Player> const* follow =
+                        current && current->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                            ? static_cast<FollowMovementGenerator<Player> const*>(current)
+                            : nullptr;
+                    regroupFollowsRestored = regroupFollowsRestored && follow &&
+                        follow->GetTarget() == players[0] &&
+                        bot->HasUnitState(UNIT_STATE_FOLLOW);
+                    if (follow && slotValid)
+                    {
+                        FollowFormationOffset const expected = GetFollowFormationOffset(slot);
+                        regroupFollowsRestored = regroupFollowsRestored &&
+                            std::fabs(follow->GetFollowDistance() - expected.distance) < 0.0001f &&
+                            std::fabs(follow->GetFollowAngle() - expected.angle) < 0.0001f;
+                    }
+                    else
+                        regroupFollowsRestored = false;
+
+                    regroupNewEngineOnly = regroupNewEngineOnly &&
+                        ai.m_simulatorLegacyPolicyEntryCount == 0 &&
+                        ai.m_simulatorLegacyPolicyDispatchCount == 0 &&
+                        ai.m_newEngineStrategiesRegistered &&
+                        !ai.m_engineShadowStrategiesRegistered;
+                }
+
+                regroupSlotsUnique = regroupSlotsUnique &&
+                    usedDestinationSlots[0] && usedDestinationSlots[1] &&
+                    usedDestinationSlots[2] && usedDestinationSlots[3];
+                PartySnapshot const* destinationSnapshot = destinationCoordinator
+                    ? destinationCoordinator->GetSnapshotIfFresh(WorldTimer::getMSTime(), 1000)
+                    : nullptr;
+                regroupFreshSnapshot = destinationSnapshot &&
+                    destinationSnapshot->groupId == group->GetId() &&
+                    destinationSnapshot->mapId == regroupMap->GetId() &&
+                    destinationSnapshot->instanceId == regroupMap->GetInstanceId() &&
+                    destinationSnapshot->groupLeaderGuid == leader->GetObjectGuid().GetRawValue() &&
+                    destinationSnapshot->members.size() == 5;
+                if (regroupFreshSnapshot)
+                    for (Player* member : players)
+                    {
+                        PartyMemberSnapshot const* row = destinationSnapshot->FindMember(
+                            member->GetObjectGuid().GetRawValue());
+                        regroupFreshSnapshot = regroupFreshSnapshot && row &&
+                            row->online && row->mapId == regroupMap->GetId() &&
+                            row->instanceId == regroupMap->GetInstanceId();
+                    }
+            }
+
+            // Always restore every Player before releasing the temporary dungeon
+            // bind or deleting the destination map, including partial-transfer cases.
+            for (Player* member : players)
+                if (member && member->IsInWorld() && member->GetMap() == regroupMap)
+                    regroupMap->Remove(member, false);
+            bool allDetachedFromDestination = std::all_of(
+                players.begin(), players.end(),
+                [regroupMap](Player const* member)
+                {
+                    return member && (!member->IsInWorld() || member->GetMap() != regroupMap);
+                });
+            if (allDetachedFromDestination &&
+                group->GetBoundInstance(regroupMap->GetId()))
+                group->UnbindInstance(regroupMap->GetId());
+            regroupBindReleased = group->GetBoundInstance(regroupMap->GetId()) == nullptr;
+
+            regroupPlayersRestored = allDetachedFromDestination;
+            for (Player* member : players)
+            {
+                if (!member)
+                {
+                    regroupPlayersRestored = false;
+                    continue;
+                }
+                if (!member->IsInWorld())
+                {
+                    if (!map.Add(member))
+                        regroupPlayersRestored = false;
+                }
+                else if (member->GetMap() != &map)
+                    regroupPlayersRestored = false;
+            }
+            regroupPlayersRestored = regroupPlayersRestored &&
+                std::all_of(players.begin(), players.end(),
+                    [&map](Player const* member)
+                    {
+                        return member && member->IsInWorld() && member->GetMap() == &map &&
+                            member->GetMapId() == map.GetId() &&
+                            member->GetInstanceId() == map.GetInstanceId();
+                    });
+        }
+    }
+    if (regroupMap)
+    {
+        bool const mapEmpty = std::all_of(players.begin(), players.end(),
+            [regroupMap](Player const* member)
+            {
+                return !member || !member->IsInWorld() || member->GetMap() != regroupMap;
+            });
+        if (mapEmpty && group->GetBoundInstance(regroupMap->GetId()))
+            group->UnbindInstance(regroupMap->GetId());
+        regroupBindReleased = regroupBindReleased &&
+            group->GetBoundInstance(regroupMap->GetId()) == nullptr;
+        if (mapEmpty && regroupBindReleased)
+            sMapMgr.DeleteTestMap(regroupMap);
+        else
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSimulator] Refusing to delete F52e destination Map %u instance %u (empty=%u bindReleased=%u).",
+                regroupMap->GetId(), regroupMap->GetInstanceId(),
+                mapEmpty ? 1u : 0u, regroupBindReleased ? 1u : 0u);
+    }
+    bool const f52ePassed = regroupSourceReleased && regroupDestinationReady &&
+        regroupSharedCoordinator && regroupFreshSnapshot && regroupSlotsUnique &&
+        regroupFollowsRestored && regroupNewEngineOnly && regroupPlayersRestored &&
+        regroupBindReleased;
+    sLog.Out(LOG_BASIC, f52ePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F52e five-Bot cross-map regroup: sourceReleased=%u destinationReady=%u sharedCoordinator=%u freshFiveMemberSnapshot=%u uniqueSlots=%u nativeFollows=%u newEngineOnly=%u playersRestored=%u groupBindReleased=%u.",
+        regroupSourceReleased ? 1u : 0u, regroupDestinationReady ? 1u : 0u,
+        regroupSharedCoordinator ? 1u : 0u, regroupFreshSnapshot ? 1u : 0u,
+        regroupSlotsUnique ? 1u : 0u, regroupFollowsRestored ? 1u : 0u,
+        regroupNewEngineOnly ? 1u : 0u, regroupPlayersRestored ? 1u : 0u,
+        regroupBindReleased ? 1u : 0u);
+    if (f52ePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F52e transferred a real five-Player Group to a distinct Vanilla dungeon Map; all four PartyBotAI instances released the source shard, reacquired one shared destination coordinator and five-member snapshot, received unique formation slots, resumed exact native Follow offsets through NewEngine only, and the fixture restored all Players and released its temporary GroupBind.");
+
     bool const passed = groupCreated && membersAdded &&
         sharedCoordinatorForAll && allSnapshotsAreFiveMembers &&
         allBotsStartedFollow && allFourSlotsOccupied && allSlotsUnique &&
         allOffsetsMatch && allNewEngineOnly && reverseTickNoOps &&
         removedFromGroup && departureReleasedSlot && incumbentsKeptSlots &&
-        rejoinReclaimedSlot;
+        rejoinReclaimedSlot && f52ePassed;
 
     bool const cleaned = cleanup();
     sLog.Out(LOG_BASIC, passed && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,

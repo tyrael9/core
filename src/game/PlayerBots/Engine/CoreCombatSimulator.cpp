@@ -8662,6 +8662,8 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
             if (productionFollowPassed)
             {
                 follower->SetInCombatState();
+                if (actionRuntime->m_partyCoordinator)
+                    actionRuntime->m_partyCoordinator->InvalidateSnapshot();
                 actionRuntime->m_updateTimer.Reset(1000);
                 actionRuntime->UpdateAI(1000);
                 MovementGenerator const* combatMovement =
@@ -8681,6 +8683,8 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
                     !follower->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
 
                 follower->ClearInCombat();
+                if (actionRuntime->m_partyCoordinator)
+                    actionRuntime->m_partyCoordinator->InvalidateSnapshot();
                 actionRuntime->m_updateTimer.Reset(1000);
                 actionRuntime->UpdateAI(1000);
                 MovementGenerator const* recoveredMovement =

@@ -7963,6 +7963,418 @@ bool RunEngineCoreItemUtilityUseSmokeTest(Map& map)
     return passed && playerCleaned;
 }
 
+
+bool ResolveSimulatorItemUtilityRequest(
+    Player* player, ActionCandidate const& candidate, Item*& item,
+    SpellEntry const*& spell, char const*& reason)
+{
+    item = nullptr; spell = nullptr; reason = "item_utility_request_invalid";
+    if (!player || !player->IsInWorld() || !player->IsAlive()) {
+        reason = "item_utility_actor_unavailable"; return false;
+    }
+    if (player->IsInCombat()) {
+        reason = "item_utility_actor_in_combat"; return false;
+    }
+    if (player->GetCurrentSpell(CURRENT_GENERIC_SPELL)) {
+        reason = "item_utility_actor_cast_in_progress"; return false;
+    }
+    if (candidate.targetGuid || !candidate.itemGuid || !candidate.itemEntry ||
+        candidate.itemPosition == 0xffff ||
+        candidate.itemSpellSlot >= MAX_ITEM_PROTO_SPELLS || !candidate.spellId) {
+        reason = "item_utility_candidate_identity_invalid"; return false;
+    }
+
+    item = player->GetItemByPos(candidate.itemPosition);
+    if (!item || item->GetPos() != candidate.itemPosition ||
+        item->GetObjectGuid().GetRawValue() != candidate.itemGuid ||
+        item->GetOwnerGuid() != player->GetObjectGuid()) {
+        item = nullptr; reason = "item_utility_inventory_identity_mismatch"; return false;
+    }
+    ItemPrototype const* prototype = item->GetProto();
+    if (!prototype || prototype->ItemId != candidate.itemEntry ||
+        prototype->Class != ITEM_CLASS_CONSUMABLE || prototype->Stackable < 2 ||
+        !item->GetCount()) {
+        item = nullptr; reason = "item_utility_item_prototype_or_stack_invalid"; return false;
+    }
+    if (player->CanUseItem(item) != EQUIP_ERR_OK) {
+        item = nullptr; reason = "item_utility_core_can_use_item_rejected"; return false;
+    }
+
+    _ItemSpell const& requested = prototype->Spells[candidate.itemSpellSlot];
+    if (requested.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE ||
+        requested.SpellId != candidate.spellId) {
+        item = nullptr; reason = "item_utility_requested_on_use_slot_mismatch"; return false;
+    }
+    uint32 onUseSlots = 0;
+    bool requestedSlotFound = false;
+    for (uint8 slot = 0; slot < MAX_ITEM_PROTO_SPELLS; ++slot) {
+        _ItemSpell const& itemSpell = prototype->Spells[slot];
+        if (!itemSpell.SpellId || itemSpell.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+            continue;
+        ++onUseSlots;
+        if (slot == candidate.itemSpellSlot) requestedSlotFound = true;
+        SpellEntry const* slotSpell = sSpellMgr.GetSpellEntry(itemSpell.SpellId);
+        if (!slotSpell || !IsF47BoundedItemUtilitySpell(*slotSpell)) {
+            item = nullptr; reason = "item_utility_on_use_fanout_not_fully_bounded"; return false;
+        }
+    }
+    if (onUseSlots != 1 || !requestedSlotFound) {
+        item = nullptr; reason = "item_utility_on_use_fanout_not_single_slot"; return false;
+    }
+
+    spell = sSpellMgr.GetSpellEntry(candidate.spellId);
+    if (!spell || !spell->IsPositiveSpell() || !IsF47BoundedItemUtilitySpell(*spell)) {
+        item = nullptr; spell = nullptr;
+        reason = "item_utility_spell_not_f47_bounded"; return false;
+    }
+    if (!player->IsSpellReady(spell, prototype)) {
+        item = nullptr; spell = nullptr; reason = "item_utility_cooldown_not_ready"; return false;
+    }
+    reason = "item_utility_inventory_request_resolved";
+    return true;
+}
+
+class SimulatorCoreItemUtilityUseAction final : public CoreAction
+{
+public:
+    std::string const& GetName() const override { return m_name; }
+
+    bool IsPossible(DecisionContext const& context, ActionCandidate const& candidate,
+                    std::string& reason) const override
+    {
+        CoreActionResolution const resolved = context.coreActionRuntime
+            ? context.coreActionRuntime->ResolveUnitContext(context, candidate.targetGuid)
+            : CoreActionResolution();
+        if (!resolved.IsResolved() || !resolved.actor) {
+            reason = resolved.reason ? resolved.reason : "item_utility_actor_resolution_failed";
+            return false;
+        }
+        Item* item = nullptr; SpellEntry const* spell = nullptr; char const* failure = nullptr;
+        if (!ResolveSimulatorItemUtilityRequest(resolved.actor, candidate, item, spell, failure)) {
+            reason = failure ? failure : "item_utility_request_rejected"; return false;
+        }
+        return true;
+    }
+
+    bool IsUseful(DecisionContext const& context, ActionCandidate const& candidate,
+                  std::string& reason) const override
+    {
+        CoreActionResolution const resolved = context.coreActionRuntime
+            ? context.coreActionRuntime->ResolveUnitContext(context, candidate.targetGuid)
+            : CoreActionResolution();
+        if (!resolved.IsResolved() || !resolved.actor) {
+            reason = resolved.reason ? resolved.reason : "item_utility_actor_resolution_failed";
+            return false;
+        }
+        if (resolved.actor->HasAura(candidate.spellId)) {
+            reason = "item_utility_aura_already_active"; return false;
+        }
+        return true;
+    }
+
+    ThreatImpactEstimate EstimateThreatImpact(
+        DecisionContext const& context, ActionCandidate const& candidate) const override
+    {
+        ThreatImpactEstimate estimate;
+        estimate.snapshotEpoch = context.snapshot.epoch;
+        estimate.reason = "item_utility_threat_impact_unproven";
+        CoreActionResolution const resolved = context.coreActionRuntime
+            ? context.coreActionRuntime->ResolveUnitContext(context, candidate.targetGuid)
+            : CoreActionResolution();
+        Item* item = nullptr; SpellEntry const* spell = nullptr; char const* failure = nullptr;
+        if (!resolved.IsResolved() || !resolved.actor ||
+            !ResolveSimulatorItemUtilityRequest(resolved.actor, candidate, item, spell, failure)) {
+            estimate.reason = failure ? failure : "item_utility_threat_actor_unresolved";
+            return estimate;
+        }
+        // This NoThreat scope applies only to F47's positive item-cast path;
+        // ordinary positive non-triggered Player spells remain excluded by F46.
+        return MakeSimulatorNoThreatEstimate(
+            context, "core_positive_item_cast_suppresses_procs_for_f47_bounded_self_aura");
+    }
+
+protected:
+    ActionExecutionResult ValidateCoreAction(
+        DecisionContext const&, ActionCandidate const& candidate,
+        CoreActionResolution const& resolved) const override
+    {
+        ActionExecutionResult result;
+        if (!resolved.actor || candidate.targetGuid || !candidate.actionId) {
+            result.result = ActionResult::Impossible;
+            result.reason = "item_utility_live_preflight_actor_or_action_invalid";
+            return result;
+        }
+        Item* item = nullptr; SpellEntry const* spell = nullptr; char const* failure = nullptr;
+        if (!ResolveSimulatorItemUtilityRequest(resolved.actor, candidate, item, spell, failure)) {
+            result.result = ActionResult::Impossible;
+            result.reason = failure ? failure : "item_utility_live_preflight_rejected";
+            return result;
+        }
+        if (resolved.actor->HasAura(candidate.spellId)) {
+            result.result = ActionResult::Useless;
+            result.reason = "item_utility_aura_already_active";
+            return result;
+        }
+        result.result = ActionResult::Success;
+        result.reason = "item_utility_live_preflight_passed";
+        return result;
+    }
+
+    ActionExecutionResult ExecuteCore(
+        DecisionContext&, ActionCandidate const& candidate,
+        CoreActionResolution const& resolved) override
+    {
+        ActionExecutionResult result;
+        Item* item = nullptr; SpellEntry const* spell = nullptr; char const* failure = nullptr;
+        if (!resolved.actor ||
+            !ResolveSimulatorItemUtilityRequest(resolved.actor, candidate, item, spell, failure)) {
+            result.result = ActionResult::Failed;
+            result.reason = failure ? failure : "item_utility_execute_resolution_failed";
+            return result;
+        }
+        SpellCastTargets targets;
+        targets.PrepareForSpellSystem(resolved.actor);
+        uint64 const itemUseId = resolved.actor->CastItemUseSpell(
+            item, targets, item->GetBagSlot(), item->GetSlot(), candidate.itemSpellSlot);
+        result.result = itemUseId ? ActionResult::Success : ActionResult::Failed;
+        result.reason = itemUseId ? "item_utility_core_item_use_started"
+                                  : "item_utility_core_item_use_root_not_started";
+        return result;
+    }
+
+private:
+    std::string m_name = "core_item_utility_use";
+};
+
+class SimulatorItemUtilityUseTrigger final : public Trigger
+{
+public:
+    explicit SimulatorItemUtilityUseTrigger(ActionCandidate candidate)
+        : m_candidate(std::move(candidate)) {}
+    std::string const& GetName() const override { return m_name; }
+    std::uint32_t GetCheckIntervalMs() const override { return 0; }
+    bool IsActive(DecisionContext const& context) const override {
+        return context.bot.online && context.bot.alive;
+    }
+    void SetCandidate(ActionCandidate const& candidate) { m_candidate = candidate; }
+    void CollectCandidates(DecisionContext const&,
+                           std::vector<ActionCandidate>& candidates) const override {
+        candidates.push_back(m_candidate);
+    }
+private:
+    std::string m_name = "simulator_item_utility";
+    ActionCandidate m_candidate;
+};
+
+ActionCandidate MakeSimulatorItemUtilityCandidate(Item const& item, uint8 spellSlot,
+                                                   uint32 spellId)
+{
+    ActionCandidate candidate;
+    candidate.actionName = "core_item_utility_use";
+    candidate.spellId = spellId;
+    candidate.itemGuid = item.GetObjectGuid().GetRawValue();
+    candidate.itemEntry = item.GetProto()->ItemId;
+    candidate.itemPosition = item.GetPos();
+    candidate.itemSpellSlot = spellSlot;
+    candidate.basePriority = 75.0f;
+    candidate.channel = ActionChannel::GlobalCooldown;
+    return candidate;
+}
+
+bool RunEngineCoreItemUtilityActionSmokeTest(Map& map)
+{
+    static uint32 const ItemId = 2457;
+    static uint32 const SpellId = 2374;
+    ItemPrototype const* prototype = sObjectMgr.GetItemPrototype(ItemId);
+    SpellEntry const* spell = sSpellMgr.GetSpellEntry(SpellId);
+    uint8 spellSlot = 0xff;
+    if (prototype)
+        for (uint8 slot = 0; slot < MAX_ITEM_PROTO_SPELLS; ++slot)
+            if (prototype->Spells[slot].SpellId == SpellId &&
+                prototype->Spells[slot].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+                spellSlot = slot;
+    bool const prototypeValid = prototype && spell &&
+        prototype->Class == ITEM_CLASS_CONSUMABLE && prototype->Stackable >= 2 &&
+        spellSlot < MAX_ITEM_PROTO_SPELLS &&
+        prototype->Spells[spellSlot].SpellCharges < 0 &&
+        IsF47BoundedItemUtilitySpell(*spell);
+    if (!prototypeValid) return false;
+
+    class SimulatorItemUtilityActionCapture final : public ItemUseTerminalListener
+    {
+    public:
+        void OnItemUseTerminal(ItemUseTerminalEvent const& event) override {
+            events.push_back(event);
+        }
+        std::vector<ItemUseTerminalEvent> events;
+    };
+
+    WorldSession session(0, nullptr, SEC_PLAYER, 0, LOCALE_enUS);
+    Player* player = nullptr;
+    if (!CreateSimulatorPlayer(map, 1, session, player, 0.0f, 15.0f, 4.0f)) {
+        if (session.GetPlayer()) session.LogoutPlayer(false);
+        else if (player) delete player;
+        return false;
+    }
+    PartyBotAI itemAI(player, map.GetId(), map.GetInstanceId(),
+                      player->GetPositionX(), player->GetPositionY(),
+                      player->GetPositionZ(), player->GetOrientation());
+    itemAI.SetPlayer(player);
+    player->SetAI(&itemAI);
+    std::shared_ptr<SimulatorItemUtilityActionCapture> capture(
+        new SimulatorItemUtilityActionCapture());
+    bool const listenerAdded = itemAI.m_partyBotEngine.AddItemUseTerminalListener(capture);
+
+    PartySnapshot snapshot;
+    snapshot.groupId = 2;
+    snapshot.mapId = map.GetId();
+    snapshot.instanceId = map.GetInstanceId();
+    snapshot.epoch = 1;
+    snapshot.capturedAtMs = WorldTimer::getMSTime();
+    PartyMemberSnapshot bot;
+    bot.guid = player->GetObjectGuid().GetRawValue();
+    bot.mapId = map.GetId();
+    bot.instanceId = map.GetInstanceId();
+    bot.online = player->IsInWorld();
+    bot.alive = player->IsAlive();
+    bot.health = player->GetHealth();
+    bot.maxHealth = player->GetMaxHealth();
+    snapshot.members.push_back(bot);
+
+    PartyCoordinator coordinator;
+    DecisionContext context(snapshot, snapshot.members[0], coordinator,
+                            WorldTimer::getMSTime(), nullptr, nullptr, &itemAI, nullptr, &itemAI);
+    PartyBotEngine engine;
+    std::shared_ptr<SimulatorCoreItemUtilityUseAction> action(
+        new SimulatorCoreItemUtilityUseAction());
+    bool const registered = engine.RegisterAction(action);
+    std::shared_ptr<SimulatorItemUtilityUseTrigger> trigger(
+        new SimulatorItemUtilityUseTrigger(ActionCandidate()));
+    std::shared_ptr<Strategy> strategy(new Strategy("simulator_item_utility"));
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+
+    // Select an exact Item, remove it before live preflight, and require no side effects.
+    Item* staleItem = player->StoreNewItemInInventorySlot(ItemId, 1);
+    ActionCandidate staleCandidate;
+    if (staleItem) staleCandidate = MakeSimulatorItemUtilityCandidate(*staleItem, spellSlot, SpellId);
+    trigger->SetCandidate(staleCandidate);
+    DecisionReport staleReport = engine.Evaluate(context);
+    bool const staleSelected = staleItem && staleReport.selectedIndices.size() == 1;
+    uint8 const staleBag = staleItem ? staleItem->GetBagSlot() : 0xff;
+    uint8 const staleSlot = staleItem ? staleItem->GetSlot() : 0xff;
+    uint16 const stalePosition = staleItem ? staleItem->GetPos() : 0xffff;
+    if (staleItem) player->DestroyItem(staleBag, staleSlot, true);
+    bool const staleRemoved = !staleItem || player->GetItemByPos(stalePosition) == nullptr;
+    if (staleSelected) engine.ExecuteSelected(context, staleReport);
+    bool const staleRejected = staleSelected &&
+        staleReport.candidates[staleReport.selectedIndices[0]].status == CandidateStatus::ExecutionFailed &&
+        staleReport.candidates[staleReport.selectedIndices[0]].actionResult == ActionResult::Impossible &&
+        staleReport.candidates[staleReport.selectedIndices[0]].reason ==
+            "item_utility_inventory_identity_mismatch";
+    ItemUseMutationEvent staleMutation;
+    bool const staleMutationAbsent = !itemAI.m_partyBotEngine.PopItemUseMutationEvent(staleMutation);
+    bool const staleSideEffectsAbsent = staleRemoved && staleRejected && capture->events.empty() &&
+        itemAI.m_partyBotEngine.GetPendingItemUseCount() == 0 && staleMutationAbsent;
+
+    Item* item = player->StoreNewItemInInventorySlot(ItemId, 2);
+    float const agilityBeforeUse = player->GetStat(STAT_AGILITY);
+    ActionCandidate candidate;
+    if (item) candidate = MakeSimulatorItemUtilityCandidate(*item, spellSlot, SpellId);
+    trigger->SetCandidate(candidate);
+    snapshot.epoch = 2;
+    snapshot.capturedAtMs = WorldTimer::getMSTime();
+    DecisionReport report = engine.Evaluate(context);
+    bool const selected = item && report.selectedIndices.size() == 1;
+    std::size_t const selectedIndex = selected ? report.selectedIndices[0] : 0;
+    if (selected) engine.ExecuteSelected(context, report);
+    for (uint32 tick = 0; tick < 8 &&
+         (itemAI.m_partyBotEngine.GetPendingItemUseCount() != 0 ||
+          player->GetCurrentSpell(CURRENT_GENERIC_SPELL)); ++tick) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+
+    ActionId const engineActionId = selected ? report.candidates[selectedIndex].actionId : 0;
+    uint32 const countAfterUse = player->GetItemCount(ItemId);
+    float const agilityAfterUse = player->GetStat(STAT_AGILITY);
+    bool const auraApplied = player->HasAura(SpellId);
+    bool const actionExecuted = selected &&
+        report.candidates[selectedIndex].status == CandidateStatus::Executed &&
+        report.candidates[selectedIndex].actionResult == ActionResult::Success;
+
+    ItemUseMutationEvent mutation;
+    std::vector<ItemUseMutationEvent> mutations;
+    while (itemAI.m_partyBotEngine.PopItemUseMutationEvent(mutation))
+        mutations.push_back(mutation);
+    bool const terminalValid = capture->events.size() == 1 && engineActionId &&
+        capture->events[0].actionId == engineActionId &&
+        capture->events[0].actorGuid == bot.guid &&
+        capture->events[0].itemGuid == candidate.itemGuid &&
+        capture->events[0].itemEntry == ItemId &&
+        capture->events[0].status == ItemUseAggregateStatus::AllSucceeded &&
+        capture->events[0].childCount == 1 && capture->events[0].succeededChildCount == 1 &&
+        capture->events[0].children[0].spellId == SpellId &&
+        capture->events[0].children[0].status == ItemUseChildStatus::Succeeded;
+    bool const mutationValid = capture->events.size() == 1 && mutations.size() == 1 &&
+        mutations[0].itemUseId == capture->events[0].itemUseId &&
+        mutations[0].childId == capture->events[0].children[0].childId &&
+        mutations[0].itemGuid == candidate.itemGuid && mutations[0].itemEntry == ItemId &&
+        mutations[0].kind == ItemUseMutationKind::CountChanged &&
+        mutations[0].beforeCount == 2 && mutations[0].afterCount == 1 &&
+        mutations[0].itemExistsAfter;
+
+    player->ResetGCD(spell);
+    bool const cooldownBlocked = !player->IsSpellReady(spell, prototype);
+    snapshot.epoch = 3;
+    snapshot.capturedAtMs = WorldTimer::getMSTime();
+    DecisionReport repeatReport = engine.Evaluate(context);
+    bool const repeatRejected = repeatReport.selectedIndices.empty() &&
+        repeatReport.candidates.size() == 1 &&
+        repeatReport.candidates[0].status == CandidateStatus::RejectedImpossible &&
+        repeatReport.candidates[0].reason == "item_utility_cooldown_not_ready";
+    Item* const sameItem = candidate.itemPosition != 0xffff
+        ? player->GetItemByPos(candidate.itemPosition) : nullptr;
+    bool const noRepeatRootOrMutation = capture->events.size() == 1 &&
+        itemAI.m_partyBotEngine.GetPendingItemUseCount() == 0 &&
+        !itemAI.m_partyBotEngine.PopItemUseMutationEvent(mutation);
+    bool const useSucceeded = listenerAdded && registered && staleSideEffectsAbsent &&
+        selected && actionExecuted && engineActionId != 0 && terminalValid && mutationValid &&
+        auraApplied && countAfterUse == 1 && sameItem &&
+        sameItem->GetObjectGuid().GetRawValue() == candidate.itemGuid &&
+        sameItem->GetCount() == 1 && agilityAfterUse > agilityBeforeUse;
+    bool const cooldownSafe = cooldownBlocked && repeatRejected && noRepeatRootOrMutation &&
+        sameItem && sameItem->GetCount() == 1 && player->HasAura(SpellId);
+
+    sLog.Out(LOG_BASIC, useSucceeded && cooldownSafe ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F49 Engine item utility: prototype=%u listener=%u staleSelected=%u staleRejected=%u staleSideEffectsAbsent=%u selected=%u executed=%u actionId=%llu rootActionMatch=%u aura=%u agility=%.1f>%.1f count=2>%u mutation=%u terminal=%u cooldownBlocked=%u repeatRejected=%u repeatCount=%u pendingCleared=%u.",
+        prototypeValid ? 1u : 0u, listenerAdded ? 1u : 0u,
+        staleSelected ? 1u : 0u, staleRejected ? 1u : 0u,
+        staleSideEffectsAbsent ? 1u : 0u, selected ? 1u : 0u, actionExecuted ? 1u : 0u,
+        static_cast<unsigned long long>(engineActionId),
+        terminalValid ? 1u : 0u, auraApplied ? 1u : 0u,
+        agilityBeforeUse, agilityAfterUse, countAfterUse,
+        mutationValid ? 1u : 0u, terminalValid ? 1u : 0u,
+        cooldownBlocked ? 1u : 0u, repeatRejected ? 1u : 0u,
+        sameItem ? sameItem->GetCount() : 0u, noRepeatRootOrMutation ? 1u : 0u);
+
+    bool const passed = useSucceeded && cooldownSafe &&
+        player->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+    if (passed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F49 selected an item-backed self-utility candidate through PartyBotEngine, revalidated exact inventory identity before Core item use, correlated the Engine action ID with ItemUseTerminal, applied the real Core aura/stat and stack mutation, rejected a stale removed-item race without side effects, and suppressed a cooldown-blocked repeat before dispatch.");
+
+    if (player->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        player->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+    player->SetAI(nullptr);
+    session.LogoutPlayer(false);
+    bool const playerCleaned = session.GetPlayer() == nullptr;
+    if (!playerCleaned)
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[PartyBotSimulator] F49 item utility Player cleanup failed.");
+    return passed && playerCleaned;
+}
+
+
 } // anonymous namespace
 
 
@@ -14587,6 +14999,8 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
         RunEngineCoreItemUtilityAuditSmokeTest();
     bool const itemUtilityUsePassed =
         RunEngineCoreItemUtilityUseSmokeTest(*map);
+    bool const itemUtilityActionPassed =
+        RunEngineCoreItemUtilityActionSmokeTest(*map);
     bool const movementPassed = RunEngineCoreMovementSmokeTest(*map);
     bool const followPassed = RunEngineCoreFollowSmokeTest(*map);
     bool const playerFollowCastSafetyPassed = RunEngineCorePlayerFollowCastSafetySmokeTest(*map);
@@ -14610,7 +15024,7 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                               followPartyMemberPassed && itemUsePassed &&
                               countBasedItemMutationPassed && utilitySpellAuditPassed &&
                               itemUtilityAuditPassed &&
-                              itemUtilityUsePassed &&
+                              itemUtilityUsePassed && itemUtilityActionPassed &&
                               movementPassed && followPassed &&
                               playerFollowCastSafetyPassed && followRetargetPassed &&
                               playerHealRevalidationPassed && playerHealLosPassed &&

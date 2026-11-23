@@ -4961,7 +4961,28 @@ void TestEncounterTraceBudgetConfigurationIsClampedAndBounded()
 }
 
 }
+void TestActionCandidatePreservesStableItemIdentity() {
+    ActionCandidate candidate;
+    assert(candidate.itemGuid == 0);
+    assert(candidate.itemEntry == 0);
+    assert(candidate.itemPosition == 0xffff);
+    assert(candidate.itemSpellSlot == 0xff);
+    candidate.itemGuid = 0x1122334455667788ULL;
+    candidate.itemEntry = 2457;
+    candidate.itemPosition = 0x0203;
+    candidate.itemSpellSlot = 1;
+    CandidateEvaluation evaluation;
+    evaluation.candidate = candidate;
+    ActionCandidate copied = evaluation.candidate;
+    assert(copied.itemGuid == candidate.itemGuid);
+    assert(copied.itemEntry == candidate.itemEntry);
+    assert(copied.itemPosition == candidate.itemPosition);
+    assert(copied.itemSpellSlot == candidate.itemSpellSlot);
+}
+
+
 int main() {
+    TestActionCandidatePreservesStableItemIdentity();
     TestExecutionAuthorityModesAreExplicitAndFailSafe();
     TestValueCacheEpochExpiryInvalidationAndTypeSafety();
     TestValueCacheCapacityFailsOpenWithoutEvictingLiveEntries();

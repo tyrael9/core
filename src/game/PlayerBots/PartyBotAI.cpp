@@ -672,6 +672,20 @@ void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint64 actionId,
         actionId, spellId, targetGuid, success, interrupted);
 }
 
+std::uint32_t PartyBotAI::GetResurrectionSpellId() const
+{
+    return m_resurrectionSpell ? m_resurrectionSpell->Id : 0;
+}
+
+bool PartyBotAI::CanCastGroupResurrection(
+    PartyBotEngine::DecisionContext const& /*context*/, Player* target,
+    std::uint32_t spellId) const
+{
+    return me && target && m_resurrectionSpell &&
+        m_resurrectionSpell->Id == spellId && !IsInDuel() &&
+        CanTryToCastSpell(target, m_resurrectionSpell);
+}
+
 PartyBotEngine::CoreActionResolution PartyBotAI::ResolveUnitContext(
     PartyBotEngine::DecisionContext const& context,
     PartyBotEngine::Guid targetGuid) const

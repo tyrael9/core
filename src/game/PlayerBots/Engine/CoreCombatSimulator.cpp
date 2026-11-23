@@ -10369,10 +10369,143 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             resurrectionAI.m_simulatorNewEngineTickCount == ticksBefore &&
             resurrectionAI.m_simulatorEngineDecisionCycleCount == cyclesBefore &&
             wipeCoordinator && !wipeCoordinator->HasActiveEncounter();
+
+        // F52g-C1: interrupt a real in-flight group resurrection through Core.
+        // The terminal must retain the exact Engine action/target/spell identity,
+        // release only that Bot's corpse reservation, and never create an offer.
+        if (f52gBTargetAccepted && f52gBSpellAvailable && wipeCoordinator)
+        {
+            std::shared_ptr<CaptureCoreSpellTerminalListener> interruptedTerminal(
+                new CaptureCoreSpellTerminalListener());
+            f52gCListenerAdded =
+                resurrectionAI.m_partyBotEngine.AddCoreSpellTerminalListener(interruptedTerminal);
+
+            // Keep another Bot's reservation on a different corpse in the same
+            // coordinator. Terminal cleanup must not release another owner's row.
+            Guid const unrelatedTargetGuid = ghostTarget->GetObjectGuid().GetRawValue();
+            Guid const unrelatedOwnerGuid = players[4]->GetObjectGuid().GetRawValue();
+            Reservation unrelatedReservation;
+            unrelatedReservation.type = ReservationType::Resurrection;
+            unrelatedReservation.targetGuid = unrelatedTargetGuid;
+            unrelatedReservation.ownerGuid = unrelatedOwnerGuid;
+            unrelatedReservation.spellId = f52gBSpellId;
+            unrelatedReservation.expiresAtMs = WorldTimer::getMSTime() + 60000u;
+            bool const unrelatedReserved =
+                wipeCoordinator->TryReserve(unrelatedReservation, WorldTimer::getMSTime());
+
+            // Recreate a real same-Group Corpse and execute through the same
+            // production trigger/action path as F52g-B.
+            corpseTarget->SetHealth(0);
+            corpseTarget->SetDeathState(JUST_DIED);
+            corpseTarget->KillPlayer();
+            PartySnapshot interruptedSnapshot;
+            DecisionReport interruptedReport;
+            std::size_t interruptedIndex = 0;
+            bool const selected = f52gCListenerAdded && unrelatedReserved &&
+                corpseTarget->GetDeathState() == CORPSE &&
+                captureGroupResurrectionDecision(
+                    corpseTarget, interruptedSnapshot, interruptedReport, interruptedIndex);
+            if (selected)
+            {
+                f52gCActionSelected = true;
+                PartyMemberSnapshot const* const botSnapshot =
+                    interruptedSnapshot.FindMember(casterGuid);
+                DecisionContext interruptedContext(
+                    interruptedSnapshot, *botSnapshot, *wipeCoordinator,
+                    WorldTimer::getMSTime(), nullptr, nullptr,
+                    &resurrectionAI, nullptr, &resurrectionAI);
+                resurrectionAI.m_partyBotEngine.ExecuteSelected(
+                    interruptedContext, interruptedReport);
+                CandidateEvaluation const& evaluation =
+                    interruptedReport.candidates[interruptedIndex];
+                f52gCActionId = evaluation.actionId;
+                f52gCCastStarted =
+                    evaluation.status == CandidateStatus::Executed &&
+                    evaluation.actionResult == ActionResult::Success &&
+                    f52gCActionId != 0 &&
+                    caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr &&
+                    std::any_of(
+                        wipeCoordinator->GetReservations().begin(),
+                        wipeCoordinator->GetReservations().end(),
+                        [casterGuid, corpseTargetGuid](Reservation const& row)
+                        {
+                            return row.type == ReservationType::Resurrection &&
+                                row.targetGuid == corpseTargetGuid &&
+                                row.ownerGuid == casterGuid;
+                        });
+            }
+
+            if (f52gCCastStarted)
+            {
+                // Core Spell::cancel invokes the normal PlayerAI terminal hook.
+                caster->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+                f52gCInterruptedTerminalMatched =
+                    interruptedTerminal->events.size() == 1 &&
+                    interruptedTerminal->events[0].actionId == f52gCActionId &&
+                    interruptedTerminal->events[0].targetGuid == corpseTargetGuid &&
+                    interruptedTerminal->events[0].spellId == f52gBSpellId &&
+                    interruptedTerminal->events[0].status ==
+                        CoreSpellTerminalStatus::Interrupted &&
+                    caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+                f52gCReservationReleased = f52gCInterruptedTerminalMatched &&
+                    std::none_of(
+                        wipeCoordinator->GetReservations().begin(),
+                        wipeCoordinator->GetReservations().end(),
+                        [casterGuid, corpseTargetGuid](Reservation const& row)
+                        {
+                            return row.type == ReservationType::Resurrection &&
+                                row.targetGuid == corpseTargetGuid &&
+                                row.ownerGuid == casterGuid;
+                        });
+                f52gCNoOfferCreated = f52gCInterruptedTerminalMatched &&
+                    !corpseTarget->IsRessurectRequested();
+                f52gCUnrelatedReservationPreserved = unrelatedReserved &&
+                    std::any_of(
+                        wipeCoordinator->GetReservations().begin(),
+                        wipeCoordinator->GetReservations().end(),
+                        [unrelatedOwnerGuid, unrelatedTargetGuid](Reservation const& row)
+                        {
+                            return row.type == ReservationType::Resurrection &&
+                                row.targetGuid == unrelatedTargetGuid &&
+                                row.ownerGuid == unrelatedOwnerGuid;
+                        });
+            }
+
+            wipeCoordinator->ReleaseReservation(
+                ReservationType::Resurrection, unrelatedTargetGuid, unrelatedOwnerGuid);
+            if (!corpseTarget->IsAlive())
+            {
+                corpseTarget->ResurrectPlayer(0.5f, false);
+                corpseTarget->SpawnCorpseBones();
+                corpseTarget->ClearResurrectRequestData();
+            }
+        }
+        f52gCPassed =
+            f52gCListenerAdded && f52gCActionSelected && f52gCCastStarted &&
+            f52gCInterruptedTerminalMatched && f52gCReservationReleased &&
+            f52gCNoOfferCreated && f52gCUnrelatedReservationPreserved;
+        sLog.Out(LOG_BASIC, f52gCPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F52g-C1 interrupted group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu interruptedTerminal=%u reservationReleased=%u noOffer=%u unrelatedReservationPreserved=%u.",
+            f52gCListenerAdded ? 1u : 0u, f52gCActionSelected ? 1u : 0u,
+            f52gCCastStarted ? 1u : 0u,
+            static_cast<unsigned long long>(f52gCActionId),
+            f52gCInterruptedTerminalMatched ? 1u : 0u,
+            f52gCReservationReleased ? 1u : 0u,
+            f52gCNoOfferCreated ? 1u : 0u,
+            f52gCUnrelatedReservationPreserved ? 1u : 0u);
+        if (f52gCPassed)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F52g-C1 interrupted a real Core resurrection cast; the matching Engine terminal released only its exact corpse reservation, preserved another Bot's reservation, and created no resurrection offer.");
+        f52gBNewEngineOnly =
+            resurrectionAI.m_newEngineStrategiesRegistered &&
+            !resurrectionAI.m_engineShadowStrategiesRegistered &&
+            resurrectionAI.m_simulatorLegacyPolicyEntryCount == legacyEntriesBefore &&
+            resurrectionAI.m_simulatorLegacyPolicyDispatchCount == legacyDispatchesBefore &&
+            resurrectionAI.m_simulatorNewEngineTickCount == ticksBefore &&
+            resurrectionAI.m_simulatorEngineDecisionCycleCount == cyclesBefore &&
+            wipeCoordinator && !wipeCoordinator->HasActiveEncounter();
     }
-    // F52g-C1: interrupt a real in-flight group resurrection through Core.
-    // The terminal must retain the exact Engine action/target/spell identity,
-    // release only that Bot's corpse reservation, and never create an offer.
+    bool f52gCPassed = false;
     bool f52gCListenerAdded = false;
     bool f52gCActionSelected = false;
     bool f52gCCastStarted = false;
@@ -10381,138 +10514,13 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52gCNoOfferCreated = false;
     bool f52gCUnrelatedReservationPreserved = false;
     ActionId f52gCActionId = 0;
-    if (f52gBTargetAccepted && f52gBSpellAvailable && wipeCoordinator)
-    {
-        std::shared_ptr<CaptureCoreSpellTerminalListener> interruptedTerminal(
-            new CaptureCoreSpellTerminalListener());
-        f52gCListenerAdded =
-            resurrectionAI.m_partyBotEngine.AddCoreSpellTerminalListener(interruptedTerminal);
-
-        // Keep another Bot's reservation on a different corpse in the same
-        // coordinator. Terminal cleanup must not release another owner's row.
-        Guid const unrelatedTargetGuid = ghostTarget->GetObjectGuid().GetRawValue();
-        Guid const unrelatedOwnerGuid = players[4]->GetObjectGuid().GetRawValue();
-        Reservation unrelatedReservation;
-        unrelatedReservation.type = ReservationType::Resurrection;
-        unrelatedReservation.targetGuid = unrelatedTargetGuid;
-        unrelatedReservation.ownerGuid = unrelatedOwnerGuid;
-        unrelatedReservation.spellId = f52gBSpellId;
-        unrelatedReservation.expiresAtMs = WorldTimer::getMSTime() + 60000u;
-        bool const unrelatedReserved =
-            wipeCoordinator->TryReserve(unrelatedReservation, WorldTimer::getMSTime());
-
-        // Recreate a real same-Group Corpse and execute through the same
-        // production trigger/action path as F52g-B.
-        corpseTarget->SetHealth(0);
-        corpseTarget->SetDeathState(JUST_DIED);
-        corpseTarget->KillPlayer();
-        PartySnapshot interruptedSnapshot;
-        DecisionReport interruptedReport;
-        std::size_t interruptedIndex = 0;
-        bool const selected = f52gCListenerAdded && unrelatedReserved &&
-            corpseTarget->GetDeathState() == CORPSE &&
-            captureGroupResurrectionDecision(
-                corpseTarget, interruptedSnapshot, interruptedReport, interruptedIndex);
-        if (selected)
-        {
-            f52gCActionSelected = true;
-            PartyMemberSnapshot const* const botSnapshot =
-                interruptedSnapshot.FindMember(casterGuid);
-            DecisionContext interruptedContext(
-                interruptedSnapshot, *botSnapshot, *wipeCoordinator,
-                WorldTimer::getMSTime(), nullptr, nullptr,
-                &resurrectionAI, nullptr, &resurrectionAI);
-            resurrectionAI.m_partyBotEngine.ExecuteSelected(
-                interruptedContext, interruptedReport);
-            CandidateEvaluation const& evaluation =
-                interruptedReport.candidates[interruptedIndex];
-            f52gCActionId = evaluation.actionId;
-            f52gCCastStarted =
-                evaluation.status == CandidateStatus::Executed &&
-                evaluation.actionResult == ActionResult::Success &&
-                f52gCActionId != 0 &&
-                caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr &&
-                std::any_of(
-                    wipeCoordinator->GetReservations().begin(),
-                    wipeCoordinator->GetReservations().end(),
-                    [casterGuid, corpseTargetGuid](Reservation const& row)
-                    {
-                        return row.type == ReservationType::Resurrection &&
-                            row.targetGuid == corpseTargetGuid &&
-                            row.ownerGuid == casterGuid;
-                    });
-        }
-
-        if (f52gCCastStarted)
-        {
-            // Core Spell::cancel invokes the normal PlayerAI terminal hook.
-            caster->InterruptSpell(CURRENT_GENERIC_SPELL, true);
-            f52gCInterruptedTerminalMatched =
-                interruptedTerminal->events.size() == 1 &&
-                interruptedTerminal->events[0].actionId == f52gCActionId &&
-                interruptedTerminal->events[0].targetGuid == corpseTargetGuid &&
-                interruptedTerminal->events[0].spellId == f52gBSpellId &&
-                interruptedTerminal->events[0].status ==
-                    CoreSpellTerminalStatus::Interrupted &&
-                caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
-            f52gCReservationReleased = f52gCInterruptedTerminalMatched &&
-                std::none_of(
-                    wipeCoordinator->GetReservations().begin(),
-                    wipeCoordinator->GetReservations().end(),
-                    [casterGuid, corpseTargetGuid](Reservation const& row)
-                    {
-                        return row.type == ReservationType::Resurrection &&
-                            row.targetGuid == corpseTargetGuid &&
-                            row.ownerGuid == casterGuid;
-                    });
-            f52gCNoOfferCreated = f52gCInterruptedTerminalMatched &&
-                !corpseTarget->IsRessurectRequested() &&
-                corpseTarget->GetResurrector() == ObjectGuid();
-            f52gCUnrelatedReservationPreserved = unrelatedReserved &&
-                std::any_of(
-                    wipeCoordinator->GetReservations().begin(),
-                    wipeCoordinator->GetReservations().end(),
-                    [unrelatedOwnerGuid, unrelatedTargetGuid](Reservation const& row)
-                    {
-                        return row.type == ReservationType::Resurrection &&
-                            row.targetGuid == unrelatedTargetGuid &&
-                            row.ownerGuid == unrelatedOwnerGuid;
-                    });
-        }
-
-        wipeCoordinator->ReleaseReservation(
-            ReservationType::Resurrection, unrelatedTargetGuid, unrelatedOwnerGuid);
-        if (!corpseTarget->IsAlive())
-        {
-            corpseTarget->ResurrectPlayer(0.5f, false);
-            corpseTarget->SpawnCorpseBones();
-            corpseTarget->ClearResurrectRequestData();
-        }
-    }
-    bool const f52gCPassed =
-        f52gCListenerAdded && f52gCActionSelected && f52gCCastStarted &&
-        f52gCInterruptedTerminalMatched && f52gCReservationReleased &&
-        f52gCNoOfferCreated && f52gCUnrelatedReservationPreserved;
-    sLog.Out(LOG_BASIC, f52gCPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F52g-C1 interrupted group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu interruptedTerminal=%u reservationReleased=%u noOffer=%u unrelatedReservationPreserved=%u.",
-        f52gCListenerAdded ? 1u : 0u, f52gCActionSelected ? 1u : 0u,
-        f52gCCastStarted ? 1u : 0u,
-        static_cast<unsigned long long>(f52gCActionId),
-        f52gCInterruptedTerminalMatched ? 1u : 0u,
-        f52gCReservationReleased ? 1u : 0u,
-        f52gCNoOfferCreated ? 1u : 0u,
-        f52gCUnrelatedReservationPreserved ? 1u : 0u);
-    if (f52gCPassed)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: F52g-C1 interrupted a real Core resurrection cast; the matching Engine terminal released only its exact corpse reservation, preserved another Bot's reservation, and created no resurrection offer.");
-
     bool const f52gBPassed =
         f52gBSpellAvailable && f52gBTerminalListenerAdded &&
         f52gBGhostRejected && f52gBForeignGroupRejected &&
         f52gBOutOfRangeRejected && f52gBActionSelected &&
         f52gBCastStarted && f52gBRequestPending &&
         f52gBTerminalMatched && f52gBReservationReleased &&
-        f52gBTargetAccepted && f52gBNewEngineOnly && f52gCPassed;
+        f52gBTargetAccepted && f52gBNewEngineOnly;
     sLog.Out(LOG_BASIC, f52gBPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
         "[PartyBotSimulator] F52g-B group resurrection: spellAvailable=%u spellId=%u ghostRejected=%u foreignGroupRejected=%u outOfRangeRejected=%u selected=%u castStarted=%u actionId=%llu candidateStatus=%u actionResult=%u actionReason=%s requestPending=%u terminalMatched=%u reservationReleased=%u targetAccepted=%u newEngineOnly=%u.",
         f52gBSpellAvailable ? 1u : 0u, f52gBSpellId,
@@ -10538,7 +10546,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         allOffsetsMatch && allNewEngineOnly && reverseTickNoOps &&
         removedFromGroup && departureReleasedSlot && incumbentsKeptSlots &&
         rejoinReclaimedSlot && f52ePassed && f52fPassed &&
-        f52gSelfResurrectionPassed && f52gBPassed;
+        f52gSelfResurrectionPassed && f52gBPassed && f52gCPassed;
 
     bool const cleaned = cleanup();
     sLog.Out(LOG_BASIC, passed && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,

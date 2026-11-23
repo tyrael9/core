@@ -10403,7 +10403,11 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 wipeCoordinator->TryReserve(unrelatedReservation, WorldTimer::getMSTime());
 
             // Recreate a real same-Group Corpse and execute through the same
-            // production trigger/action path as F52g-B.
+            // production trigger/action path as F52g-B. The preceding successful
+            // F52g-B cast spent the selected Resurrection rank's full 1032 mana;
+            // restore resources so this fixture reaches the in-flight interrupt
+            // lifecycle instead of failing Core's initial CheckPower validation.
+            caster->SetPower(POWER_MANA, caster->GetMaxPower(POWER_MANA));
             corpseTarget->SetHealth(0);
             corpseTarget->SetDeathState(JUST_DIED);
             corpseTarget->KillPlayer();

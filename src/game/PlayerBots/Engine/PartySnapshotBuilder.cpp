@@ -288,6 +288,30 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         }
         memberData.online = member->IsInWorld();
         memberData.alive = member->IsAlive();
+        switch (member->GetDeathState())
+        {
+            case ALIVE:
+                memberData.deathState = PartyMemberDeathState::Alive;
+                break;
+            case JUST_DIED:
+                memberData.deathState = PartyMemberDeathState::Dying;
+                break;
+            case CORPSE:
+                memberData.deathState = PartyMemberDeathState::Corpse;
+                break;
+            case DEAD:
+                memberData.deathState = PartyMemberDeathState::ReleasedGhost;
+                break;
+            case JUST_ALIVED:
+                memberData.deathState = PartyMemberDeathState::Resurrecting;
+                break;
+            case CORPSE_FALLING:
+                memberData.deathState = PartyMemberDeathState::CorpseFalling;
+                break;
+            default:
+                memberData.deathState = PartyMemberDeathState::Unknown;
+                break;
+        }
         memberData.inCombat = member->IsInCombat();
         memberData.mounted = member->IsMounted();
         memberData.taxiFlying = member->IsTaxiFlying();

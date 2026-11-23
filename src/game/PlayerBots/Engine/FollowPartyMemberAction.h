@@ -3,6 +3,7 @@
 
 #include "CoreAction.h"
 #include "PartySnapshot.h"
+#include "Formation.h"
 
 #include "Group.h"
 #include "MotionMaster.h"
@@ -82,7 +83,9 @@ protected:
 
         Player* actor = resolved.actor;
         Player* target = resolved.target->ToPlayer();
-        actor->GetMotionMaster()->MoveFollow(target, m_followDistance, m_followAngle);
+        FollowFormationOffset const offset =
+            GetFollowFormationOffset(candidate.formationSlot);
+        actor->GetMotionMaster()->MoveFollow(target, offset.distance, offset.angle);
 
         FollowMovementGenerator<Player> const* follow = GetCurrentFollow(actor);
         bool const started = follow && follow->GetTarget() == target &&
@@ -193,8 +196,6 @@ private:
         return result;
     }
 
-    float m_followDistance = 2.5f;
-    float m_followAngle = 3.14159265358979323846f;
     std::string m_name = "core_follow_party_member";
 };
 } // namespace PartyBotEngine

@@ -2,6 +2,7 @@
 #define MANGOS_PARTYBOT_FOLLOW_PARTY_LEADER_TRIGGER_H
 #include "Trigger.h"
 #include "BotBehaviorState.h"
+#include "Formation.h"
 namespace PartyBotEngine
 {
 class FollowPartyLeaderTrigger final : public Trigger
@@ -33,9 +34,15 @@ public:
             leader->mapId != context.snapshot.mapId ||
             leader->instanceId != context.snapshot.instanceId)
             return;
+        std::uint8_t const formationSlot =
+            context.coordinator.GetFormationSlot(context.bot.guid);
+        if (formationSlot == InvalidFormationSlot)
+            return;
+
         ActionCandidate candidate;
         candidate.actionName = "core_follow_party_member";
         candidate.targetGuid = leaderGuid;
+        candidate.formationSlot = formationSlot;
         candidate.basePriority = 50.0f;
         candidate.channel = ActionChannel::Movement;
         candidates.push_back(candidate);

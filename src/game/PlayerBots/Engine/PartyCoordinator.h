@@ -1,6 +1,7 @@
 #ifndef MANGOS_PARTYBOT_PARTY_COORDINATOR_H
 #define MANGOS_PARTYBOT_PARTY_COORDINATOR_H
 #include "PartySnapshot.h"
+#include "Formation.h"
 #include <memory>
 #include <vector>
 namespace PartyBotEngine {
@@ -74,6 +75,12 @@ public:
     bool HasReservation(ReservationType type, Guid targetGuid, Guid exceptOwner, std::uint32_t nowMs);
     std::uint32_t GetReservedAmount(ReservationType type, Guid targetGuid, Guid exceptOwner, std::uint32_t nowMs);
     void ReleaseOwner(Guid ownerGuid);
+
+    // Stable, value-only formation slots shared by every Bot in this party shard.
+    void ReconcileFormationAssignments(PartySnapshot const& snapshot)
+    { m_formationAssignments.Reconcile(snapshot); }
+    std::uint8_t GetFormationSlot(Guid botGuid) const
+    { return m_formationAssignments.GetSlot(botGuid); }
     void PruneExpired(std::uint32_t nowMs);
     std::vector<Reservation> const& GetReservations() const { return m_reservations; }
 
@@ -127,6 +134,7 @@ private:
     static bool IsExpired(std::uint32_t nowMs, std::uint32_t expiresAtMs);
     std::vector<Reservation> m_reservations;
     std::vector<ThreatReservation> m_threatReservations;
+    FormationAssignments m_formationAssignments;
     struct TrackedNonBotPartyMemberState
     {
         Guid memberGuid = 0;

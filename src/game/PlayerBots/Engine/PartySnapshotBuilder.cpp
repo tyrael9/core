@@ -39,6 +39,7 @@ PartySnapshot const* PartySnapshotBuilder::GetOrBuild(Player* bot, PartyCoordina
     PartySnapshot snapshot;
     if (!Build(bot, snapshot, coordinator.NextSnapshotEpoch(), nowMs))
         return nullptr;
+    coordinator.ReconcileFormationAssignments(snapshot);
     coordinator.SetSnapshot(std::move(snapshot));
     return coordinator.GetSnapshotIfFresh(nowMs, maxAgeMs);
 }

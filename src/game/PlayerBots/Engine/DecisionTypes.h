@@ -93,6 +93,8 @@ struct ActionCandidate {
     ActionChannel channel = ActionChannel::GlobalCooldown;
     float destinationX = 0.0f, destinationY = 0.0f, destinationZ = 0.0f;
     bool hasDestination = false;
+    // Stable party-relative Follow slot; invalid candidates keep legacy slot-zero geometry.
+    std::uint8_t formationSlot = 0xff;
     // Value-only inventory identity; Core Item pointers are always re-resolved.
     Guid itemGuid = 0;
     std::uint32_t itemEntry = 0;

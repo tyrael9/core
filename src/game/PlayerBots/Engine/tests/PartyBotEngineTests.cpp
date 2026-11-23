@@ -10,6 +10,7 @@
 #include "StopFollowingUnsafeTrigger.h"
 #include "ThreatBudget.h"
 #include "ThreatBudgetPolicy.h"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -5029,6 +5030,141 @@ void TestClearPoliciesRemovesStrategiesActionsAndPendingWork() {
     assert(engine.GetPendingActionCount() == 0);
 }
 
+void TestFormationAssignmentsRemainStableAcrossRosterAndLeaderChanges() {
+    PartySnapshot snapshot;
+    snapshot.groupId = 93;
+    snapshot.mapId = 33;
+    snapshot.instanceId = 101;
+    snapshot.groupLeaderGuid = 100;
+
+    PartyMemberSnapshot leader;
+    leader.guid = 100;
+    leader.mapId = snapshot.mapId;
+    leader.instanceId = snapshot.instanceId;
+    leader.online = true;
+    leader.alive = true;
+    snapshot.members.push_back(leader);
+
+    auto addBot = [&snapshot](Guid guid) {
+        PartyMemberSnapshot bot;
+        bot.guid = guid;
+        bot.mapId = snapshot.mapId;
+        bot.instanceId = snapshot.instanceId;
+        bot.online = true;
+        bot.alive = true;
+        bot.isPlayerBot = true;
+        snapshot.members.push_back(bot);
+    };
+    addBot(50);
+    addBot(20);
+    addBot(40);
+    addBot(30);
+
+    PartyMemberSnapshot ordinaryMember = leader;
+    ordinaryMember.guid = 110;
+    ordinaryMember.isPlayerBot = false;
+    snapshot.members.push_back(ordinaryMember);
+
+    PartyCoordinator coordinator;
+    coordinator.ReconcileFormationAssignments(snapshot);
+    assert(coordinator.GetFormationSlot(20) == 0);
+    assert(coordinator.GetFormationSlot(30) == 1);
+    assert(coordinator.GetFormationSlot(40) == 2);
+    assert(coordinator.GetFormationSlot(50) == 3);
+    assert(coordinator.GetFormationSlot(100) == InvalidFormationSlot);
+    assert(coordinator.GetFormationSlot(110) == InvalidFormationSlot);
+
+    // Snapshot/Group member iteration order must not reshuffle existing Bots.
+    std::reverse(snapshot.members.begin(), snapshot.members.end());
+    coordinator.ReconcileFormationAssignments(snapshot);
+    assert(coordinator.GetFormationSlot(20) == 0);
+    assert(coordinator.GetFormationSlot(30) == 1);
+    assert(coordinator.GetFormationSlot(40) == 2);
+    assert(coordinator.GetFormationSlot(50) == 3);
+
+    // A Bot promoted to leader releases its own slot; other assignments remain stable.
+    snapshot.groupLeaderGuid = 30;
+    coordinator.ReconcileFormationAssignments(snapshot);
+    assert(coordinator.GetFormationSlot(30) == InvalidFormationSlot);
+    assert(coordinator.GetFormationSlot(20) == 0);
+    assert(coordinator.GetFormationSlot(40) == 2);
+    assert(coordinator.GetFormationSlot(50) == 3);
+
+    // A newly joined Bot takes the lowest vacant slot without moving incumbents.
+    addBot(60);
+    coordinator.ReconcileFormationAssignments(snapshot);
+    assert(coordinator.GetFormationSlot(60) == 1);
+    assert(coordinator.GetFormationSlot(20) == 0);
+    assert(coordinator.GetFormationSlot(40) == 2);
+    assert(coordinator.GetFormationSlot(50) == 3);
+
+    // Departed members release their slot, which is then available to a newcomer.
+    snapshot.members.erase(
+        std::remove_if(snapshot.members.begin(), snapshot.members.end(),
+            [](PartyMemberSnapshot const& member) { return member.guid == 40; }),
+        snapshot.members.end());
+    addBot(70);
+    coordinator.ReconcileFormationAssignments(snapshot);
+    assert(coordinator.GetFormationSlot(70) == 2);
+    assert(coordinator.GetFormationSlot(20) == 0);
+    assert(coordinator.GetFormationSlot(60) == 1);
+    assert(coordinator.GetFormationSlot(50) == 3);
+
+    // The five-member party limit is enforced; an excess Bot does not share a slot.
+    addBot(80);
+    coordinator.ReconcileFormationAssignments(snapshot);
+    assert(coordinator.GetFormationSlot(80) == InvalidFormationSlot);
+    assert(coordinator.GetFormationSlot(20) == 0);
+    assert(coordinator.GetFormationSlot(70) == 2);
+
+    // Group identity changes reset the old assignment domain deterministically.
+    snapshot.groupId = 94;
+    snapshot.groupLeaderGuid = 20;
+    coordinator.ReconcileFormationAssignments(snapshot);
+    assert(coordinator.GetFormationSlot(20) == InvalidFormationSlot);
+    assert(coordinator.GetFormationSlot(30) == 0);
+    assert(coordinator.GetFormationSlot(50) == 1);
+    assert(coordinator.GetFormationSlot(60) == 2);
+    assert(coordinator.GetFormationSlot(70) == 3);
+    assert(coordinator.GetFormationSlot(80) == InvalidFormationSlot);
+
+    // A map transition also resets slots; current-map membership is re-evaluated.
+    snapshot.mapId = 34;
+    snapshot.groupLeaderGuid = 50;
+    for (PartyMemberSnapshot& member : snapshot.members)
+        member.mapId = snapshot.mapId;
+    coordinator.ReconcileFormationAssignments(snapshot);
+    assert(coordinator.GetFormationSlot(50) == InvalidFormationSlot);
+    assert(coordinator.GetFormationSlot(20) == 0);
+    assert(coordinator.GetFormationSlot(30) == 1);
+    assert(coordinator.GetFormationSlot(60) == 2);
+    assert(coordinator.GetFormationSlot(70) == 3);
+
+    // Instance transitions use a distinct formation assignment domain as well.
+    snapshot.instanceId = 202;
+    snapshot.groupLeaderGuid = 70;
+    for (PartyMemberSnapshot& member : snapshot.members)
+        member.instanceId = snapshot.instanceId;
+    coordinator.ReconcileFormationAssignments(snapshot);
+    assert(coordinator.GetFormationSlot(70) == InvalidFormationSlot);
+    assert(coordinator.GetFormationSlot(20) == 0);
+    assert(coordinator.GetFormationSlot(30) == 1);
+    assert(coordinator.GetFormationSlot(50) == 2);
+    assert(coordinator.GetFormationSlot(60) == 3);
+    assert(coordinator.GetFormationSlot(80) == InvalidFormationSlot);
+
+    FollowFormationOffset const slot0 = GetFollowFormationOffset(0);
+    FollowFormationOffset const slot1 = GetFollowFormationOffset(1);
+    FollowFormationOffset const slot2 = GetFollowFormationOffset(2);
+    FollowFormationOffset const slot3 = GetFollowFormationOffset(3);
+    FollowFormationOffset const invalid = GetFollowFormationOffset(InvalidFormationSlot);
+    assert(slot0.distance == 2.5f && std::fabs(slot0.angle - 3.14159265358979323846f) < 0.0001f);
+    assert(slot1.distance == 3.25f && slot1.angle < slot0.angle);
+    assert(slot2.distance == 3.25f && slot2.angle > slot0.angle);
+    assert(slot3.distance == 4.75f && slot3.angle == slot0.angle);
+    assert(invalid.distance == slot0.distance && invalid.angle == slot0.angle);
+}
+
 void TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader() {
     PartySnapshot snapshot;
     snapshot.groupId = 2;
@@ -5043,6 +5179,7 @@ void TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader() {
     bot.instanceId = snapshot.instanceId;
     bot.online = true;
     bot.alive = true;
+    bot.isPlayerBot = true;
     snapshot.members.push_back(bot);
 
     PartyMemberSnapshot leader;
@@ -5054,6 +5191,7 @@ void TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader() {
     snapshot.members.push_back(leader);
 
     PartyCoordinator coordinator;
+    coordinator.ReconcileFormationAssignments(snapshot);
     FollowPartyLeaderTrigger trigger;
     DecisionContext idleContext(snapshot, snapshot.members[0], coordinator, 1000);
     assert(trigger.IsActive(idleContext));
@@ -5063,6 +5201,7 @@ void TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader() {
     assert(candidates[0].actionName == "core_follow_party_member");
     assert(candidates[0].targetGuid == snapshot.groupLeaderGuid);
     assert(candidates[0].channel == ActionChannel::Movement);
+    assert(candidates[0].formationSlot == 0);
 
     snapshot.members[0].followTargetGuid = snapshot.groupLeaderGuid;
     DecisionContext followingContext(snapshot, snapshot.members[0], coordinator, 2000);
@@ -5147,18 +5286,20 @@ void TestProductionFollowTriggersRetargetStopAndRecover() {
     snapshot.epoch = 9; snapshot.groupLeaderGuid = 22;
     PartyMemberSnapshot bot;
     bot.guid = 11; bot.mapId = snapshot.mapId; bot.instanceId = snapshot.instanceId;
-    bot.online = true; bot.alive = true; snapshot.members.push_back(bot);
+    bot.online = true; bot.alive = true; bot.isPlayerBot = true; snapshot.members.push_back(bot);
     PartyMemberSnapshot leader;
     leader.guid = 22; leader.mapId = snapshot.mapId; leader.instanceId = snapshot.instanceId;
     leader.online = true; leader.alive = true; snapshot.members.push_back(leader);
 
     PartyCoordinator coordinator;
+    coordinator.ReconcileFormationAssignments(snapshot);
     FollowPartyLeaderTrigger follow;
     StopFollowingUnsafeTrigger stop;
     std::vector<ActionCandidate> candidates;
     DecisionContext idle(snapshot, snapshot.members[0], coordinator, 1000);
     follow.CollectCandidates(idle, candidates);
     assert(candidates.size() == 1 && candidates[0].actionName == "core_follow_party_member");
+    assert(candidates[0].formationSlot == 0);
 
     snapshot.members[0].followTargetGuid = snapshot.groupLeaderGuid;
     DecisionContext following(snapshot, snapshot.members[0], coordinator, 2000);
@@ -5208,6 +5349,7 @@ void TestProductionFollowTriggersRetargetStopAndRecover() {
 int main() {
     TestActionCandidatePreservesStableItemIdentity();
     TestClearPoliciesRemovesStrategiesActionsAndPendingWork();
+    TestFormationAssignmentsRemainStableAcrossRosterAndLeaderChanges();
     TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader();
     TestBotBehaviorStateMachineTransitionsAndTimeoutClockWrap();
     TestProductionFollowTriggersRetargetStopAndRecover();

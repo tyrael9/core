@@ -8511,7 +8511,8 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         initialSnapshot->groupLeaderGuid == firstLeaderGuid.GetRawValue() &&
         initialSnapshot->members.size() == 3 && initialBot &&
         initialSnapshot->FindMember(firstLeaderGuid.GetRawValue()) &&
-        initialSnapshot->FindMember(nextLeaderGuid.GetRawValue());
+        initialSnapshot->FindMember(nextLeaderGuid.GetRawValue()) &&
+        initialCoordinator.GetFormationSlot(followerGuid.GetRawValue()) == 0;
     if (!rosterValid)
     {
         bool const cleaned = cleanup();
@@ -8654,6 +8655,8 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
                 actionRuntime->m_simulatorEngineCandidateCount == 1 &&
                 actionRuntime->m_newEngineStrategiesRegistered &&
                 !actionRuntime->m_engineShadowStrategiesRegistered &&
+                actionRuntime->m_partyCoordinator &&
+                actionRuntime->m_partyCoordinator->GetFormationSlot(botGuid) == 0 &&
                 productionFollow && productionFollow->GetTarget() == firstLeader &&
                 follower->HasUnitState(UNIT_STATE_FOLLOW);
 

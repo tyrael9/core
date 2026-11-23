@@ -10075,6 +10075,13 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52gCNoOfferCreated = false;
     bool f52gCUnrelatedReservationPreserved = false;
     ActionId f52gCActionId = 0;
+    bool f52gC2ListenerAdded = false;
+    bool f52gC2ActionSelected = false;
+    bool f52gC2CastStarted = false;
+    bool f52gC2FailedTerminalMatched = false;
+    bool f52gC2ReservationReleased = false;
+    bool f52gC2NoOfferCreated = false;
+    ActionId f52gC2ActionId = 0;
     if (f52gSelfResurrectionPassed && botAIs.size() == 4 && players.size() == 5)
     {
         PartyBotAI& resurrectionAI = *botAIs[0];
@@ -10492,11 +10499,104 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 corpseTarget->SpawnCorpseBones();
                 corpseTarget->ClearResurrectRequestData();
             }
+
+            // F52g-C2: let a real Core Resurrection cast reach its cast-time
+            // completion with insufficient mana. Spell::cast must take its
+            // CheckPower -> finish(false) path and publish a Failed terminal.
+            std::shared_ptr<CaptureCoreSpellTerminalListener> failedTerminal(
+                new CaptureCoreSpellTerminalListener());
+            f52gC2ListenerAdded =
+                resurrectionAI.m_partyBotEngine.AddCoreSpellTerminalListener(failedTerminal);
+            caster->SetPower(POWER_MANA, caster->GetMaxPower(POWER_MANA));
+            corpseTarget->SetHealth(0);
+            corpseTarget->SetDeathState(JUST_DIED);
+            corpseTarget->KillPlayer();
+            PartySnapshot failedSnapshot;
+            DecisionReport failedReport;
+            std::size_t failedIndex = 0;
+            bool const failedSelected = f52gC2ListenerAdded &&
+                corpseTarget->GetDeathState() == CORPSE &&
+                captureGroupResurrectionDecision(
+                    corpseTarget, failedSnapshot, failedReport, failedIndex);
+            if (failedSelected)
+            {
+                f52gC2ActionSelected = true;
+                PartyMemberSnapshot const* const failedBotSnapshot =
+                    failedSnapshot.FindMember(casterGuid);
+                DecisionContext failedContext(
+                    failedSnapshot, *failedBotSnapshot, *wipeCoordinator,
+                    WorldTimer::getMSTime(), nullptr, nullptr,
+                    &resurrectionAI, nullptr, &resurrectionAI);
+                resurrectionAI.m_partyBotEngine.ExecuteSelected(
+                    failedContext, failedReport);
+                CandidateEvaluation const& evaluation =
+                    failedReport.candidates[failedIndex];
+                f52gC2ActionId = evaluation.actionId;
+                f52gC2CastStarted =
+                    evaluation.status == CandidateStatus::Executed &&
+                    evaluation.actionResult == ActionResult::Success &&
+                    f52gC2ActionId != 0 &&
+                    caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr &&
+                    std::any_of(
+                        wipeCoordinator->GetReservations().begin(),
+                        wipeCoordinator->GetReservations().end(),
+                        [casterGuid, corpseTargetGuid](Reservation const& row)
+                        {
+                            return row.type == ReservationType::Resurrection &&
+                                row.targetGuid == corpseTargetGuid &&
+                                row.ownerGuid == casterGuid;
+                        });
+            }
+
+            if (f52gC2CastStarted)
+            {
+                // The cast has passed initial CheckPower. Zeroing mana now
+                // exercises Core's second CheckPower at cast completion.
+                caster->SetPower(POWER_MANA, 0);
+                for (uint32 tick = 0; tick < 60 &&
+                    (failedTerminal->events.empty() ||
+                     caster->GetCurrentSpell(CURRENT_GENERIC_SPELL)); ++tick)
+                {
+                    caster->Update(250, 250);
+                }
+                f52gC2FailedTerminalMatched =
+                    failedTerminal->events.size() == 1 &&
+                    failedTerminal->events[0].actionId == f52gC2ActionId &&
+                    failedTerminal->events[0].targetGuid == corpseTargetGuid &&
+                    failedTerminal->events[0].spellId == f52gBSpellId &&
+                    failedTerminal->events[0].status ==
+                        CoreSpellTerminalStatus::Failed &&
+                    caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+                f52gC2ReservationReleased = f52gC2FailedTerminalMatched &&
+                    std::none_of(
+                        wipeCoordinator->GetReservations().begin(),
+                        wipeCoordinator->GetReservations().end(),
+                        [casterGuid, corpseTargetGuid](Reservation const& row)
+                        {
+                            return row.type == ReservationType::Resurrection &&
+                                row.targetGuid == corpseTargetGuid &&
+                                row.ownerGuid == casterGuid;
+                        });
+                f52gC2NoOfferCreated = f52gC2FailedTerminalMatched &&
+                    !corpseTarget->IsRessurectRequested();
+            }
+
+            if (!corpseTarget->IsAlive())
+            {
+                corpseTarget->ResurrectPlayer(0.5f, false);
+                corpseTarget->SpawnCorpseBones();
+                corpseTarget->ClearResurrectRequestData();
+            }
         }
-        f52gCPassed =
+        bool const f52gC1Passed =
             f52gCListenerAdded && f52gCActionSelected && f52gCCastStarted &&
             f52gCInterruptedTerminalMatched && f52gCReservationReleased &&
             f52gCNoOfferCreated && f52gCUnrelatedReservationPreserved;
+        bool const f52gC2Passed =
+            f52gC2ListenerAdded && f52gC2ActionSelected && f52gC2CastStarted &&
+            f52gC2FailedTerminalMatched && f52gC2ReservationReleased &&
+            f52gC2NoOfferCreated;
+        f52gCPassed = f52gC1Passed && f52gC2Passed;
         sLog.Out(LOG_BASIC, f52gCPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
             "[PartyBotSimulator] F52g-C1 interrupted group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu interruptedTerminal=%u reservationReleased=%u noOffer=%u unrelatedReservationPreserved=%u.",
             f52gCListenerAdded ? 1u : 0u, f52gCActionSelected ? 1u : 0u,
@@ -10509,6 +10609,17 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         if (f52gCPassed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F52g-C1 interrupted a real Core resurrection cast; the matching Engine terminal released only its exact corpse reservation, preserved another Bot's reservation, and created no resurrection offer.");
+        sLog.Out(LOG_BASIC, f52gC2Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F52g-C2 failed group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu failedTerminal=%u reservationReleased=%u noOffer=%u.",
+            f52gC2ListenerAdded ? 1u : 0u, f52gC2ActionSelected ? 1u : 0u,
+            f52gC2CastStarted ? 1u : 0u,
+            static_cast<unsigned long long>(f52gC2ActionId),
+            f52gC2FailedTerminalMatched ? 1u : 0u,
+            f52gC2ReservationReleased ? 1u : 0u,
+            f52gC2NoOfferCreated ? 1u : 0u);
+        if (f52gC2Passed)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F52g-C2 depleted mana after a real Core resurrection cast began; Core CheckPower finished the spell as Failed, emitted the matching Engine terminal, released its reservation and created no resurrection offer.");
         f52gBNewEngineOnly =
             resurrectionAI.m_newEngineStrategiesRegistered &&
             !resurrectionAI.m_engineShadowStrategiesRegistered &&

@@ -9826,7 +9826,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 f52fDeadStateObserved = f52fDeadStateObserved &&
                     ai.m_partyCoordinator &&
                     ai.m_partyCoordinator.get() == wipeCoordinator.get() &&
-                    ai.m_botBehaviorStateMachine.GetState() == BotBehaviorState::Dead &&
+                    ai.m_botBehaviorStateMachine.GetState() == BotBehaviorState::Corpse &&
                     noFollowGenerator &&
                     ai.m_simulatorLegacyPolicyEntryCount == 0 &&
                     ai.m_simulatorLegacyPolicyDispatchCount == 0;

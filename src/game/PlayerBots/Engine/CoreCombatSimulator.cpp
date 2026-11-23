@@ -20,6 +20,7 @@
 #include "PlayerBots/Engine/ClearStaleTargetAction.h"
 #include "PlayerBots/Engine/StopUnattackableTargetAction.h"
 #include "PlayerBots/Engine/FollowPartyMemberAction.h"
+#include "PlayerBots/Engine/Formation.h"
 #include "PlayerBots/Engine/FaceTargetAction.h"
 #include "PlayerBots/Engine/StopFollowingAction.h"
 #include "PlayerBots/Engine/AttackTargetAction.h"
@@ -831,8 +832,9 @@ private:
 class SimulatorFollowPartyMemberTrigger final : public Trigger
 {
 public:
-    explicit SimulatorFollowPartyMemberTrigger(Guid targetGuid)
-        : m_targetGuid(targetGuid) {}
+    explicit SimulatorFollowPartyMemberTrigger(
+        Guid targetGuid, std::uint8_t formationSlot = InvalidFormationSlot)
+        : m_targetGuid(targetGuid), m_formationSlot(formationSlot) {}
 
     std::string const& GetName() const override { return m_name; }
     bool IsActive(DecisionContext const& context) const override
@@ -845,6 +847,7 @@ public:
         ActionCandidate candidate;
         candidate.actionName = "core_follow_party_member";
         candidate.targetGuid = m_targetGuid;
+        candidate.formationSlot = m_formationSlot;
         candidate.basePriority = 50.0f;
         candidate.channel = ActionChannel::Movement;
         candidates.push_back(candidate);
@@ -852,6 +855,7 @@ public:
 
 private:
     Guid m_targetGuid = 0;
+    std::uint8_t m_formationSlot = InvalidFormationSlot;
     std::string m_name = "simulator_follow_party_member";
 };
 
@@ -8572,6 +8576,7 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         observedBot->followFormationSlot == 0;
 
     bool sameTargetNotRestarted = false;
+    bool sameTargetFormationReapplied = false;
     bool retargeted = false;
     bool staleGroupRejected = false;
     bool retargetRegistered = false;
@@ -8596,6 +8601,45 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         sameTargetNotRestarted = sameTargetReport.selectedIndices.empty() &&
             !sameTargetReport.candidates.empty() &&
             sameTargetReport.candidates[0].status == CandidateStatus::RejectedUseless;
+
+        // A same-target request with a different assigned slot must replace
+        // the native Follow generator so existing Bots adopt the new formation.
+        PartyBotEngine formationEngine;
+        std::shared_ptr<FollowPartyMemberAction> formationAction(
+            new FollowPartyMemberAction());
+        bool const formationRegistered = formationEngine.RegisterAction(formationAction);
+        std::shared_ptr<Strategy> formationStrategy(
+            new Strategy("simulator_follow_party_member_formation"));
+        formationStrategy->AddTrigger(
+            std::make_shared<SimulatorFollowPartyMemberTrigger>(firstGuid, 1));
+        formationEngine.AddStrategy(formationStrategy);
+        DecisionContext formationContext(
+            *observedSnapshot, *observedBot, observedCoordinator,
+            WorldTimer::getMSTime(), nullptr, nullptr, nullptr, nullptr,
+            actionRuntime.get());
+        DecisionReport formationReport = formationEngine.Evaluate(formationContext);
+        bool const formationSelected = formationRegistered &&
+            formationReport.selectedIndices.size() == 1 &&
+            formationReport.candidates[formationReport.selectedIndices[0]].status ==
+                CandidateStatus::Selected;
+        if (formationSelected)
+            formationEngine.ExecuteSelected(formationContext, formationReport);
+        CandidateEvaluation const* formationEvaluation = formationSelected
+            ? &formationReport.candidates[formationReport.selectedIndices[0]] : nullptr;
+        MovementGenerator const* formationMovement =
+            follower->GetMotionMaster()->GetCurrent();
+        FollowMovementGenerator<Player> const* formationFollow =
+            formationMovement &&
+            formationMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                ? static_cast<FollowMovementGenerator<Player> const*>(formationMovement)
+                : nullptr;
+        FollowFormationOffset const slotOneOffset = GetFollowFormationOffset(1);
+        sameTargetFormationReapplied = formationEvaluation &&
+            formationEvaluation->status == CandidateStatus::Executed &&
+            formationEvaluation->actionResult == ActionResult::Success &&
+            formationFollow && formationFollow->GetTarget() == firstLeader &&
+            formationFollow->GetFollowDistance() == slotOneOffset.distance &&
+            formationFollow->GetFollowAngle() == slotOneOffset.angle;
 
         PartyBotEngine retargetEngine;
         std::shared_ptr<FollowPartyMemberAction> retargetAction(
@@ -8918,14 +8962,16 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         pointMovementPreserved ? 1u : 0u);
 
     bool const passed = registered && firstStarted && followTargetCaptured &&
-        sameTargetNotRestarted && retargetRegistered && retargeted &&
+        sameTargetNotRestarted && sameTargetFormationReapplied &&
+        retargetRegistered && retargeted &&
         productionFollowPassed && f51CombatFollowStopped && f51CombatFollowResumed &&
         firstLeaderRemoved && staleSelected && staleGroupRejected &&
         stopFollowingPassed;
     sLog.Out(LOG_BASIC, passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] Core FollowPartyMember action: registered=%u firstStarted=%u followTargetCaptured=%u sameTargetNotRestarted=%u retargetRegistered=%u retargeted=%u firstLeaderRemoved=%u staleSelected=%u staleGroupRejected=%u.",
+        "[PartyBotSimulator] Core FollowPartyMember action: registered=%u firstStarted=%u followTargetCaptured=%u sameTargetNotRestarted=%u sameTargetFormationReapplied=%u retargetRegistered=%u retargeted=%u firstLeaderRemoved=%u staleSelected=%u staleGroupRejected=%u.",
         registered ? 1u : 0u, firstStarted ? 1u : 0u,
         followTargetCaptured ? 1u : 0u, sameTargetNotRestarted ? 1u : 0u,
+        sameTargetFormationReapplied ? 1u : 0u,
         retargetRegistered ? 1u : 0u, retargeted ? 1u : 0u,
         firstLeaderRemoved ? 1u : 0u, staleSelected ? 1u : 0u,
         staleGroupRejected ? 1u : 0u);
@@ -8940,7 +8986,7 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-        "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-only current-follow snapshot to avoid restarting the same target, retargeted the native Player FollowMovementGenerator to a new group member, and rejected stale live-Group membership without disturbing movement.");
+        "[PartyBotSimulator] PASS: FollowPartyMemberAction used a GUID-only current-follow snapshot to avoid restarting an unchanged target/slot, reapplied the native FollowMovementGenerator when the same target required a new formation slot, retargeted to a new group member, and rejected stale live-Group membership.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
         "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator.");
     return true;

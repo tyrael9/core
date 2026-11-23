@@ -6061,10 +6061,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[PartyBotSimulator] PASS: Core-backed PartyBotEngine prioritised trigger telemetry by actionable active state, then active-empty, then inactive; cadence-skipped rows were deprioritised by the four-row cap, while healer-candidate attribution remained intact.");
 
-    // F29: drive the real PartyBotAI::UpdateAI entry with an explicit per-instance
-    // NewEngine override. The process config remains Shadow-enabled for the
-    // surrounding F17/F27 fixtures; this bot must nevertheless run an empty
-    // authoritative Engine cycle and return before entering any Legacy policy.
+    // F29: exercise exclusive NewEngine while the bot is in combat. The
+    // production out-of-combat follow policy must register but remain inactive.
     PartyBotAI newEngineAuthorityAI(
         dps, map.GetId(), map.GetInstanceId(),
         tank->GetPositionX(), tank->GetPositionY(),
@@ -6073,33 +6071,38 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     newEngineAuthorityAI.m_initialized = true;
     newEngineAuthorityAI.m_simulatorExecutionAuthorityOverride =
         static_cast<int32>(ExecutionAuthorityMode::NewEngine);
+    tank->SetInCombatState();
     newEngineAuthorityAI.m_updateTimer.Reset(1000);
     PlayerAI* const previousTankAIForNewEngineAuthority = tank->AI();
     tank->SetAI(&newEngineAuthorityAI);
     newEngineAuthorityAI.UpdateAI(1000);
     bool const f29NewEngineAuthorityPassed =
+        tank->IsInCombat() &&
         newEngineAuthorityAI.m_simulatorNewEngineTickCount == 1 &&
         newEngineAuthorityAI.m_simulatorLegacyPolicyEntryCount == 0 &&
         newEngineAuthorityAI.m_simulatorLegacyPolicyDispatchCount == 0 &&
         newEngineAuthorityAI.m_simulatorEngineDecisionCycleCount == 1 &&
         newEngineAuthorityAI.m_simulatorEngineCandidateCount == 0 &&
+        newEngineAuthorityAI.m_newEngineStrategiesRegistered &&
         !newEngineAuthorityAI.m_engineShadowStrategiesRegistered &&
         newEngineAuthorityAI.m_partyCoordinator &&
         newEngineAuthorityAI.m_partyCoordinatorMapId == map.GetId() &&
         newEngineAuthorityAI.m_partyCoordinatorInstanceId == map.GetInstanceId();
     tank->SetAI(previousTankAIForNewEngineAuthority);
     sLog.Out(LOG_BASIC, f29NewEngineAuthorityPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-             "[PartyBotSimulator] NewEngine authority tick: newEngineTicks=%u legacyEntries=%u legacyDispatches=%u decisionCycles=%u candidates=%u shadowPoliciesRegistered=%u coordinator=%u.",
+             "[PartyBotSimulator] NewEngine authority tick: newEngineTicks=%u legacyEntries=%u legacyDispatches=%u decisionCycles=%u candidates=%u newEnginePolicies=%u shadowPolicies=%u inCombat=%u coordinator=%u.",
              newEngineAuthorityAI.m_simulatorNewEngineTickCount,
              newEngineAuthorityAI.m_simulatorLegacyPolicyEntryCount,
              newEngineAuthorityAI.m_simulatorLegacyPolicyDispatchCount,
              newEngineAuthorityAI.m_simulatorEngineDecisionCycleCount,
              newEngineAuthorityAI.m_simulatorEngineCandidateCount,
+             newEngineAuthorityAI.m_newEngineStrategiesRegistered ? 1u : 0u,
              newEngineAuthorityAI.m_engineShadowStrategiesRegistered ? 1u : 0u,
+             tank->IsInCombat() ? 1u : 0u,
              newEngineAuthorityAI.m_partyCoordinator ? 1u : 0u);
     if (f29NewEngineAuthorityPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: F29 real PartyBotAI::UpdateAI ran one empty exclusive NewEngine decision cycle and returned before Legacy policy entry/dispatch, with no Shadow probe strategies registered.");
+                 "[PartyBotSimulator] PASS: F29 real PartyBotAI::UpdateAI registered the production out-of-combat follow policy but emitted no candidate while the bot was in combat, with no Legacy policy entry or Shadow-policy registration.");
 
     dps->SetAI(previousDpsAIForPartyTrace);
     secondPartyTraceAI.Remove();

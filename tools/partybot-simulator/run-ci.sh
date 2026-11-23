@@ -272,8 +272,8 @@ if [[ "$decision_summary_count" != "1" ]]; then
     echo "[PartyBotSimulator] Expected exactly one complete F20 decision_summary for the executed Core Player heal, found $decision_summary_count." | tee -a "$LOG_FILE"
     exit 1
 fi
-if ! grep -Fq "[PartyBotSimulator] PASS: F29 real PartyBotAI::UpdateAI ran one empty exclusive NewEngine decision cycle and returned before Legacy policy entry/dispatch, with no Shadow probe strategies registered." "$LOG_FILE"; then
-    echo "[PartyBotSimulator] The F29 NewEngine authority/no-Legacy-fallback PASS marker was not found." | tee -a "$LOG_FILE"
+if ! grep -Fq "[PartyBotSimulator] PASS: F29 real PartyBotAI::UpdateAI registered the production out-of-combat follow policy but emitted no candidate while the bot was in combat, with no Legacy policy entry or Shadow-policy registration." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F29 NewEngine combat-veto/no-Legacy-fallback PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 

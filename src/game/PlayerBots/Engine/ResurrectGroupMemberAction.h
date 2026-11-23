@@ -98,17 +98,6 @@ protected:
     }
 
 private:
-    static bool HasNonMeleeSpell(Player* actor)
-    {
-        if (!actor)
-            return false;
-        for (uint32 index = CURRENT_FIRST_NON_MELEE_SPELL;
-             index < CURRENT_MAX_SPELL; ++index)
-            if (actor->GetCurrentSpell(CurrentSpellTypes(index)))
-                return true;
-        return false;
-    }
-
     static ActionExecutionResult Reject(char const* reason)
     {
         ActionExecutionResult result;
@@ -121,19 +110,9 @@ private:
         DecisionContext const& context, ActionCandidate const& candidate,
         CoreActionResolution const& resolved)
     {
-        Player* const actor = resolved.actor;
-        Player* const target = resolved.target ? resolved.target->ToPlayer() : nullptr;
-        Group* const group = actor ? actor->GetGroup() : nullptr;
-        SpellEntry const* const spell = sSpellMgr.GetSpellEntry(candidate.spellId);
-
-        if (!actor || !target || resolved.target != target || !resolved.map ||
-            !candidate.targetGuid || candidate.targetGuid == context.bot.guid ||
-            target->GetObjectGuid().GetRawValue() != candidate.targetGuid ||
-            !actor->IsInWorld() || !target->IsInWorld() ||
-            !actor->IsAlive() || target->IsAlive() ||
-            actor->GetDeathState() != ALIVE || target->GetDeathState() != CORPSE ||
-            actor->InBattleGround() || actor->IsMounted() ||
-            !spell || spell->Id != candidate.spellId ||
+        if (!resolved.IsResolved() || !resolved.actor || !resolved.target ||
+            !resolved.map || !candidate.targetGuid ||
+            candidate.targetGuid == context.bot.guid ||
             context.bot.resurrectionSpellId != candidate.spellId ||
             !context.coreActionRuntime ||
             context.coreActionRuntime->GetResurrectionSpellId() != candidate.spellId ||

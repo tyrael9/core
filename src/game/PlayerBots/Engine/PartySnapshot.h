@@ -26,6 +26,7 @@ struct PartyMemberSnapshot {
     std::uint32_t pointMovementPointId = 0;
     float x = 0.0f, y = 0.0f, z = 0.0f, orientation = 0.0f;
     std::uint32_t currentSpellId = 0, currentSpellState = 0;
+    std::uint32_t resurrectionSpellId = 0;
     Guid currentSpellTargetGuid = 0;
     ActionId currentSpellActionId = 0;
     std::uint64_t currentSpellEncounterId = 0;
@@ -33,6 +34,7 @@ struct PartyMemberSnapshot {
     bool currentSpellEngineAction = false;
     std::uint8_t shapeshiftForm = 0, currentSpellType = 0xff;
     PartyMemberDeathState deathState = PartyMemberDeathState::Alive;
+    bool resurrectionPending = false, inDuel = false;
     bool online = false, alive = false, inCombat = false, isMainTank = false;
     bool victimAttackable = false;
     bool isPlayerBot = false;

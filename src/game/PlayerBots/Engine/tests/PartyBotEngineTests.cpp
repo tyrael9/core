@@ -9,6 +9,8 @@
 #include "BotBehaviorState.h"
 #include "AutoResurrectSelfTrigger.h"
 #include "ResurrectionPolicy.h"
+#include "ResurrectGroupMemberTrigger.h"
+#include "ResurrectGroupMemberAction.h"
 #include "StopFollowingUnsafeTrigger.h"
 #include "ThreatBudget.h"
 #include "ThreatBudgetPolicy.h"
@@ -5507,6 +5509,165 @@ void TestAutoResurrectSelfPolicyDistinguishesCorpseAndReleasedGhost() {
     assert(!ShouldAutoResurrectSelf(snapshot, snapshot.members[0]));
 }
 
+void TestResurrectGroupMemberTriggerAndActionEligibility() {
+    PartySnapshot snapshot;
+    snapshot.groupId = 51;
+    snapshot.mapId = 33;
+    snapshot.instanceId = 101;
+    snapshot.groupLeaderGuid = 10;
+
+    PartyMemberSnapshot leader;
+    leader.guid = 10;
+    leader.mapId = snapshot.mapId;
+    leader.instanceId = snapshot.instanceId;
+    leader.online = true;
+    leader.alive = true;
+    snapshot.members.push_back(leader);
+
+    PartyMemberSnapshot caster;
+    caster.guid = 11;
+    caster.classId = 5;
+    caster.mapId = snapshot.mapId;
+    caster.instanceId = snapshot.instanceId;
+    caster.online = true;
+    caster.alive = true;
+    caster.isPlayerBot = true;
+    caster.resurrectionSpellId = 2006;
+    snapshot.members.push_back(caster);
+
+    PartyMemberSnapshot corpse;
+    corpse.guid = 22;
+    corpse.classId = 8;
+    corpse.mapId = snapshot.mapId;
+    corpse.instanceId = snapshot.instanceId;
+    corpse.online = true;
+    corpse.alive = false;
+    corpse.deathState = PartyMemberDeathState::Corpse;
+    snapshot.members.push_back(corpse);
+
+    PartyCoordinator coordinator;
+    ResurrectGroupMemberTrigger trigger;
+    ResurrectGroupMemberAction action;
+    DecisionContext context(snapshot, snapshot.members[1], coordinator, 1000);
+    std::vector<ActionCandidate> candidates;
+    trigger.CollectCandidates(context, candidates);
+    assert(candidates.size() == 1);
+    assert(candidates[0].actionName == "core_resurrect_group_member");
+    assert(candidates[0].targetGuid == corpse.guid);
+    assert(candidates[0].spellId == 2006);
+    assert(candidates[0].channel == ActionChannel::GlobalCooldown);
+
+    std::string reason;
+    assert(action.IsPossible(context, candidates[0], reason));
+    assert(action.IsUseful(context, candidates[0], reason));
+    ThreatImpactEstimate const estimate = action.EstimateThreatImpact(context, candidates[0]);
+    assert(estimate.completeness == ThreatImpactCompleteness::NoThreat);
+    assert(estimate.snapshotEpoch == snapshot.epoch);
+
+    // Resurrection is only offered to a living same-shard Corpse, never a
+    // released ghost, corpse-falling transition or target with a pending offer.
+    snapshot.members[2].deathState = PartyMemberDeathState::ReleasedGhost;
+    DecisionContext ghost(snapshot, snapshot.members[1], coordinator, 1100);
+    candidates.clear(); trigger.CollectCandidates(ghost, candidates);
+    assert(candidates.empty());
+    snapshot.members[2].deathState = PartyMemberDeathState::CorpseFalling;
+    DecisionContext falling(snapshot, snapshot.members[1], coordinator, 1200);
+    candidates.clear(); trigger.CollectCandidates(falling, candidates);
+    assert(candidates.empty());
+    snapshot.members[2].deathState = PartyMemberDeathState::Corpse;
+    snapshot.members[2].resurrectionPending = true;
+    DecisionContext pendingOffer(snapshot, snapshot.members[1], coordinator, 1300);
+    candidates.clear(); trigger.CollectCandidates(pendingOffer, candidates);
+    assert(candidates.empty());
+    snapshot.members[2].resurrectionPending = false;
+
+    // Actor must have a live, known resurrection spell and be out of combat/cast.
+    snapshot.members[1].resurrectionSpellId = 0;
+    DecisionContext noSpell(snapshot, snapshot.members[1], coordinator, 1400);
+    candidates.clear(); trigger.CollectCandidates(noSpell, candidates);
+    assert(candidates.empty());
+    snapshot.members[1].resurrectionSpellId = 2006;
+    snapshot.members[1].inDuel = true;
+    DecisionContext duel(snapshot, snapshot.members[1], coordinator, 1500);
+    candidates.clear(); trigger.CollectCandidates(duel, candidates);
+    assert(candidates.empty());
+    snapshot.members[1].inDuel = false;
+    snapshot.members[1].currentSpellId = 2050;
+    DecisionContext casting(snapshot, snapshot.members[1], coordinator, 1600);
+    candidates.clear(); trigger.CollectCandidates(casting, candidates);
+    assert(candidates.empty());
+    snapshot.members[1].currentSpellId = 0;
+    snapshot.members[1].inCombat = true;
+    DecisionContext combat(snapshot, snapshot.members[1], coordinator, 1700);
+    candidates.clear(); trigger.CollectCandidates(combat, candidates);
+    assert(candidates.empty());
+    snapshot.members[1].inCombat = false;
+
+    // A foreign-shard target cannot be selected even when its death state is CORPSE.
+    snapshot.members[2].mapId = 34;
+    DecisionContext foreignMap(snapshot, snapshot.members[1], coordinator, 1800);
+    candidates.clear(); trigger.CollectCandidates(foreignMap, candidates);
+    assert(candidates.empty());
+    snapshot.members[2].mapId = snapshot.mapId;
+
+    // The shared coordinator reservation is the final arbitration guard
+    // against two Bot casters selecting the same corpse in one update window.
+    Reservation reserved;
+    reserved.type = ReservationType::Resurrection;
+    reserved.targetGuid = corpse.guid;
+    reserved.ownerGuid = 33;
+    reserved.spellId = 2008;
+    reserved.expiresAtMs = 5000;
+    assert(coordinator.TryReserve(reserved, 1900));
+    DecisionContext alreadyReserved(snapshot, snapshot.members[1], coordinator, 2000);
+    candidates.clear(); trigger.CollectCandidates(alreadyReserved, candidates);
+    assert(candidates.empty());
+}
+
+void TestCoordinatorReleasesOnlyExactReservationOwnerAndTarget() {
+    PartyCoordinator coordinator;
+    Reservation first;
+    first.type = ReservationType::Resurrection;
+    first.targetGuid = 100;
+    first.ownerGuid = 1;
+    first.spellId = 2006;
+    first.expiresAtMs = 10000;
+    assert(coordinator.TryReserve(first, 1000));
+
+    Reservation second;
+    second.type = ReservationType::Resurrection;
+    second.targetGuid = 200;
+    second.ownerGuid = 1;
+    second.spellId = 2006;
+    second.expiresAtMs = 10000;
+    assert(coordinator.TryReserve(second, 1000));
+
+    Reservation third;
+    third.type = ReservationType::Dispel;
+    third.targetGuid = 100;
+    third.ownerGuid = 1;
+    third.expiresAtMs = 10000;
+    assert(coordinator.TryReserve(third, 1000));
+
+    assert(coordinator.GetReservations().size() == 3);
+    assert(coordinator.ReleaseReservation(ReservationType::Resurrection, 100, 1));
+    assert(coordinator.GetReservations().size() == 2);
+    assert(!coordinator.ReleaseReservation(ReservationType::Resurrection, 100, 1));
+    assert(!coordinator.ReleaseReservation(ReservationType::Resurrection, 200, 2));
+    assert(std::any_of(coordinator.GetReservations().begin(),
+        coordinator.GetReservations().end(), [](Reservation const& row)
+        {
+            return row.type == ReservationType::Resurrection &&
+                row.targetGuid == 200 && row.ownerGuid == 1;
+        }));
+    assert(std::any_of(coordinator.GetReservations().begin(),
+        coordinator.GetReservations().end(), [](Reservation const& row)
+        {
+            return row.type == ReservationType::Dispel &&
+                row.targetGuid == 100 && row.ownerGuid == 1;
+        }));
+}
+
 void TestProductionFollowTriggersRetargetStopAndRecover() {
     PartySnapshot snapshot;
     snapshot.groupId = 31; snapshot.mapId = 33; snapshot.instanceId = 101;
@@ -5610,6 +5771,8 @@ int main() {
     TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader();
     TestBotBehaviorStateMachineTransitionsAndTimeoutClockWrap();
     TestAutoResurrectSelfPolicyDistinguishesCorpseAndReleasedGhost();
+    TestResurrectGroupMemberTriggerAndActionEligibility();
+    TestCoordinatorReleasesOnlyExactReservationOwnerAndTarget();
     TestProductionFollowTriggersRetargetStopAndRecover();
     TestExecutionAuthorityModesAreExplicitAndFailSafe();
     TestValueCacheEpochExpiryInvalidationAndTypeSafety();

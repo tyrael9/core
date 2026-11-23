@@ -9759,7 +9759,9 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 std::all_of(botAIs.begin(), botAIs.end(),
                     [](std::unique_ptr<PartyBotAI> const& ai)
                     {
-                        return ai->m_partyBotEngine.GetPendingActionCount() == 0;
+                        return ai->m_partyBotEngine.GetPendingActionCount() == 0 &&
+                            ai->m_partyBotEngine.GetPendingContinuationCount() == 0 &&
+                            ai->m_partyBotEngine.GetPendingItemUseCount() == 0;
                     });
             f52fRepeatedWipeIdempotent = f52fWipeClosed &&
                 !wipeCoordinator->HasActiveEncounter() &&

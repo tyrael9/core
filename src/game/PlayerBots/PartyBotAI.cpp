@@ -605,6 +605,17 @@ void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint64 actionId,
     if (me)
         m_partyBotEngine.InvalidateDecisionState();
 
+    // A resurrection action owns one exact corpse reservation while the Core
+    // Spell is in flight. Release only that (type,target,caster) row at terminal;
+    // other Bots' and this Bot's unrelated reservations remain untouched.
+    if (engineAction && me && m_resurrectionSpell &&
+        spellId == m_resurrectionSpell->Id && targetGuid && m_partyCoordinator &&
+        m_partyCoordinatorMapId == me->GetMapId() &&
+        m_partyCoordinatorInstanceId == me->GetInstanceId())
+        m_partyCoordinator->ReleaseReservation(
+            PartyBotEngine::ReservationType::Resurrection, targetGuid,
+            me->GetObjectGuid().GetRawValue());
+
     // Core terminal is separate from the synchronous Action::Execute result.
     // Notify before trace gates so listeners work with DecisionTrace disabled.
     if (engineAction && actionId)

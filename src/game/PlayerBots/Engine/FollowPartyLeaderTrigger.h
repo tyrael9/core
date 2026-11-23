@@ -14,6 +14,7 @@ public:
     {
         bool const stateAllowsFollow =
             context.botBehaviorState == BotBehaviorState::Idle ||
+            context.botBehaviorState == BotBehaviorState::FollowingLeader ||
             context.botBehaviorState == BotBehaviorState::FollowingPartyMember ||
             context.botBehaviorState == BotBehaviorState::FollowingUnavailableTarget;
         return stateAllowsFollow && context.bot.online && context.bot.alive &&

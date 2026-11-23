@@ -9481,6 +9481,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             std::shared_ptr<PartyCoordinator> destinationCoordinator;
             bool usedDestinationSlots[MaxPartyFormationSlots] = {};
             regroupSharedCoordinator = regroupDestinationReady;
+            regroupSlotsUnique = regroupDestinationReady;
             regroupFollowsRestored = regroupDestinationReady;
             regroupNewEngineOnly = regroupDestinationReady;
             if (regroupDestinationReady)

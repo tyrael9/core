@@ -9750,6 +9750,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 f52fDeadStateObserved = f52fDeadStateObserved &&
                     ai.m_partyCoordinator &&
                     ai.m_partyCoordinator.get() == wipeCoordinator.get() &&
+                    ai.m_botBehaviorStateMachine.GetState() == BotBehaviorState::Dead &&
                     noFollowGenerator &&
                     ai.m_simulatorLegacyPolicyEntryCount == 0 &&
                     ai.m_simulatorLegacyPolicyDispatchCount == 0;
@@ -9778,6 +9779,11 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 wipeCoordinator->InvalidateSnapshot();
                 ai.m_updateTimer.Reset(1000);
                 ai.UpdateAI(1000);
+                // A second tick observes the native Follow created by the first
+                // recovery decision and must settle the state machine at FollowingLeader.
+                wipeCoordinator->InvalidateSnapshot();
+                ai.m_updateTimer.Reset(1000);
+                ai.UpdateAI(1000);
 
                 uint8 const slot = wipeCoordinator->GetFormationSlot(
                     bot->GetObjectGuid().GetRawValue());
@@ -9797,7 +9803,8 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                     bot->IsAlive() && ai.m_partyCoordinator &&
                     ai.m_partyCoordinator.get() == wipeCoordinator.get() &&
                     slotValid && follow && follow->GetTarget() == leader &&
-                    bot->HasUnitState(UNIT_STATE_FOLLOW);
+                    bot->HasUnitState(UNIT_STATE_FOLLOW) &&
+                    ai.m_botBehaviorStateMachine.GetState() == BotBehaviorState::FollowingLeader;
                 if (follow && slotValid)
                 {
                     FollowFormationOffset const expected = GetFollowFormationOffset(slot);

@@ -8764,9 +8764,18 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
         if (productionFollowPassed && f51CombatFollowStopped &&
             f51CombatFollowResumed)
         {
-            group->ChangeLeader(followerGuid);
+            // Group::ChangeLeader asserts when asked to set the current leader
+            // again. Guard both the promotion and restoration requests, and
+            // make the fixture require a real leader transition in both directions.
+            uint32 const leaderBeforePromotion = group->GetLeaderGuid().GetCounter();
+            bool const promotionRequested =
+                group->IsMember(followerGuid) &&
+                group->GetLeaderGuid() != followerGuid;
+            if (promotionRequested)
+                group->ChangeLeader(followerGuid);
             bool const promotedToLeader =
                 group->GetLeaderGuid() == followerGuid;
+
             if (promotedToLeader)
             {
                 if (actionRuntime->m_partyCoordinator)
@@ -8781,23 +8790,45 @@ bool RunEngineCoreFollowPartyMemberActionSmokeTest(Map& map)
                     promotedMovement->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
                         ? static_cast<FollowMovementGenerator<Player> const*>(promotedMovement)
                         : nullptr;
+                bool const leaderRetainedAfterTick =
+                    group->GetLeaderGuid() == followerGuid;
+                bool const nativeFollowStopped =
+                    !promotedFollow &&
+                    !follower->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
                 f52bLeaderPromotionFollowStopped =
+                    promotionRequested && leaderRetainedAfterTick &&
                     actionRuntime->m_simulatorNewEngineTickCount == 4 &&
                     actionRuntime->m_simulatorEngineDecisionCycleCount == 4 &&
                     actionRuntime->m_simulatorEngineCandidateCount == 1 &&
                     actionRuntime->m_simulatorLegacyPolicyEntryCount == 0 &&
                     actionRuntime->m_simulatorLegacyPolicyDispatchCount == 0 &&
-                    !promotedFollow &&
-                    !follower->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
+                    nativeFollowStopped;
             }
 
-            // Restore the fixture's original leader and current Follow so the
-            // existing stale-Group target test keeps its independent preconditions.
-            group->ChangeLeader(firstLeaderGuid);
-            if (actionRuntime->m_partyCoordinator)
-                actionRuntime->m_partyCoordinator->InvalidateSnapshot();
-            follower->GetMotionMaster()->MoveFollow(
-                nextLeader, 2.5f, 3.14159265358979323846f);
+            // Restore the fixture's original leader only when it is not already
+            // current; then retain the old Follow precondition for the stale-target test.
+            bool const restoreRequested =
+                group->IsMember(firstLeaderGuid) &&
+                group->GetLeaderGuid() != firstLeaderGuid;
+            if (restoreRequested)
+                group->ChangeLeader(firstLeaderGuid);
+            bool const leaderRestored = group->GetLeaderGuid() == firstLeaderGuid;
+            sLog.Out(LOG_BASIC,
+                promotionRequested && promotedToLeader && leaderRestored
+                    ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+                "[PartyBotSimulator] F52b Group leader identity: before=%u follower=%u promotionRequested=%u promoted=%u afterTick=%u restoreRequested=%u restored=%u.",
+                leaderBeforePromotion, followerGuid.GetCounter(),
+                promotionRequested ? 1u : 0u, promotedToLeader ? 1u : 0u,
+                group->GetLeaderGuid() == firstLeaderGuid ? 1u : 0u,
+                restoreRequested ? 1u : 0u, leaderRestored ? 1u : 0u);
+
+            if (leaderRestored)
+            {
+                if (actionRuntime->m_partyCoordinator)
+                    actionRuntime->m_partyCoordinator->InvalidateSnapshot();
+                follower->GetMotionMaster()->MoveFollow(
+                    nextLeader, 2.5f, 3.14159265358979323846f);
+            }
         }
 
         // The old snapshot still includes firstLeader, but the live Group no longer does.

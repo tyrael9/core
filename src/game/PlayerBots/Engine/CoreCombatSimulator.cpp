@@ -7485,9 +7485,15 @@ bool RunEngineCoreUtilitySpellAuditSmokeTest(Map& /*map*/)
     uint32 inspected = 0;
     uint32 positiveSelfAuraShapes = 0;
     uint32 missingProcSuppression = 0;
+    uint32 casterProcSuppressed = 0;
+    uint32 targetProcSuppressed = 0;
+    uint32 spellThreatRows = 0;
+    uint32 spellProcEventRows = 0;
+    uint32 procFieldRows = 0;
     uint32 threatOrProcRows = 0;
     uint32 strictCandidates = 0;
     uint32 loggedCandidates = 0;
+    uint32 loggedNearMisses = 0;
 
     for (uint32 spellId = 1; spellId < sSpellMgr.GetMaxSpellId(); ++spellId)
     {
@@ -7500,18 +7506,51 @@ bool RunEngineCoreUtilitySpellAuditSmokeTest(Map& /*map*/)
             continue;
         ++positiveSelfAuraShapes;
 
-        bool const bothProcSuppressed =
-            spell->HasAttribute(SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS) &&
+        bool const casterSuppressed =
+            spell->HasAttribute(SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS);
+        bool const targetSuppressed =
             spell->HasAttribute(SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS);
-        if (!bothProcSuppressed)
+        if (casterSuppressed)
+            ++casterProcSuppressed;
+        if (targetSuppressed)
+            ++targetProcSuppressed;
+        if (!casterSuppressed || !targetSuppressed)
             ++missingProcSuppression;
 
-        bool const threatOrProc =
-            sSpellMgr.GetSpellThreatEntry(spellId) != nullptr ||
-            sSpellMgr.GetSpellProcEvent(spellId) != nullptr ||
-            spell->procFlags || spell->procChance || spell->procCharges;
-        if (threatOrProc)
+        bool const hasSpellThreat = sSpellMgr.GetSpellThreatEntry(spellId) != nullptr;
+        bool const hasSpellProcEvent = sSpellMgr.GetSpellProcEvent(spellId) != nullptr;
+        bool const hasProcFields = spell->procFlags || spell->procChance || spell->procCharges;
+        if (hasSpellThreat)
+            ++spellThreatRows;
+        if (hasSpellProcEvent)
+            ++spellProcEventRows;
+        if (hasProcFields)
+            ++procFieldRows;
+        if (hasSpellThreat || hasSpellProcEvent || hasProcFields)
             ++threatOrProcRows;
+
+        // Keep a small, explicit sample of the actual blockers. In particular,
+        // do not silently relax the proc-suppression requirement just because
+        // the strict scan finds no candidate.
+        if (loggedNearMisses < 8 &&
+            (!casterSuppressed || !targetSuppressed || hasSpellThreat ||
+             hasSpellProcEvent || hasProcFields))
+        {
+            uint32 auraType = 0;
+            for (uint32 index = 0; index < MAX_EFFECT_INDEX; ++index)
+                if (spell->Effect[index])
+                {
+                    auraType = spell->EffectApplyAuraName[index];
+                    break;
+                }
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] F46 self-utility near-miss: spell=%u name=%s aura=%u casterSuppressed=%u targetSuppressed=%u spellThreat=%u spellProcEvent=%u procFlags=%u procChance=%u procCharges=%u.",
+                spellId, spell->SpellName[0].c_str(), auraType,
+                casterSuppressed ? 1u : 0u, targetSuppressed ? 1u : 0u,
+                hasSpellThreat ? 1u : 0u, hasSpellProcEvent ? 1u : 0u,
+                spell->procFlags, spell->procChance, spell->procCharges);
+            ++loggedNearMisses;
+        }
 
         if (!IsF46BoundedSelfUtilitySpell(*spell))
             continue;
@@ -7546,9 +7585,11 @@ bool RunEngineCoreUtilitySpellAuditSmokeTest(Map& /*map*/)
     bool const auditRan = inspected > 1000 &&
         sSpellMgr.GetMaxSpellId() > 1000;
     sLog.Out(LOG_BASIC, auditRan ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F46 utility spell audit: spellRows=%u positiveSelfAuraShapes=%u missingProcSuppression=%u threatOrProcRows=%u strictCandidates=%u loggedCandidates=%u.",
-        inspected, positiveSelfAuraShapes, missingProcSuppression,
-        threatOrProcRows, strictCandidates, loggedCandidates);
+        "[PartyBotSimulator] F46 utility spell audit: spellRows=%u positiveSelfAuraShapes=%u casterProcSuppressed=%u targetProcSuppressed=%u missingProcSuppression=%u spellThreatRows=%u spellProcEventRows=%u procFieldRows=%u threatOrProcRows=%u strictCandidates=%u loggedCandidates=%u loggedNearMisses=%u.",
+        inspected, positiveSelfAuraShapes, casterProcSuppressed,
+        targetProcSuppressed, missingProcSuppression, spellThreatRows,
+        spellProcEventRows, procFieldRows, threatOrProcRows,
+        strictCandidates, loggedCandidates, loggedNearMisses);
 
     if (auditRan)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,

@@ -46,6 +46,12 @@ public:
     virtual ~CoreActionRuntime() {}
     virtual CoreActionResolution ResolveUnitContext(
         DecisionContext const& context, Guid targetGuid) const = 0;
+
+    // Optional host capability used by the Engine's generic group-resurrection
+    // action. Core/PartyBotAI owns spellbook and class-specific cast checks.
+    virtual std::uint32_t GetResurrectionSpellId() const { return 0; }
+    virtual bool CanCastGroupResurrection(
+        DecisionContext const&, Player*, std::uint32_t) const { return false; }
 };
 }
 

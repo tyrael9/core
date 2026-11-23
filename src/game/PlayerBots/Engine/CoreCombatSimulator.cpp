@@ -9639,12 +9639,225 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F52e transferred a real five-Player Group to a distinct Vanilla dungeon Map; all four PartyBotAI instances released the source shard, reacquired one shared destination coordinator and five-member snapshot, received unique formation slots, resumed exact native Follow offsets through NewEngine only, and the fixture restored all Players and released its temporary GroupBind.");
 
+    // F52f: drive party-wide wipe detection and recovery through the production
+    // PartyBotAI -> PartySnapshotBuilder -> PartyCoordinator update path using
+    // the same five real Core Players and four native Follow generators.
+    bool const f52fSourceReady = std::all_of(players.begin(), players.end(),
+        [&map](Player const* member)
+        {
+            return member && member->IsInWorld() && member->GetMap() == &map &&
+                member->GetMapId() == map.GetId() &&
+                member->GetInstanceId() == map.GetInstanceId();
+        });
+    std::shared_ptr<PartyCoordinator> wipeCoordinator;
+    bool f52fEncounterStarted = false;
+    bool f52fReservationsSeeded = false;
+    bool f52fPartialDeathSafe = false;
+    bool f52fWipeClosed = false;
+    bool f52fReservationsCleared = false;
+    bool f52fRepeatedWipeIdempotent = false;
+    bool f52fFollowStoppedOnDeath = false;
+    bool f52fDeadStateObserved = false;
+    bool f52fResurrectionRecovered = false;
+    bool f52fNoFalseEncounterRestart = false;
+    if (f52fSourceReady && sharedCoordinator &&
+        !sharedCoordinator->HasActiveEncounter())
+    {
+        // A real active party encounter starts from the owner's Core combat bit.
+        sharedCoordinator->InvalidateSnapshot();
+        leader->SetInCombatState();
+        PartyBotAI& driverAI = *botAIs[0];
+        driverAI.m_updateTimer.Reset(1000);
+        driverAI.UpdateAI(1000);
+        wipeCoordinator = driverAI.m_partyCoordinator;
+        f52fEncounterStarted = wipeCoordinator &&
+            wipeCoordinator.get() == sharedCoordinator.get() &&
+            wipeCoordinator->HasActiveEncounter();
+
+        if (f52fEncounterStarted)
+        {
+            uint32 const nowMs = WorldTimer::getMSTime();
+            Reservation reservation;
+            reservation.targetGuid = leader->GetObjectGuid().GetRawValue();
+            reservation.ownerGuid = players[1]->GetObjectGuid().GetRawValue();
+            reservation.expiresAtMs = nowMs + 60000u;
+            bool const ordinaryReserved = wipeCoordinator->TryReserve(reservation, nowMs);
+
+            ThreatReservation threatReservation;
+            threatReservation.ownerGuid = players[1]->GetObjectGuid().GetRawValue();
+            threatReservation.threatOwnerGuid = players[1]->GetObjectGuid().GetRawValue();
+            threatReservation.hostileGuid = leader->GetObjectGuid().GetRawValue();
+            threatReservation.actionId = wipeCoordinator->NextActionId();
+            threatReservation.threatPoints = 25.0f;
+            threatReservation.expiresAtMs = nowMs + 60000u;
+            bool const threatReserved =
+                wipeCoordinator->TryReserveThreatImpact(threatReservation, nowMs);
+            f52fReservationsSeeded = ordinaryReserved && threatReserved &&
+                wipeCoordinator->GetReservations().size() == 1 &&
+                wipeCoordinator->GetThreatReservationCount() == 1;
+
+            // One dead Bot is not a wipe: the other four online members live.
+            players[4]->SetDeathState(JUST_DIED);
+            wipeCoordinator->InvalidateSnapshot();
+            driverAI.m_updateTimer.Reset(1000);
+            driverAI.UpdateAI(1000);
+            PartySnapshot const* partialSnapshot = wipeCoordinator->GetSnapshotIfFresh(
+                WorldTimer::getMSTime(), 1000);
+            uint32 partialOnline = 0, partialLiving = 0;
+            if (partialSnapshot)
+                for (PartyMemberSnapshot const& member : partialSnapshot->members)
+                {
+                    if (!member.online)
+                        continue;
+                    ++partialOnline;
+                    if (member.alive)
+                        ++partialLiving;
+                }
+            f52fPartialDeathSafe = partialSnapshot && partialOnline == 5 &&
+                partialLiving == 4 && wipeCoordinator->HasActiveEncounter() &&
+                wipeCoordinator->GetReservations().size() == 1 &&
+                wipeCoordinator->GetThreatReservationCount() == 1;
+
+            // The remaining four deaths create a true party wipe. Core's
+            // JUST_DIED transition also clears every bot's native movement.
+            for (Player* member : players)
+                if (member && member->IsAlive())
+                    member->SetDeathState(JUST_DIED);
+            bool allDead = std::all_of(players.begin(), players.end(),
+                [](Player const* member) { return member && !member->IsAlive(); });
+            wipeCoordinator->InvalidateSnapshot();
+            driverAI.m_updateTimer.Reset(1000);
+            driverAI.UpdateAI(1000);
+            f52fWipeClosed = allDead && !wipeCoordinator->HasActiveEncounter();
+            f52fReservationsCleared = f52fWipeClosed &&
+                wipeCoordinator->GetReservations().empty() &&
+                wipeCoordinator->GetThreatReservationCount() == 0;
+
+            // Tick every dead Bot so its behavior state machine observes Dead;
+            // further dead snapshots must not recreate or re-close an encounter.
+            f52fDeadStateObserved = allDead;
+            for (std::size_t index = 0; index < botAIs.size(); ++index)
+            {
+                PartyBotAI& ai = *botAIs[index];
+                Player* const bot = players[index + 1];
+                wipeCoordinator->InvalidateSnapshot();
+                ai.m_updateTimer.Reset(1000);
+                ai.UpdateAI(1000);
+                bool const noFollowGenerator =
+                    bot->GetMotionMaster()->GetCurrentMovementGeneratorType() !=
+                        FOLLOW_MOTION_TYPE &&
+                    !bot->HasUnitState(UNIT_STATE_FOLLOW | UNIT_STATE_FOLLOW_MOVE);
+                f52fDeadStateObserved = f52fDeadStateObserved &&
+                    ai.m_partyCoordinator &&
+                    ai.m_partyCoordinator.get() == wipeCoordinator.get() &&
+                    noFollowGenerator &&
+                    ai.m_simulatorLegacyPolicyEntryCount == 0 &&
+                    ai.m_simulatorLegacyPolicyDispatchCount == 0;
+            }
+            f52fFollowStoppedOnDeath = f52fDeadStateObserved &&
+                std::all_of(botAIs.begin(), botAIs.end(),
+                    [](std::unique_ptr<PartyBotAI> const& ai)
+                    {
+                        return ai->m_partyBotEngine.GetPendingActionCount() == 0;
+                    });
+            f52fRepeatedWipeIdempotent = f52fWipeClosed &&
+                !wipeCoordinator->HasActiveEncounter() &&
+                wipeCoordinator->GetReservations().empty() &&
+                wipeCoordinator->GetThreatReservationCount() == 0;
+
+            // Resurrect the whole Group. With no member in combat, recovery
+            // must rebuild the same four slots and native leader Follow only.
+            for (Player* member : players)
+                member->ResurrectPlayer(0.5f, false);
+            f52fResurrectionRecovered = true;
+            bool recoveredSlots[MaxPartyFormationSlots] = {};
+            for (std::size_t index = 0; index < botAIs.size(); ++index)
+            {
+                PartyBotAI& ai = *botAIs[index];
+                Player* const bot = players[index + 1];
+                wipeCoordinator->InvalidateSnapshot();
+                ai.m_updateTimer.Reset(1000);
+                ai.UpdateAI(1000);
+
+                uint8 const slot = wipeCoordinator->GetFormationSlot(
+                    bot->GetObjectGuid().GetRawValue());
+                bool const slotValid = slot < MaxPartyFormationSlots;
+                if (slotValid)
+                {
+                    if (recoveredSlots[slot])
+                        f52fResurrectionRecovered = false;
+                    recoveredSlots[slot] = true;
+                }
+                MovementGenerator const* current = bot->GetMotionMaster()->GetCurrent();
+                FollowMovementGenerator<Player> const* follow =
+                    current && current->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE
+                        ? static_cast<FollowMovementGenerator<Player> const*>(current)
+                        : nullptr;
+                f52fResurrectionRecovered = f52fResurrectionRecovered &&
+                    bot->IsAlive() && ai.m_partyCoordinator &&
+                    ai.m_partyCoordinator.get() == wipeCoordinator.get() &&
+                    slotValid && follow && follow->GetTarget() == leader &&
+                    bot->HasUnitState(UNIT_STATE_FOLLOW);
+                if (follow && slotValid)
+                {
+                    FollowFormationOffset const expected = GetFollowFormationOffset(slot);
+                    f52fResurrectionRecovered = f52fResurrectionRecovered &&
+                        std::fabs(follow->GetFollowDistance() - expected.distance) < 0.0001f &&
+                        std::fabs(follow->GetFollowAngle() - expected.angle) < 0.0001f;
+                }
+                else
+                    f52fResurrectionRecovered = false;
+                f52fResurrectionRecovered = f52fResurrectionRecovered &&
+                    ai.m_simulatorLegacyPolicyEntryCount == 0 &&
+                    ai.m_simulatorLegacyPolicyDispatchCount == 0 &&
+                    ai.m_newEngineStrategiesRegistered &&
+                    !ai.m_engineShadowStrategiesRegistered;
+            }
+            f52fResurrectionRecovered = f52fResurrectionRecovered &&
+                recoveredSlots[0] && recoveredSlots[1] &&
+                recoveredSlots[2] && recoveredSlots[3];
+
+            f52fNoFalseEncounterRestart =
+                !wipeCoordinator->HasActiveEncounter() &&
+                wipeCoordinator->GetReservations().empty() &&
+                wipeCoordinator->GetThreatReservationCount() == 0;
+            PartySnapshot const* recoveredSnapshot = wipeCoordinator->GetSnapshotIfFresh(
+                WorldTimer::getMSTime(), 1000);
+            f52fNoFalseEncounterRestart = f52fNoFalseEncounterRestart &&
+                recoveredSnapshot && recoveredSnapshot->members.size() == 5 &&
+                std::all_of(recoveredSnapshot->members.begin(), recoveredSnapshot->members.end(),
+                    [](PartyMemberSnapshot const& member)
+                    {
+                        return member.online && member.alive && !member.inCombat;
+                    });
+        }
+    }
+
+    bool const f52fPassed = f52fEncounterStarted && f52fReservationsSeeded &&
+        f52fPartialDeathSafe && f52fWipeClosed && f52fReservationsCleared &&
+        f52fRepeatedWipeIdempotent && f52fFollowStoppedOnDeath &&
+        f52fDeadStateObserved && f52fResurrectionRecovered &&
+        f52fNoFalseEncounterRestart;
+    sLog.Out(LOG_BASIC, f52fPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F52f five-Player wipe recovery: encounterStarted=%u reservationsSeeded=%u partialDeathSafe=%u wipeClosed=%u reservationsCleared=%u repeatedWipeIdempotent=%u followStoppedOnDeath=%u deadStateObserved=%u resurrectionRecovered=%u noFalseEncounterRestart=%u.",
+        f52fEncounterStarted ? 1u : 0u, f52fReservationsSeeded ? 1u : 0u,
+        f52fPartialDeathSafe ? 1u : 0u, f52fWipeClosed ? 1u : 0u,
+        f52fReservationsCleared ? 1u : 0u,
+        f52fRepeatedWipeIdempotent ? 1u : 0u,
+        f52fFollowStoppedOnDeath ? 1u : 0u,
+        f52fDeadStateObserved ? 1u : 0u,
+        f52fResurrectionRecovered ? 1u : 0u,
+        f52fNoFalseEncounterRestart ? 1u : 0u);
+    if (f52fPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F52f closed a real five-Player Group encounter immediately on a full wipe, preserved it through a single Bot death, cleared encounter reservations once, verified Core death cleanup and Dead-state observation, then resurrected all members and restored four unique native NewEngine Follow offsets without restarting combat or entering Legacy policy.");
+
     bool const passed = groupCreated && membersAdded &&
         sharedCoordinatorForAll && allSnapshotsAreFiveMembers &&
         allBotsStartedFollow && allFourSlotsOccupied && allSlotsUnique &&
         allOffsetsMatch && allNewEngineOnly && reverseTickNoOps &&
         removedFromGroup && departureReleasedSlot && incumbentsKeptSlots &&
-        rejoinReclaimedSlot && f52ePassed;
+        rejoinReclaimedSlot && f52ePassed && f52fPassed;
 
     bool const cleaned = cleanup();
     sLog.Out(LOG_BASIC, passed && cleaned ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,

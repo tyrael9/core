@@ -7,6 +7,8 @@
 #include "DpsAssistTrigger.h"
 #include "FollowPartyLeaderTrigger.h"
 #include "BotBehaviorState.h"
+#include "AutoResurrectSelfTrigger.h"
+#include "ResurrectionPolicy.h"
 #include "StopFollowingUnsafeTrigger.h"
 #include "ThreatBudget.h"
 #include "ThreatBudgetPolicy.h"
@@ -5423,6 +5425,88 @@ void TestBotBehaviorStateMachineTransitionsAndTimeoutClockWrap() {
     assert(state.reason == std::string("resurrected"));
 }
 
+void TestAutoResurrectSelfPolicyDistinguishesCorpseAndReleasedGhost() {
+    PartySnapshot snapshot;
+    snapshot.groupId = 41;
+    snapshot.mapId = 33;
+    snapshot.instanceId = 101;
+
+    PartyMemberSnapshot bot;
+    bot.guid = 100;
+    bot.mapId = snapshot.mapId;
+    bot.instanceId = snapshot.instanceId;
+    bot.online = true;
+    bot.alive = false;
+    bot.deathState = PartyMemberDeathState::Corpse;
+    bot.x = 0.0f; bot.y = 0.0f; bot.z = 0.0f;
+    snapshot.members.push_back(bot);
+
+    PartyMemberSnapshot nearby;
+    nearby.guid = 200;
+    nearby.classId = 8; // Mage: not one of the four healer-capable Vanilla classes.
+    nearby.mapId = snapshot.mapId;
+    nearby.instanceId = snapshot.instanceId;
+    nearby.online = true;
+    nearby.alive = true;
+    nearby.x = 10.0f; nearby.y = 0.0f; nearby.z = 0.0f;
+    snapshot.members.push_back(nearby);
+
+    assert(ShouldAutoResurrectSelf(snapshot, snapshot.members[0]));
+    PartyCoordinator coordinator;
+    AutoResurrectSelfTrigger trigger;
+    DecisionContext corpseContext(snapshot, snapshot.members[0], coordinator, 1000);
+    std::vector<ActionCandidate> candidates;
+    trigger.CollectCandidates(corpseContext, candidates);
+    assert(candidates.size() == 1);
+    assert(candidates[0].actionName == "core_resurrect_self");
+    assert(candidates[0].targetGuid == 0);
+    assert(candidates[0].channel == ActionChannel::Utility);
+
+    // A healer-capable party member suppresses corpse auto-resurrection,
+    // matching CombatBotBaseAI::IsHealerClass rather than the Bot's role label.
+    snapshot.members[1].classId = 5; // Priest.
+    assert(IsResurrectionHealerClass(snapshot.members[1].classId));
+    assert(!ShouldAutoResurrectSelf(snapshot, snapshot.members[0]));
+    candidates.clear();
+    trigger.CollectCandidates(corpseContext, candidates);
+    assert(candidates.empty());
+
+    // Any online party member in combat also suppresses corpse auto-resurrection.
+    snapshot.members[1].classId = 8;
+    snapshot.members[1].inCombat = true;
+    assert(!ShouldAutoResurrectSelf(snapshot, snapshot.members[0]));
+    snapshot.members[1].inCombat = false;
+
+    // The corpse branch requires a nearby living player on the same map/instance.
+    snapshot.members[1].x = 16.0f;
+    assert(!ShouldAutoResurrectSelf(snapshot, snapshot.members[0]));
+    snapshot.members[1].x = 10.0f;
+    snapshot.members[1].instanceId = 102;
+    assert(!ShouldAutoResurrectSelf(snapshot, snapshot.members[0]));
+    snapshot.members[1].instanceId = snapshot.instanceId;
+
+    // Dying/falling and unknown death states are not executable resurrection targets.
+    snapshot.members[0].deathState = PartyMemberDeathState::Dying;
+    assert(!ShouldAutoResurrectSelf(snapshot, snapshot.members[0]));
+    snapshot.members[0].deathState = PartyMemberDeathState::CorpseFalling;
+    assert(!ShouldAutoResurrectSelf(snapshot, snapshot.members[0]));
+
+    // A released ghost may self-resurrect regardless of nearby healer/combat state,
+    // preserving the existing ShouldAutoRevive() DEAD fast path.
+    snapshot.members[0].deathState = PartyMemberDeathState::ReleasedGhost;
+    snapshot.members[1].classId = 5;
+    snapshot.members[1].inCombat = true;
+    assert(ShouldAutoResurrectSelf(snapshot, snapshot.members[0]));
+    candidates.clear();
+    DecisionContext ghostContext(snapshot, snapshot.members[0], coordinator, 2000);
+    trigger.CollectCandidates(ghostContext, candidates);
+    assert(candidates.size() == 1 &&
+        candidates[0].actionName == "core_resurrect_self");
+
+    snapshot.members[0].online = false;
+    assert(!ShouldAutoResurrectSelf(snapshot, snapshot.members[0]));
+}
+
 void TestProductionFollowTriggersRetargetStopAndRecover() {
     PartySnapshot snapshot;
     snapshot.groupId = 31; snapshot.mapId = 33; snapshot.instanceId = 101;
@@ -5525,6 +5609,7 @@ int main() {
     TestFormationAssignmentsRemainStableAcrossRosterAndLeaderChanges();
     TestFollowPartyLeaderTriggerRequiresIdleBotAndLiveLeader();
     TestBotBehaviorStateMachineTransitionsAndTimeoutClockWrap();
+    TestAutoResurrectSelfPolicyDistinguishesCorpseAndReleasedGhost();
     TestProductionFollowTriggersRetargetStopAndRecover();
     TestExecutionAuthorityModesAreExplicitAndFailSafe();
     TestValueCacheEpochExpiryInvalidationAndTypeSafety();

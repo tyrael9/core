@@ -170,7 +170,13 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
         CombatBotBaseAI* combatAI = dynamic_cast<CombatBotBaseAI*>(member->AI());
         memberData.isPlayerBot = combatAI != nullptr;
         if (combatAI)
+        {
             memberData.roleId = static_cast<std::uint8_t>(ToPartyRole(combatAI->GetRole()));
+            memberData.resurrectionSpellId = combatAI->m_resurrectionSpell
+                ? combatAI->m_resurrectionSpell->Id : 0;
+            memberData.inDuel = combatAI->IsInDuel();
+        }
+        memberData.resurrectionPending = member->IsRessurectRequested();
         memberData.isMainTank = member->GetObjectGuid() == mainTankGuid;
         memberData.level = member->GetLevel();
         memberData.powerType = static_cast<std::uint8_t>(member->GetPowerType());

@@ -9660,6 +9660,11 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52fDeadStateObserved = false;
     bool f52fResurrectionRecovered = false;
     bool f52fNoFalseEncounterRestart = false;
+    bool partialSnapshotAvailable = false;
+    uint32 partialOnline = 0;
+    uint32 partialLiving = 0;
+    uint32 partialNormalReservationCount = 0;
+    uint32 partialThreatReservationCount = 0;
     if (f52fSourceReady && sharedCoordinator &&
         !sharedCoordinator->HasActiveEncounter())
     {
@@ -9751,7 +9756,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             driverAI->UpdateAI(1000);
             PartySnapshot const* partialSnapshot = wipeCoordinator->GetSnapshotIfFresh(
                 WorldTimer::getMSTime(), 1000);
-            uint32 partialOnline = 0, partialLiving = 0;
+            partialSnapshotAvailable = partialSnapshot != nullptr;
             if (partialSnapshot)
                 for (PartyMemberSnapshot const& member : partialSnapshot->members)
                 {
@@ -9761,9 +9766,9 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                     if (member.alive)
                         ++partialLiving;
                 }
-            uint32 const partialNormalReservationCount =
+            partialNormalReservationCount =
                 static_cast<uint32>(wipeCoordinator->GetReservations().size());
-            uint32 const partialThreatReservationCount =
+            partialThreatReservationCount =
                 static_cast<uint32>(wipeCoordinator->GetThreatReservationCount());
             bool const survivingReservationPresent =
                 wipeCoordinator->GetReservations().size() == 2 &&
@@ -9785,7 +9790,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                     nowAfterPartial) > 0.0f &&
                 wipeCoordinator->GetReservedThreatImpact(leaderGuid, deadBotGuid, 0,
                     nowAfterPartial) == 0.0f;
-            f52fPartialDeathSafe = partialSnapshot && partialOnline == 5 &&
+            f52fPartialDeathSafe = partialSnapshotAvailable && partialOnline == 5 &&
                 partialLiving == 4 && wipeCoordinator->HasActiveEncounter() &&
                 survivingReservationPresent && survivingThreatReservationPresent;
 
@@ -9922,7 +9927,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     sLog.Out(LOG_BASIC, f52fPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
         "[PartyBotSimulator] F52f five-Player wipe recovery: encounterStarted=%u reservationsSeeded=%u partialDeathSafe=%u partialSnapshot=%u partialOnline=%u partialLiving=%u partialNormalReservations=%u partialThreatReservations=%u wipeClosed=%u reservationsCleared=%u repeatedWipeIdempotent=%u followStoppedOnDeath=%u deadStateObserved=%u resurrectionRecovered=%u noFalseEncounterRestart=%u.",
         f52fEncounterStarted ? 1u : 0u, f52fReservationsSeeded ? 1u : 0u,
-        f52fPartialDeathSafe ? 1u : 0u, partialSnapshot ? 1u : 0u,
+        f52fPartialDeathSafe ? 1u : 0u, partialSnapshotAvailable ? 1u : 0u,
         partialOnline, partialLiving, partialNormalReservationCount,
         partialThreatReservationCount, f52fWipeClosed ? 1u : 0u,
         f52fReservationsCleared ? 1u : 0u,

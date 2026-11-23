@@ -9804,7 +9804,8 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 f52fResurrectionRecovered = f52fResurrectionRecovered &&
                     bot->IsAlive() && ai.m_partyCoordinator &&
                     ai.m_partyCoordinator.get() == wipeCoordinator.get() &&
-                    slotValid && follow && follow->GetTarget() == leader &&
+                    slotValid && slot == slotByBot[index] &&
+                    follow && follow->GetTarget() == leader &&
                     bot->HasUnitState(UNIT_STATE_FOLLOW) &&
                     ai.m_botBehaviorStateMachine.GetState() == BotBehaviorState::FollowingLeader;
                 if (follow && slotValid)

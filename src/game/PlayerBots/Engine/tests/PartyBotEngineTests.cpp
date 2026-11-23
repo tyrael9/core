@@ -5382,27 +5382,6 @@ void TestBotBehaviorStateMachineTransitionsAndTimeoutClockWrap() {
     assert(state.changed && state.state == BotBehaviorState::FollowingUnavailableTarget);
     assert(state.reason == std::string("follow_target_unavailable"));
 
-    // Core death states must not collapse corpse and released ghost into one
-    // generic dead value: NewEngine recovery policy needs the distinction.
-    snapshot.members[0].followTargetGuid = 0;
-    snapshot.members[0].deathState = PartyMemberDeathState::Dying;
-    snapshot.members[0].alive = false;
-    state = machine.Observe(snapshot, snapshot.members[0], 0x70u);
-    assert(state.changed && state.state == BotBehaviorState::Corpse);
-    assert(state.reason == std::string("became_corpse"));
-    snapshot.members[0].deathState = PartyMemberDeathState::ReleasedGhost;
-    state = machine.Observe(snapshot, snapshot.members[0], 0x80u);
-    assert(state.changed && state.state == BotBehaviorState::ReleasedGhost);
-    assert(state.reason == std::string("spirit_released"));
-    snapshot.members[0].deathState = PartyMemberDeathState::Resurrecting;
-    state = machine.Observe(snapshot, snapshot.members[0], 0x90u);
-    assert(state.changed && state.state == BotBehaviorState::Resurrecting);
-    assert(state.reason == std::string("resurrection_started"));
-    snapshot.members[0].deathState = PartyMemberDeathState::Alive;
-    snapshot.members[0].alive = true;
-    state = machine.Observe(snapshot, snapshot.members[0], 0xa0u);
-    assert(state.changed && state.state == BotBehaviorState::Idle);
-    assert(state.reason == std::string("resurrected"));
     state = machine.Observe(snapshot, snapshot.members[0],
         0x60u + InvalidFollowTargetTimeoutMs - 1);
     assert(!state.changed && !state.HasTimedOut(InvalidFollowTargetTimeoutMs));
@@ -5416,6 +5395,32 @@ void TestBotBehaviorStateMachineTransitionsAndTimeoutClockWrap() {
         0x60u + InvalidFollowTargetTimeoutMs + 1);
     assert(state.changed && state.reason == std::string("party_context_changed"));
     assert(state.elapsedMs == 0);
+
+    // Core death states must not collapse corpse and released ghost into one
+    // generic dead value: NewEngine recovery policy needs the distinction.
+    snapshot.members[0].followTargetGuid = 0;
+    snapshot.members[0].alive = false;
+    snapshot.members[0].deathState = PartyMemberDeathState::Dying;
+    state = machine.Observe(snapshot, snapshot.members[0],
+        0x60u + InvalidFollowTargetTimeoutMs + 2);
+    assert(state.changed && state.state == BotBehaviorState::Corpse);
+    assert(state.reason == std::string("became_corpse"));
+    snapshot.members[0].deathState = PartyMemberDeathState::ReleasedGhost;
+    state = machine.Observe(snapshot, snapshot.members[0],
+        0x60u + InvalidFollowTargetTimeoutMs + 3);
+    assert(state.changed && state.state == BotBehaviorState::ReleasedGhost);
+    assert(state.reason == std::string("spirit_released"));
+    snapshot.members[0].deathState = PartyMemberDeathState::Resurrecting;
+    state = machine.Observe(snapshot, snapshot.members[0],
+        0x60u + InvalidFollowTargetTimeoutMs + 4);
+    assert(state.changed && state.state == BotBehaviorState::Resurrecting);
+    assert(state.reason == std::string("resurrection_started"));
+    snapshot.members[0].deathState = PartyMemberDeathState::Alive;
+    snapshot.members[0].alive = true;
+    state = machine.Observe(snapshot, snapshot.members[0],
+        0x60u + InvalidFollowTargetTimeoutMs + 5);
+    assert(state.changed && state.state == BotBehaviorState::Idle);
+    assert(state.reason == std::string("resurrected"));
 }
 
 void TestProductionFollowTriggersRetargetStopAndRecover() {

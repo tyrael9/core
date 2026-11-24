@@ -4582,6 +4582,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         bool f53bPriestActionCandidatePossible = false;
         bool f53bPriestActionCandidateUseful = false;
         bool f53bPriestActionThreatVetoed = false;
+        bool f53bPriestActionEncounterStarted = false;
         bool f53bPriestActionLivePreflight = false;
         bool f53bPriestActionCastAccepted = false;
         bool f53bPriestActionCastCompleted = false;
@@ -4661,6 +4662,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         EncounterTransition const transition =
                             f53bCoordinator->ObserveEncounter(
                                 f53bSnapshot, f53bNowMs, 30000);
+                        f53bPriestActionEncounterStarted =
+                            transition.kind == EncounterTransitionKind::Started &&
+                            f53bCoordinator->HasActiveEncounter();
                         DecisionContext f53bContext(
                             f53bSnapshot, *priestIt, *f53bCoordinator,
                             f53bNowMs, nullptr, nullptr,
@@ -4684,6 +4688,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         f53bPriestActionId = candidate.actionId;
                         std::string possibleReason;
                         f53bPriestActionCandidatePossible =
+                            f53bPriestActionEncounterStarted &&
                             selectedRank && candidate.actionId &&
                             action.IsPossible(
                                 f53bContext, candidate, possibleReason);
@@ -4753,6 +4758,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                                 std::chrono::milliseconds(250));
                             map.Update(250);
                         }
+                        // Never detach the temporary PlayerAI while Core still
+                        // owns a pending Spell that can call its lifecycle hooks.
+                        if (priest->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+                            priest->InterruptSpell(CURRENT_GENERIC_SPELL, true);
                         f53bPriestActionCastCompleted =
                             f53bPriestActionCastAccepted &&
                             !priest->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
@@ -4784,6 +4793,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         }
         bool const f53bPriestDirectHealRuntimePassed =
             f53bPriestActionSnapshotReady &&
+            f53bPriestActionEncounterStarted &&
             f53bPriestActionCandidatePossible &&
             f53bPriestActionCandidateUseful &&
             f53bPriestActionThreatVetoed &&
@@ -4795,8 +4805,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC,
             f53bPriestDirectHealRuntimePassed
                 ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-            "[PartyBotSimulator] F53b Priest direct heal Core action: snapshot=%u possible=%u useful=%u engineThreatVeto=%u livePreflight=%u castAccepted=%u castCompleted=%u manaSpent=%u terminalMatched=%u actionId=%llu spell=%u.",
+            "[PartyBotSimulator] F53b Priest direct heal Core action: snapshot=%u encounterStarted=%u possible=%u useful=%u engineThreatVeto=%u livePreflight=%u castAccepted=%u castCompleted=%u manaSpent=%u terminalMatched=%u actionId=%llu spell=%u.",
             f53bPriestActionSnapshotReady ? 1u : 0u,
+            f53bPriestActionEncounterStarted ? 1u : 0u,
             f53bPriestActionCandidatePossible ? 1u : 0u,
             f53bPriestActionCandidateUseful ? 1u : 0u,
             f53bPriestActionThreatVetoed ? 1u : 0u,

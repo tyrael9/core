@@ -426,7 +426,7 @@ for expected in rankOne=1 rankTwo=1 spellbookCaptured=1 sortedUnique=1 coreManaC
     fi
 done
 f53b_priest_state_line="$(grep -F '[PartyBotSimulator] F53b Priest direct heal Core action:' "$LOG_FILE" | tail -n 1)"
-for expected in snapshot=1 possible=1 useful=1 engineThreatVeto=1 livePreflight=1 castAccepted=1 castCompleted=1 manaSpent=1 terminalMatched=1; do
+for expected in snapshot=1 encounterStarted=1 possible=1 useful=1 engineThreatVeto=1 livePreflight=1 castAccepted=1 castCompleted=1 manaSpent=1 terminalMatched=1; do
     if [[ "$f53b_priest_state_line" != *"$expected"* ]]; then
         echo "[PartyBotSimulator] F53b Priest direct-heal runtime assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1

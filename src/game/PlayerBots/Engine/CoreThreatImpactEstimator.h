@@ -63,20 +63,21 @@ inline ThreatImpactEstimate EstimateAppliedDirectDamageComponent(
     return estimate;
 }
 
-// Estimate only the direct-heal assist component. Spell::DoAllEffectOnTarget
-// passes effective healing gain through the class coefficient and spell threat
-// multiplier, then HostileRefManager::threatAssist divides that value over every
-// reference held by the healed Unit. The caller supplies a Core-derived upper
-// bound for effective healing; this helper deliberately leaves the envelope
-// Unknown because flat spell-table threat, triggered procs and other side
-// effects are not covered by this component.
-inline ThreatImpactEstimate EstimateDirectHealingAssistComponent(
+// Estimate the two direct helpful-threat components produced for one healed
+// target. Spell::DoAllEffectOnTarget passes effective healing gain through the
+// class coefficient and heal-spell threat multiplier; Spell::HandleThreatSpells
+// may add positive flat spell-table threat. HostileRefManager::threatAssist
+// divides each component over every reference held by the healed Unit. The
+// caller supplies a Core-derived upper bound for effective healing. This stays
+// Unknown because proc/trigger side effects and other target recipients are
+// not closed by a single-target component estimate.
+inline ThreatImpactEstimate EstimateDirectHealingThreatComponents(
     Unit* realCaster, Unit* healedTarget, float maxEffectiveHealing,
     SpellEntry const* spellInfo, PartySnapshot const& snapshot)
 {
     ThreatImpactEstimate estimate;
     estimate.snapshotEpoch = snapshot.epoch;
-    estimate.reason = "direct_heal_assist_component_only";
+    estimate.reason = "direct_heal_threat_components_only";
 
     if (!snapshot.epoch || !realCaster || !healedTarget || !spellInfo ||
         !std::isfinite(maxEffectiveHealing) || maxEffectiveHealing < 0.0f ||

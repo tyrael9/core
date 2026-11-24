@@ -56,7 +56,7 @@
 #include "SpellCastTargetsInfo.h"
 #include "SpellAuras.h"
 #include "SpellMgr.h"
-#include "DatabaseEnv.h"
+#include "Database/DatabaseEnv.h"
 #include "Timer.h"
 
 #include <algorithm>

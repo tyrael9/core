@@ -17,7 +17,6 @@ struct DirectHealSpellSnapshot
     std::uint32_t spellId = 0;
     std::uint32_t baseHealing = 0;
     std::uint32_t manaCost = 0;
-    std::uint32_t manaCostPercentage = 0;
 };
 struct PartyMemberSnapshot {
     Guid guid = 0;

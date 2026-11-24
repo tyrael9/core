@@ -572,7 +572,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C6 Core interrupted the departing 
     exit 1
 fi
 f52g_c6_state_line="$(grep -F '[PartyBotSimulator] F52g-C6 resurrection caster left source Map during group resurrection:' "$LOG_FILE" | tail -n 1)"
-for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrelatedReservation=1 interruptedTerminal=1 auxiliaryPreservedUntilLeave=1 mapLeaveProcessed=1 ownerRowsReleased=1 unrelatedPreserved=1 playerRestored=1 noOffer=1; do
+for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrelatedReservation=1 interruptedTerminal=1 auxiliaryPreservedUntilLeave=1 mapLeaveProcessed=1 ownerRowsReleased=1 unrelatedPreserved=1 playerRestored=1 coordinatorReacquired=1 noOffer=1; do
     if [[ "$f52g_c6_state_line" != *"$expected"* ]]; then
         echo "[PartyBotSimulator] F52g-C6 owner-map-leave assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1
@@ -584,7 +584,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C7 Core Spell::update re-resolved 
     exit 1
 fi
 f52g_c7_state_line="$(grep -F '[PartyBotSimulator] F52g-C7 resurrection target left source Map during group resurrection:' "$LOG_FILE" | tail -n 1)"
-for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrelatedReservation=1 targetRemoved=1 interruptedTerminal=1 resurrectionReservationReleased=1 auxiliaryPreserved=1 unrelatedPreserved=1 targetRestored=1 noOffer=1; do
+for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrelatedReservation=1 targetRemoved=1 interruptedTerminal=1 resurrectionReservationReleased=1 auxiliaryPreserved=1 unrelatedPreserved=1 targetRestored=1 targetCoordinatorReacquired=1 noOffer=1; do
     if [[ "$f52g_c7_state_line" != *"$expected"* ]]; then
         echo "[PartyBotSimulator] F52g-C7 target-map-departure assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1

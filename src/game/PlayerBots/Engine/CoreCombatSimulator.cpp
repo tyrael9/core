@@ -39,6 +39,7 @@
 #include "PlayerBots/Engine/PartySnapshotBuilder.h"
 #include "PlayerBots/Engine/PartyCoordinator.h"
 #include "PlayerBots/Engine/PartySnapshot.h"
+#include "PlayerBots/Engine/PriestHealingPolicy.h"
 #include "PlayerBots/Engine/CoreThreatImpactEstimator.h"
 #include "PlayerBots/Engine/ThreatBudgetPolicy.h"
 #include "PlayerBots/Engine/Strategy.h"
@@ -4225,9 +4226,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool petCleanupPassed = true;
     std::unique_ptr<Group> group(new Group());
     bool groupRegistered = false;
+    std::unique_ptr<PartyBotAI> priestHealerAI;
 
     auto cleanup = [&]() -> bool
     {
+        priestHealerAI.reset();
         Player* const petOwner = players.size() > 1 ? players[1] : nullptr;
         petCleanupPassed = DestroySimulatorPrimaryPet(map, petOwner, primaryPet) &&
             petCleanupPassed;
@@ -4397,10 +4400,213 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         cachedSnapshot && cachedSnapshot->epoch == initialSnapshot->epoch &&
         cachedSnapshot->capturedAtMs == 15000;
 
+    // F53a: exercise real learned Priest ranks through the production snapshot
+    // builder. This is still observation/policy groundwork only; no Heal action
+    // is registered into the NewEngine production registry here.
+    bool f53aPriestSpellSnapshotPassed = false;
+    bool f53aPriestSpellRankOneLearned = false;
+    bool f53aPriestSpellRankTwoLearned = false;
+    bool f53aPriestSpellbookCaptured = false;
+    bool f53aPriestRanksSorted = false;
+    bool f53aPriestManaCostsMatchCore = false;
+    bool f53aPriestSelectorMatchesSnapshot = false;
+    uint32 f53aPriestSnapshotSpellCount = 0;
+    uint32 f53aPriestSelectedSpellId = 0;
+    {
+        Player* const priest = players.size() > 1 ? players[1] : nullptr;
+        SpellEntry const* const lesserHealRankOne = sSpellMgr.GetSpellEntry(2050);
+        SpellEntry const* const lesserHealRankTwo = sSpellMgr.GetSpellEntry(2052);
+        auto hasDirectHealEffect = [](SpellEntry const* spell)
+        {
+            if (!spell)
+                return false;
+            for (uint32 effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
+                if (spell->Effect[effect] == SPELL_EFFECT_HEAL)
+                    return true;
+            return false;
+        };
+        bool const rankEntriesValid =
+            hasDirectHealEffect(lesserHealRankOne) &&
+            hasDirectHealEffect(lesserHealRankTwo);
+        if (priest && rankEntriesValid)
+        {
+            if (!priest->HasSpell(2050))
+                priest->LearnSpell(2050, false);
+            if (!priest->HasSpell(2052))
+                priest->LearnSpell(2052, false);
+            f53aPriestSpellRankOneLearned = priest->HasSpell(2050);
+            f53aPriestSpellRankTwoLearned = priest->HasSpell(2052);
+
+            if (f53aPriestSpellRankOneLearned && f53aPriestSpellRankTwoLearned)
+            {
+                priestHealerAI.reset(new PartyBotAI(
+                    players[0], nullptr, ROLE_HEALER,
+                    RACE_HUMAN, CLASS_PRIEST, priest->GetLevel(),
+                    map.GetId(), map.GetInstanceId(),
+                    priest->GetPositionX(), priest->GetPositionY(),
+                    priest->GetPositionZ(), priest->GetOrientation()));
+                priestHealerAI->SetPlayer(priest);
+                priest->SetAI(priestHealerAI.get());
+                priestHealerAI->ResetSpellData();
+                priestHealerAI->PopulateSpellData();
+
+                bool const productionSpellbookContainsRanks =
+                    priestHealerAI->m_spellListDirectHeal.size() >= 2 &&
+                    std::any_of(
+                        priestHealerAI->m_spellListDirectHeal.begin(),
+                        priestHealerAI->m_spellListDirectHeal.end(),
+                        [](SpellEntry const* spell) { return spell && spell->Id == 2050; }) &&
+                    std::any_of(
+                        priestHealerAI->m_spellListDirectHeal.begin(),
+                        priestHealerAI->m_spellListDirectHeal.end(),
+                        [](SpellEntry const* spell) { return spell && spell->Id == 2052; });
+
+                coordinator.InvalidateSnapshot();
+                PartySnapshot const* const priestSpellSnapshot =
+                    productionSpellbookContainsRanks
+                        ? PartySnapshotBuilder::GetOrBuild(
+                            players[0], coordinator, 15101, 0)
+                        : nullptr;
+                PartyMemberSnapshot const* const priestMember =
+                    priestSpellSnapshot
+                        ? priestSpellSnapshot->FindMember(
+                            priest->GetObjectGuid().GetRawValue())
+                        : nullptr;
+                f53aPriestSpellbookCaptured =
+                    priestMember && priestMember->isPlayerBot &&
+                    priestMember->classId == CLASS_PRIEST &&
+                    priestMember->roleId == static_cast<uint8>(
+                        PartyRole::Healer) &&
+                    priestSpellSnapshot->groupId == group->GetId() &&
+                    priestSpellSnapshot->members.size() == MAX_GROUP_SIZE &&
+                    priestMember->directHealSpells.size() >= 2;
+                if (f53aPriestSpellbookCaptured)
+                {
+                    f53aPriestSnapshotSpellCount = static_cast<uint32>(
+                        priestMember->directHealSpells.size());
+                    auto findRank = [priestMember](uint32 spellId)
+                        -> DirectHealSpellSnapshot const*
+                    {
+                        auto const itr = std::find_if(
+                            priestMember->directHealSpells.begin(),
+                            priestMember->directHealSpells.end(),
+                            [spellId](DirectHealSpellSnapshot const& value)
+                            {
+                                return value.spellId == spellId;
+                            });
+                        return itr == priestMember->directHealSpells.end()
+                            ? nullptr : &*itr;
+                    };
+                    DirectHealSpellSnapshot const* const rankOneSnapshot =
+                        findRank(2050);
+                    DirectHealSpellSnapshot const* const rankTwoSnapshot =
+                        findRank(2052);
+                    uint64 expectedRankOneHealing = 0;
+                    uint64 expectedRankTwoHealing = 0;
+                    for (uint32 effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
+                    {
+                        if (lesserHealRankOne->Effect[effect] == SPELL_EFFECT_HEAL &&
+                            lesserHealRankOne->EffectBasePoints[effect] > 0)
+                            expectedRankOneHealing += static_cast<uint32>(
+                                lesserHealRankOne->EffectBasePoints[effect]);
+                        if (lesserHealRankTwo->Effect[effect] == SPELL_EFFECT_HEAL &&
+                            lesserHealRankTwo->EffectBasePoints[effect] > 0)
+                            expectedRankTwoHealing += static_cast<uint32>(
+                                lesserHealRankTwo->EffectBasePoints[effect]);
+                    }
+                    f53aPriestManaCostsMatchCore =
+                        rankOneSnapshot && rankTwoSnapshot &&
+                        rankOneSnapshot->baseHealing == expectedRankOneHealing &&
+                        rankTwoSnapshot->baseHealing == expectedRankTwoHealing &&
+                        rankOneSnapshot->manaCost ==
+                            Spell::CalculatePowerCost(
+                                lesserHealRankOne, priest, nullptr, nullptr, false) &&
+                        rankTwoSnapshot->manaCost ==
+                            Spell::CalculatePowerCost(
+                                lesserHealRankTwo, priest, nullptr, nullptr, false);
+                    f53aPriestRanksSorted = true;
+                    uint32 previousHealing = std::numeric_limits<uint32>::max();
+                    uint32 previousSpellId = 0;
+                    std::vector<uint32> snapshotSpellIds;
+                    for (DirectHealSpellSnapshot const& spell :
+                         priestMember->directHealSpells)
+                    {
+                        f53aPriestRanksSorted =
+                            f53aPriestRanksSorted && spell.spellId != 0 &&
+                            spell.baseHealing != 0 &&
+                            spell.baseHealing <= previousHealing &&
+                            (spell.baseHealing != previousHealing ||
+                             !previousSpellId || previousSpellId < spell.spellId);
+                        for (uint32 existingSpellId : snapshotSpellIds)
+                            if (existingSpellId == spell.spellId)
+                                f53aPriestRanksSorted = false;
+                        snapshotSpellIds.push_back(spell.spellId);
+                        previousHealing = spell.baseHealing;
+                        previousSpellId = spell.spellId;
+                    }
+
+                    PriestDirectHealSelection selection;
+                    DirectHealSpellSnapshot const* expectedSelection = nullptr;
+                    for (DirectHealSpellSnapshot const& spell :
+                         priestMember->directHealSpells)
+                    {
+                        if (spell.manaCost > priestMember->power)
+                            continue;
+                        if (!expectedSelection ||
+                            spell.baseHealing < expectedSelection->baseHealing ||
+                            (spell.baseHealing == expectedSelection->baseHealing &&
+                             (spell.manaCost < expectedSelection->manaCost ||
+                              (spell.manaCost == expectedSelection->manaCost &&
+                               spell.spellId < expectedSelection->spellId))))
+                            expectedSelection = &spell;
+                    }
+                    bool const selected = expectedSelection &&
+                        SelectPriestDirectHealSpell(
+                            *priestMember, 1, selection);
+                    f53aPriestSelectorMatchesSnapshot = selected &&
+                        selection.spellId == expectedSelection->spellId &&
+                        selection.baseHealing == expectedSelection->baseHealing &&
+                        selection.manaCost == expectedSelection->manaCost;
+                    if (f53aPriestSelectorMatchesSnapshot)
+                        f53aPriestSelectedSpellId = selection.spellId;
+                }
+            }
+        }
+        f53aPriestSpellSnapshotPassed =
+            f53aPriestSpellRankOneLearned &&
+            f53aPriestSpellRankTwoLearned &&
+            f53aPriestSpellbookCaptured &&
+            f53aPriestRanksSorted &&
+            f53aPriestManaCostsMatchCore &&
+            f53aPriestSelectorMatchesSnapshot;
+        sLog.Out(LOG_BASIC,
+            f53aPriestSpellSnapshotPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F53a Priest healer spell snapshot: rankOne=%u rankTwo=%u spellbookCaptured=%u sortedUnique=%u coreManaCosts=%u selector=%u spellCount=%u selected=%u.",
+            f53aPriestSpellRankOneLearned ? 1u : 0u,
+            f53aPriestSpellRankTwoLearned ? 1u : 0u,
+            f53aPriestSpellbookCaptured ? 1u : 0u,
+            f53aPriestRanksSorted ? 1u : 0u,
+            f53aPriestManaCostsMatchCore ? 1u : 0u,
+            f53aPriestSelectorMatchesSnapshot ? 1u : 0u,
+            f53aPriestSnapshotSpellCount,
+            f53aPriestSelectedSpellId);
+        if (priest)
+            priest->SetAI(nullptr);
+        priestHealerAI.reset();
+        coordinator.InvalidateSnapshot();
+    }
+    if (f53aPriestSpellSnapshotPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: the real five-Player Group PartySnapshotBuilder copied a ROLE_HEALER Priest's learned Lesser Heal ranks 2050/2052 with Core-calculated mana costs, sorted unique spell ranks and deterministic affordable rank selection.");
+    else
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSimulator] F53a real Priest spell snapshot integration failed.");
+
     bool actorsCreated = false;
     if (membersAdded && mainTankAssigned && allPlayersOnSameMap &&
         initialSnapshotValid && initialRosterResolved && initialValuesCopied &&
-        initialRolesUnknown && initialCacheRetained)
+        initialRolesUnknown && initialCacheRetained &&
+        f53aPriestSpellSnapshotPassed)
         // Keep the first hostile within Core melee reach of Tank and Healer,
         // while the second remains outside reach of both. The same four
         // references therefore exercise both true and false snapshot values.

@@ -31,7 +31,9 @@ struct HealSpellCompare
             }
         }
 
-        return spell1dmg > spell2dmg;
+        if (spell1dmg != spell2dmg)
+            return spell1dmg > spell2dmg;
+        return lhs->Id < rhs->Id;
     }
 };
 

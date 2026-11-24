@@ -10696,7 +10696,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                     std::any_of(
                         wipeCoordinator->GetReservations().begin(),
                         wipeCoordinator->GetReservations().end(),
-                        [competingOwnerGuid, corpseTargetGuid](Reservation const& row)
+                        [competingOwnerGuid, corpseTargetGuid, f52gBSpellId](Reservation const& row)
                         {
                             return row.type == ReservationType::Resurrection &&
                                 row.targetGuid == corpseTargetGuid &&

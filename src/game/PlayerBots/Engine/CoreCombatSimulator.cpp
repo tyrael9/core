@@ -5281,6 +5281,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool f53cInspirationAuraAttached = false;
     bool f53cInspirationAuraProcVetoed = false;
     bool f53cInspirationAuraRemoved = false;
+    bool f53cComponentEstimateRestored = false;
     SpellEntry const* const inspirationSpell = sSpellMgr.GetSpellEntry(14892);
     if (inspirationSpell && healer && tank && healAssistSnapshot && healSpell)
     {
@@ -5309,24 +5310,37 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             healer->RemoveAurasDueToSpell(inspirationSpell->Id);
             f53cInspirationAuraRemoved =
                 healer->GetSpellAuraHolder(inspirationSpell->Id) == nullptr;
+            ThreatImpactEstimate const restoredEstimate =
+                EstimateDirectHealingThreatComponents(
+                    healer, tank,
+                    static_cast<float>(tank->GetMaxHealth() -
+                                       tank->GetHealth()),
+                    healSpell, *healAssistSnapshot);
+            f53cComponentEstimateRestored =
+                f53cInspirationAuraRemoved &&
+                restoredEstimate.reason ==
+                    "direct_heal_threat_components_only" &&
+                restoredEstimate.impacts.size() == 2;
         }
     }
     bool const f53cPriestProcClosureRuntimePassed =
         f53cInspirationSpellValid &&
         f53cInspirationAuraAttached &&
         f53cInspirationAuraProcVetoed &&
-        f53cInspirationAuraRemoved;
+        f53cInspirationAuraRemoved &&
+        f53cComponentEstimateRestored;
     sLog.Out(LOG_BASIC,
         f53cPriestProcClosureRuntimePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F53c Priest direct-heal proc closure: inspirationValid=%u auraAttached=%u procVeto=%u impactsEmpty=%u auraRemoved=%u.",
+        "[PartyBotSimulator] F53c Priest direct-heal proc closure: inspirationValid=%u auraAttached=%u procVeto=%u impactsEmpty=%u auraRemoved=%u componentRestored=%u.",
         f53cInspirationSpellValid ? 1u : 0u,
         f53cInspirationAuraAttached ? 1u : 0u,
         f53cInspirationAuraProcVetoed ? 1u : 0u,
         f53cInspirationAuraProcVetoed ? 1u : 0u,
-        f53cInspirationAuraRemoved ? 1u : 0u);
+        f53cInspirationAuraRemoved ? 1u : 0u,
+        f53cComponentEstimateRestored ? 1u : 0u);
     if (f53cPriestProcClosureRuntimePassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: real Core Priest Inspiration aura on the healer is detected before proc resolution; direct-heal threat remains Unknown with no impacts, and removing the aura restores the component-only estimate.");
+            "[PartyBotSimulator] PASS: real Core Priest Inspiration aura on the healer vetoes the direct-heal threat estimate with no impacts; after aura removal the component-only estimate is restored.");
 
     auto findHealAssistBound = [&](Guid hostileGuid) -> float
     {

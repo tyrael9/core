@@ -2563,14 +2563,17 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
                 spellObserver.lastFinishedTargetGuid == patientGuid.GetRawValue() &&
                 spellObserver.lastFinishedInterrupted &&
                 !spellObserver.lastFinishedSuccess;
-            mindFlayAuraRemoved = mindFlayAuraWasActive &&
-                !patient.creature->HasAura(15407);
-
+            // Core channel interruption clears the channel slot immediately,
+            // but the target aura is removed by the normal Aura update path.
+            // Observe removal after advancing that path instead of asserting
+            // synchronously in the same tick as SpellCaster::InterruptSpell.
             for (uint32 tick = 0; tick < 8; ++tick)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
                 map.Update(250);
             }
+            mindFlayAuraRemoved = mindFlayAuraWasActive &&
+                !patient.creature->HasAura(15407);
             mindFlayNoFurtherTicks =
                 patient.creature->GetHealth() >= healthAtCancel &&
                 !patient.creature->HasAura(15407);

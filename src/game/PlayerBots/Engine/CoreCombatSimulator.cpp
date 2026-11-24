@@ -10140,6 +10140,25 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52gC7TargetCoordinatorReacquired = false;
     bool f52gC7NoOfferCreated = false;
     ActionId f52gC7ActionId = 0;
+    bool f52gC8ListenerAdded = false;
+    bool f52gC8ActionSelected = false;
+    bool f52gC8CastStarted = false;
+    bool f52gC8DestinationMapCreated = false;
+    bool f52gC8InterruptedTerminalMatched = false;
+    bool f52gC8AuxiliaryPreservedUntilMapLeave = false;
+    bool f52gC8MapLeaveProcessed = false;
+    bool f52gC8OwnerReservationsReleased = false;
+    bool f52gC8UnrelatedReservationPreserved = false;
+    bool f52gC8OldShardPreserved = false;
+    bool f52gC8DestinationEntered = false;
+    bool f52gC8DestinationCoordinatorAcquired = false;
+    bool f52gC8DestinationSnapshotFresh = false;
+    bool f52gC8PlayerRestored = false;
+    bool f52gC8SourceCoordinatorReacquired = false;
+    bool f52gC8DestinationMapCleaned = false;
+    bool f52gC8NoOfferCreated = false;
+    bool f52gC8NewEngineOnly = false;
+    ActionId f52gC8ActionId = 0;
     if (f52gSelfResurrectionPassed && botAIs.size() == 4 && players.size() == 5)
     {
         PartyBotAI& resurrectionAI = *botAIs[0];
@@ -11319,6 +11338,307 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                     targetAI.m_partyCoordinatorMapId == map.GetId() &&
                     targetAI.m_partyCoordinatorInstanceId == map.GetInstanceId();
             }
+
+            // F52g-C8: exercise a true owner map/instance transfer while a
+            // real same-Group resurrection cast is pending. The Core teleport
+            // path interrupts the cast first, then Map::Remove invokes
+            // PartyBotAI::OnMapLeave; only this Bot's source-shard rows may be
+            // released, while the other source-shard owners remain attached.
+            std::shared_ptr<CaptureCoreSpellTerminalListener> ownerTransferTerminal(
+                new CaptureCoreSpellTerminalListener());
+            f52gC8ListenerAdded =
+                resurrectionAI.m_partyBotEngine.AddCoreSpellTerminalListener(
+                    ownerTransferTerminal);
+            static uint32 constexpr F52G_C8_DESTINATION_MAP_ID = 34; // Stockades.
+            MapEntry const* c8DestinationEntry =
+                sMapStorage.LookupEntry<MapEntry>(F52G_C8_DESTINATION_MAP_ID);
+            bool const c8DestinationAvailable = c8DestinationEntry &&
+                c8DestinationEntry->IsDungeon() &&
+                group->GetBoundInstance(F52G_C8_DESTINATION_MAP_ID) == nullptr;
+            Map* c8DestinationMap = c8DestinationAvailable
+                ? sMapMgr.CreateTestMap(
+                    F52G_C8_DESTINATION_MAP_ID, true, 0.0f, 0.0f)
+                : nullptr;
+            Map* const c8SourceMap = caster->GetMap();
+            f52gC8DestinationMapCreated = c8DestinationMap &&
+                c8DestinationMap->GetId() == F52G_C8_DESTINATION_MAP_ID &&
+                c8SourceMap == &map &&
+                c8DestinationMap->GetInstanceId() != c8SourceMap->GetInstanceId() &&
+                !caster->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            caster->SetPower(POWER_MANA, caster->GetMaxPower(POWER_MANA));
+            corpseTarget->SetHealth(0);
+            corpseTarget->SetDeathState(JUST_DIED);
+            corpseTarget->KillPlayer();
+
+            Guid const c8AuxiliaryTargetGuid =
+                ghostTarget->GetObjectGuid().GetRawValue();
+            Guid const c8OtherOwnerGuid =
+                players[4]->GetObjectGuid().GetRawValue();
+            Guid const c8OtherTargetGuid = c8OtherOwnerGuid;
+            uint32 const c8ReservationNow = WorldTimer::getMSTime();
+            Reservation c8AuxiliaryReservation;
+            c8AuxiliaryReservation.type = ReservationType::Target;
+            c8AuxiliaryReservation.targetGuid = c8AuxiliaryTargetGuid;
+            c8AuxiliaryReservation.ownerGuid = casterGuid;
+            c8AuxiliaryReservation.expiresAtMs = c8ReservationNow + 60000u;
+            f52gC8AuxiliaryReservationCreated =
+                f52gC8ListenerAdded && f52gC8DestinationMapCreated &&
+                wipeCoordinator && caster->GetGroup() == group.get() &&
+                corpseTarget->GetDeathState() == CORPSE &&
+                wipeCoordinator->TryReserve(c8AuxiliaryReservation, c8ReservationNow);
+            Reservation c8OtherOwnerReservation;
+            c8OtherOwnerReservation.type = ReservationType::Target;
+            c8OtherOwnerReservation.targetGuid = c8OtherTargetGuid;
+            c8OtherOwnerReservation.ownerGuid = c8OtherOwnerGuid;
+            c8OtherOwnerReservation.expiresAtMs = c8ReservationNow + 60000u;
+            f52gC8UnrelatedReservationCreated =
+                f52gC8AuxiliaryReservationCreated &&
+                wipeCoordinator->TryReserve(c8OtherOwnerReservation, c8ReservationNow);
+
+            PartySnapshot ownerTransferSnapshot;
+            DecisionReport ownerTransferReport;
+            std::size_t ownerTransferIndex = 0;
+            bool const ownerTransferSelected =
+                f52gC8UnrelatedReservationCreated &&
+                captureGroupResurrectionDecision(
+                    corpseTarget, ownerTransferSnapshot, ownerTransferReport,
+                    ownerTransferIndex);
+            if (ownerTransferSelected)
+            {
+                f52gC8ActionSelected = true;
+                PartyMemberSnapshot const* const ownerTransferBotSnapshot =
+                    ownerTransferSnapshot.FindMember(casterGuid);
+                DecisionContext ownerTransferContext(
+                    ownerTransferSnapshot, *ownerTransferBotSnapshot,
+                    *wipeCoordinator, WorldTimer::getMSTime(),
+                    nullptr, nullptr, &resurrectionAI, nullptr, &resurrectionAI);
+                resurrectionAI.m_partyBotEngine.ExecuteSelected(
+                    ownerTransferContext, ownerTransferReport);
+                CandidateEvaluation const& evaluation =
+                    ownerTransferReport.candidates[ownerTransferIndex];
+                f52gC8ActionId = evaluation.actionId;
+                f52gC8CastStarted =
+                    evaluation.status == CandidateStatus::Executed &&
+                    evaluation.actionResult == ActionResult::Success &&
+                    f52gC8ActionId != 0 &&
+                    caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr &&
+                    std::any_of(
+                        wipeCoordinator->GetReservations().begin(),
+                        wipeCoordinator->GetReservations().end(),
+                        [casterGuid, corpseTargetGuid](Reservation const& row)
+                        {
+                            return row.type == ReservationType::Resurrection &&
+                                row.targetGuid == corpseTargetGuid &&
+                                row.ownerGuid == casterGuid;
+                        });
+            }
+
+            if (f52gC8CastStarted && c8SourceMap &&
+                c8SourceMap == caster->GetMap() &&
+                c8SourceMap->GetId() != c8DestinationMap->GetId() &&
+                c8SourceMap->GetInstanceId() != c8DestinationMap->GetInstanceId())
+            {
+                // Mirror the Core teleport ordering: the pending cast's exact
+                // terminal arrives before the source Map removes this Player.
+                caster->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+                f52gC8InterruptedTerminalMatched =
+                    ownerTransferTerminal->events.size() == 1 &&
+                    ownerTransferTerminal->events[0].actionId == f52gC8ActionId &&
+                    ownerTransferTerminal->events[0].targetGuid == corpseTargetGuid &&
+                    ownerTransferTerminal->events[0].spellId == f52gBSpellId &&
+                    ownerTransferTerminal->events[0].status ==
+                        CoreSpellTerminalStatus::Interrupted &&
+                    caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+                f52gC8AuxiliaryPreservedUntilMapLeave =
+                    f52gC8InterruptedTerminalMatched &&
+                    std::any_of(
+                        wipeCoordinator->GetReservations().begin(),
+                        wipeCoordinator->GetReservations().end(),
+                        [casterGuid, c8AuxiliaryTargetGuid](Reservation const& row)
+                        {
+                            return row.type == ReservationType::Target &&
+                                row.targetGuid == c8AuxiliaryTargetGuid &&
+                                row.ownerGuid == casterGuid;
+                        });
+
+                if (f52gC8InterruptedTerminalMatched &&
+                    f52gC8AuxiliaryPreservedUntilMapLeave)
+                {
+                    c8SourceMap->Remove(caster, false);
+                    f52gC8MapLeaveProcessed =
+                        !caster->IsInWorld() &&
+                        resurrectionAI.m_partyCoordinator == nullptr &&
+                        resurrectionAI.m_partyCoordinatorMapId == 0 &&
+                        resurrectionAI.m_partyCoordinatorInstanceId == 0;
+                    f52gC8OwnerReservationsReleased =
+                        f52gC8MapLeaveProcessed &&
+                        std::none_of(
+                            wipeCoordinator->GetReservations().begin(),
+                            wipeCoordinator->GetReservations().end(),
+                            [casterGuid](Reservation const& row)
+                            {
+                                return row.ownerGuid == casterGuid;
+                            });
+                    f52gC8UnrelatedReservationPreserved =
+                        f52gC8OwnerReservationsReleased &&
+                        std::any_of(
+                            wipeCoordinator->GetReservations().begin(),
+                            wipeCoordinator->GetReservations().end(),
+                            [c8OtherOwnerGuid, c8OtherTargetGuid](Reservation const& row)
+                            {
+                                return row.type == ReservationType::Target &&
+                                    row.targetGuid == c8OtherTargetGuid &&
+                                    row.ownerGuid == c8OtherOwnerGuid;
+                            });
+                    // Other Bot owners remain on the source shard while this
+                    // caster acquires a distinct destination (group,map,instance).
+                    f52gC8OldShardPreserved =
+                        f52gC8UnrelatedReservationPreserved &&
+                        players[4]->IsInWorld() &&
+                        players[4]->GetMap() == c8SourceMap &&
+                        botAIs[3]->m_partyCoordinator == wipeCoordinator;
+
+                    bool const addedToDestination =
+                        c8DestinationMap->Add(caster);
+                    f52gC8DestinationEntered = addedToDestination &&
+                        caster->IsInWorld() &&
+                        caster->GetMap() == c8DestinationMap &&
+                        caster->GetMapId() == c8DestinationMap->GetId() &&
+                        caster->GetInstanceId() == c8DestinationMap->GetInstanceId();
+                    if (f52gC8DestinationEntered)
+                    {
+                        resurrectionAI.UpdatePartyBotEngineShadow();
+                        std::shared_ptr<PartyCoordinator> const destinationCoordinator =
+                            resurrectionAI.m_partyCoordinator;
+                        f52gC8DestinationCoordinatorAcquired =
+                            destinationCoordinator &&
+                            destinationCoordinator != wipeCoordinator &&
+                            resurrectionAI.m_partyCoordinatorMapId ==
+                                c8DestinationMap->GetId() &&
+                            resurrectionAI.m_partyCoordinatorInstanceId ==
+                                c8DestinationMap->GetInstanceId() &&
+                            resurrectionAI.m_newEngineStrategiesRegistered &&
+                            !resurrectionAI.m_engineShadowStrategiesRegistered;
+                        PartySnapshot const* const destinationSnapshot =
+                            destinationCoordinator
+                                ? destinationCoordinator->GetSnapshotIfFresh(
+                                    WorldTimer::getMSTime(), 1000)
+                                : nullptr;
+                        PartyMemberSnapshot const* const destinationCaster =
+                            destinationSnapshot
+                                ? destinationSnapshot->FindMember(casterGuid)
+                                : nullptr;
+                        f52gC8DestinationSnapshotFresh =
+                            destinationSnapshot &&
+                            destinationSnapshot->groupId == group->GetId() &&
+                            destinationSnapshot->mapId == c8DestinationMap->GetId() &&
+                            destinationSnapshot->instanceId ==
+                                c8DestinationMap->GetInstanceId() &&
+                            destinationCaster && destinationCaster->online &&
+                            destinationCaster->mapId == c8DestinationMap->GetId() &&
+                            destinationCaster->instanceId ==
+                                c8DestinationMap->GetInstanceId();
+                    }
+                }
+            }
+
+            // Always restore the caster to the original source Map before
+            // deleting the temporary destination Map, even after a partial
+            // transfer. The old shard must still be available to the other Bots.
+            if (c8DestinationMap && caster->IsInWorld() &&
+                caster->GetMap() == c8DestinationMap)
+                c8DestinationMap->Remove(caster, false);
+            bool const casterDetachedFromDestination =
+                !caster->IsInWorld() || caster->GetMap() != c8DestinationMap;
+            if (casterDetachedFromDestination && !caster->IsInWorld() &&
+                c8SourceMap)
+                f52gC8PlayerRestored = c8SourceMap->Add(caster) &&
+                    caster->IsInWorld() && caster->GetMap() == c8SourceMap &&
+                    caster->GetMapId() == c8SourceMap->GetId() &&
+                    caster->GetInstanceId() == c8SourceMap->GetInstanceId();
+            if (f52gC8PlayerRestored)
+            {
+                resurrectionAI.UpdatePartyBotEngineShadow();
+                f52gC8SourceCoordinatorReacquired =
+                    resurrectionAI.m_partyCoordinator == wipeCoordinator &&
+                    resurrectionAI.m_partyCoordinatorMapId == c8SourceMap->GetId() &&
+                    resurrectionAI.m_partyCoordinatorInstanceId ==
+                        c8SourceMap->GetInstanceId();
+            }
+
+            if (wipeCoordinator)
+                wipeCoordinator->ReleaseReservation(
+                    ReservationType::Target, c8OtherTargetGuid, c8OtherOwnerGuid);
+            if (!corpseTarget->IsAlive())
+            {
+                corpseTarget->ResurrectPlayer(0.5f, false);
+                corpseTarget->SpawnCorpseBones();
+                corpseTarget->ClearResurrectRequestData();
+            }
+            f52gC8NoOfferCreated =
+                f52gC8InterruptedTerminalMatched &&
+                !corpseTarget->IsRessurectRequested();
+            f52gC8NewEngineOnly =
+                resurrectionAI.m_newEngineStrategiesRegistered &&
+                !resurrectionAI.m_engineShadowStrategiesRegistered &&
+                resurrectionAI.m_simulatorLegacyPolicyEntryCount ==
+                    legacyEntriesBefore &&
+                resurrectionAI.m_simulatorLegacyPolicyDispatchCount ==
+                    legacyDispatchesBefore;
+
+            if (c8DestinationMap)
+            {
+                bool const destinationMapEmpty =
+                    !caster->IsInWorld() || caster->GetMap() != c8DestinationMap;
+                if (destinationMapEmpty &&
+                    group->GetBoundInstance(c8DestinationMap->GetId()))
+                    group->UnbindInstance(c8DestinationMap->GetId());
+                bool const bindReleased =
+                    group->GetBoundInstance(c8DestinationMap->GetId()) == nullptr;
+                f52gC8DestinationMapCleaned = destinationMapEmpty && bindReleased;
+                if (f52gC8DestinationMapCleaned)
+                    sMapMgr.DeleteTestMap(c8DestinationMap);
+                else
+                    sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                        "[PartyBotSimulator] Refusing to delete F52g-C8 destination Map %u instance %u (empty=%u bindReleased=%u).",
+                        c8DestinationMap->GetId(), c8DestinationMap->GetInstanceId(),
+                        destinationMapEmpty ? 1u : 0u, bindReleased ? 1u : 0u);
+            }
+
+            bool const f52gC8Passed =
+                f52gC8ListenerAdded && f52gC8ActionSelected && f52gC8CastStarted &&
+                f52gC8DestinationMapCreated && f52gC8InterruptedTerminalMatched &&
+                f52gC8AuxiliaryPreservedUntilMapLeave && f52gC8MapLeaveProcessed &&
+                f52gC8OwnerReservationsReleased &&
+                f52gC8UnrelatedReservationPreserved && f52gC8OldShardPreserved &&
+                f52gC8DestinationEntered &&
+                f52gC8DestinationCoordinatorAcquired &&
+                f52gC8DestinationSnapshotFresh && f52gC8PlayerRestored &&
+                f52gC8SourceCoordinatorReacquired && f52gC8DestinationMapCleaned &&
+                f52gC8NoOfferCreated && f52gC8NewEngineOnly;
+            sLog.Out(LOG_BASIC, f52gC8Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+                "[PartyBotSimulator] F52g-C8 resurrection caster transferred to another Map during group resurrection: listener=%u selected=%u castStarted=%u destinationMapCreated=%u interruptedTerminal=%u auxiliaryPreservedUntilMapLeave=%u mapLeaveProcessed=%u ownerRowsReleased=%u unrelatedPreserved=%u oldShardPreserved=%u destinationEntered=%u destinationCoordinator=%u destinationSnapshot=%u returnedToSource=%u sourceCoordinatorReacquired=%u destinationMapCleaned=%u noOffer=%u newEngineOnly=%u.",
+                f52gC8ListenerAdded ? 1u : 0u,
+                f52gC8ActionSelected ? 1u : 0u,
+                f52gC8CastStarted ? 1u : 0u,
+                f52gC8DestinationMapCreated ? 1u : 0u,
+                f52gC8InterruptedTerminalMatched ? 1u : 0u,
+                f52gC8AuxiliaryPreservedUntilMapLeave ? 1u : 0u,
+                f52gC8MapLeaveProcessed ? 1u : 0u,
+                f52gC8OwnerReservationsReleased ? 1u : 0u,
+                f52gC8UnrelatedReservationPreserved ? 1u : 0u,
+                f52gC8OldShardPreserved ? 1u : 0u,
+                f52gC8DestinationEntered ? 1u : 0u,
+                f52gC8DestinationCoordinatorAcquired ? 1u : 0u,
+                f52gC8DestinationSnapshotFresh ? 1u : 0u,
+                f52gC8PlayerRestored ? 1u : 0u,
+                f52gC8SourceCoordinatorReacquired ? 1u : 0u,
+                f52gC8DestinationMapCleaned ? 1u : 0u,
+                f52gC8NoOfferCreated ? 1u : 0u,
+                f52gC8NewEngineOnly ? 1u : 0u);
+            if (f52gC8Passed)
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                    "[PartyBotSimulator] PASS: F52g-C8 transferred the resurrection caster through real Core Map::Remove/Map::Add into a distinct dungeon instance; OnMapLeave released only its source-shard reservations, preserved another Bot's source shard/row, acquired a destination coordinator and fresh snapshot, and safely restored the caster to the original coordinator without a resurrection offer.");
         }
         bool const f52gC1Passed =
             f52gCListenerAdded && f52gCActionSelected && f52gCCastStarted &&
@@ -11382,7 +11702,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 "[PartyBotSimulator] PASS: F52g-C lifecycle checks retained exclusive NewEngine authority without Legacy policy entry or dispatch.");
         f52gCPassed = f52gC1Passed && f52gC2Passed &&
             f52gC3Passed && f52gC4Passed && f52gC5Passed &&
-            f52gC6Passed && f52gC7Passed && f52gCNewEngineOnly;
+            f52gC6Passed && f52gC7Passed && f52gC8Passed && f52gCNewEngineOnly;
         sLog.Out(LOG_BASIC, f52gC1Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
             "[PartyBotSimulator] F52g-C1 interrupted group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu interruptedTerminal=%u reservationReleased=%u noOffer=%u unrelatedReservationPreserved=%u.",
             f52gCListenerAdded ? 1u : 0u, f52gCActionSelected ? 1u : 0u,
@@ -11483,6 +11803,9 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         if (f52gC7Passed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F52g-C7 Core Spell::update re-resolved the departed corpse GUID, cancelled the pending resurrection cast, released only its exact Resurrection reservation, preserved unrelated reservations and restored the target Player to the source Map.");
+        if (f52gC8Passed)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F52g-C8 transferred the resurrection caster through real Core Map::Remove/Map::Add into a distinct dungeon instance; OnMapLeave released only its source-shard reservations, preserved another Bot's source shard/row, acquired a destination coordinator and fresh snapshot, and safely restored the caster to the original coordinator without a resurrection offer.");
     }
     bool const f52gBPassed =
         f52gBSpellAvailable && f52gBTerminalListenerAdded &&

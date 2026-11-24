@@ -432,7 +432,7 @@ for expected in snapshot=1 encounterStarted=1 possible=1 useful=1 engineThreatVe
         exit 1
     fi
 done
-if ! grep -Fq "[PartyBotSimulator] PASS: fixture-only PriestDirectHealAction passed same-Group live Core preflight, cast a direct heal, spent Core mana and matched the exact Engine action ID to its successful Core Spell terminal; the threat budget remained Unknown." "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: fixture-only PriestDirectHealAction passed same-Group live Core preflight, rejected the AoE Prayer of Healing spell, cast a single-target direct heal, spent Core mana and matched the exact Engine action ID to its successful Core Spell terminal; the threat budget remained Unknown." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F53b Priest direct-heal Core action PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi

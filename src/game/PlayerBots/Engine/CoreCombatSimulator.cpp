@@ -5271,7 +5271,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         PartySnapshotBuilder::GetOrBuild(tank, coordinator, 15600, 250);
     ThreatImpactEstimate const healThreatComponents =
         healAssistSnapshot && healSpell
-            ? EstimateDirectHealingAssistComponent(
+            ? EstimateDirectHealingThreatComponents(
                   healer, tank,
                   static_cast<float>(tank->GetMaxHealth() - patientHealthBeforeHeal),
                   healSpell, *healAssistSnapshot)

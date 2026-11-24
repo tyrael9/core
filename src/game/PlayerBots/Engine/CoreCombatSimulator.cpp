@@ -11081,8 +11081,11 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                     sourceMap->GetInstanceId() == corpseTarget->GetInstanceId())
                 {
                     sourceMap->Remove(caster, false);
+                    // GetMap() asserts when m_currMap is null; after a
+                    // real Map::Remove, use the Player world-state and the
+                    // PartyBotAI's source-shard reset as the detached proof.
                     f52gC6MapLeaveProcessed =
-                        !caster->IsInWorld() && caster->GetMap() == nullptr &&
+                        !caster->IsInWorld() &&
                         resurrectionAI.m_partyCoordinator == nullptr &&
                         resurrectionAI.m_partyCoordinatorMapId == 0 &&
                         resurrectionAI.m_partyCoordinatorInstanceId == 0;

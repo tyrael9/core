@@ -579,7 +579,7 @@ for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrel
     fi
 done
 
-if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C7 Core Spell::update re-resolved the departed corpse GUID;" "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C7 Core Spell::update re-resolved the departed corpse GUID," "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F52g-C7 target map-departure Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi

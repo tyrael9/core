@@ -2,6 +2,7 @@
 #define MANGOS_PARTYBOT_PRIEST_DIRECT_HEAL_ACTION_H
 
 #include "CoreAction.h"
+#include <algorithm>
 
 namespace PartyBotEngine
 {
@@ -12,6 +13,9 @@ namespace PartyBotEngine
 class PriestDirectHealAction final : public CoreAction
 {
 public:
+    // Vanilla player class IDs are stable protocol values; the policy layer
+    // stays independent of Core's Common.h and can run in the pure test target.
+    static constexpr std::uint8_t PriestClassId = 5;
     std::string const& GetName() const override { return m_name; }
 
     ThreatImpactEstimate EstimateThreatImpact(
@@ -28,7 +32,7 @@ public:
         std::string& reason) const override
     {
         if (!context.bot.isPlayerBot || !context.bot.online || !context.bot.alive ||
-            context.bot.classId != CLASS_PRIEST ||
+            context.bot.classId != PriestClassId ||
             context.bot.roleId != static_cast<std::uint8_t>(PartyRole::Healer) ||
             context.bot.currentSpellId || !candidate.targetGuid || !candidate.spellId ||
             candidate.channel != ActionChannel::GlobalCooldown ||

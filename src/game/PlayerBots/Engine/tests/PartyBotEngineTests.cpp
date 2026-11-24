@@ -3608,7 +3608,7 @@ void TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots() {
 
 void TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure() {
     Fixture f;
-    f.bot.classId = CLASS_PRIEST;
+    f.bot.classId = PriestDirectHealAction::PriestClassId;
     f.bot.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
     f.bot.isPlayerBot = true;
     f.bot.power = 500;

@@ -543,7 +543,7 @@ for expected in listener=1 selected=1 castStarted=1 reservationExpired=1 reserva
     fi
 done
 
-if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C4 target Player::BuildPlayerRepop interrupted a real incoming Core resurrection cast;" "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C4 target Player::BuildPlayerRepop interrupted a real incoming Core resurrection cast," "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F52g-C4 target spirit-release Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi

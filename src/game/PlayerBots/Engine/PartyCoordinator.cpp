@@ -25,6 +25,32 @@ std::atomic<std::uint64_t>& GetNextEncounterId()
     return nextId;
 }
 
+// Core spell terminals may arrive when no encounter is active and after a Bot
+// has changed map shards. Process-wide IDs prevent a late terminal from one
+// coordinator from colliding with a successor action in another coordinator.
+std::atomic<ActionId>& GetNextGlobalActionId()
+{
+    static std::atomic<ActionId> nextId(1);
+    return nextId;
+}
+
+ActionId AllocateGlobalActionId()
+{
+    std::atomic<ActionId>& nextId = GetNextGlobalActionId();
+    ActionId candidate = nextId.load(std::memory_order_relaxed);
+    while (candidate)
+    {
+        // When the uint64 namespace is exhausted, leave the counter at zero
+        // permanently rather than wrapping and reusing an outstanding ID.
+        ActionId const next = candidate + 1;
+        if (nextId.compare_exchange_weak(
+                candidate, next, std::memory_order_relaxed,
+                std::memory_order_relaxed))
+            return candidate;
+    }
+    return 0;
+}
+
 bool HasElapsed(std::uint32_t nowMs, std::uint32_t sinceMs, std::uint32_t durationMs)
 {
     std::uint32_t const elapsed = nowMs - sinceMs;
@@ -131,22 +157,22 @@ void PartyCoordinator::ReleaseOwner(Guid ownerGuid) {
 }
 
 ActionId PartyCoordinator::NextActionId() {
-    // At most 128 IDs can be retained, so a free nonzero ID is guaranteed within
-    // one pass unless the uint64_t namespace is pathologically exhausted.
+    // Action IDs outlive an encounter and may be delivered after a Bot changes
+    // map shards. A process-wide namespace prevents cross-coordinator reuse.
     for (std::size_t attempt = 0; attempt <= m_threatReservations.size(); ++attempt) {
-        ++m_nextThreatActionId;
-        if (m_nextThreatActionId == 0)
-            ++m_nextThreatActionId;
+        ActionId const candidate = AllocateGlobalActionId();
+        if (!candidate)
+            return 0;
 
         bool inUse = false;
         for (ThreatReservation const& reservation : m_threatReservations) {
-            if (reservation.actionId == m_nextThreatActionId) {
+            if (reservation.actionId == candidate) {
                 inUse = true;
                 break;
             }
         }
         if (!inUse)
-            return m_nextThreatActionId;
+            return candidate;
     }
     return 0;
 }

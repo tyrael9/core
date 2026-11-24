@@ -85,8 +85,8 @@ public:
     void PruneExpired(std::uint32_t nowMs);
     std::vector<Reservation> const& GetReservations() const { return m_reservations; }
 
-    // Action IDs are coordinator-local and nonzero. The legacy-named wrapper
-    // remains for callers that allocate IDs specifically for threat rows.
+    // Action IDs are process-wide and nonzero so late Core terminals cannot
+    // collide with a successor action after map-shard rebinding.
     ActionId NextActionId();
     ThreatActionId NextThreatActionId() { return NextActionId(); }
     bool TryReserveThreatImpact(ThreatReservation const& reservation, std::uint32_t nowMs);
@@ -145,7 +145,6 @@ private:
     };
     std::vector<TrackedNonBotPartyMemberState> m_trackedNonBotPartyMembers;
     PartySnapshot m_snapshot;
-    ThreatActionId m_nextThreatActionId = 0;
     std::uint64_t m_encounterId = 0;
     std::uint32_t m_encounterSequence = 0;
     std::uint32_t m_encounterGroupId = 0;

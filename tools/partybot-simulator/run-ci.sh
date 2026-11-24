@@ -459,7 +459,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F53f real Core Interrupted and Failed S
     exit 1
 fi
 f53f_failure_state_line="$(grep -F '[PartyBotSimulator] F53f real Core terminal reservation matrix:' "$LOG_FILE" | tail -n 1)"
-for expected in "listener=1" "interruptedSeeded=1" "interruptedRowsReleased=1" "interruptedUnrelatedPreserved=1" "failedSeeded=1" "failedRowReleased=1" "failedUnrelatedPreserved=1"; do
+for expected in "listener=1" "interruptedSeeded=1" "interruptedRowsReleased=1" "interruptedUnrelatedPreserved=1" "interruptedNoEncounterTerminal=1" "failedSeeded=1" "failedRowReleased=1" "failedUnrelatedPreserved=1" "failedNoEncounterTerminal=1"; do
     if [[ "$f53f_failure_state_line" != *"$expected"* ]]; then
         echo "[PartyBotSimulator] F53f interrupted/failed-terminal assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1

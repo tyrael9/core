@@ -27,11 +27,18 @@ public:
 
     void OnCoreSpellTerminal(CoreSpellTerminalEvent const& event) override
     {
-        if (!m_ownerGuid || !event.actionId || !event.encounterId)
+        if (!m_ownerGuid || !event.actionId)
             return;
 
         std::shared_ptr<PartyCoordinator> coordinator = m_coordinator.lock();
-        if (!coordinator || coordinator->GetEncounterId() != event.encounterId)
+        if (!coordinator)
+            return;
+
+        // Out-of-combat actions (notably group resurrection) legitimately
+        // finish with encounterId=0. Their process-wide action ID is still an
+        // exact correlation key. A nonzero terminal must continue to match the
+        // coordinator's current encounter, rejecting stale cross-encounter events.
+        if (event.encounterId && coordinator->GetEncounterId() != event.encounterId)
             return;
 
         coordinator->ReleaseThreatAction(event.actionId, m_ownerGuid);

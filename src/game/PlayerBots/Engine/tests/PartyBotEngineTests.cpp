@@ -3026,6 +3026,52 @@ void TestThreatReservationTerminalListenerReleasesOnlyMatchingOwnerAndEncounter(
     listener.OnCoreSpellTerminal(terminal);
 }
 
+void TestThreatReservationTerminalListenerReleasesNoEncounterTerminalWithoutCrossShardCollision()
+{
+    auto sourceCoordinator = std::make_shared<PartyCoordinator>();
+    auto destinationCoordinator = std::make_shared<PartyCoordinator>();
+    Guid const ownerGuid = 4200;
+
+    ActionId const sourceActionId = sourceCoordinator->NextActionId();
+    ActionId const destinationActionId = destinationCoordinator->NextActionId();
+    assert(sourceActionId != 0 && destinationActionId != 0);
+    assert(sourceActionId != destinationActionId);
+    assert(sourceCoordinator->GetEncounterId() == 0);
+    assert(destinationCoordinator->GetEncounterId() == 0);
+
+    ThreatReservation sourceReservation;
+    sourceReservation.ownerGuid = ownerGuid;
+    sourceReservation.threatOwnerGuid = ownerGuid;
+    sourceReservation.hostileGuid = 9101;
+    sourceReservation.actionId = sourceActionId;
+    sourceReservation.threatPoints = 17.0f;
+    sourceReservation.expiresAtMs = 5000;
+    assert(sourceCoordinator->TryReserveThreatImpact(sourceReservation, 1000));
+
+    ThreatReservation successorReservation = sourceReservation;
+    successorReservation.hostileGuid = 9102;
+    successorReservation.actionId = destinationActionId;
+    successorReservation.threatPoints = 19.0f;
+    assert(destinationCoordinator->TryReserveThreatImpact(successorReservation, 1000));
+
+    ThreatReservationTerminalListener sourceListener(ownerGuid, sourceCoordinator);
+    ThreatReservationTerminalListener destinationListener(ownerGuid, destinationCoordinator);
+    CoreSpellTerminalEvent terminal;
+    terminal.actionId = sourceActionId;
+    terminal.encounterId = 0;
+    terminal.status = CoreSpellTerminalStatus::Interrupted;
+
+    // A terminal for an out-of-encounter action still releases its exact source
+    // row. Rebinding the old event to a new coordinator must not release the
+    // successor row owned by the same Bot.
+    sourceListener.OnCoreSpellTerminal(terminal);
+    assert(sourceCoordinator->GetThreatReservationCount() == 0);
+    destinationListener.OnCoreSpellTerminal(terminal);
+    assert(destinationCoordinator->GetThreatReservationCount() == 1);
+    assert(destinationCoordinator->GetReservedThreatImpact(
+        9102, ownerGuid, 0, 1000) == 19.0f);
+}
+
 void TestClosingEncounterClearsInFlightThreatReservations()
 {
     PartyCoordinator coordinator;
@@ -6301,6 +6347,7 @@ int main() {
     TestActionResultListenersReceiveDispatchOutcomesWithoutTraceSinks();
     TestActionResultListenersAreBoundedAndSnapshotDuringDispatch();
     TestThreatReservationTerminalListenerReleasesOnlyMatchingOwnerAndEncounter();
+    TestThreatReservationTerminalListenerReleasesNoEncounterTerminalWithoutCrossShardCollision();
     TestClosingEncounterClearsInFlightThreatReservations();
     TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded();
     TestCoreSpellSuccessReleasesAndExecutesBoundedContinuation();

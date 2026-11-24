@@ -11237,6 +11237,8 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f53fInterruptedThreatReservationsSeeded = false;
     bool f53fInterruptedThreatRowsReleased = false;
     bool f53fInterruptedUnrelatedThreatRowsPreserved = false;
+    bool f53fInterruptedNoEncounterTerminal = false;
+    std::uint64_t f53fInterruptedEventEncounterId = 0;
     ActionId f53fInterruptedSameBotOtherActionId = 0;
     ActionId f53fInterruptedOtherBotActionId = 0;
     bool f52gC2ListenerAdded = false;
@@ -11249,6 +11251,8 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f53fFailedThreatReservationsSeeded = false;
     bool f53fFailedThreatRowReleased = false;
     bool f53fFailedUnrelatedThreatRowsPreserved = false;
+    bool f53fFailedNoEncounterTerminal = false;
+    std::uint64_t f53fFailedEventEncounterId = 0;
     ActionId f53fFailedSameBotOtherActionId = 0;
     ActionId f53fFailedOtherBotActionId = 0;
     bool f52gC3ListenerAdded = false;
@@ -11785,6 +11789,12 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                         });
                 f52gCNoOfferCreated = f52gCInterruptedTerminalMatched &&
                     !corpseTarget->IsRessurectRequested();
+                if (interruptedTerminal->events.size() == 1)
+                    f53fInterruptedEventEncounterId =
+                        interruptedTerminal->events[0].encounterId;
+                f53fInterruptedNoEncounterTerminal =
+                    f53fInterruptedThreatReservationsSeeded &&
+                    f53fInterruptedEventEncounterId == 0;
                 std::uint32_t const terminalNow = WorldTimer::getMSTime();
                 Guid const f53fOtherOwnerGuid = players[4]->GetObjectGuid().GetRawValue();
                 f53fInterruptedThreatRowsReleased =
@@ -11940,6 +11950,12 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                         });
                 f52gC2NoOfferCreated = f52gC2FailedTerminalMatched &&
                     !corpseTarget->IsRessurectRequested();
+                if (failedTerminal->events.size() == 1)
+                    f53fFailedEventEncounterId =
+                        failedTerminal->events[0].encounterId;
+                f53fFailedNoEncounterTerminal =
+                    f53fFailedThreatReservationsSeeded &&
+                    f53fFailedEventEncounterId == 0;
                 std::uint32_t const terminalNow = WorldTimer::getMSTime();
                 Guid const f53fOtherOwnerGuid = players[4]->GetObjectGuid().GetRawValue();
                 f53fFailedThreatRowReleased =
@@ -13037,19 +13053,27 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             f53fInterruptedThreatReservationsSeeded &&
             f53fInterruptedThreatRowsReleased &&
             f53fInterruptedUnrelatedThreatRowsPreserved &&
+            f53fInterruptedNoEncounterTerminal &&
             f53fFailedThreatReservationsSeeded &&
             f53fFailedThreatRowReleased &&
-            f53fFailedUnrelatedThreatRowsPreserved;
+            f53fFailedUnrelatedThreatRowsPreserved &&
+            f53fFailedNoEncounterTerminal;
         sLog.Out(LOG_BASIC,
             f53fCoreFailureAndInterruptPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-            "[PartyBotSimulator] F53f real Core terminal reservation matrix: listener=%u interruptedSeeded=%u interruptedRowsReleased=%u interruptedUnrelatedPreserved=%u failedSeeded=%u failedRowReleased=%u failedUnrelatedPreserved=%u.",
+            "[PartyBotSimulator] F53f real Core terminal reservation matrix: listener=%u interruptedSeeded=%u interruptedRowsReleased=%u interruptedUnrelatedPreserved=%u interruptedNoEncounterTerminal=%u failedSeeded=%u failedRowReleased=%u failedUnrelatedPreserved=%u failedNoEncounterTerminal=%u interruptedEventEncounter=%llu failedEventEncounter=%llu coordinatorEncounter=%llu.",
             f53fThreatReservationListenerReady ? 1u : 0u,
             f53fInterruptedThreatReservationsSeeded ? 1u : 0u,
             f53fInterruptedThreatRowsReleased ? 1u : 0u,
             f53fInterruptedUnrelatedThreatRowsPreserved ? 1u : 0u,
+            f53fInterruptedNoEncounterTerminal ? 1u : 0u,
             f53fFailedThreatReservationsSeeded ? 1u : 0u,
             f53fFailedThreatRowReleased ? 1u : 0u,
-            f53fFailedUnrelatedThreatRowsPreserved ? 1u : 0u);
+            f53fFailedUnrelatedThreatRowsPreserved ? 1u : 0u,
+            f53fFailedNoEncounterTerminal ? 1u : 0u,
+            static_cast<unsigned long long>(f53fInterruptedEventEncounterId),
+            static_cast<unsigned long long>(f53fFailedEventEncounterId),
+            static_cast<unsigned long long>(wipeCoordinator
+                ? wipeCoordinator->GetEncounterId() : 0));
         if (f53fCoreFailureAndInterruptPassed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F53f real Core Interrupted and Failed Spell terminals released every in-flight threat row owned by the matching Bot/action while preserving another action by the same Bot and unrelated rows owned by another Bot.");

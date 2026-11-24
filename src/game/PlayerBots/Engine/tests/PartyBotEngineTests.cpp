@@ -3198,7 +3198,13 @@ void TestPriestHealReservationStartRollbackAndTerminalRelease()
     successful.bot.power = 500;
     successful.bot.directHealSpells = {{2050, 120, 25}};
     PartyMemberSnapshot target;
-    ConfigureMember(target, 22, PartyRole::Tank, 30, 100, true);
+    target.guid = 22;
+    target.roleId = static_cast<std::uint8_t>(PartyRole::Tank);
+    target.health = 30;
+    target.maxHealth = 100;
+    target.online = true;
+    target.alive = true;
+    target.isMainTank = true;
     target.mapId = successful.snapshot.mapId;
     target.instanceId = successful.snapshot.instanceId;
     successful.snapshot.members.push_back(target);

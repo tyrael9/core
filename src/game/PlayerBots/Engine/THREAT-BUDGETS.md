@@ -2,6 +2,18 @@
 
 ## Status and goal
 
+## Current estimator validation — F53c/F53d (trusted-runtime validated 2026-11-24)
+
+The action-specific threat-impact contract is now exercised by real Core direct-heal fixtures, but it is not yet a production action multiplier or a complete Priest Healer policy.
+
+- Positive Lesser Heal spell_threat=24: Core's actual per-hostile flat-threat deltas match the estimator; the fixture also checks the assist-plus-flat upper bound and restores the disposable DB row.
+- Positive flat threat with a healed same-Group Player whose HostileRefManager is empty: estimator returns snapshot-matched NoThreat with no impact rows, the threat budget is Safe, and a real heal creates no hostile reference or ThreatManager delta. The caster may independently have hostile references.
+- Zero flat threat with two hostile references: exactly two healing-assist impacts and no flat-threat impacts are emitted; both real Core ThreatManager deltas are 12.25, matching the assist-only estimate. The original DB row is restored.
+- Core's persisted SpellThreatEntry::threat is unsigned uint16; negative persisted values are not representable. The pure helper rejects negative inputs. Harmful spell-table threat remains a distinct Core path.
+- Trusted push [#45452330798](https://github.com/tyrael9/core/actions/runs/45452330798) passed the full Linux ARM64/Vanilla 5875 build and Core-backed simulator through final Runtime PASS; artifact [#14949022280](https://github.com/tyrael9/core/actions/runs/45452330798/artifacts/14949022280).
+
+**Next audit boundary (F53e):** close secondary triggered-spell targets and caster-/target-side proc recipients, including the actual nested spell and threat owner/recipient semantics. Any path whose complete recipient set or amount cannot be bounded remains Unknown; do not treat unrecognized triggers as zero threat. F53f separately closes reservation and terminal cleanup. No production healing strategy is enabled by F53c/F53d.
+
 This document is the design/audit boundary for the Phase 7 threat-budget work. Stages F11 and F12 have completed the snapshot prerequisites: threat entries carry Core-derived `meleeReachable`, and hostile discovery includes all member-side `HostileRefManager` links, including offline references. ARM64 runtime CI validates both reachability states and the complete hostile-reference discovery path.
 
 Stage P7.1 now provides a pure, snapshot-only threshold/headroom assessment and standalone boundary/unknown-state tests. It is not yet connected to action evaluation and does not estimate any future action's threat impact; no production aggro-prevention multiplier is implemented. The next code change must not turn the observed 110%/130% rules into a second, incomplete copy of Core target selection.

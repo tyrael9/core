@@ -93,6 +93,7 @@ public:
     float GetReservedThreatImpact(Guid hostileGuid, Guid threatOwnerGuid,
                                   ThreatActionId exceptActionId, std::uint32_t nowMs) const;
     void ReleaseThreatAction(ThreatActionId actionId);
+    void ReleaseThreatAction(ThreatActionId actionId, Guid ownerGuid);
     std::size_t GetThreatReservationCount() const { return m_threatReservations.size(); }
 
     // One map/instance-scoped encounter lifecycle shared by every bot in the party.

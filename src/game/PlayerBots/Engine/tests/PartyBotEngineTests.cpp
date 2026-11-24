@@ -17,6 +17,7 @@
 #include "StopFollowingUnsafeTrigger.h"
 #include "ThreatBudget.h"
 #include "ThreatBudgetPolicy.h"
+#include "ThreatReservationTerminalListener.h"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -2949,6 +2950,113 @@ void TestEngineActionAttemptAndResultTrace()
     assert(report.candidates[report.selectedIndices[0]].actionId !=
            report.candidates[report.selectedIndices[1]].actionId);
     assert(report.candidates[report.selectedIndices[0]].threatActionId == 0);
+}
+
+void TestThreatReservationTerminalListenerReleasesOnlyMatchingOwnerAndEncounter()
+{
+    auto coordinator = std::make_shared<PartyCoordinator>();
+    PartySnapshot snapshot;
+    snapshot.groupId = 71;
+    snapshot.mapId = 33;
+    snapshot.instanceId = 101;
+    snapshot.epoch = 1;
+    PartyMemberSnapshot member;
+    member.guid = 42;
+    member.online = true;
+    member.alive = true;
+    member.inCombat = true;
+    snapshot.members.push_back(member);
+    EncounterTransition started = coordinator->ObserveEncounter(snapshot, 1000, 30000);
+    assert(started.kind == EncounterTransitionKind::Started);
+    assert(started.encounterId != 0);
+
+    ThreatReservation reservation;
+    reservation.ownerGuid = 42;
+    reservation.threatOwnerGuid = 42;
+    reservation.hostileGuid = 9001;
+    reservation.actionId = coordinator->NextActionId();
+    reservation.threatPoints = 17.0f;
+    reservation.expiresAtMs = 5000;
+    assert(coordinator->TryReserveThreatImpact(reservation, 1000));
+
+    ThreatReservation otherOwner = reservation;
+    otherOwner.ownerGuid = 43;
+    otherOwner.actionId = coordinator->NextActionId();
+    otherOwner.threatPoints = 9.0f;
+    assert(coordinator->TryReserveThreatImpact(otherOwner, 1000));
+
+    ThreatReservationTerminalListener listener(42, coordinator);
+    CoreSpellTerminalEvent terminal;
+    terminal.actionId = reservation.actionId;
+    terminal.encounterId = started.encounterId + 1;
+    terminal.status = CoreSpellTerminalStatus::Succeeded;
+    listener.OnCoreSpellTerminal(terminal);
+    assert(coordinator->GetThreatReservationCount() == 2);
+
+    terminal.encounterId = started.encounterId;
+    terminal.actionId = otherOwner.actionId;
+    terminal.status = CoreSpellTerminalStatus::Succeeded;
+    listener.OnCoreSpellTerminal(terminal);
+    assert(coordinator->GetThreatReservationCount() == 2);
+
+    terminal.actionId = reservation.actionId;
+    const CoreSpellTerminalStatus terminalStatuses[] = {
+        CoreSpellTerminalStatus::Succeeded,
+        CoreSpellTerminalStatus::Failed,
+        CoreSpellTerminalStatus::Interrupted
+    };
+    for (CoreSpellTerminalStatus status : terminalStatuses)
+    {
+        // Reinsert the bot's row to verify every Core terminal outcome releases it.
+        if (!coordinator->TryReserveThreatImpact(reservation, 1000))
+            assert(coordinator->GetThreatReservationCount() == 2);
+        terminal.status = status;
+        listener.OnCoreSpellTerminal(terminal);
+        assert(coordinator->GetReservedThreatImpact(
+            9001, 42, 0, 1000) == 0.0f);
+        assert(coordinator->GetReservedThreatImpact(
+            9001, 42, 0, 1000) == 0.0f);
+        assert(coordinator->GetThreatReservationCount() == 1);
+    }
+
+    // A terminal delivered after its coordinator has been destroyed is inert.
+    std::shared_ptr<PartyCoordinator> expiredCoordinator = coordinator;
+    ThreatReservationTerminalListener expiredListener(42, expiredCoordinator);
+    expiredCoordinator.reset();
+    terminal.actionId = reservation.actionId;
+    expiredListener.OnCoreSpellTerminal(terminal);
+}
+
+void TestClosingEncounterClearsInFlightThreatReservations()
+{
+    PartyCoordinator coordinator;
+    PartySnapshot snapshot;
+    snapshot.groupId = 72;
+    snapshot.mapId = 33;
+    snapshot.instanceId = 102;
+    snapshot.epoch = 1;
+    PartyMemberSnapshot member;
+    member.guid = 52;
+    member.online = true;
+    member.alive = true;
+    member.inCombat = true;
+    snapshot.members.push_back(member);
+    EncounterTransition started = coordinator.ObserveEncounter(snapshot, 1000, 30000);
+    assert(started.kind == EncounterTransitionKind::Started);
+
+    ThreatReservation reservation;
+    reservation.ownerGuid = 52;
+    reservation.threatOwnerGuid = 52;
+    reservation.hostileGuid = 9002;
+    reservation.actionId = coordinator.NextActionId();
+    reservation.threatPoints = 12.0f;
+    reservation.expiresAtMs = 10000;
+    assert(coordinator.TryReserveThreatImpact(reservation, 1000));
+    assert(coordinator.GetThreatReservationCount() == 1);
+
+    EncounterTransition ended = coordinator.CloseEncounter(1500, "test_terminal");
+    assert(ended.kind == EncounterTransitionKind::Ended);
+    assert(coordinator.GetThreatReservationCount() == 0);
 }
 
 void TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded()
@@ -6054,6 +6162,8 @@ int main() {
     TestEngineActionAttemptAndResultTrace();
     TestActionResultListenersReceiveDispatchOutcomesWithoutTraceSinks();
     TestActionResultListenersAreBoundedAndSnapshotDuringDispatch();
+    TestThreatReservationTerminalListenerReleasesOnlyMatchingOwnerAndEncounter();
+    TestClosingEncounterClearsInFlightThreatReservations();
     TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded();
     TestCoreSpellSuccessReleasesAndExecutesBoundedContinuation();
     TestRejectedContinuationIsTombstonedUntilQueueReset();

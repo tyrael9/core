@@ -213,6 +213,15 @@ void PartyCoordinator::ReleaseThreatAction(ThreatActionId actionId) {
         m_threatReservations.end());
 }
 
+void PartyCoordinator::ReleaseThreatAction(ThreatActionId actionId, Guid ownerGuid) {
+    if (!actionId || !ownerGuid)
+        return;
+    m_threatReservations.erase(std::remove_if(m_threatReservations.begin(), m_threatReservations.end(),
+        [actionId, ownerGuid](ThreatReservation const& reservation) {
+            return reservation.actionId == actionId && reservation.ownerGuid == ownerGuid;
+        }), m_threatReservations.end());
+}
+
 EncounterTransition PartyCoordinator::ObserveEncounter(PartySnapshot const& snapshot,
                                                                       std::uint32_t nowMs,
                                                                       std::uint32_t settleMs)
@@ -338,6 +347,9 @@ EncounterTransition PartyCoordinator::CloseEncounter(std::uint32_t nowMs, char c
     transition.elapsedMs = nowMs - m_encounterStartedAtMs;
     transition.reason = reason ? reason : "explicit_end";
 
+    // In-flight threat reservations are scoped to this encounter. Once the
+    // encounter closes, retaining them would veto actions in a later fight.
+    m_threatReservations.clear();
     m_encounterActive = false;
     m_encounterId = 0;
     m_encounterSequence = 0;

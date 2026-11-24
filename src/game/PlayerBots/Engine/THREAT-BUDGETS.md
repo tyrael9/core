@@ -2,7 +2,7 @@
 
 ## Status and goal
 
-## Current estimator validation — F53c/F53d (trusted-runtime validated 2026-11-24)
+## Current estimator validation — F53c/F53d/F53e (trusted-runtime validated 2026-11-24)
 
 The action-specific threat-impact contract is now exercised by real Core direct-heal fixtures, but it is not yet a production action multiplier or a complete Priest Healer policy.
 
@@ -12,7 +12,7 @@ The action-specific threat-impact contract is now exercised by real Core direct-
 - Core's persisted SpellThreatEntry::threat is unsigned uint16; negative persisted values are not representable. The pure helper rejects negative inputs. Harmful spell-table threat remains a distinct Core path.
 - Trusted push [#45452330798](https://github.com/tyrael9/core/actions/runs/45452330798) passed the full Linux ARM64/Vanilla 5875 build and Core-backed simulator through final Runtime PASS; artifact [#14949022280](https://github.com/tyrael9/core/actions/runs/45452330798/artifacts/14949022280).
 
-**Next audit boundary (F53e):** close secondary triggered-spell targets and caster-/target-side proc recipients, including the actual nested spell and threat owner/recipient semantics. Any path whose complete recipient set or amount cannot be bounded remains Unknown; do not treat unrecognized triggers as zero threat. F53f separately closes reservation and terminal cleanup. No production healing strategy is enabled by F53c/F53d.
+**F53e closure guard:** the estimator returns Unknown for configured SpellScript callbacks and for any direct-heal effect slot using TriggerSpell, TriggerMissile, Dummy or ScriptEffect. It checks every active caster aura effect slot for AddTargetTrigger using Core `Aura::IsAffectedOnSpell()`, and rejects AuraScript, configured helpful proc flags and audited hard-coded helpful proc paths on both caster and healed target. The full trusted runtime [#45463689912](https://github.com/tyrael9/core/actions/runs/45463689912) passed on `c317fb3`; artifact [#14955181341](https://github.com/tyrael9/core/actions/runs/45463689912/artifacts/14955181341). This is intentionally conservative: no triggered child spell has been allowlisted, and the complete nested recipient closure is not yet modeled. **F53f:** close in-flight threat reservations on matching Core spell terminal and encounter closure, preserving stale-event isolation. No production healing strategy is enabled by F53c/F53d/F53e.
 
 This document is the design/audit boundary for the Phase 7 threat-budget work. Stages F11 and F12 have completed the snapshot prerequisites: threat entries carry Core-derived `meleeReachable`, and hostile discovery includes all member-side `HostileRefManager` links, including offline references. ARM64 runtime CI validates both reachability states and the complete hostile-reference discovery path.
 

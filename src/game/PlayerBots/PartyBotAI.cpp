@@ -2219,6 +2219,20 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
         m_partyCoordinatorInstanceId = instanceId;
     }
 
+    // Keep one terminal listener per bot and rebind its weak shard reference
+    // when Group/map/instance ownership changes. A terminal from an old
+    // encounter cannot release a reservation in the new shard.
+    if (!m_threatReservationTerminalListener)
+    {
+        std::shared_ptr<PartyBotEngine::ThreatReservationTerminalListener> listener =
+            std::make_shared<PartyBotEngine::ThreatReservationTerminalListener>(
+                me->GetObjectGuid().GetRawValue(), m_partyCoordinator);
+        if (m_partyBotEngine.AddCoreSpellTerminalListener(listener))
+            m_threatReservationTerminalListener = listener;
+    }
+    else
+        m_threatReservationTerminalListener->SetCoordinator(m_partyCoordinator);
+
     m_partyCoordinator->ConfigureEncounterTraceBudget(detailBudget, importantBudget);
     m_partyCoordinator->PruneExpired(nowMs);
     PartyBotEngine::PartySnapshot const* snapshot =

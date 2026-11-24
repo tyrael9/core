@@ -33,10 +33,10 @@ inline bool HasUnboundedDirectHealSpellScript(bool hasConfiguredScript)
 // secondary spell against each successful target (or the caster on reflect).
 inline bool HasMatchingAddTargetTriggerAuraEffect(
     bool hasActiveAuraEffect, bool isAddTargetTrigger,
-    std::uint32_t effectItemType, std::uint32_t healingSpellFamilyFlags)
+    bool affectedOnHealingSpell)
 {
     return hasActiveAuraEffect && isAddTargetTrigger &&
-        (effectItemType & healingSpellFamilyFlags) != 0;
+        affectedOnHealingSpell;
 }
 
 // Raw per-reference inputs for the two independent helpful-threat paths in

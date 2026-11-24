@@ -3636,14 +3636,10 @@ void TestDirectHealHelpfulProcRiskClassifier() {
 
     // Add-target-trigger auras are checked at their actual active effect
     // index, including nonzero slots; inactive or nonmatching slots are safe.
-    assert(!HasMatchingAddTargetTriggerAuraEffect(
-        false, true, 1u << 5, 1u << 5));
-    assert(!HasMatchingAddTargetTriggerAuraEffect(
-        true, false, 1u << 5, 1u << 5));
-    assert(!HasMatchingAddTargetTriggerAuraEffect(
-        true, true, 1u << 4, 1u << 5));
-    assert(HasMatchingAddTargetTriggerAuraEffect(
-        true, true, 1u << 5, 1u << 5));
+    assert(!HasMatchingAddTargetTriggerAuraEffect(false, true, true));
+    assert(!HasMatchingAddTargetTriggerAuraEffect(true, false, true));
+    assert(!HasMatchingAddTargetTriggerAuraEffect(true, true, false));
+    assert(HasMatchingAddTargetTriggerAuraEffect(true, true, true));
 }
 
 void TestDirectHealThreatComponentsSplitAcrossAllHostileReferences() {

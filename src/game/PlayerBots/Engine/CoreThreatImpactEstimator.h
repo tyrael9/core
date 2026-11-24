@@ -118,8 +118,7 @@ inline bool HasUnboundedDirectHealProcRisk(
                         activeAura != nullptr,
                         auraSpell->EffectApplyAuraName[effectIndex] ==
                             SPELL_AURA_ADD_TARGET_TRIGGER,
-                        auraSpell->EffectItemType[effectIndex],
-                        healingSpell->SpellFamilyFlags))
+                        activeAura && activeAura->IsAffectedOnSpell(healingSpell)))
                 {
                     hardcodedHelpfulProc = true;
                     break;

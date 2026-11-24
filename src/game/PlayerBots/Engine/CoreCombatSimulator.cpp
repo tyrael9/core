@@ -10067,6 +10067,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         static_cast<uint32>(ActionResult::NotAttempted);
     std::string f52gBActionReason = "not_executed";
     bool f52gCPassed = false;
+    bool f52gCNewEngineOnly = false;
     bool f52gCListenerAdded = false;
     bool f52gCActionSelected = false;
     bool f52gCCastStarted = false;
@@ -10151,7 +10152,6 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         uint32 const legacyDispatchesBefore = resurrectionAI.m_simulatorLegacyPolicyDispatchCount;
         uint32 const ticksBefore = resurrectionAI.m_simulatorNewEngineTickCount;
         uint32 const cyclesBefore = resurrectionAI.m_simulatorEngineDecisionCycleCount;
-        uint32 f52gCoordinatorReacquireCycles = 0;
 
         // Simulator Players start with only their minimal default spell set.
         // Learn the real Vanilla Priest Resurrection chain through Core, then
@@ -11132,12 +11132,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                         // Map::Remove drops this AI's shard reference. Run the
                         // normal NewEngine shard update after re-entry so its
                         // terminal callback uses the reacquired source coordinator.
-                        uint32 const cyclesBeforeReacquire =
-                            resurrectionAI.m_simulatorEngineDecisionCycleCount;
                         resurrectionAI.UpdatePartyBotEngineShadow();
-                        f52gCoordinatorReacquireCycles +=
-                            resurrectionAI.m_simulatorEngineDecisionCycleCount -
-                            cyclesBeforeReacquire;
                         f52gC6CoordinatorReacquired =
                             resurrectionAI.m_partyCoordinator &&
                             resurrectionAI.m_partyCoordinator == wipeCoordinator &&
@@ -11367,9 +11362,27 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             f52gC7ReservationReleased && f52gC7AuxiliaryReservationPreserved &&
             f52gC7UnrelatedReservationPreserved && f52gC7TargetRestored &&
             f52gC7TargetCoordinatorReacquired && f52gC7NoOfferCreated;
+        // Keep F52g-B's authority/counter acceptance scoped to the B phase.
+        // C1-C7 deliberately perform their own lifecycle actions and shard
+        // reacquisition; they have separate per-case assertions above.
+        f52gCNewEngineOnly =
+            resurrectionAI.m_newEngineStrategiesRegistered &&
+            !resurrectionAI.m_engineShadowStrategiesRegistered &&
+            resurrectionAI.m_simulatorLegacyPolicyEntryCount == legacyEntriesBefore &&
+            resurrectionAI.m_simulatorLegacyPolicyDispatchCount == legacyDispatchesBefore;
+        sLog.Out(LOG_BASIC, f52gCNewEngineOnly ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F52g-C NewEngine authority: registered=%u shadow=%u legacyEntriesUnchanged=%u legacyDispatchesUnchanged=%u valid=%u.",
+            resurrectionAI.m_newEngineStrategiesRegistered ? 1u : 0u,
+            resurrectionAI.m_engineShadowStrategiesRegistered ? 1u : 0u,
+            resurrectionAI.m_simulatorLegacyPolicyEntryCount == legacyEntriesBefore ? 1u : 0u,
+            resurrectionAI.m_simulatorLegacyPolicyDispatchCount == legacyDispatchesBefore ? 1u : 0u,
+            f52gCNewEngineOnly ? 1u : 0u);
+        if (f52gCNewEngineOnly)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F52g-C lifecycle checks retained exclusive NewEngine authority without Legacy policy entry or dispatch.");
         f52gCPassed = f52gC1Passed && f52gC2Passed &&
             f52gC3Passed && f52gC4Passed && f52gC5Passed &&
-            f52gC6Passed && f52gC7Passed;
+            f52gC6Passed && f52gC7Passed && f52gCNewEngineOnly;
         sLog.Out(LOG_BASIC, f52gC1Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
             "[PartyBotSimulator] F52g-C1 interrupted group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu interruptedTerminal=%u reservationReleased=%u noOffer=%u unrelatedReservationPreserved=%u.",
             f52gCListenerAdded ? 1u : 0u, f52gCActionSelected ? 1u : 0u,
@@ -11470,15 +11483,6 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         if (f52gC7Passed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F52g-C7 Core Spell::update re-resolved the departed corpse GUID, cancelled the pending resurrection cast, released only its exact Resurrection reservation, preserved unrelated reservations and restored the target Player to the source Map.");
-        f52gBNewEngineOnly =
-            resurrectionAI.m_newEngineStrategiesRegistered &&
-            !resurrectionAI.m_engineShadowStrategiesRegistered &&
-            resurrectionAI.m_simulatorLegacyPolicyEntryCount == legacyEntriesBefore &&
-            resurrectionAI.m_simulatorLegacyPolicyDispatchCount == legacyDispatchesBefore &&
-            resurrectionAI.m_simulatorNewEngineTickCount == ticksBefore &&
-            resurrectionAI.m_simulatorEngineDecisionCycleCount ==
-                cyclesBefore + 3 + f52gCoordinatorReacquireCycles &&
-            wipeCoordinator && !wipeCoordinator->HasActiveEncounter();
     }
     bool const f52gBPassed =
         f52gBSpellAvailable && f52gBTerminalListenerAdded &&

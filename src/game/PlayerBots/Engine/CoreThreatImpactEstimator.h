@@ -63,6 +63,77 @@ inline ThreatImpactEstimate EstimateAppliedDirectDamageComponent(
     return estimate;
 }
 
+// Unit::ProcDamageAndSpellFor examines every active holder on both the
+// caster and target. IsTriggeredAtSpellProcEvent calls AuraScript::OnCheckProc
+// before consulting generic proc flags, so any scripted holder is not statically
+// closed. Vanilla also has hard-coded helpful exceptions (Priest Inspiration,
+// Paladin Improved Lay on Hands and family-mask target triggers) which can
+// bypass the ordinary SpellProcEvent flag gate.
+inline bool HasUnboundedDirectHealProcRisk(
+    Unit const* unit, SpellEntry const* healingSpell, bool casterSide)
+{
+    if (!unit || !healingSpell)
+        return true;
+
+    for (auto const& auraPair : unit->GetSpellAuraHolderMap())
+    {
+        SpellAuraHolder const* holder = auraPair.second;
+        if (!holder)
+            return true;
+        if (holder->IsDeleted())
+            continue;
+
+        SpellEntry const* auraSpell = holder->GetSpellProto();
+        if (!auraSpell)
+            return true;
+
+        bool hardcodedHelpfulProc = false;
+        if (casterSide)
+        {
+            // UnitAuraProcHandler.cpp: Inspiration's hard-coded branch fires
+            // on a critical Priest heal even if SpellProcEvent::procFlags is 0.
+            hardcodedHelpfulProc =
+                auraSpell->SpellFamilyName == SPELLFAMILY_PRIEST &&
+                auraSpell->SpellIconID == 79;
+
+            // Improved Lay on Hands is another explicit successful return
+            // before the generic proc flag check.
+            hardcodedHelpfulProc = hardcodedHelpfulProc ||
+                (auraSpell->SpellFamilyName == SPELLFAMILY_PALADIN &&
+                 auraSpell->SpellIconID == 79 &&
+                 healingSpell->SpellFamilyName == SPELLFAMILY_PALADIN &&
+                 healingSpell->SpellIconID == 79 &&
+                 healingSpell->Category == 56);
+
+            // SpellCanTrigger() handles SPELL_AURA_ADD_TARGET_TRIGGER before
+            // generic proc flags and is attacker-side only.
+            hardcodedHelpfulProc = hardcodedHelpfulProc ||
+                (auraSpell->EffectApplyAuraName[0] ==
+                     SPELL_AURA_ADD_TARGET_TRIGGER &&
+                 auraSpell->SpellFamilyName == healingSpell->SpellFamilyName &&
+                 (auraSpell->EffectItemType[0] &
+                  healingSpell->SpellFamilyFlags) != 0);
+        }
+
+        SpellProcEventEntry const* procEvent =
+            sSpellMgr.GetSpellProcEvent(auraSpell->Id);
+        std::uint32_t configuredProcFlags =
+            procEvent && procEvent->procFlags
+                ? procEvent->procFlags : auraSpell->procFlags;
+        std::uint32_t sideHelpfulProcFlag = casterSide
+            ? PROC_FLAG_DEAL_HELPFUL_SPELL
+            : PROC_FLAG_TAKE_HELPFUL_SPELL;
+
+        if (HasPotentialHelpfulSpellProc(
+                holder->GetAuraScript() != nullptr,
+                hardcodedHelpfulProc, configuredProcFlags,
+                sideHelpfulProcFlag))
+            return true;
+    }
+
+    return false;
+}
+
 // Estimate the two direct helpful-threat components produced for one healed
 // target. Spell::DoAllEffectOnTarget passes effective healing gain through the
 // class coefficient and heal-spell threat multiplier; Spell::HandleThreatSpells
@@ -108,6 +179,16 @@ inline ThreatImpactEstimate EstimateDirectHealingThreatComponents(
 
     if (spellInfo->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT)) {
         estimate.reason = "direct_heal_assist_suppressed_by_core_spell_attribute";
+        return estimate;
+    }
+
+    // Helpful proc processing runs on both the caster and the healed target.
+    // Do not emit even the known direct components when either side has a
+    // scripted, DB-driven or hard-coded helpful proc whose secondary effects
+    // and threat recipients are not yet enclosed by this estimate.
+    if (HasUnboundedDirectHealProcRisk(realCaster, spellInfo, true) ||
+        HasUnboundedDirectHealProcRisk(healedTarget, spellInfo, false)) {
+        estimate.reason = "direct_heal_proc_closure_unbounded";
         return estimate;
     }
 

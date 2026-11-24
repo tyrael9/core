@@ -2981,6 +2981,7 @@ void TestThreatReservationTerminalListenerReleasesOnlyMatchingOwnerAndEncounter(
 
     ThreatReservation otherOwner = reservation;
     otherOwner.ownerGuid = 43;
+    otherOwner.threatOwnerGuid = 43;
     otherOwner.actionId = coordinator->NextActionId();
     otherOwner.threatPoints = 9.0f;
     assert(coordinator->TryReserveThreatImpact(otherOwner, 1000));
@@ -3020,11 +3021,9 @@ void TestThreatReservationTerminalListenerReleasesOnlyMatchingOwnerAndEncounter(
     }
 
     // A terminal delivered after its coordinator has been destroyed is inert.
-    std::shared_ptr<PartyCoordinator> expiredCoordinator = coordinator;
-    ThreatReservationTerminalListener expiredListener(42, expiredCoordinator);
-    expiredCoordinator.reset();
     terminal.actionId = reservation.actionId;
-    expiredListener.OnCoreSpellTerminal(terminal);
+    coordinator.reset();
+    listener.OnCoreSpellTerminal(terminal);
 }
 
 void TestClosingEncounterClearsInFlightThreatReservations()

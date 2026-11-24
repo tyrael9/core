@@ -11,9 +11,9 @@ Legacy PartyBot fixes are maintenance work only. They do not count as new-engine
 - [ ] Not started.
 - CI, in-game testing and deployment are separate evidence categories.
 
-## Current overall position (2026-11-24, F53e trusted-runtime validated)
+## Current overall position (2026-11-24, F53e trusted-runtime validated; F53f Core runtime matrix added, push validation pending)
 
-**Phase 6 / F53a–F53e — first Priest Healer direct-heal vertical slice is in progress.** F53a learned-rank snapshot/affordable rank selection, F53b test-only CoreAction/real cast/Mana/terminal correlation, F53c positive flat-threat parity and caster-side Inspiration veto, F53d NoThreat/zero-flat boundaries, and F53e fail-closed secondary-spell/proc closure now have trusted Core-runtime evidence. F53e does not yet claim an allowlisted triggered-heal path; unknown nested casts remain Unknown. This closes the F53e audit guard, not the Priest Healer production slice.
+**Phase 6 / Priest Healer vertical slice remains in progress.** F53a–F53e have trusted Core-runtime evidence. F53e remains conservative: no triggered child heal is allowlisted and unknown nested casts remain Unknown. F53f now has dedicated real-Core success, interruption and failure reservation-lifecycle cases with same-owner/other-owner and stale-encounter assertions; the new mandatory trusted-push marker gates are awaiting a non-cancelled push run. F54a adds deterministic snapshot-only Priest target/rank composition; it is a policy primitive, not executable healing.
 
 - **F53d NoThreat:** a positive temporary spell_threat=24 row was present, but the healed same-Group Player had no hostile references. The estimator returned snapshot-matched NoThreat with empty impacts and Safe budget admission; real Lesser Heal succeeded, Mana was spent, and no hostile reference or ThreatManager delta appeared (refsBefore=1 on the caster, refsAfter=1).
 - **F53d zero flat threat:** with the temporary row set to zero and two hostile references on the healed target, the estimator emitted exactly two healing-assist impacts and no flat-threat impacts. Both real Core ThreatManager deltas were 12.25, matching the assist-only estimate; the original DB row was restored.
@@ -24,7 +24,7 @@ Legacy PartyBot fixes are maintenance work only. They do not count as new-engine
 
 Trusted push [#45452330798](https://github.com/tyrael9/core/actions/runs/45452330798) on ee0bffabcc0b195d430c43335e2d4d6942cda626 passed pure tests, report collector, Linux ARM64/Vanilla 5875 build and the complete Core-backed simulator through final Runtime PASS. Runtime artifact [partybot-simulator-ee0bffab](https://github.com/tyrael9/core/actions/runs/45452330798/artifacts/14949022280). Matching PR build [#45452348101](https://github.com/tyrael9/core/actions/runs/45452348101) passed; its trusted runtime was intentionally skipped because PR workflows do not receive fixture secrets.
 
-The current head keeps PriestDirectHealAction unregistered and the whole action fail-closed as Unknown. F53e guards configured SpellScript callbacks, all effect slots with TriggerSpell/TriggerMissile/Dummy/ScriptEffect dispatch, active caster AddTargetTrigger aura effects, and both caster-/target-side helpful proc paths. Trusted push [#45463689912](https://github.com/tyrael9/core/actions/runs/45463689912) on `c317fb3` passed pure tests, report collector, full Linux ARM64/Vanilla 5875 build, simulator harness and final Core-backed `Runtime PASS`; artifact [partybot-simulator-c317fb3](https://github.com/tyrael9/core/actions/runs/45463689912/artifacts/14955181341). Matching PR build [#45463703546](https://github.com/tyrael9/core/actions/runs/45463703546) passed. **Next: F53f — release in-flight threat reservations on matching Core spell success/failure/interruption and encounter closure, while rejecting stale cross-encounter terminals.** Then F54 composes the complete Priest Healer decision loop. Only after F54 should production registration be considered. After Priest, proceed to real Tank, real DPS, five-player coordination, then Phase 8 encounter mechanics.
+The current head keeps PriestDirectHealAction unregistered and the whole action fail-closed as Unknown. F53e's conservative SpellScript, nested-effect and caster-/target-side proc closure has trusted-runtime evidence [#45463689912](https://github.com/tyrael9/core/actions/runs/45463689912). F53f's new real-Core success/interruption/failure reservation fixture is implemented, but awaits a non-cancelled trusted push run; PR ARM64/pure/harness validation passed [#45486156644](https://github.com/tyrael9/core/actions/runs/45486156644). F54a adds pure same-shard Player triage plus affordable rank composition; incoming-heal/HoT/shield/effective-healing signals and the full threat envelope remain open. No healing action or strategy is production-registered.
 
 
 **F50 — trusted-runtime validated (2026-11-22).** F50 establishes the first production NewEngine policy, narrowly scoped to out-of-combat party movement. PartySnapshot now carries the actual Group leader GUID as value-only identity; FollowPartyLeaderTrigger proposes that online/alive same-map leader only while the bot is alive, out of combat, not casting and not already following. ProductionStrategies registers only FollowPartyMemberAction. The real five-Player Group fixture drove PartyBotAI::UpdateAI through snapshot, trigger, candidate, arbitration and CoreAction, then verified the native FollowMovementGenerator targets the real Group leader. F29 also verifies combat veto, zero Legacy entries/dispatches and no Shadow-policy registration.
@@ -238,7 +238,7 @@ The runtime pointer is carried through all four Engine-created DecisionContext c
 All classes and roles are composed within one PartyBotEngine queue; this is not a rollout boundary between old and new AI.
 
 - [ ] Warrior: tank and damage strategies, stance/resource/threat/taunt logic.
-- [~] Priest: F53a/F53b and F53c positive flat-threat parity plus the Inspiration proc veto have trusted-runtime evidence. F53d adds a real self-heal with positive flat threat but no hostile references, plus a zero-flat real heal with two hostile references; the new trusted-runtime markers and disposable DB restoration are pending on the current head. Negative flat amounts are not representable by Core's `uint16` SpellThreatEntry and are rejected by the pure helper. Still open: F53e secondary triggered-spell/proc-recipient closure, F53f whole-action reservation/terminal/cancellation cleanup, then F54 full Priest Healer policy and production-registration review. Priest damage, shields, dispels and mana management remain open.
+- [~] Priest: F53a–F53e have trusted-runtime evidence; F53f has new required real-Core success/interruption/failure reservation-terminal fixtures pending trusted push validation. F54a deterministic target/rank selection is implemented as a pure snapshot policy primitive, with incoming-heal/HoT/shield/absorb/effective-heal awareness still absent. PriestDirectHealAction remains unregistered and its whole-action threat estimate remains Unknown. After F54 closes the complete Priest Healer loop, proceed to Priest damage, shields, dispels and mana management.
 - [ ] Druid: healing, caster and feral forms/roles, form-aware transitions.
 - [ ] Shaman: healing and damage roles, totems, shocks and utility.
 - [ ] Paladin: healing, tanking and damage roles, blessings/seals and utility.
@@ -260,14 +260,29 @@ All classes and roles are composed within one PartyBotEngine queue; this is not 
 
 Trusted push [#45353641584](https://github.com/tyrael9/core/actions/runs/45353641584) on `f9d31ca3ac95fe7064bc4f0e0651de5f462f6067` passed pure tests, report collector, Configure, full Linux ARM64 Server/Realm build, harness syntax and the complete fixture-backed Vanilla 5875 simulator through final `Runtime PASS`. Matching PR build [#45353646529](https://github.com/tyrael9/core/actions/runs/45353646529) passed the PR-safe pure/build checks. Artifact [partybot-simulator-f9d31ca3](https://github.com/tyrael9/core/actions/runs/45353641584/artifacts/14900559875).
 
-### F53d — direct-heal NoThreat and zero-flat boundaries (implementation committed; trusted runtime pending)
+### F53d — direct-heal NoThreat and zero-flat boundaries (trusted-runtime validated 2026-11-24)
 
 - A real Core Lesser Heal is cast by the healer on a same-Group Player whose `HostileRefManager` has no references, with a positive temporary Lesser Heal `spell_threat` row installed. The caster's own hostile references do not affect this recipient list. The fixture requires a snapshot-matched `NoThreat` estimate, a Safe threat-budget result, successful healing and Mana consumption, no new HostileReference and no ThreatManager delta.
 - A second real Core Lesser Heal runs with a temporary zero `spell_threat` row and two hostile references. The estimate must retain only the two `DirectHealAssist` impacts; both actual ThreatManager deltas must match Core's assist-only calculation.
 - The pure helper rejects a negative positive-flat-threat input. Core's `SpellThreatEntry::threat` is `uint16`, loaded with `Field::GetUInt16`; a negative persisted amount is not representable. Harmful-spell flat threat is a separate positive-amount Core path, not a negative amount.
-- Both simulator fixtures run only against the disposable `partybot_sim_*` schema. The zero-row fixture restores the original `spell_threat` rows and requires a restoration PASS marker. These new cases are **not accepted** until a trusted branch-push workflow passes the complete Vanilla 5875 simulator and final `Runtime PASS`.
+- Both simulator fixtures run only against the disposable `partybot_sim_*` schema. The zero-row fixture restores the original `spell_threat` rows and requires a restoration PASS marker. Trusted push [#45467767969](https://github.com/tyrael9/core/actions/runs/45467767969) on b3faac5 passed the full ARM64 build and complete Core-backed simulator through final Runtime PASS; PR build [#45467778023](https://github.com/tyrael9/core/actions/runs/45467778023) passed.
 - `PriestDirectHealAction` remains absent from production `ProductionStrategies`; the whole direct-heal action is still `Unknown`.
 
+### F53f — in-flight threat-reservation terminal lifecycle (Core fixture added; trusted runtime pending)
+
+- The production PartyBotAI Spell-terminal callback forwards the matching action/encounter event to PartyBotEngine; ThreatReservationTerminalListener releases only rows for that Bot and action. Encounter close clears all remaining threat rows.
+- The new real-Core fixture covers success (Priest Lesser Heal), interruption (Core Resurrection cancel) and failure (Core CheckPower at cast completion). Each path seeds matching fan-out rows, another action by the same Bot, and another Bot's row; the success path also injects a stale-encounter terminal.
+- The runtime harness requires marker gates for all three terminal statuses, exact fan-out release, ownership isolation and stale-event isolation. PR ARM64/pure/harness validation passed [#45486156644](https://github.com/tyrael9/core/actions/runs/45486156644), but trusted push runtime is still required before closure.
+- No combat action or strategy is registered by this milestone.
+
+### F54a — deterministic Priest healing target/rank selection (pure policy implementation; CI pending)
+
+- Selects only unique, online, alive, positive-health same-map/instance Player members from the immutable roster; the healer must be the same-shard, online Priest Bot with Healer role.
+- Uses integer cross multiplication to rank the lowest health fraction without floating-point drift. Exact percentage ties prefer Main Tank, then greater absolute missing health, then lower GUID; a value-only deficit basis-point field is returned for diagnostics.
+- Composes target selection with the affordable learned direct-heal rank selector. If either selection fails, the entire decision is cleared.
+- This is only a baseline triage primitive: incoming heals, HoTs, absorbs, effective healing, healer movement/range/LOS and the whole-action threat envelope are not modeled. PriestDirectHealAction remains unregistered and its estimate remains Unknown.
+
+## Phase 7 — party-wide coordination
 ## Phase 7 — party-wide coordination
 
 - [ ] Main Tank and assistant assignments.

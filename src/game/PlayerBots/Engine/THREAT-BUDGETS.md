@@ -2,7 +2,7 @@
 
 ## Status and goal
 
-## Current estimator validation — F53c/F53d/F53e (trusted-runtime validated 2026-11-24)
+## Current estimator validation — F53c/F53d/F53e trusted-runtime validated; F53f Core terminal fixture pending trusted push
 
 The action-specific threat-impact contract is now exercised by real Core direct-heal fixtures, but it is not yet a production action multiplier or a complete Priest Healer policy.
 
@@ -13,6 +13,9 @@ The action-specific threat-impact contract is now exercised by real Core direct-
 - Trusted push [#45452330798](https://github.com/tyrael9/core/actions/runs/45452330798) passed the full Linux ARM64/Vanilla 5875 build and Core-backed simulator through final Runtime PASS; artifact [#14949022280](https://github.com/tyrael9/core/actions/runs/45452330798/artifacts/14949022280).
 
 **F53e closure guard:** the estimator returns Unknown for configured SpellScript callbacks and for any direct-heal effect slot using TriggerSpell, TriggerMissile, Dummy or ScriptEffect. It checks every active caster aura effect slot for AddTargetTrigger using Core `Aura::IsAffectedOnSpell()`, and rejects AuraScript, configured helpful proc flags and audited hard-coded helpful proc paths on both caster and healed target. The full trusted runtime [#45463689912](https://github.com/tyrael9/core/actions/runs/45463689912) passed on `c317fb3`; artifact [#14955181341](https://github.com/tyrael9/core/actions/runs/45463689912/artifacts/14955181341). This is intentionally conservative: no triggered child spell has been allowlisted, and the complete nested recipient closure is not yet modeled. **F53f:** close in-flight threat reservations on matching Core spell terminal and encounter closure, preserving stale-event isolation. No production healing strategy is enabled by F53c/F53d/F53e.
+
+**F53f terminal reservation closure — implementation and Core-backed fixtures added; trusted runtime pending.** The fixture attaches the real ThreatReservationTerminalListener to the PartyBotEngine receiving Core PlayerAI terminals. A real Priest direct-heal success checks multi-hostile action fan-out release, preserves another action by the same healer and another Bot's reservations, and rejects a stale-encounter event. Real Core Resurrection casts also exercise Interrupted and Failed terminals while checking owner/action isolation. The trusted push harness has mandatory marker gates for all three statuses and ownership assertions; PR ARM64 build, pure tests and harness syntax passed [#45486156644](https://github.com/tyrael9/core/actions/runs/45486156644), while trusted push runtime is still required before closure. Encounter close clears all remaining threat reservations.
+
 
 This document is the design/audit boundary for the Phase 7 threat-budget work. Stages F11 and F12 have completed the snapshot prerequisites: threat entries carry Core-derived `meleeReachable`, and hostile discovery includes all member-side `HostileRefManager` links, including offline references. ARM64 runtime CI validates both reachability states and the complete hostile-reference discovery path.
 

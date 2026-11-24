@@ -3936,6 +3936,145 @@ void TestPriestDirectHealSelectionUsesAffordableClosestRank() {
     assert(!SelectPriestDirectHealSpell(healer, 700, selection));
 }
 
+void TestPriestHealingTargetSelectionIsDeterministicAndSnapshotBounded()
+{
+    PartySnapshot snapshot;
+    snapshot.groupId = 901;
+    snapshot.mapId = 1;
+    snapshot.instanceId = 9;
+    snapshot.epoch = 84;
+
+    PartyMemberSnapshot healer, mainTank, ranged, melee, foreignMap, foreignInstance;
+    ConfigureMember(healer, 11, PartyRole::Healer, 90, 100);
+    healer.classId = 5;
+    healer.isPlayerBot = true;
+    healer.power = 60;
+    healer.mapId = snapshot.mapId;
+    healer.instanceId = snapshot.instanceId;
+    healer.directHealSpells = {{2050, 100, 20}, {2052, 600, 55}};
+
+    ConfigureMember(mainTank, 22, PartyRole::Tank, 20, 100, true);
+    mainTank.mapId = snapshot.mapId;
+    mainTank.instanceId = snapshot.instanceId;
+
+    // Same 20% current health as the Main Tank; the exact-ratio tie goes to tank.
+    ConfigureMember(ranged, 33, PartyRole::RangedDamage, 100, 500);
+    ranged.mapId = snapshot.mapId;
+    ranged.instanceId = snapshot.instanceId;
+
+    ConfigureMember(melee, 44, PartyRole::MainTank, 21, 100);
+    melee.mapId = snapshot.mapId;
+    melee.instanceId = snapshot.instanceId;
+
+    ConfigureMember(foreignMap, 55, PartyRole::RangedDamage, 1, 100);
+    foreignMap.mapId = snapshot.mapId + 1;
+    foreignMap.instanceId = snapshot.instanceId;
+
+    ConfigureMember(foreignInstance, 66, PartyRole::RangedDamage, 1, 100);
+    foreignInstance.mapId = snapshot.mapId;
+    foreignInstance.instanceId = snapshot.instanceId + 1;
+
+    PartyMemberSnapshot offline, dead, full, contradictory;
+    ConfigureMember(offline, 77, PartyRole::RangedDamage, 1, 100);
+    offline.mapId = snapshot.mapId; offline.instanceId = snapshot.instanceId;
+    offline.online = false;
+    ConfigureMember(dead, 88, PartyRole::RangedDamage, 1, 100);
+    dead.mapId = snapshot.mapId; dead.instanceId = snapshot.instanceId;
+    dead.alive = false;
+    ConfigureMember(full, 99, PartyRole::RangedDamage, 100, 100);
+    full.mapId = snapshot.mapId; full.instanceId = snapshot.instanceId;
+    ConfigureMember(contradictory, 100, PartyRole::RangedDamage, 0, 100);
+    contradictory.mapId = snapshot.mapId; contradictory.instanceId = snapshot.instanceId;
+
+    snapshot.members = {healer, mainTank, ranged, melee, foreignMap,
+                        foreignInstance, offline, dead, full, contradictory};
+
+    PriestHealingTargetSelection target;
+    assert(SelectPriestHealingTarget(snapshot, healer.guid, target));
+    assert(target.targetGuid == mainTank.guid);
+    assert(target.missingHealth == 80);
+    assert(target.deficitBasisPoints == 8000);
+
+    // A lower health fraction beats Main Tank preference.
+    snapshot.members[1].health = 35;
+    assert(SelectPriestHealingTarget(snapshot, healer.guid, target));
+    assert(target.targetGuid == ranged.guid);
+    assert(target.missingHealth == 400);
+
+    // Equal percentages among non-tanks prefer the larger absolute deficit.
+    snapshot.members[1].health = 50;
+    snapshot.members[1].isMainTank = false;
+    snapshot.members[2].health = 20;
+    snapshot.members[2].maxHealth = 100;
+    snapshot.members[2].roleId = static_cast<std::uint8_t>(PartyRole::RangedDamage);
+    snapshot.members[2].isMainTank = false;
+    snapshot.members[3].health = 200;
+    snapshot.members[3].maxHealth = 1000;
+    snapshot.members[3].roleId = static_cast<std::uint8_t>(PartyRole::RangedDamage);
+    snapshot.members[3].isMainTank = false;
+    assert(SelectPriestHealingTarget(snapshot, healer.guid, target));
+    assert(target.targetGuid == melee.guid); // Same ratio, 800 missing beats 80.
+
+    // A final exact tie falls back to stable, lower GUID.
+    snapshot.members[2].health = 100;
+    snapshot.members[2].maxHealth = 500;
+    snapshot.members[3].health = 100;
+    snapshot.members[3].maxHealth = 500;
+    assert(SelectPriestHealingTarget(snapshot, healer.guid, target));
+    assert(target.targetGuid == ranged.guid);
+
+    // Roster order does not change the choice.
+    std::reverse(snapshot.members.begin(), snapshot.members.end());
+    assert(SelectPriestHealingTarget(snapshot, healer.guid, target));
+    assert(target.targetGuid == ranged.guid);
+
+    PriestHealingDecisionSelection decision;
+    // The selected target has 400 missing health; rank 2052 covers it and
+    // remains affordable, while rank 2050 under-heals.
+    assert(SelectPriestHealingDecision(snapshot, healer.guid, decision));
+    assert(decision.IsValid());
+    assert(decision.target.targetGuid == ranged.guid);
+    assert(decision.target.missingHealth == 400);
+    assert(decision.spell.spellId == 2052);
+    assert(decision.spell.manaCost == 55);
+
+    // Without an affordable direct-heal rank, do not return a target-only plan.
+    auto healerIt = std::find_if(
+        snapshot.members.begin(), snapshot.members.end(),
+        [&healer](PartyMemberSnapshot const& member)
+        {
+            return member.guid == healer.guid;
+        });
+    assert(healerIt != snapshot.members.end());
+    healerIt->power = 10;
+    assert(!SelectPriestHealingDecision(snapshot, healer.guid, decision));
+    assert(!decision.IsValid());
+
+    // Duplicate member GUIDs make identity ambiguous and fail closed.
+    healerIt->power = 60;
+    snapshot.members.push_back(snapshot.members[1]);
+    assert(!SelectPriestHealingTarget(snapshot, healer.guid, target));
+    assert(!target.IsValid());
+
+    snapshot.members.pop_back();
+    assert(!SelectPriestHealingTarget(snapshot, 0, target));
+    assert(!target.IsValid());
+
+    // A stale/non-healer actor must never generate a Priest heal decision.
+    healerIt = std::find_if(
+        snapshot.members.begin(), snapshot.members.end(),
+        [&healer](PartyMemberSnapshot const& member)
+        {
+            return member.guid == healer.guid;
+        });
+    assert(healerIt != snapshot.members.end());
+    healerIt->classId = 8;
+    assert(!SelectPriestHealingTarget(snapshot, healer.guid, target));
+    healerIt->classId = 5;
+    healerIt->roleId = static_cast<std::uint8_t>(PartyRole::Tank);
+    assert(!SelectPriestHealingDecision(snapshot, healer.guid, decision));
+}
+
 void TestHealingTriageShadowStrategy() {
     PartySnapshot snapshot; snapshot.epoch = 81;
     PartyMemberSnapshot healer, tank, damage;
@@ -6228,6 +6367,7 @@ int main() {
     TestDirectHealThreatComponentsSplitAcrossAllHostileReferences();
     TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure();
     TestPriestDirectHealSelectionUsesAffordableClosestRank();
+    TestPriestHealingTargetSelectionIsDeterministicAndSnapshotBounded();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();

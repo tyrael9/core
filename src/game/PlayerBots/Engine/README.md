@@ -4,7 +4,7 @@ Independent party-coordinated AI for the pinned Vanilla 1.12.1 / build 5875 vMaN
 
 ## Current status (2026-11-24)
 
-## Latest verified status — F53d trusted-runtime validated
+## Latest verified status — F53e trusted-runtime validated; F53f runtime fixture pending
 
 **Phase 5 is closed; Phase 6 is in progress.** The Engine, asynchronous dispatcher, 17 reusable generic CoreAction adapters and real five-Player simulator are established. Only FollowPartyMemberAction and StopFollowingAction are registered in production NewEngine. The remaining generic adapters, class/role strategies and combat actions are not production gameplay behavior.
 
@@ -18,7 +18,12 @@ Independent party-coordinated AI for the pinned Vanilla 1.12.1 / build 5875 vMaN
 
 **Full trusted runtime — passed.** Push [#45452330798](https://github.com/tyrael9/core/actions/runs/45452330798) on ee0bffabcc0b195d430c43335e2d4d6942cda626 passed pure PartyBotEngine tests, report collector, full Linux ARM64/Vanilla 5875 server and realm build, simulator harness validation and the complete Core-backed simulator through final Runtime PASS. The runtime also verified the shared two-bot trace budget (512 + 513 = 1025, one overflow marker, subsequent detail suppressed), Tank/Healer death-reference cleanup and multi-add recovery. Artifact: [partybot-simulator-ee0bffab](https://github.com/tyrael9/core/actions/runs/45452330798/artifacts/14949022280). Matching PR build [#45452348101](https://github.com/tyrael9/core/actions/runs/45452348101) passed; its runtime step was correctly skipped because PR workflows do not receive fixture secrets.
 
-**Still not production healing:** F53e must close secondary triggered-spell targets and both caster-/target-side proc recipients; F53f must prove whole-action reservation, rollback, terminal, failure and cancellation cleanup. Only then should F54 compose the full Priest Healer loop and consider production registration. PriestDirectHealAction remains unregistered and the whole action remains Unknown.
+**F53f runtime gate — pending trusted push.** A real-Core simulator matrix has been added for successful Priest Heal, interrupted Resurrection and failed Resurrection terminals; it requires exact fan-out release, same-Bot/other-Bot reservation preservation and stale-encounter isolation. PR ARM64, pure tests and harness syntax passed [#45486156644](https://github.com/tyrael9/core/actions/runs/45486156644), while PR runtime is skipped by design.
+
+**F54a — pure baseline triage added; CI pending.** It selects a valid same-shard party Player deterministically and pairs the target with an affordable learned Priest heal rank. Incoming heals, HoTs, absorbs and effective healing are not modeled; no production action is registered.
+
+
+**Still not production healing:** F53e's conservative secondary/proc closure has trusted-runtime evidence, but no nested triggered-heal path is allowlisted. F53f's dedicated real-Core success/interruption/failure reservation fixture and mandatory harness gates are now in the branch; its trusted push runtime is still pending. F54a adds only pure target/rank selection (incoming heals/HoTs/shields and effective healing are not represented yet). PriestDirectHealAction remains unregistered and the whole action remains Unknown.
 
 
 **F50 — trusted-runtime validated (2026-11-22).** F50 establishes the first production NewEngine policy, narrowly scoped to out-of-combat party movement. PartySnapshot now carries the actual Group leader GUID as value-only identity; FollowPartyLeaderTrigger proposes that online/alive same-map leader only while the bot is alive, out of combat, not casting and not already following. ProductionStrategies registers only FollowPartyMemberAction. The real five-Player Group fixture drove PartyBotAI::UpdateAI through snapshot, trigger, candidate, arbitration and CoreAction, then verified the native FollowMovementGenerator targets the real Group leader. F29 also verifies combat veto, zero Legacy entries/dispatches and no Shadow-policy registration.

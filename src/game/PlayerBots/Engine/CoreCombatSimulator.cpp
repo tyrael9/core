@@ -5278,6 +5278,34 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                   healSpell, *healAssistSnapshot)
             : ThreatImpactEstimate();
 
+    bool const f53dHealerHasNoHostileReferences =
+        healer && healer->GetHostileRefManager().getFirst() == nullptr;
+    ThreatImpactEstimate const f53dNoThreatSelfHeal =
+        f53dHealerHasNoHostileReferences && healAssistSnapshot && healSpell
+            ? EstimateDirectHealingThreatComponents(
+                  healer, healer, 1.0f, healSpell, *healAssistSnapshot)
+            : ThreatImpactEstimate();
+    bool const f53dNoThreatAccepted =
+        f53dHealerHasNoHostileReferences &&
+        f53dNoThreatSelfHeal.completeness == ThreatImpactCompleteness::NoThreat &&
+        f53dNoThreatSelfHeal.reason ==
+            "direct_heal_has_no_hostile_references" &&
+        f53dNoThreatSelfHeal.impacts.empty() &&
+        IsThreatImpactEstimateForSnapshot(
+            f53dNoThreatSelfHeal, healAssistSnapshot->epoch);
+    sLog.Out(LOG_BASIC,
+        f53dNoThreatAccepted ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F53d no-hostile-reference direct-heal: noRefs=%u completenessNoThreat=%u impactsEmpty=%u snapshotMatched=%u.",
+        f53dHealerHasNoHostileReferences ? 1u : 0u,
+        f53dNoThreatSelfHeal.completeness ==
+            ThreatImpactCompleteness::NoThreat ? 1u : 0u,
+        f53dNoThreatSelfHeal.impacts.empty() ? 1u : 0u,
+        healAssistSnapshot && IsThreatImpactEstimateForSnapshot(
+            f53dNoThreatSelfHeal, healAssistSnapshot->epoch) ? 1u : 0u);
+    if (f53dNoThreatAccepted)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: a direct self-heal with no live hostile references is represented as an explicit snapshot-matched NoThreat estimate with no impacts.");
+
     bool f53cInspirationSpellValid = false;
     bool f53cInspirationAuraAttached = false;
     bool f53cInspirationAuraProcVetoed = false;

@@ -19,6 +19,26 @@ inline bool HasPotentialHelpfulSpellProc(
         (configuredProcFlags & sideHelpfulProcFlag) != 0;
 }
 
+// SpellScript callbacks can create secondary spells in OnCast, OnHit,
+// OnAfterHit or OnSuccessfulFinish. Until those script-specific effects are
+// audited, any spell with a configured ScriptId is outside the estimator's
+// closed direct-heal threat set.
+inline bool HasUnboundedDirectHealSpellScript(bool hasConfiguredScript)
+{
+    return hasConfiguredScript;
+}
+
+// Spell::HandleAddTargetTriggerAuras scans active caster auras by their
+// individual effect index, not only effect zero. A matching effect can cast a
+// secondary spell against each successful target (or the caster on reflect).
+inline bool HasMatchingAddTargetTriggerAuraEffect(
+    bool hasActiveAuraEffect, bool isAddTargetTrigger,
+    std::uint32_t effectItemType, std::uint32_t healingSpellFamilyFlags)
+{
+    return hasActiveAuraEffect && isAddTargetTrigger &&
+        (effectItemType & healingSpellFamilyFlags) != 0;
+}
+
 // Raw per-reference inputs for the two independent helpful-threat paths in
 // Vanilla Core. The assist path applies the class coefficient and spell threat
 // multiplier before HostileRefManager::threatAssist fans it out. The positive

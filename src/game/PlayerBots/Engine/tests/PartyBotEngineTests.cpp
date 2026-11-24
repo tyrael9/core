@@ -3628,6 +3628,22 @@ void TestDirectHealHelpfulProcRiskClassifier() {
         false, false, kHarmfulSpell, kHelpfulSpellMask));
     assert(!HasPotentialHelpfulSpellProc(
         false, false, kDealHelpfulSpell, kTakeHelpfulSpell));
+
+    // A configured SpellScript can issue nested casts outside the generic
+    // proc-flag path; it is fail-closed until its callback is audited.
+    assert(!HasUnboundedDirectHealSpellScript(false));
+    assert(HasUnboundedDirectHealSpellScript(true));
+
+    // Add-target-trigger auras are checked at their actual active effect
+    // index, including nonzero slots; inactive or nonmatching slots are safe.
+    assert(!HasMatchingAddTargetTriggerAuraEffect(
+        false, true, 1u << 5, 1u << 5));
+    assert(!HasMatchingAddTargetTriggerAuraEffect(
+        true, false, 1u << 5, 1u << 5));
+    assert(!HasMatchingAddTargetTriggerAuraEffect(
+        true, true, 1u << 4, 1u << 5));
+    assert(HasMatchingAddTargetTriggerAuraEffect(
+        true, true, 1u << 5, 1u << 5));
 }
 
 void TestDirectHealThreatComponentsSplitAcrossAllHostileReferences() {

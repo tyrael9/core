@@ -105,14 +105,26 @@ inline bool HasUnboundedDirectHealProcRisk(
                  healingSpell->SpellIconID == 79 &&
                  healingSpell->Category == 56);
 
-            // SpellCanTrigger() handles SPELL_AURA_ADD_TARGET_TRIGGER before
-            // generic proc flags and is attacker-side only.
-            hardcodedHelpfulProc = hardcodedHelpfulProc ||
-                (auraSpell->EffectApplyAuraName[0] ==
-                     SPELL_AURA_ADD_TARGET_TRIGGER &&
-                 auraSpell->SpellFamilyName == healingSpell->SpellFamilyName &&
-                 (auraSpell->EffectItemType[0] &
-                  healingSpell->SpellFamilyFlags) != 0);
+            // Spell::HandleAddTargetTriggerAuras is a separate caster-side
+            // path from Unit::SpellCanTrigger. It scans every active aura
+            // effect index, then may cast a secondary spell for each
+            // successful target. Do not assume effect zero is the only slot.
+            for (std::uint8_t effectIndex = 0;
+                 effectIndex < MAX_EFFECT_INDEX; ++effectIndex)
+            {
+                Aura const* activeAura =
+                    holder->GetAuraByEffectIndex(SpellEffectIndex(effectIndex));
+                if (HasMatchingAddTargetTriggerAuraEffect(
+                        activeAura != nullptr,
+                        auraSpell->EffectApplyAuraName[effectIndex] ==
+                            SPELL_AURA_ADD_TARGET_TRIGGER,
+                        auraSpell->EffectItemType[effectIndex],
+                        healingSpell->SpellFamilyFlags))
+                {
+                    hardcodedHelpfulProc = true;
+                    break;
+                }
+            }
         }
 
         SpellProcEventEntry const* procEvent =
@@ -179,6 +191,14 @@ inline ThreatImpactEstimate EstimateDirectHealingThreatComponents(
 
     if (spellInfo->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT)) {
         estimate.reason = "direct_heal_assist_suppressed_by_core_spell_attribute";
+        return estimate;
+    }
+
+    // SpellScript is independent of AuraScript and can issue arbitrary nested
+    // casts from successful cast/hit/finish callbacks. Until the exact script
+    // attached to this spell is audited, its threat recipients are unknown.
+    if (HasUnboundedDirectHealSpellScript(spellInfo->ScriptId != 0)) {
+        estimate.reason = "direct_heal_spell_script_closure_unbounded";
         return estimate;
     }
 

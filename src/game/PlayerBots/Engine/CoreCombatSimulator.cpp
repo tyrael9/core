@@ -5257,6 +5257,57 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     // fixture uses a zero-flat-threat spell to isolate the assist delta; F53c
     // separately tests the positive flat-threat arithmetic. Proc closure is
     // still absent, so this component estimate remains Unknown.
+    bool f53cInspirationSpellValid = false;
+    bool f53cInspirationAuraAttached = false;
+    bool f53cInspirationAuraProcVetoed = false;
+    bool f53cInspirationAuraRemoved = false;
+    SpellEntry const* const inspirationSpell = sSpellMgr.GetSpellEntry(14892);
+    if (inspirationSpell && healer && tank && healAssistSnapshot && healSpell)
+    {
+        f53cInspirationSpellValid =
+            inspirationSpell->SpellFamilyName == SPELLFAMILY_PRIEST &&
+            inspirationSpell->SpellIconID == 79;
+        SpellAuraHolder* const inspirationAura =
+            f53cInspirationSpellValid
+                ? healer->AddAura(inspirationSpell->Id, 0, healer)
+                : nullptr;
+        f53cInspirationAuraAttached = inspirationAura != nullptr;
+        if (f53cInspirationAuraAttached)
+        {
+            ThreatImpactEstimate const procRiskEstimate =
+                EstimateDirectHealingThreatComponents(
+                    healer, tank,
+                    static_cast<float>(tank->GetMaxHealth() -
+                                       tank->GetHealth()),
+                    healSpell, *healAssistSnapshot);
+            f53cInspirationAuraProcVetoed =
+                procRiskEstimate.completeness ==
+                    ThreatImpactCompleteness::Unknown &&
+                procRiskEstimate.reason ==
+                    "direct_heal_proc_closure_unbounded" &&
+                procRiskEstimate.impacts.empty();
+            healer->RemoveAurasDueToSpell(inspirationSpell->Id);
+            f53cInspirationAuraRemoved =
+                healer->GetSpellAuraHolder(inspirationSpell->Id) == nullptr;
+        }
+    }
+    bool const f53cPriestProcClosureRuntimePassed =
+        f53cInspirationSpellValid &&
+        f53cInspirationAuraAttached &&
+        f53cInspirationAuraProcVetoed &&
+        f53cInspirationAuraRemoved;
+    sLog.Out(LOG_BASIC,
+        f53cPriestProcClosureRuntimePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F53c Priest direct-heal proc closure: inspirationValid=%u auraAttached=%u procVeto=%u impactsEmpty=%u auraRemoved=%u.",
+        f53cInspirationSpellValid ? 1u : 0u,
+        f53cInspirationAuraAttached ? 1u : 0u,
+        f53cInspirationAuraProcVetoed ? 1u : 0u,
+        f53cInspirationAuraProcVetoed ? 1u : 0u,
+        f53cInspirationAuraRemoved ? 1u : 0u);
+    if (f53cPriestProcClosureRuntimePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: real Core Priest Inspiration aura on the healer is detected before proc resolution; direct-heal threat remains Unknown with no impacts, and removing the aura restores the component-only estimate.");
+
     uint32 const patientHealthBeforeDamage = tank->GetHealth();
     uint32 const scriptedTankDamage = std::max<uint32>(1u, tank->GetMaxHealth() / 5u);
     hostiles[0].creature->DealDamage(

@@ -567,6 +567,18 @@ for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrel
     fi
 done
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C6 Core interrupted the departing Bot's pending resurrection cast before source Map::Remove;" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52g-C6 owner map-leave Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f52g_c6_state_line="$(grep -F '[PartyBotSimulator] F52g-C6 resurrection caster left source Map during group resurrection:' "$LOG_FILE" | tail -n 1)"
+for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrelatedReservation=1 interruptedTerminal=1 auxiliaryPreservedUntilLeave=1 mapLeaveProcessed=1 ownerRowsReleased=1 unrelatedPreserved=1 playerRestored=1 noOffer=1; do
+    if [[ "$f52g_c6_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F52g-C6 owner-map-leave assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
 if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

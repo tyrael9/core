@@ -5,6 +5,7 @@
 #include "HostileRefManager.h"
 #include "Player.h"
 #include "PlayerBots/Engine/PartySnapshot.h"
+#include "PlayerBots/Engine/DirectHealThreatComponents.h"
 #include "PlayerBots/Engine/ThreatImpact.h"
 #include "SpellMgr.h"
 #include "ThreatManager.h"
@@ -169,41 +170,9 @@ inline ThreatImpactEstimate EstimateDirectHealingAssistComponent(
         return estimate;
     }
 
-    float const threatPerReference = static_cast<float>(
-        totalAssistThreat / static_cast<double>(hostileGuids.size()));
-    if (!std::isfinite(threatPerReference) || threatPerReference < 0.0f) {
-        estimate.reason = "direct_heal_assist_component_invalid_fanout_value";
-        return estimate;
-    }
-
-    // ThreatManager::addThreat calls this with pVictim == realCaster and the
-    // same spell/school values. CC suppression is deliberately not subtracted:
-    // omitting that reduction keeps this a safe upper bound.
-    for (Guid hostileGuid : hostileGuids) {
-        float const threatPoints = ThreatCalcHelper::CalcThreat(
-            realCaster, threatPerReference, false,
-            spellInfo->GetSpellSchoolMask(), spellInfo);
-        if (!std::isfinite(threatPoints) || threatPoints < 0.0f) {
-            estimate.reason = "direct_heal_assist_component_invalid_core_threat";
-            estimate.impacts.clear();
-            return estimate;
-        }
-
-        ThreatImpactEntry impact;
-        impact.threatOwnerGuid = casterGuid;
-        impact.hostileGuid = hostileGuid;
-        impact.threatPoints = threatPoints;
-        impact.source = ThreatImpactSource::DirectHealAssist;
-        impact.bound = ThreatImpactBound::UpperBound;
-        estimate.impacts.push_back(impact);
-    }
-
-    // Spell::HandleThreatSpells adds an additional flat-threat component for
-    // positive spells. For each successful target it uses the same helpful
-    // HostileRefManager fan-out, then ThreatManager::addThreat applies the
-    // caster's spell-threat modifiers. This function covers only the supplied
-    // healed target; multi-target spell recipients must be enumerated by the
-    // caller and the enclosing action remains Unknown.
+    // Spell::HandleThreatSpells adds a separate positive flat-threat path.
+    // It uses the same HostileRefManager fan-out, but does not apply the heal's
+    // GetSpellThreatMultiplier; ThreatCalcHelper still applies caster modifiers.
     SpellThreatEntry const* flatThreatEntry =
         sSpellMgr.GetSpellThreatEntry(spellInfo->Id);
     std::uint8_t effectMask = 0;
@@ -221,20 +190,46 @@ inline ThreatImpactEstimate EstimateDirectHealingAssistComponent(
             positiveForFlatThreat = false;
     }
 
+    float positiveFlatSpellThreat = 0.0f;
     if (flatThreatEntry && flatThreatEntry->threat &&
         positiveForFlatThreat && effectMask &&
-        flatThreatEntry->CanCauseThreatOnMask(effectMask)) {
-        float const flatThreatPerReference = static_cast<float>(
-            flatThreatEntry->threat / static_cast<double>(hostileGuids.size()));
-        if (!std::isfinite(flatThreatPerReference) || flatThreatPerReference < 0.0f) {
-            estimate.reason = "direct_heal_assist_component_invalid_flat_spell_threat";
+        flatThreatEntry->CanCauseThreatOnMask(effectMask))
+        positiveFlatSpellThreat = flatThreatEntry->threat;
+
+    DirectHealThreatComponents components;
+    if (!CalculateDirectHealThreatComponents(
+            maxEffectiveHealing, classThreatModifier, spellThreatMultiplier,
+            positiveFlatSpellThreat, hostileGuids.size(), components)) {
+        estimate.reason = "direct_heal_assist_component_invalid_fanout_values";
+        return estimate;
+    }
+
+    // ThreatManager::addThreat calls this with pVictim == realCaster and the
+    // same spell/school values. CC suppression is deliberately not subtracted:
+    // omitting that reduction keeps this a safe upper bound.
+    for (Guid hostileGuid : hostileGuids) {
+        float const threatPoints = ThreatCalcHelper::CalcThreat(
+            realCaster, components.assistThreatPerReference, false,
+            spellInfo->GetSpellSchoolMask(), spellInfo);
+        if (!std::isfinite(threatPoints) || threatPoints < 0.0f) {
+            estimate.reason = "direct_heal_assist_component_invalid_core_threat";
             estimate.impacts.clear();
             return estimate;
         }
 
+        ThreatImpactEntry impact;
+        impact.threatOwnerGuid = casterGuid;
+        impact.hostileGuid = hostileGuid;
+        impact.threatPoints = threatPoints;
+        impact.source = ThreatImpactSource::DirectHealAssist;
+        impact.bound = ThreatImpactBound::UpperBound;
+        estimate.impacts.push_back(impact);
+    }
+
+    if (components.flatThreatPerReference > 0.0f) {
         for (Guid hostileGuid : hostileGuids) {
             float const threatPoints = ThreatCalcHelper::CalcThreat(
-                realCaster, flatThreatPerReference, false,
+                realCaster, components.flatThreatPerReference, false,
                 spellInfo->GetSpellSchoolMask(), spellInfo);
             if (!std::isfinite(threatPoints) || threatPoints < 0.0f) {
                 estimate.reason = "direct_heal_assist_component_invalid_flat_threat_modifier";

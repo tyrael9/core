@@ -531,6 +531,18 @@ for expected in listener=1 selected=1 castStarted=1 failedTerminal=1 reservation
     fi
 done
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C3 expired a pending real Core resurrection reservation before its late Interrupted terminal;" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52g-C3 reservation-expiry/late-terminal Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f52g_c3_state_line="$(grep -F '[PartyBotSimulator] F52g-C3 expired pending group resurrection:' "$LOG_FILE" | tail -n 1)"
+for expected in listener=1 selected=1 castStarted=1 reservationExpired=1 reservationReclaimed=1 lateInterruptedTerminal=1 successorPreserved=1 noOffer=1; do
+    if [[ "$f52g_c3_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F52g-C3 expiry-race assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
 if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

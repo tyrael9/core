@@ -10082,6 +10082,15 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52gC2ReservationReleased = false;
     bool f52gC2NoOfferCreated = false;
     ActionId f52gC2ActionId = 0;
+    bool f52gC3ListenerAdded = false;
+    bool f52gC3ActionSelected = false;
+    bool f52gC3CastStarted = false;
+    bool f52gC3ReservationExpired = false;
+    bool f52gC3ReservationReclaimed = false;
+    bool f52gC3LateTerminalMatched = false;
+    bool f52gC3SuccessorReservationPreserved = false;
+    bool f52gC3NoOfferCreated = false;
+    ActionId f52gC3ActionId = 0;
     if (f52gSelfResurrectionPassed && botAIs.size() == 4 && players.size() == 5)
     {
         PartyBotAI& resurrectionAI = *botAIs[0];
@@ -10581,6 +10590,126 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                     !corpseTarget->IsRessurectRequested();
             }
 
+            // F52g-C3: a real Core resurrection cast is deliberately left
+            // pending while its bounded reservation expires. A second owner
+            // then claims the same corpse; the old cast's late terminal must
+            // not release the successor owner's reservation.
+            std::shared_ptr<CaptureCoreSpellTerminalListener> lateTerminal(
+                new CaptureCoreSpellTerminalListener());
+            f52gC3ListenerAdded =
+                resurrectionAI.m_partyBotEngine.AddCoreSpellTerminalListener(lateTerminal);
+            caster->SetPower(POWER_MANA, caster->GetMaxPower(POWER_MANA));
+            corpseTarget->SetHealth(0);
+            corpseTarget->SetDeathState(JUST_DIED);
+            corpseTarget->KillPlayer();
+            PartySnapshot expirySnapshot;
+            DecisionReport expiryReport;
+            std::size_t expiryIndex = 0;
+            bool const expirySelected = f52gC3ListenerAdded &&
+                corpseTarget->GetDeathState() == CORPSE &&
+                captureGroupResurrectionDecision(
+                    corpseTarget, expirySnapshot, expiryReport, expiryIndex);
+            if (expirySelected)
+            {
+                f52gC3ActionSelected = true;
+                PartyMemberSnapshot const* const expiryBotSnapshot =
+                    expirySnapshot.FindMember(casterGuid);
+                DecisionContext expiryContext(
+                    expirySnapshot, *expiryBotSnapshot, *wipeCoordinator,
+                    WorldTimer::getMSTime(), nullptr, nullptr,
+                    &resurrectionAI, nullptr, &resurrectionAI);
+                resurrectionAI.m_partyBotEngine.ExecuteSelected(
+                    expiryContext, expiryReport);
+                CandidateEvaluation const& evaluation =
+                    expiryReport.candidates[expiryIndex];
+                f52gC3ActionId = evaluation.actionId;
+                f52gC3CastStarted =
+                    evaluation.status == CandidateStatus::Executed &&
+                    evaluation.actionResult == ActionResult::Success &&
+                    f52gC3ActionId != 0 &&
+                    caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr;
+            }
+
+            uint32 reservationDeadline = 0;
+            if (f52gC3CastStarted)
+            {
+                auto const pendingReservation = std::find_if(
+                    wipeCoordinator->GetReservations().begin(),
+                    wipeCoordinator->GetReservations().end(),
+                    [casterGuid, corpseTargetGuid](Reservation const& row)
+                    {
+                        return row.type == ReservationType::Resurrection &&
+                            row.targetGuid == corpseTargetGuid &&
+                            row.ownerGuid == casterGuid;
+                    });
+                if (pendingReservation != wipeCoordinator->GetReservations().end())
+                    reservationDeadline = pendingReservation->expiresAtMs;
+                f52gC3CastStarted = reservationDeadline != 0;
+            }
+
+            if (f52gC3CastStarted)
+            {
+                // Advance only the coordinator's monotonic reservation clock;
+                // do not tick the original Core spell, so no terminal is
+                // delivered before the missing-terminal recovery is exercised.
+                wipeCoordinator->PruneExpired(reservationDeadline);
+                f52gC3ReservationExpired = std::none_of(
+                    wipeCoordinator->GetReservations().begin(),
+                    wipeCoordinator->GetReservations().end(),
+                    [casterGuid, corpseTargetGuid](Reservation const& row)
+                    {
+                        return row.type == ReservationType::Resurrection &&
+                            row.targetGuid == corpseTargetGuid &&
+                            row.ownerGuid == casterGuid;
+                    });
+
+                Guid const competingOwnerGuid =
+                    players[4]->GetObjectGuid().GetRawValue();
+                Reservation successorReservation;
+                successorReservation.type = ReservationType::Resurrection;
+                successorReservation.targetGuid = corpseTargetGuid;
+                successorReservation.ownerGuid = competingOwnerGuid;
+                successorReservation.spellId = f52gBSpellId;
+                successorReservation.expiresAtMs = reservationDeadline + 60000u;
+                f52gC3ReservationReclaimed = f52gC3ReservationExpired &&
+                    competingOwnerGuid && competingOwnerGuid != casterGuid &&
+                    wipeCoordinator->TryReserve(
+                        successorReservation, reservationDeadline);
+            }
+
+            if (f52gC3ReservationReclaimed)
+            {
+                // Core now completes the old cast as Interrupted. Its terminal
+                // callback attempts exact (type,target,old owner) cleanup only.
+                caster->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+                f52gC3LateTerminalMatched =
+                    lateTerminal->events.size() == 1 &&
+                    lateTerminal->events[0].actionId == f52gC3ActionId &&
+                    lateTerminal->events[0].targetGuid == corpseTargetGuid &&
+                    lateTerminal->events[0].spellId == f52gBSpellId &&
+                    lateTerminal->events[0].status ==
+                        CoreSpellTerminalStatus::Interrupted &&
+                    caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+                Guid const competingOwnerGuid =
+                    players[4]->GetObjectGuid().GetRawValue();
+                f52gC3SuccessorReservationPreserved = f52gC3LateTerminalMatched &&
+                    std::any_of(
+                        wipeCoordinator->GetReservations().begin(),
+                        wipeCoordinator->GetReservations().end(),
+                        [competingOwnerGuid, corpseTargetGuid](Reservation const& row)
+                        {
+                            return row.type == ReservationType::Resurrection &&
+                                row.targetGuid == corpseTargetGuid &&
+                                row.ownerGuid == competingOwnerGuid &&
+                                row.spellId == f52gBSpellId;
+                        });
+                f52gC3NoOfferCreated = f52gC3LateTerminalMatched &&
+                    !corpseTarget->IsRessurectRequested();
+                wipeCoordinator->ReleaseReservation(
+                    ReservationType::Resurrection, corpseTargetGuid,
+                    competingOwnerGuid);
+            }
+
             if (!corpseTarget->IsAlive())
             {
                 corpseTarget->ResurrectPlayer(0.5f, false);
@@ -10596,7 +10725,12 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             f52gC2ListenerAdded && f52gC2ActionSelected && f52gC2CastStarted &&
             f52gC2FailedTerminalMatched && f52gC2ReservationReleased &&
             f52gC2NoOfferCreated;
-        f52gCPassed = f52gC1Passed && f52gC2Passed;
+        bool const f52gC3Passed =
+            f52gC3ListenerAdded && f52gC3ActionSelected && f52gC3CastStarted &&
+            f52gC3ReservationExpired && f52gC3ReservationReclaimed &&
+            f52gC3LateTerminalMatched && f52gC3SuccessorReservationPreserved &&
+            f52gC3NoOfferCreated;
+        f52gCPassed = f52gC1Passed && f52gC2Passed && f52gC3Passed;
         sLog.Out(LOG_BASIC, f52gC1Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
             "[PartyBotSimulator] F52g-C1 interrupted group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu interruptedTerminal=%u reservationReleased=%u noOffer=%u unrelatedReservationPreserved=%u.",
             f52gCListenerAdded ? 1u : 0u, f52gCActionSelected ? 1u : 0u,
@@ -10620,6 +10754,19 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         if (f52gC2Passed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F52g-C2 depleted mana after a real Core resurrection cast began; Core CheckPower finished the spell as Failed, emitted the matching Engine terminal, released its reservation and created no resurrection offer.");
+        sLog.Out(LOG_BASIC, f52gC3Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F52g-C3 expired pending group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu reservationExpired=%u reservationReclaimed=%u lateInterruptedTerminal=%u successorPreserved=%u noOffer=%u.",
+            f52gC3ListenerAdded ? 1u : 0u, f52gC3ActionSelected ? 1u : 0u,
+            f52gC3CastStarted ? 1u : 0u,
+            static_cast<unsigned long long>(f52gC3ActionId),
+            f52gC3ReservationExpired ? 1u : 0u,
+            f52gC3ReservationReclaimed ? 1u : 0u,
+            f52gC3LateTerminalMatched ? 1u : 0u,
+            f52gC3SuccessorReservationPreserved ? 1u : 0u,
+            f52gC3NoOfferCreated ? 1u : 0u);
+        if (f52gC3Passed)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F52g-C3 expired a pending real Core resurrection reservation before its late Interrupted terminal; a competing owner reclaimed the corpse and the old terminal preserved that successor reservation without creating an offer.");
         f52gBNewEngineOnly =
             resurrectionAI.m_newEngineStrategiesRegistered &&
             !resurrectionAI.m_engineShadowStrategiesRegistered &&

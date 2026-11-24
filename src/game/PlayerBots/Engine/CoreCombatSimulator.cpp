@@ -10141,6 +10141,8 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52gC7NoOfferCreated = false;
     ActionId f52gC7ActionId = 0;
     bool f52gC8ListenerAdded = false;
+    bool f52gC8AuxiliaryReservationCreated = false;
+    bool f52gC8UnrelatedReservationCreated = false;
     bool f52gC8ActionSelected = false;
     bool f52gC8CastStarted = false;
     bool f52gC8DestinationMapCreated = false;

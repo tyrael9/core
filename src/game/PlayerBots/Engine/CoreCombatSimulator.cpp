@@ -11609,7 +11609,10 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
 
             bool const f52gC8Passed =
                 f52gC8ListenerAdded && f52gC8ActionSelected && f52gC8CastStarted &&
-                f52gC8DestinationMapCreated && f52gC8InterruptedTerminalMatched &&
+                f52gC8DestinationMapCreated &&
+                f52gC8AuxiliaryReservationCreated &&
+                f52gC8UnrelatedReservationCreated &&
+                f52gC8InterruptedTerminalMatched &&
                 f52gC8AuxiliaryPreservedUntilMapLeave && f52gC8MapLeaveProcessed &&
                 f52gC8OwnerReservationsReleased &&
                 f52gC8UnrelatedReservationPreserved && f52gC8OldShardPreserved &&
@@ -11619,11 +11622,13 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 f52gC8SourceCoordinatorReacquired && f52gC8DestinationMapCleaned &&
                 f52gC8NoOfferCreated && f52gC8NewEngineOnly;
             sLog.Out(LOG_BASIC, f52gC8Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-                "[PartyBotSimulator] F52g-C8 resurrection caster transferred to another Map during group resurrection: listener=%u selected=%u castStarted=%u destinationMapCreated=%u interruptedTerminal=%u auxiliaryPreservedUntilMapLeave=%u mapLeaveProcessed=%u ownerRowsReleased=%u unrelatedPreserved=%u oldShardPreserved=%u destinationEntered=%u destinationCoordinator=%u destinationSnapshot=%u returnedToSource=%u sourceCoordinatorReacquired=%u destinationMapCleaned=%u noOffer=%u newEngineOnly=%u.",
+                "[PartyBotSimulator] F52g-C8 resurrection caster transferred to another Map during group resurrection: listener=%u selected=%u castStarted=%u destinationMapCreated=%u auxiliaryReservation=%u unrelatedReservation=%u interruptedTerminal=%u auxiliaryPreservedUntilMapLeave=%u mapLeaveProcessed=%u ownerRowsReleased=%u unrelatedPreserved=%u oldShardPreserved=%u destinationEntered=%u destinationCoordinator=%u destinationSnapshot=%u returnedToSource=%u sourceCoordinatorReacquired=%u destinationMapCleaned=%u noOffer=%u newEngineOnly=%u.",
                 f52gC8ListenerAdded ? 1u : 0u,
                 f52gC8ActionSelected ? 1u : 0u,
                 f52gC8CastStarted ? 1u : 0u,
                 f52gC8DestinationMapCreated ? 1u : 0u,
+                f52gC8AuxiliaryReservationCreated ? 1u : 0u,
+                f52gC8UnrelatedReservationCreated ? 1u : 0u,
                 f52gC8InterruptedTerminalMatched ? 1u : 0u,
                 f52gC8AuxiliaryPreservedUntilMapLeave ? 1u : 0u,
                 f52gC8MapLeaveProcessed ? 1u : 0u,

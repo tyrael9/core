@@ -5391,11 +5391,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         if (f53cFlatThreatDbTouched)
         {
             bool restoreSuccess = WorldDatabase.PExecute(
+                DbExecMode::MustBeSync,
                 "DELETE FROM `spell_threat` WHERE `entry` IN (%u, %u)",
                 healFirstRankSpellId, healSpell->Id);
             for (SavedSpellThreatRow const& row : savedHealSpellThreatRows)
             {
                 bool const rowRestored = WorldDatabase.PExecute(
+                    DbExecMode::MustBeSync,
                     "INSERT INTO `spell_threat` "
                     "(`entry`, `threat`, `multiplier`, `inverse_effect_mask`, `build_min`, `build_max`) "
                     "VALUES (%u, %u, %.6f, %u, %u, %u)",
@@ -5404,10 +5406,37 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 restoreSuccess = rowRestored && restoreSuccess;
             }
             sSpellMgr.LoadSpellThreats();
+            uint16 expectedRestoredThreat = 0;
+            bool expectedRestoredEntry = false;
+            // A custom cast-rank row takes precedence; otherwise the rank
+            // helper inherits the first-rank row when rebuilding the map.
+            for (SavedSpellThreatRow const& row : savedHealSpellThreatRows)
+            {
+                if (row.entry == healSpell->Id)
+                {
+                    expectedRestoredThreat = row.threat;
+                    expectedRestoredEntry = true;
+                    break;
+                }
+            }
+            if (!expectedRestoredEntry)
+            {
+                for (SavedSpellThreatRow const& row : savedHealSpellThreatRows)
+                {
+                    if (row.entry == healFirstRankSpellId)
+                    {
+                        expectedRestoredThreat = row.threat;
+                        expectedRestoredEntry = true;
+                        break;
+                    }
+                }
+            }
             SpellThreatEntry const* restoredEntry =
                 sSpellMgr.GetSpellThreatEntry(healSpell->Id);
             f53cFlatThreatDbRestored = restoreSuccess &&
-                (!restoredEntry || restoredEntry->threat == 0);
+                (restoredEntry
+                    ? restoredEntry->threat == expectedRestoredThreat
+                    : !expectedRestoredEntry || expectedRestoredThreat == 0);
             f53cFlatThreatDbTouched = false;
         }
         delete marker;
@@ -5418,12 +5447,14 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     if (healFirstRankSpellId && healSpell)
     {
         bool const rowsDeleted = WorldDatabase.PExecute(
+            DbExecMode::MustBeSync,
             "DELETE FROM `spell_threat` WHERE `entry` IN (%u, %u)",
             healFirstRankSpellId, healSpell->Id);
         if (rowsDeleted)
         {
             f53cFlatThreatDbTouched = true;
             bool const rowInserted = WorldDatabase.PExecute(
+                DbExecMode::MustBeSync,
                 "INSERT INTO `spell_threat` "
                 "(`entry`, `threat`, `multiplier`, `inverse_effect_mask`, `build_min`, `build_max`) "
                 "VALUES (%u, %u, 1.0, 0, 0, %u)",

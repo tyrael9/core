@@ -4338,7 +4338,7 @@ void TestPriestHealingTargetSelectionAccountsForOtherBotHealReservations()
     snapshot.instanceId = 9;
     snapshot.epoch = 85;
     PartyMemberSnapshot healer, tank, ranged;
-    ConfigureMember(healer, 11, PartyRole::Healer, 90, 100);
+    ConfigureMember(healer, 11, PartyRole::Healer, 100, 100);
     healer.classId = 5;
     healer.isPlayerBot = true;
     healer.power = 100;

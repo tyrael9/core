@@ -10091,6 +10091,15 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52gC3SuccessorReservationPreserved = false;
     bool f52gC3NoOfferCreated = false;
     ActionId f52gC3ActionId = 0;
+    bool f52gC4ListenerAdded = false;
+    bool f52gC4ActionSelected = false;
+    bool f52gC4CastStarted = false;
+    bool f52gC4ReservationCreated = false;
+    bool f52gC4TargetReleased = false;
+    bool f52gC4InterruptedTerminalMatched = false;
+    bool f52gC4ReservationReleased = false;
+    bool f52gC4NoOfferCreated = false;
+    ActionId f52gC4ActionId = 0;
     if (f52gSelfResurrectionPassed && botAIs.size() == 4 && players.size() == 5)
     {
         PartyBotAI& resurrectionAI = *botAIs[0];
@@ -10716,6 +10725,96 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 corpseTarget->SpawnCorpseBones();
                 corpseTarget->ClearResurrectRequestData();
             }
+
+            // F52g-C4: release the target's spirit while the caster has a
+            // real pending resurrection spell. Core Player::BuildPlayerRepop
+            // interrupts incoming resurrection casts before changing CORPSE
+            // to DEAD; the resulting terminal must release the exact owner row.
+            std::shared_ptr<CaptureCoreSpellTerminalListener> targetReleaseTerminal(
+                new CaptureCoreSpellTerminalListener());
+            f52gC4ListenerAdded =
+                resurrectionAI.m_partyBotEngine.AddCoreSpellTerminalListener(
+                    targetReleaseTerminal);
+            caster->SetPower(POWER_MANA, caster->GetMaxPower(POWER_MANA));
+            corpseTarget->SetHealth(0);
+            corpseTarget->SetDeathState(JUST_DIED);
+            corpseTarget->KillPlayer();
+            PartySnapshot targetReleaseSnapshot;
+            DecisionReport targetReleaseReport;
+            std::size_t targetReleaseIndex = 0;
+            bool const targetReleaseSelected = f52gC4ListenerAdded &&
+                corpseTarget->GetDeathState() == CORPSE &&
+                captureGroupResurrectionDecision(
+                    corpseTarget, targetReleaseSnapshot,
+                    targetReleaseReport, targetReleaseIndex);
+            if (targetReleaseSelected)
+            {
+                f52gC4ActionSelected = true;
+                PartyMemberSnapshot const* const targetReleaseBotSnapshot =
+                    targetReleaseSnapshot.FindMember(casterGuid);
+                DecisionContext targetReleaseContext(
+                    targetReleaseSnapshot, *targetReleaseBotSnapshot,
+                    *wipeCoordinator, WorldTimer::getMSTime(),
+                    nullptr, nullptr, &resurrectionAI, nullptr, &resurrectionAI);
+                resurrectionAI.m_partyBotEngine.ExecuteSelected(
+                    targetReleaseContext, targetReleaseReport);
+                CandidateEvaluation const& evaluation =
+                    targetReleaseReport.candidates[targetReleaseIndex];
+                f52gC4ActionId = evaluation.actionId;
+                f52gC4CastStarted =
+                    evaluation.status == CandidateStatus::Executed &&
+                    evaluation.actionResult == ActionResult::Success &&
+                    f52gC4ActionId != 0 &&
+                    caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) != nullptr;
+            }
+
+            f52gC4ReservationCreated = f52gC4CastStarted &&
+                std::any_of(
+                    wipeCoordinator->GetReservations().begin(),
+                    wipeCoordinator->GetReservations().end(),
+                    [casterGuid, corpseTargetGuid](Reservation const& row)
+                    {
+                        return row.type == ReservationType::Resurrection &&
+                            row.targetGuid == corpseTargetGuid &&
+                            row.ownerGuid == casterGuid;
+                    });
+            if (f52gC4ReservationCreated)
+            {
+                // This is Core's real recipient-side release-spirit path. It
+                // discovers and interrupts the incoming resurrection cast
+                // through Unit::InterruptSpellsCastedOnMe.
+                corpseTarget->BuildPlayerRepop();
+                f52gC4TargetReleased =
+                    corpseTarget->GetDeathState() == DEAD &&
+                    !corpseTarget->IsAlive() && corpseTarget->GetCorpse() != nullptr;
+                f52gC4InterruptedTerminalMatched =
+                    targetReleaseTerminal->events.size() == 1 &&
+                    targetReleaseTerminal->events[0].actionId == f52gC4ActionId &&
+                    targetReleaseTerminal->events[0].targetGuid == corpseTargetGuid &&
+                    targetReleaseTerminal->events[0].spellId == f52gBSpellId &&
+                    targetReleaseTerminal->events[0].status ==
+                        CoreSpellTerminalStatus::Interrupted &&
+                    caster->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+                f52gC4ReservationReleased = f52gC4InterruptedTerminalMatched &&
+                    std::none_of(
+                        wipeCoordinator->GetReservations().begin(),
+                        wipeCoordinator->GetReservations().end(),
+                        [casterGuid, corpseTargetGuid](Reservation const& row)
+                        {
+                            return row.type == ReservationType::Resurrection &&
+                                row.targetGuid == corpseTargetGuid &&
+                                row.ownerGuid == casterGuid;
+                        });
+                f52gC4NoOfferCreated = f52gC4InterruptedTerminalMatched &&
+                    !corpseTarget->IsRessurectRequested();
+            }
+
+            if (!corpseTarget->IsAlive())
+            {
+                corpseTarget->ResurrectPlayer(0.5f, false);
+                corpseTarget->SpawnCorpseBones();
+                corpseTarget->ClearResurrectRequestData();
+            }
         }
         bool const f52gC1Passed =
             f52gCListenerAdded && f52gCActionSelected && f52gCCastStarted &&
@@ -10730,7 +10829,13 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             f52gC3ReservationExpired && f52gC3ReservationReclaimed &&
             f52gC3LateTerminalMatched && f52gC3SuccessorReservationPreserved &&
             f52gC3NoOfferCreated;
-        f52gCPassed = f52gC1Passed && f52gC2Passed && f52gC3Passed;
+        bool const f52gC4Passed =
+            f52gC4ListenerAdded && f52gC4ActionSelected && f52gC4CastStarted &&
+            f52gC4ReservationCreated && f52gC4TargetReleased &&
+            f52gC4InterruptedTerminalMatched && f52gC4ReservationReleased &&
+            f52gC4NoOfferCreated;
+        f52gCPassed = f52gC1Passed && f52gC2Passed &&
+            f52gC3Passed && f52gC4Passed;
         sLog.Out(LOG_BASIC, f52gC1Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
             "[PartyBotSimulator] F52g-C1 interrupted group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu interruptedTerminal=%u reservationReleased=%u noOffer=%u unrelatedReservationPreserved=%u.",
             f52gCListenerAdded ? 1u : 0u, f52gCActionSelected ? 1u : 0u,
@@ -10767,6 +10872,19 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         if (f52gC3Passed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F52g-C3 expired a pending real Core resurrection reservation before its late Interrupted terminal; a competing owner reclaimed the corpse and the old terminal preserved that successor reservation without creating an offer.");
+        sLog.Out(LOG_BASIC, f52gC4Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F52g-C4 target released spirit during group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu reservationCreated=%u targetReleased=%u interruptedTerminal=%u reservationReleased=%u noOffer=%u.",
+            f52gC4ListenerAdded ? 1u : 0u, f52gC4ActionSelected ? 1u : 0u,
+            f52gC4CastStarted ? 1u : 0u,
+            static_cast<unsigned long long>(f52gC4ActionId),
+            f52gC4ReservationCreated ? 1u : 0u,
+            f52gC4TargetReleased ? 1u : 0u,
+            f52gC4InterruptedTerminalMatched ? 1u : 0u,
+            f52gC4ReservationReleased ? 1u : 0u,
+            f52gC4NoOfferCreated ? 1u : 0u);
+        if (f52gC4Passed)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F52g-C4 target Player::BuildPlayerRepop interrupted a real incoming Core resurrection cast, emitted the matching Engine terminal, released its exact reservation and created no resurrection offer.");
         f52gBNewEngineOnly =
             resurrectionAI.m_newEngineStrategiesRegistered &&
             !resurrectionAI.m_engineShadowStrategiesRegistered &&

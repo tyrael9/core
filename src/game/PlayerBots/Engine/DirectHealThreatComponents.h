@@ -3,10 +3,22 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 
 namespace PartyBotEngine
 {
+// Proc callbacks may run for either side of a direct heal. The Core caller
+// supplies the side-specific helpful-spell proc flag; scripted Aura callbacks
+// and audited hard-coded proc cases remain unsafe even without DB proc flags.
+inline bool HasPotentialHelpfulSpellProc(
+    bool hasAuraScript, bool hasHardcodedProc,
+    std::uint32_t configuredProcFlags, std::uint32_t sideHelpfulProcFlag)
+{
+    return hasAuraScript || hasHardcodedProc ||
+        (configuredProcFlags & sideHelpfulProcFlag) != 0;
+}
+
 // Raw per-reference inputs for the two independent helpful-threat paths in
 // Vanilla Core. The assist path applies the class coefficient and spell threat
 // multiplier before HostileRefManager::threatAssist fans it out. The positive

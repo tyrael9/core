@@ -248,7 +248,11 @@ inline ThreatImpactEstimate EstimateDirectHealingThreatComponents(
     }
 
     if (hostileGuids.empty()) {
-        estimate.reason = "direct_heal_assist_component_has_no_hostile_references";
+        // Both direct healing assist and positive spell_threat are routed
+        // through the healed Unit's HostileRefManager. With no references,
+        // Core has no recipient for either path. Proc risk was checked above.
+        estimate.completeness = ThreatImpactCompleteness::NoThreat;
+        estimate.reason = "direct_heal_has_no_hostile_references";
         return estimate;
     }
 

@@ -12,6 +12,7 @@
 #include "Spell.h"
 #include "ThreatManager.h"
 #include "Unit.h"
+#include <algorithm>
 #include <map>
 #include <utility>
 
@@ -175,6 +176,51 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
             memberData.resurrectionSpellId = combatAI->m_resurrectionSpell
                 ? combatAI->m_resurrectionSpell->Id : 0;
             memberData.inDuel = combatAI->IsInDuel();
+
+            // F53a: expose the Priest Healer's learned direct-heal spell ranks
+            // as scalar values. The immutable snapshot never retains SpellEntry
+            // pointers; live castability and threat closure remain action-time
+            // Core responsibilities.
+            if (member->GetClass() == CLASS_PRIEST &&
+                combatAI->GetRole() == ROLE_HEALER)
+            {
+                for (SpellEntry const* spell : combatAI->m_spellListDirectHeal)
+                {
+                    if (!spell || !spell->Id)
+                        continue;
+
+                    std::uint64_t baseHealing = 0;
+                    for (std::uint32_t effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
+                    {
+                        if (spell->Effect[effect] == SPELL_EFFECT_HEAL &&
+                            spell->EffectBasePoints[effect] > 0)
+                            baseHealing += static_cast<std::uint32_t>(
+                                spell->EffectBasePoints[effect]);
+                    }
+
+                    if (!baseHealing ||
+                        baseHealing > std::numeric_limits<std::uint32_t>::max())
+                        continue;
+
+                    DirectHealSpellSnapshot healSpell;
+                    healSpell.spellId = spell->Id;
+                    healSpell.baseHealing = static_cast<std::uint32_t>(baseHealing);
+                    healSpell.manaCost = spell->GetManaCost();
+                    healSpell.manaCostPercentage = spell->ManaCostPercentage;
+                    memberData.directHealSpells.push_back(healSpell);
+                }
+
+                std::sort(
+                    memberData.directHealSpells.begin(),
+                    memberData.directHealSpells.end(),
+                    [](DirectHealSpellSnapshot const& lhs,
+                       DirectHealSpellSnapshot const& rhs)
+                    {
+                        if (lhs.baseHealing != rhs.baseHealing)
+                            return lhs.baseHealing > rhs.baseHealing;
+                        return lhs.spellId < rhs.spellId;
+                    });
+            }
         }
         memberData.resurrectionPending = member->IsRessurectRequested();
         memberData.isMainTank = member->GetObjectGuid() == mainTankGuid;

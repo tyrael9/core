@@ -12,6 +12,13 @@ enum class PartyMemberDeathState : std::uint8_t
     CorpseFalling,
     Unknown
 };
+struct DirectHealSpellSnapshot
+{
+    std::uint32_t spellId = 0;
+    std::uint32_t baseHealing = 0;
+    std::uint32_t manaCost = 0;
+    std::uint32_t manaCostPercentage = 0;
+};
 struct PartyMemberSnapshot {
     Guid guid = 0;
     std::uint8_t classId = 0, roleId = 0, level = 0, powerType = 0;
@@ -27,6 +34,7 @@ struct PartyMemberSnapshot {
     float x = 0.0f, y = 0.0f, z = 0.0f, orientation = 0.0f;
     std::uint32_t currentSpellId = 0, currentSpellState = 0;
     std::uint32_t resurrectionSpellId = 0;
+    std::vector<DirectHealSpellSnapshot> directHealSpells;
     Guid currentSpellTargetGuid = 0;
     ActionId currentSpellActionId = 0;
     std::uint64_t currentSpellEncounterId = 0;

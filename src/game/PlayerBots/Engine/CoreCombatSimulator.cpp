@@ -5257,6 +5257,26 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     // fixture uses a zero-flat-threat spell to isolate the assist delta; F53c
     // separately tests the positive flat-threat arithmetic. Proc closure is
     // still absent, so this component estimate remains Unknown.
+    uint32 const patientHealthBeforeDamage = tank->GetHealth();
+    uint32 const scriptedTankDamage = std::max<uint32>(1u, tank->GetMaxHealth() / 5u);
+    hostiles[0].creature->DealDamage(
+        tank, scriptedTankDamage, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    uint32 const patientHealthBeforeHeal = tank->GetHealth();
+    bool const tankAliveAndInjured = tank->IsAlive() && patientHealthBeforeHeal > 0 &&
+        patientHealthBeforeHeal < patientHealthBeforeDamage;
+    uint32 const healerManaBefore = healer->GetPower(POWER_MANA);
+    SpellEntry const* const healSpell = sSpellMgr.GetSpellEntry(SIMULATOR_HEAL_SPELL_ID);
+    coordinator.InvalidateSnapshot();
+    PartySnapshot const* healAssistSnapshot =
+        PartySnapshotBuilder::GetOrBuild(tank, coordinator, 15600, 250);
+    ThreatImpactEstimate const healThreatComponents =
+        healAssistSnapshot && healSpell
+            ? EstimateDirectHealingThreatComponents(
+                  healer, tank,
+                  static_cast<float>(tank->GetMaxHealth() - patientHealthBeforeHeal),
+                  healSpell, *healAssistSnapshot)
+            : ThreatImpactEstimate();
+
     bool f53cInspirationSpellValid = false;
     bool f53cInspirationAuraAttached = false;
     bool f53cInspirationAuraProcVetoed = false;
@@ -5308,25 +5328,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: real Core Priest Inspiration aura on the healer is detected before proc resolution; direct-heal threat remains Unknown with no impacts, and removing the aura restores the component-only estimate.");
 
-    uint32 const patientHealthBeforeDamage = tank->GetHealth();
-    uint32 const scriptedTankDamage = std::max<uint32>(1u, tank->GetMaxHealth() / 5u);
-    hostiles[0].creature->DealDamage(
-        tank, scriptedTankDamage, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
-    uint32 const patientHealthBeforeHeal = tank->GetHealth();
-    bool const tankAliveAndInjured = tank->IsAlive() && patientHealthBeforeHeal > 0 &&
-        patientHealthBeforeHeal < patientHealthBeforeDamage;
-    uint32 const healerManaBefore = healer->GetPower(POWER_MANA);
-    SpellEntry const* const healSpell = sSpellMgr.GetSpellEntry(SIMULATOR_HEAL_SPELL_ID);
-    coordinator.InvalidateSnapshot();
-    PartySnapshot const* healAssistSnapshot =
-        PartySnapshotBuilder::GetOrBuild(tank, coordinator, 15600, 250);
-    ThreatImpactEstimate const healThreatComponents =
-        healAssistSnapshot && healSpell
-            ? EstimateDirectHealingThreatComponents(
-                  healer, tank,
-                  static_cast<float>(tank->GetMaxHealth() - patientHealthBeforeHeal),
-                  healSpell, *healAssistSnapshot)
-            : ThreatImpactEstimate();
     auto findHealAssistBound = [&](Guid hostileGuid) -> float
     {
         for (ThreatImpactEntry const& impact : healThreatComponents.impacts)

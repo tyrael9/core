@@ -93,8 +93,26 @@ void PartyCoordinator::PruneExpired(std::uint32_t nowMs) {
 
 bool PartyCoordinator::TryReserve(Reservation const& reservation, std::uint32_t nowMs) {
     PruneExpired(nowMs);
-    if (!reservation.targetGuid || !reservation.ownerGuid || IsExpired(nowMs, reservation.expiresAtMs))
+    if (!reservation.targetGuid || !reservation.ownerGuid ||
+        IsExpired(nowMs, reservation.expiresAtMs))
         return false;
+
+    if (reservation.type == ReservationType::Heal) {
+        // Healing reservations are additive across Bots. A Bot's successor
+        // cast replaces only its own row for the same target.
+        if (!reservation.actionId || !reservation.amount || !reservation.spellId)
+            return false;
+        for (auto& existing : m_reservations) {
+            if (existing.type == ReservationType::Heal &&
+                existing.targetGuid == reservation.targetGuid &&
+                existing.ownerGuid == reservation.ownerGuid) {
+                existing = reservation;
+                return true;
+            }
+        }
+        m_reservations.push_back(reservation);
+        return true;
+    }
 
     for (auto& existing : m_reservations) {
         if (existing.type != reservation.type || existing.targetGuid != reservation.targetGuid)
@@ -126,8 +144,11 @@ std::uint32_t PartyCoordinator::GetReservedAmount(ReservationType type, Guid tar
     std::uint32_t total = 0;
     for (auto const& reservation : m_reservations) {
         if (reservation.type == type && reservation.targetGuid == targetGuid &&
-            reservation.ownerGuid != exceptOwner)
+            reservation.ownerGuid != exceptOwner) {
+            if (reservation.amount > std::numeric_limits<std::uint32_t>::max() - total)
+                return std::numeric_limits<std::uint32_t>::max();
             total += reservation.amount;
+        }
     }
     return total;
 }
@@ -142,6 +163,25 @@ bool PartyCoordinator::ReleaseReservation(ReservationType type, Guid targetGuid,
         {
             return reservation.type == type && reservation.targetGuid == targetGuid &&
                 reservation.ownerGuid == ownerGuid;
+        }), m_reservations.end());
+    return m_reservations.size() != originalSize;
+}
+
+bool PartyCoordinator::ReleaseReservation(ReservationType type, Guid targetGuid,
+                                                Guid ownerGuid, ActionId actionId,
+                                                std::uint32_t spellId) {
+    if (type != ReservationType::Heal || !targetGuid || !ownerGuid ||
+        !actionId || !spellId)
+        return false;
+    std::size_t const originalSize = m_reservations.size();
+    m_reservations.erase(std::remove_if(m_reservations.begin(), m_reservations.end(),
+        [targetGuid, ownerGuid, actionId, spellId](Reservation const& reservation)
+        {
+            return reservation.type == ReservationType::Heal &&
+                reservation.targetGuid == targetGuid &&
+                reservation.ownerGuid == ownerGuid &&
+                reservation.actionId == actionId &&
+                reservation.spellId == spellId;
         }), m_reservations.end());
     return m_reservations.size() != originalSize;
 }

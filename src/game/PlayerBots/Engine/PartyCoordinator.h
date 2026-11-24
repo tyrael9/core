@@ -9,6 +9,7 @@ struct Reservation {
     ReservationType type = ReservationType::Target;
     Guid targetGuid = 0, ownerGuid = 0;
     std::uint32_t expiresAtMs = 0, amount = 0, spellId = 0;
+    ActionId actionId = 0;
 };
 
 // A pending threat-producing action may affect multiple hostiles and may
@@ -76,6 +77,8 @@ public:
     std::uint32_t GetReservedAmount(ReservationType type, Guid targetGuid, Guid exceptOwner, std::uint32_t nowMs);
     void ReleaseOwner(Guid ownerGuid);
     bool ReleaseReservation(ReservationType type, Guid targetGuid, Guid ownerGuid);
+    bool ReleaseReservation(ReservationType type, Guid targetGuid, Guid ownerGuid,
+                            ActionId actionId, std::uint32_t spellId);
 
     // Stable, value-only formation slots shared by every Bot in this party shard.
     void ReconcileFormationAssignments(PartySnapshot const& snapshot)

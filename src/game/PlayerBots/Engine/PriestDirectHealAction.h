@@ -82,6 +82,14 @@ public:
             reason = "priest_direct_heal_no_missing_health";
             return false;
         }
+        std::uint32_t const missing = target->maxHealth - target->health;
+        std::uint32_t const reserved = context.coordinator.GetReservedAmount(
+            ReservationType::Heal, candidate.targetGuid, context.bot.guid,
+            context.nowMs);
+        if (reserved >= missing) {
+            reason = "priest_direct_heal_deficit_already_reserved";
+            return false;
+        }
         return true;
     }
 
@@ -102,11 +110,53 @@ protected:
         DecisionContext& context, ActionCandidate const& candidate,
         CoreActionResolution const&) override
     {
-        if (!context.coreActionRuntime ||
-            !context.coreActionRuntime->StartDirectHeal(
-                context, candidate.targetGuid, candidate.spellId))
-            return Reject("priest_direct_heal_core_cast_rejected");
+        if (!context.coreActionRuntime || !candidate.actionId || !candidate.targetGuid)
+            return Reject("priest_direct_heal_runtime_or_correlation_missing");
+        PartyMemberSnapshot const* target =
+            context.snapshot.FindMember(candidate.targetGuid);
+        if (!target || !target->maxHealth || target->health >= target->maxHealth)
+            return Reject("priest_direct_heal_target_deficit_missing");
 
+        DirectHealSpellSnapshot const* selectedSpell = nullptr;
+        for (DirectHealSpellSnapshot const& spell : context.bot.directHealSpells)
+            if (spell.spellId == candidate.spellId && spell.baseHealing) {
+                if (selectedSpell)
+                    return Reject("priest_direct_heal_duplicate_spell_snapshot");
+                selectedSpell = &spell;
+            }
+        if (!selectedSpell || selectedSpell->manaCost > context.bot.power)
+            return Reject("priest_direct_heal_spell_snapshot_invalid");
+
+        std::uint32_t const missing = target->maxHealth - target->health;
+        std::uint32_t const reserved = context.coordinator.GetReservedAmount(
+            ReservationType::Heal, candidate.targetGuid, context.bot.guid,
+            context.nowMs);
+        if (reserved >= missing)
+            return Reject("priest_direct_heal_deficit_already_reserved");
+        std::uint32_t const unreservedMissing = missing - reserved;
+        std::uint32_t const amount = std::min(
+            selectedSpell->baseHealing, unreservedMissing);
+        if (!amount)
+            return Reject("priest_direct_heal_no_unreserved_amount");
+
+        Reservation reservation;
+        reservation.type = ReservationType::Heal;
+        reservation.targetGuid = candidate.targetGuid;
+        reservation.ownerGuid = context.bot.guid;
+        reservation.expiresAtMs = context.nowMs + 15000u;
+        reservation.amount = amount;
+        reservation.spellId = candidate.spellId;
+        reservation.actionId = candidate.actionId;
+        if (!context.coordinator.TryReserve(reservation, context.nowMs))
+            return Reject("priest_direct_heal_reservation_rejected");
+
+        if (!context.coreActionRuntime->StartDirectHeal(
+                context, candidate.targetGuid, candidate.spellId)) {
+            context.coordinator.ReleaseReservation(
+                ReservationType::Heal, candidate.targetGuid,
+                context.bot.guid, candidate.actionId, candidate.spellId);
+            return Reject("priest_direct_heal_core_cast_rejected");
+        }
         return Success("priest_direct_heal_core_cast_started");
     }
 

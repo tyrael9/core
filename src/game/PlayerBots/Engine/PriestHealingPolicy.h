@@ -1,7 +1,8 @@
 #ifndef MANGOS_PARTYBOT_PRIEST_HEALING_POLICY_H
 #define MANGOS_PARTYBOT_PRIEST_HEALING_POLICY_H
 
-#include "PartySnapshot.h"
+#include "PartyCoordinator.h"
+#include <algorithm>
 
 namespace PartyBotEngine
 {
@@ -40,14 +41,14 @@ inline bool SelectPriestDirectHealSpell(
 // prefer Main Tank, then larger absolute deficit, then lower GUID. Integer
 // cross multiplication avoids floating-point ordering drift. Incoming heals,
 // HoTs, absorbs and effective healing are not predicted by this baseline.
-inline bool SelectPriestHealingTarget(
+inline bool SelectPriestHealingTargetWithReservations(
     PartySnapshot const& snapshot, Guid healerGuid,
+    PartyCoordinator* coordinator, std::uint32_t nowMs,
     PriestHealingTargetSelection& selection)
 {
     selection = PriestHealingTargetSelection();
     if (!snapshot.groupId || !healerGuid || snapshot.members.empty())
         return false;
-
     PartyMemberSnapshot const* healer = snapshot.FindMember(healerGuid);
     if (!healer || healer->classId != 5 ||
         healer->roleId != static_cast<std::uint8_t>(PartyRole::Healer) ||
@@ -58,9 +59,7 @@ inline bool SelectPriestHealingTarget(
         healer->instanceId != snapshot.instanceId)
         return false;
 
-    // A duplicated GUID makes FindMember and target identity ambiguous.
-    for (std::size_t i = 0; i < snapshot.members.size(); ++i)
-    {
+    for (std::size_t i = 0; i < snapshot.members.size(); ++i) {
         if (!snapshot.members[i].guid)
             return false;
         for (std::size_t j = i + 1; j < snapshot.members.size(); ++j)
@@ -69,8 +68,9 @@ inline bool SelectPriestHealingTarget(
     }
 
     PartyMemberSnapshot const* best = nullptr;
-    for (PartyMemberSnapshot const& member : snapshot.members)
-    {
+    std::uint32_t bestRemainingMissing = 0;
+    std::uint32_t bestEffectiveHealth = 0;
+    for (PartyMemberSnapshot const& member : snapshot.members) {
         if (!member.guid || !member.online || !member.alive ||
             !member.maxHealth || !member.health ||
             member.health >= member.maxHealth ||
@@ -78,47 +78,73 @@ inline bool SelectPriestHealingTarget(
             member.instanceId != snapshot.instanceId)
             continue;
 
-        if (!best)
-        {
+        std::uint32_t const rawMissing = member.maxHealth - member.health;
+        std::uint32_t const reserved = coordinator
+            ? coordinator->GetReservedAmount(
+                ReservationType::Heal, member.guid, healerGuid, nowMs)
+            : 0u;
+        std::uint32_t const credited = std::min(reserved, rawMissing);
+        std::uint32_t const remaining = rawMissing - credited;
+        if (!remaining)
+            continue;
+        std::uint32_t const effectiveHealth = member.health + credited;
+
+        if (!best) {
             best = &member;
+            bestRemainingMissing = remaining;
+            bestEffectiveHealth = effectiveHealth;
             continue;
         }
-
-        // Compare health fractions exactly without float precision drift.
         std::uint64_t const candidateCross =
-            static_cast<std::uint64_t>(member.health) * best->maxHealth;
+            static_cast<std::uint64_t>(effectiveHealth) * best->maxHealth;
         std::uint64_t const bestCross =
-            static_cast<std::uint64_t>(best->health) * member.maxHealth;
+            static_cast<std::uint64_t>(bestEffectiveHealth) * member.maxHealth;
         bool prefer = candidateCross < bestCross;
-        if (candidateCross == bestCross)
-        {
+        if (candidateCross == bestCross) {
             bool const candidateTank = member.isMainTank ||
                 member.roleId == static_cast<std::uint8_t>(PartyRole::Tank) ||
                 member.roleId == static_cast<std::uint8_t>(PartyRole::MainTank);
             bool const bestTank = best->isMainTank ||
                 best->roleId == static_cast<std::uint8_t>(PartyRole::Tank) ||
                 best->roleId == static_cast<std::uint8_t>(PartyRole::MainTank);
-            std::uint32_t const candidateMissing = member.maxHealth - member.health;
-            std::uint32_t const bestMissing = best->maxHealth - best->health;
             prefer = (candidateTank != bestTank)
                 ? candidateTank
-                : (candidateMissing != bestMissing)
-                    ? candidateMissing > bestMissing
+                : (remaining != bestRemainingMissing)
+                    ? remaining > bestRemainingMissing
                     : member.guid < best->guid;
         }
-        if (prefer)
+        if (prefer) {
             best = &member;
+            bestRemainingMissing = remaining;
+            bestEffectiveHealth = effectiveHealth;
+        }
     }
 
     if (!best)
         return false;
-
     selection.targetGuid = best->guid;
-    selection.missingHealth = best->maxHealth - best->health;
+    selection.missingHealth = bestRemainingMissing;
     selection.deficitBasisPoints = static_cast<std::uint32_t>(
-        (static_cast<std::uint64_t>(selection.missingHealth) * 10000u) /
+        (static_cast<std::uint64_t>(bestRemainingMissing) * 10000u) /
         best->maxHealth);
     return selection.IsValid();
+}
+
+inline bool SelectPriestHealingTarget(
+    PartySnapshot const& snapshot, Guid healerGuid,
+    PriestHealingTargetSelection& selection)
+{
+    return SelectPriestHealingTargetWithReservations(
+        snapshot, healerGuid, nullptr, 0, selection);
+}
+
+inline bool SelectPriestHealingTarget(
+    PartySnapshot const& snapshot, Guid healerGuid,
+    PartyCoordinator& coordinator, std::uint32_t nowMs,
+    PriestHealingTargetSelection& selection)
+{
+    return SelectPriestHealingTargetWithReservations(
+        snapshot, healerGuid, &coordinator, nowMs, selection);
 }
 
 // Compose target triage with the learned-rank/mana selector. Failure clears the
@@ -129,6 +155,25 @@ inline bool SelectPriestHealingDecision(
 {
     decision = PriestHealingDecisionSelection();
     if (!SelectPriestHealingTarget(snapshot, healerGuid, decision.target))
+        return false;
+    PartyMemberSnapshot const* healer = snapshot.FindMember(healerGuid);
+    if (!healer || !SelectPriestDirectHealSpell(
+            *healer, decision.target.missingHealth, decision.spell))
+    {
+        decision = PriestHealingDecisionSelection();
+        return false;
+    }
+    return decision.IsValid();
+}
+
+inline bool SelectPriestHealingDecision(
+    PartySnapshot const& snapshot, Guid healerGuid,
+    PartyCoordinator& coordinator, std::uint32_t nowMs,
+    PriestHealingDecisionSelection& decision)
+{
+    decision = PriestHealingDecisionSelection();
+    if (!SelectPriestHealingTarget(
+            snapshot, healerGuid, coordinator, nowMs, decision.target))
         return false;
     PartyMemberSnapshot const* healer = snapshot.FindMember(healerGuid);
     if (!healer || !SelectPriestDirectHealSpell(

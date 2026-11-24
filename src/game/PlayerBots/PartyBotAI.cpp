@@ -2233,6 +2233,15 @@ void PartyBotAI::UpdatePartyBotEngineShadow()
     else
         m_threatReservationTerminalListener->SetCoordinator(m_partyCoordinator);
 
+    if (!m_healReservationTerminalListener) {
+        std::shared_ptr<PartyBotEngine::HealReservationTerminalListener> listener =
+            std::make_shared<PartyBotEngine::HealReservationTerminalListener>(
+                me->GetObjectGuid().GetRawValue(), m_partyCoordinator);
+        if (m_partyBotEngine.AddCoreSpellTerminalListener(listener))
+            m_healReservationTerminalListener = listener;
+    } else
+        m_healReservationTerminalListener->SetCoordinator(m_partyCoordinator);
+
     m_partyCoordinator->ConfigureEncounterTraceBudget(detailBudget, importantBudget);
     m_partyCoordinator->PruneExpired(nowMs);
     PartyBotEngine::PartySnapshot const* snapshot =

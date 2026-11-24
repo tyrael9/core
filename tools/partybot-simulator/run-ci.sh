@@ -579,6 +579,18 @@ for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrel
     fi
 done
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C8 transferred the resurrection caster through real Core Map::Remove/Map::Add into a distinct dungeon instance;" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52g-C8 owner map-transfer Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f52g_c8_state_line="$(grep -F '[PartyBotSimulator] F52g-C8 resurrection caster transferred to another Map during group resurrection:' "$LOG_FILE" | tail -n 1)"
+for expected in listener=1 selected=1 castStarted=1 destinationMapCreated=1 auxiliaryReservation=1 unrelatedReservation=1 interruptedTerminal=1 auxiliaryPreservedUntilMapLeave=1 mapLeaveProcessed=1 ownerRowsReleased=1 unrelatedPreserved=1 oldShardPreserved=1 destinationEntered=1 destinationCoordinator=1 destinationSnapshot=1 returnedToSource=1 sourceCoordinatorReacquired=1 destinationMapCleaned=1 noOffer=1 newEngineOnly=1; do
+    if [[ "$f52g_c8_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F52g-C8 owner map-transfer assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
 if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C7 Core Spell::update re-resolved the departed corpse GUID," "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F52g-C7 target map-departure Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

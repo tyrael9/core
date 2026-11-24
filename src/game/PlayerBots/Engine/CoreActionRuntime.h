@@ -54,6 +54,13 @@ public:
         DecisionContext const&, Guid, std::uint32_t) const { return false; }
     virtual bool StartGroupResurrection(
         DecisionContext const&, Guid, std::uint32_t) { return false; }
+
+    // The initial Priest direct-heal vertical slice is deliberately optional.
+    // Hosts that do not implement it remain fail-closed.
+    virtual bool CanCastDirectHeal(
+        DecisionContext const&, Guid, std::uint32_t) const { return false; }
+    virtual bool StartDirectHeal(
+        DecisionContext const&, Guid, std::uint32_t) { return false; }
 };
 }
 

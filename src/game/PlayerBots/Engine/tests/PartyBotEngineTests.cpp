@@ -6,6 +6,7 @@
 #include "ShadowStrategies.h"
 #include "DpsAssistTrigger.h"
 #include "PriestHealingPolicy.h"
+#include "PriestDirectHealAction.h"
 #include "FollowPartyLeaderTrigger.h"
 #include "BotBehaviorState.h"
 #include "AutoResurrectSelfTrigger.h"
@@ -3605,6 +3606,61 @@ void TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots() {
     assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
 }
 
+void TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure() {
+    Fixture f;
+    f.bot.classId = CLASS_PRIEST;
+    f.bot.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    f.bot.isPlayerBot = true;
+    f.bot.power = 500;
+    f.bot.directHealSpells = {{2050, 120, 25}};
+
+    PartyMemberSnapshot target;
+    ConfigureMember(target, 22, PartyRole::Tank, 30, 100, true);
+    target.mapId = f.snapshot.mapId;
+    target.instanceId = f.snapshot.instanceId;
+    f.snapshot.members.push_back(target);
+
+    ActionCandidate candidate = Candidate(
+        "core_priest_direct_heal", 75.0f, ActionChannel::GlobalCooldown);
+    candidate.targetGuid = target.guid;
+    candidate.spellId = 2050;
+
+    PriestDirectHealAction action;
+    std::string reason;
+    assert(action.IsPossible(f.context, candidate, reason));
+    assert(action.IsUseful(f.context, candidate, reason));
+
+    ThreatImpactEstimate const estimate =
+        action.EstimateThreatImpact(f.context, candidate);
+    assert(estimate.completeness == ThreatImpactCompleteness::Unknown);
+    assert(estimate.snapshotEpoch == f.snapshot.epoch);
+    assert(estimate.impacts.empty());
+    assert(estimate.reason == "priest_direct_heal_threat_envelope_not_closed");
+
+    // The action may be exercised in isolation, but the Engine must reject it
+    // before any Core side effect until the entire heal threat envelope closes.
+    PartyBotEngine::PartyBotEngine engine;
+    assert(engine.RegisterAction(std::shared_ptr<Action>(
+        new PriestDirectHealAction())));
+    std::shared_ptr<TestTrigger> trigger(new TestTrigger("priest_heal_probe"));
+    trigger->generated.push_back(candidate);
+    std::shared_ptr<Strategy> strategy(new Strategy("priest_heal_probe"));
+    strategy->AddTrigger(trigger);
+    engine.AddStrategy(strategy);
+    DecisionReport report = engine.Evaluate(f.context);
+    assert(report.selectedIndices.empty());
+    assert(report.candidates.size() == 1);
+    assert(report.candidates[0].status == CandidateStatus::RejectedThreatUnknown);
+    assert(report.candidates[0].reason ==
+           "priest_direct_heal_threat_envelope_not_closed");
+
+    f.bot.power = 1;
+    assert(!action.IsPossible(f.context, candidate, reason));
+    f.bot.power = 500;
+    f.snapshot.members[0].health = f.snapshot.members[0].maxHealth;
+    assert(!action.IsPossible(f.context, candidate, reason));
+}
+
 void TestPriestDirectHealSelectionUsesAffordableClosestRank() {
     PartyMemberSnapshot healer;
     ConfigureMember(healer, 11, PartyRole::Healer, 100, 100);
@@ -5953,6 +6009,7 @@ int main() {
     TestEncounterTraceBudgetConfigurationIsClampedAndBounded();
     TestNonBotPartyMemberStateChangesAreSampledWithoutDuplicates();
     TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots();
+    TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure();
     TestPriestDirectHealSelectionUsesAffordableClosestRank();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();

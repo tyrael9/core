@@ -752,6 +752,86 @@ bool PartyBotAI::StartGroupResurrection(
     return true;
 }
 
+bool PartyBotAI::CanCastDirectHeal(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const
+{
+    using namespace PartyBotEngine;
+    if (!me || !me->IsInWorld() || !me->IsAlive() ||
+        me->GetClass() != CLASS_PRIEST || GetRole() != ROLE_HEALER ||
+        !targetGuid || !spellId || !me->GetMap() ||
+        context.bot.guid != me->GetObjectGuid().GetRawValue() ||
+        context.bot.classId != CLASS_PRIEST ||
+        context.bot.roleId != static_cast<std::uint8_t>(PartyRole::Healer) ||
+        !context.bot.isPlayerBot || !context.bot.online || !context.bot.alive ||
+        context.bot.currentSpellId ||
+        context.snapshot.mapId != me->GetMapId() ||
+        context.snapshot.instanceId != me->GetInstanceId() ||
+        context.snapshot.mapId != me->GetMap()->GetId() ||
+        context.snapshot.instanceId != me->GetMap()->GetInstanceId())
+        return false;
+
+    PartyMemberSnapshot const* targetSnapshot =
+        context.snapshot.FindMember(targetGuid);
+    if (!targetSnapshot || !targetSnapshot->online || !targetSnapshot->alive ||
+        targetSnapshot->mapId != context.snapshot.mapId ||
+        targetSnapshot->instanceId != context.snapshot.instanceId ||
+        targetSnapshot->health >= targetSnapshot->maxHealth)
+        return false;
+
+    Group* const group = me->GetGroup();
+    Unit* const targetUnit = me->GetMap()->GetUnit(ObjectGuid(targetGuid));
+    Player* const target = targetUnit ? targetUnit->ToPlayer() : nullptr;
+    SpellEntry const* const spell = sSpellMgr.GetSpellEntry(spellId);
+    if (!group || group->isBGGroup() ||
+        group->GetId() != context.snapshot.groupId ||
+        !group->IsMember(me->GetObjectGuid()) ||
+        !target || targetUnit != target || !target->IsInWorld() ||
+        !target->IsAlive() || target->GetHealth() >= target->GetMaxHealth() ||
+        target->GetGroup() != group || !group->IsMember(target->GetObjectGuid()) ||
+        target->GetMap() != me->GetMap() ||
+        target->GetMapId() != context.snapshot.mapId ||
+        target->GetInstanceId() != context.snapshot.instanceId ||
+        !spell || m_spellListDirectHeal.find(spell) == m_spellListDirectHeal.end() ||
+        !me->IsWithinLOSInMap(target))
+        return false;
+
+    // This first vertical slice only accepts spells whose active effects are
+    // single-target direct heals. HoTs, area heals, mixed-effect spells and
+    // triggered secondary effects are deliberately excluded.
+    bool hasDirectHealEffect = false;
+    for (std::uint32_t effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
+    {
+        if (!spell->Effect[effect])
+            continue;
+        if (spell->Effect[effect] != SPELL_EFFECT_HEAL)
+            return false;
+        hasDirectHealEffect = true;
+    }
+    if (!hasDirectHealEffect ||
+        !spell->IsTargetInRange(me, target) ||
+        !CanTryToCastSpell(target, spell))
+        return false;
+
+    return true;
+}
+
+bool PartyBotAI::StartDirectHeal(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid, std::uint32_t spellId)
+{
+    if (!CanCastDirectHeal(context, targetGuid, spellId))
+        return false;
+
+    Unit* const target = me->GetMap()->GetUnit(ObjectGuid(targetGuid));
+    SpellEntry const* const spell = sSpellMgr.GetSpellEntry(spellId);
+    if (!target || !spell || DoCastSpell(target, spell) != SPELL_CAST_OK)
+        return false;
+
+    context.coordinator.InvalidateSnapshot();
+    return true;
+}
+
 PartyBotEngine::CoreActionResolution PartyBotAI::ResolveUnitContext(
     PartyBotEngine::DecisionContext const& context,
     PartyBotEngine::Guid targetGuid) const

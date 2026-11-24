@@ -6429,6 +6429,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             uint64 const oldVictim = actor->GetVictim()
                 ? actor->GetVictim()->GetObjectGuid().GetRawValue() : 0;
             Unit* const nextTarget = (i & 1u) ? secondTarget : firstTarget;
+            // This fixture measures target-change trace admission, not
+            // combat movement state. Explicitly stop the prior attack so Core
+            // can accept each deterministic retarget request.
+            actor->AttackStop();
             if (!ai.AttackStart(nextTarget))
                 break;
             uint64 const newVictim = actor->GetVictim()

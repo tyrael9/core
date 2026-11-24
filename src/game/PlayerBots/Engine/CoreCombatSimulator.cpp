@@ -10122,6 +10122,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52gC6OwnerReservationsReleased = false;
     bool f52gC6UnrelatedReservationPreserved = false;
     bool f52gC6PlayerRestored = false;
+    bool f52gC6CoordinatorReacquired = false;
     bool f52gC6NoOfferCreated = false;
     ActionId f52gC6ActionId = 0;
     bool f52gC7ListenerAdded = false;
@@ -10135,6 +10136,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52gC7AuxiliaryReservationPreserved = false;
     bool f52gC7UnrelatedReservationPreserved = false;
     bool f52gC7TargetRestored = false;
+    bool f52gC7TargetCoordinatorReacquired = false;
     bool f52gC7NoOfferCreated = false;
     ActionId f52gC7ActionId = 0;
     if (f52gSelfResurrectionPassed && botAIs.size() == 4 && players.size() == 5)
@@ -10149,6 +10151,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         uint32 const legacyDispatchesBefore = resurrectionAI.m_simulatorLegacyPolicyDispatchCount;
         uint32 const ticksBefore = resurrectionAI.m_simulatorNewEngineTickCount;
         uint32 const cyclesBefore = resurrectionAI.m_simulatorEngineDecisionCycleCount;
+        uint32 f52gCoordinatorReacquireCycles = 0;
 
         // Simulator Players start with only their minimal default spell set.
         // Learn the real Vanilla Priest Resurrection chain through Core, then
@@ -11124,6 +11127,24 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                             });
                     f52gC6PlayerRestored = sourceMap->Add(caster) &&
                         caster->IsInWorld() && caster->GetMap() == sourceMap;
+                    if (f52gC6PlayerRestored)
+                    {
+                        // Map::Remove drops this AI's shard reference. Run the
+                        // normal NewEngine shard update after re-entry so its
+                        // terminal callback uses the reacquired source coordinator.
+                        uint32 const cyclesBeforeReacquire =
+                            resurrectionAI.m_simulatorEngineDecisionCycleCount;
+                        resurrectionAI.UpdatePartyBotEngineShadow();
+                        f52gCoordinatorReacquireCycles +=
+                            resurrectionAI.m_simulatorEngineDecisionCycleCount -
+                            cyclesBeforeReacquire;
+                        f52gC6CoordinatorReacquired =
+                            resurrectionAI.m_partyCoordinator &&
+                            resurrectionAI.m_partyCoordinator == wipeCoordinator &&
+                            resurrectionAI.m_partyCoordinatorMapId == sourceMap->GetId() &&
+                            resurrectionAI.m_partyCoordinatorInstanceId ==
+                                sourceMap->GetInstanceId();
+                    }
                 }
 
                 f52gC6NoOfferCreated =
@@ -11292,6 +11313,17 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                 corpseTarget->SpawnCorpseBones();
                 corpseTarget->ClearResurrectRequestData();
             }
+            if (f52gC7TargetRestored && corpseTarget->IsAlive())
+            {
+                // The recipient Bot also left its map shard. Re-enter through
+                // the regular NewEngine shard update after corpse recovery.
+                PartyBotAI& targetAI = *botAIs[1];
+                targetAI.UpdatePartyBotEngineShadow();
+                f52gC7TargetCoordinatorReacquired =
+                    targetAI.m_partyCoordinator == wipeCoordinator &&
+                    targetAI.m_partyCoordinatorMapId == map.GetId() &&
+                    targetAI.m_partyCoordinatorInstanceId == map.GetInstanceId();
+            }
         }
         bool const f52gC1Passed =
             f52gCListenerAdded && f52gCActionSelected && f52gCCastStarted &&
@@ -11326,7 +11358,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             f52gC6AuxiliaryPreservedUntilMapLeave &&
             f52gC6MapLeaveProcessed && f52gC6OwnerReservationsReleased &&
             f52gC6UnrelatedReservationPreserved && f52gC6PlayerRestored &&
-            f52gC6NoOfferCreated;
+            f52gC6CoordinatorReacquired && f52gC6NoOfferCreated;
         bool const f52gC7Passed =
             f52gC7ListenerAdded && f52gC7ActionSelected && f52gC7CastStarted &&
             f52gC7AuxiliaryReservationCreated &&
@@ -11334,7 +11366,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             f52gC7TargetRemoved && f52gC7InterruptedTerminalMatched &&
             f52gC7ReservationReleased && f52gC7AuxiliaryReservationPreserved &&
             f52gC7UnrelatedReservationPreserved && f52gC7TargetRestored &&
-            f52gC7NoOfferCreated;
+            f52gC7TargetCoordinatorReacquired && f52gC7NoOfferCreated;
         f52gCPassed = f52gC1Passed && f52gC2Passed &&
             f52gC3Passed && f52gC4Passed && f52gC5Passed &&
             f52gC6Passed && f52gC7Passed;
@@ -11403,7 +11435,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F52g-C5 Core interrupted the dead resurrection caster's pending spell and PartyBotAI::OnAliveStateChanged released all of that Bot's reservations while preserving another Bot's row.");
         sLog.Out(LOG_BASIC, f52gC6Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-            "[PartyBotSimulator] F52g-C6 resurrection caster left source Map during group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu auxiliaryReservation=%u unrelatedReservation=%u interruptedTerminal=%u auxiliaryPreservedUntilLeave=%u mapLeaveProcessed=%u ownerRowsReleased=%u unrelatedPreserved=%u playerRestored=%u noOffer=%u.",
+            "[PartyBotSimulator] F52g-C6 resurrection caster left source Map during group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu auxiliaryReservation=%u unrelatedReservation=%u interruptedTerminal=%u auxiliaryPreservedUntilLeave=%u mapLeaveProcessed=%u ownerRowsReleased=%u unrelatedPreserved=%u playerRestored=%u coordinatorReacquired=%u noOffer=%u.",
             f52gC6ListenerAdded ? 1u : 0u, f52gC6ActionSelected ? 1u : 0u,
             f52gC6CastStarted ? 1u : 0u,
             static_cast<unsigned long long>(f52gC6ActionId),
@@ -11415,12 +11447,13 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             f52gC6OwnerReservationsReleased ? 1u : 0u,
             f52gC6UnrelatedReservationPreserved ? 1u : 0u,
             f52gC6PlayerRestored ? 1u : 0u,
+            f52gC6CoordinatorReacquired ? 1u : 0u,
             f52gC6NoOfferCreated ? 1u : 0u);
         if (f52gC6Passed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F52g-C6 Core interrupted the departing Bot's pending resurrection cast before source Map::Remove; PartyBotAI::OnMapLeave then released its remaining owner reservations, preserved another Bot's row, and the Player was restored to the source Map.");
         sLog.Out(LOG_BASIC, f52gC7Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-            "[PartyBotSimulator] F52g-C7 resurrection target left source Map during group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu auxiliaryReservation=%u unrelatedReservation=%u targetRemoved=%u interruptedTerminal=%u resurrectionReservationReleased=%u auxiliaryPreserved=%u unrelatedPreserved=%u targetRestored=%u noOffer=%u.",
+            "[PartyBotSimulator] F52g-C7 resurrection target left source Map during group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu auxiliaryReservation=%u unrelatedReservation=%u targetRemoved=%u interruptedTerminal=%u resurrectionReservationReleased=%u auxiliaryPreserved=%u unrelatedPreserved=%u targetRestored=%u targetCoordinatorReacquired=%u noOffer=%u.",
             f52gC7ListenerAdded ? 1u : 0u, f52gC7ActionSelected ? 1u : 0u,
             f52gC7CastStarted ? 1u : 0u,
             static_cast<unsigned long long>(f52gC7ActionId),
@@ -11432,6 +11465,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             f52gC7AuxiliaryReservationPreserved ? 1u : 0u,
             f52gC7UnrelatedReservationPreserved ? 1u : 0u,
             f52gC7TargetRestored ? 1u : 0u,
+            f52gC7TargetCoordinatorReacquired ? 1u : 0u,
             f52gC7NoOfferCreated ? 1u : 0u);
         if (f52gC7Passed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
@@ -11442,7 +11476,8 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
             resurrectionAI.m_simulatorLegacyPolicyEntryCount == legacyEntriesBefore &&
             resurrectionAI.m_simulatorLegacyPolicyDispatchCount == legacyDispatchesBefore &&
             resurrectionAI.m_simulatorNewEngineTickCount == ticksBefore &&
-            resurrectionAI.m_simulatorEngineDecisionCycleCount == cyclesBefore &&
+            resurrectionAI.m_simulatorEngineDecisionCycleCount ==
+                cyclesBefore + 3 + f52gCoordinatorReacquireCycles &&
             wipeCoordinator && !wipeCoordinator->HasActiveEncounter();
     }
     bool const f52gBPassed =

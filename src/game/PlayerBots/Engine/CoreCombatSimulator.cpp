@@ -10067,6 +10067,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         static_cast<uint32>(ActionResult::NotAttempted);
     std::string f52gBActionReason = "not_executed";
     bool f52gCPassed = false;
+    bool f52gC8Passed = false;
     bool f52gCNewEngineOnly = false;
     bool f52gCListenerAdded = false;
     bool f52gCActionSelected = false;
@@ -11607,7 +11608,7 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                         destinationMapEmpty ? 1u : 0u, bindReleased ? 1u : 0u);
             }
 
-            bool const f52gC8Passed =
+            f52gC8Passed =
                 f52gC8ListenerAdded && f52gC8ActionSelected && f52gC8CastStarted &&
                 f52gC8DestinationMapCreated &&
                 f52gC8AuxiliaryReservationCreated &&

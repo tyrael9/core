@@ -6420,9 +6420,21 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     auto switchPartyBotTargets = [&](PartyBotAI& ai, Player* actor, uint32 count)
     {
         Unit* const hostileA = hostiles[0].creature;
-        Unit* const hostileB = hostiles[1].creature;
-        Unit* const firstTarget = actor->GetVictim() == hostileA ? hostileB : hostileA;
-        Unit* const secondTarget = firstTarget == hostileA ? hostileB : hostileA;
+        // The second hostile belongs to the death/retarget fixture and may
+        // legitimately enter Core evade state after its references are
+        // cleared. Trace-budget coverage must not depend on that AI state.
+        // Use a separate live Group member as the second AttackStart target;
+        // this test exercises target-change admission, not faction policy.
+        Unit* const alternateTarget = players.size() > 4 ? players[4] : nullptr;
+        if (!actor || !hostileA || !hostileA->IsAlive() || !hostileA->IsInWorld() ||
+            !alternateTarget || alternateTarget == actor ||
+            !alternateTarget->IsAlive() || !alternateTarget->IsInWorld())
+            return 0u;
+
+        Unit* const firstTarget = actor->GetVictim() == hostileA
+            ? alternateTarget : hostileA;
+        Unit* const secondTarget = firstTarget == hostileA
+            ? alternateTarget : hostileA;
         uint32 switches = 0;
         for (uint32 i = 0; i < count; ++i)
         {
@@ -6441,6 +6453,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 break;
             ++switches;
         }
+        actor->AttackStop();
         return switches;
     };
 

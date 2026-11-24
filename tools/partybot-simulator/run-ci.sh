@@ -432,7 +432,7 @@ for expected in snapshot=1 encounterStarted=1 possible=1 useful=1 engineThreatVe
         exit 1
     fi
 done
-if ! grep -Fq "[PartyBotSimulator] PASS: real Core Priest Inspiration aura on the healer is detected before proc resolution; direct-heal threat remains Unknown with no impacts, and removing the aura restores the component-only estimate." "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: real Core Priest Inspiration aura on the healer vetoes the direct-heal threat estimate with no impacts; after aura removal the component-only estimate is restored." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F53c direct-heal proc-closure PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi

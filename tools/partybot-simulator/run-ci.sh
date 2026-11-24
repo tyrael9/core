@@ -442,6 +442,30 @@ if ! grep -Fq "[PartyBotSimulator] PASS: fixture-only PriestDirectHealAction pas
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F53f a real successful Core Priest Spell terminal released every matching threat fan-out row and preserved another action by the same Bot, another Bot's row, and a stale cross-encounter event." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F53f successful Core threat-reservation terminal PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f53f_success_state_line="$(grep -F '[PartyBotSimulator] F53f real Core successful terminal reservation:' "$LOG_FILE" | tail -n 1)"
+for expected in "listener=1" "rowsSeeded=1" "matchingActionRowsReleased=1" "sameBotOtherActionPreserved=1" "otherBotActionPreserved=1" "staleEncounterIgnored=1"; do
+    if [[ "$f53f_success_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F53f successful-terminal assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
+if ! grep -Fq "[PartyBotSimulator] PASS: F53f real Core Interrupted and Failed Spell terminals released every in-flight threat row owned by the matching Bot/action while preserving another action by the same Bot and unrelated rows owned by another Bot." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F53f interrupted/failed Core threat-reservation terminal PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f53f_failure_state_line="$(grep -F '[PartyBotSimulator] F53f real Core terminal reservation matrix:' "$LOG_FILE" | tail -n 1)"
+for expected in "listener=1" "interruptedSeeded=1" "interruptedRowsReleased=1" "interruptedUnrelatedPreserved=1" "failedSeeded=1" "failedRowReleased=1" "failedUnrelatedPreserved=1"; do
+    if [[ "$f53f_failure_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F53f interrupted/failed-terminal assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
 if ! grep -Fq "[PartyBotSimulator] PASS: the real five-Player Group PartySnapshotBuilder copied a ROLE_HEALER Priest's learned Lesser Heal ranks 2050/2052 with Core-calculated mana costs, sorted unique spell ranks and deterministic affordable rank selection." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F53a real Priest spell snapshot PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

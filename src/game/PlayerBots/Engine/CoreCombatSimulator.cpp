@@ -40,6 +40,7 @@
 #include "PlayerBots/Engine/PartyCoordinator.h"
 #include "PlayerBots/Engine/PartySnapshot.h"
 #include "PlayerBots/Engine/PriestHealingPolicy.h"
+#include "PlayerBots/Engine/PriestDirectHealAction.h"
 #include "PlayerBots/Engine/CoreThreatImpactEstimator.h"
 #include "PlayerBots/Engine/ThreatBudgetPolicy.h"
 #include "PlayerBots/Engine/Strategy.h"
@@ -4572,6 +4573,247 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 }
             }
         }
+        // F53b: exercise the CoreAction adapter directly on this disposable
+        // five-Player Group. Normal Engine evaluation is checked separately
+        // below and must veto this candidate because its full heal threat
+        // envelope is still Unknown; this direct dispatch exists only to test
+        // the action's Core preflight/cast boundary, not production selection.
+        bool f53bPriestActionSnapshotReady = false;
+        bool f53bPriestActionCandidatePossible = false;
+        bool f53bPriestActionCandidateUseful = false;
+        bool f53bPriestActionThreatVetoed = false;
+        bool f53bPriestActionLivePreflight = false;
+        bool f53bPriestActionCastAccepted = false;
+        bool f53bPriestActionCastCompleted = false;
+        bool f53bPriestActionManaSpent = false;
+        bool f53bPriestActionTerminalMatched = false;
+        uint32 f53bPriestActionSpellId = 0;
+        ActionId f53bPriestActionId = 0;
+        if (priest && priestHealerAI &&
+            f53aPriestSpellRankOneLearned &&
+            f53aPriestSpellRankTwoLearned &&
+            f53aPriestSpellbookCaptured &&
+            f53aPriestRanksSorted &&
+            f53aPriestManaCostsMatchCore &&
+            f53aPriestSelectorMatchesSnapshot)
+        {
+            Player* const tank = players[0];
+            ObjectGuid const tankGuid = tank->GetObjectGuid();
+            uint32 const tankHealthBeforeRestore = tank->GetHealth();
+            uint32 const priestManaBeforeRestore =
+                priest->GetPower(POWER_MANA);
+
+            tank->SetHealth(std::max<uint32>(1u, tank->GetMaxHealth() / 2));
+            priest->SetPower(POWER_MANA, priest->GetMaxPower(POWER_MANA));
+            priestHealerAI->m_initialized = true;
+            priestHealerAI->m_updateTimer.Reset(600000);
+
+            std::shared_ptr<PartyCoordinator> f53bCoordinator(
+                new PartyCoordinator());
+            priestHealerAI->m_partyCoordinator = f53bCoordinator;
+            priestHealerAI->m_partyCoordinatorMapId = map.GetId();
+            priestHealerAI->m_partyCoordinatorInstanceId = map.GetInstanceId();
+
+            uint32 const f53bNowMs = WorldTimer::getMSTime();
+            PartySnapshot const* const f53bBuiltSnapshot =
+                PartySnapshotBuilder::GetOrBuild(
+                    tank, *f53bCoordinator, f53bNowMs, 0);
+            if (f53bBuiltSnapshot)
+            {
+                PartySnapshot f53bSnapshot = *f53bBuiltSnapshot;
+                auto tankIt = std::find_if(
+                    f53bSnapshot.members.begin(), f53bSnapshot.members.end(),
+                    [tankGuid](PartyMemberSnapshot const& member)
+                    {
+                        return member.guid == tankGuid.GetRawValue();
+                    });
+                auto priestIt = std::find_if(
+                    f53bSnapshot.members.begin(), f53bSnapshot.members.end(),
+                    [priest](PartyMemberSnapshot const& member)
+                    {
+                        return member.guid ==
+                            priest->GetObjectGuid().GetRawValue();
+                    });
+                if (tankIt != f53bSnapshot.members.end() &&
+                    priestIt != f53bSnapshot.members.end())
+                {
+                    tankIt->health = tank->GetHealth();
+                    tankIt->maxHealth = tank->GetMaxHealth();
+                    tankIt->online = tank->IsInWorld();
+                    tankIt->alive = tank->IsAlive();
+                    priestIt->power = priest->GetPower(POWER_MANA);
+                    priestIt->maxPower = priest->GetMaxPower(POWER_MANA);
+                    priestIt->inCombat = true; // Fixture-owned action encounter.
+                    f53bSnapshot.capturedAtMs = f53bNowMs;
+                    f53bPriestActionSnapshotReady =
+                        f53bSnapshot.groupId == group->GetId() &&
+                        f53bSnapshot.mapId == map.GetId() &&
+                        f53bSnapshot.instanceId == map.GetInstanceId() &&
+                        f53bSnapshot.members.size() == MAX_GROUP_SIZE &&
+                        priestIt->isPlayerBot &&
+                        priestIt->classId == CLASS_PRIEST &&
+                        priestIt->roleId == static_cast<uint8>(
+                            PartyRole::Healer) &&
+                        !priestIt->directHealSpells.empty() &&
+                        tankIt->health < tankIt->maxHealth;
+                    if (f53bPriestActionSnapshotReady)
+                    {
+                        EncounterTransition const transition =
+                            f53bCoordinator->ObserveEncounter(
+                                f53bSnapshot, f53bNowMs, 30000);
+                        DecisionContext f53bContext(
+                            f53bSnapshot, *priestIt, *f53bCoordinator,
+                            f53bNowMs, nullptr, nullptr,
+                            priestHealerAI.get(), nullptr,
+                            priestHealerAI.get());
+                        PriestDirectHealAction action;
+                        PriestDirectHealSelection selectedHeal;
+                        uint32 const missingHealth =
+                            tankIt->maxHealth - tankIt->health;
+                        bool const selectedRank = SelectPriestDirectHealSpell(
+                            *priestIt, missingHealth, selectedHeal);
+                        ActionCandidate candidate;
+                        candidate.actionName = action.GetName();
+                        candidate.targetGuid = tankGuid.GetRawValue();
+                        candidate.spellId = selectedHeal.spellId;
+                        candidate.basePriority = 80.0f;
+                        candidate.finalPriority = 80.0f;
+                        candidate.channel = ActionChannel::GlobalCooldown;
+                        candidate.actionId = f53bCoordinator->NextActionId();
+                        f53bPriestActionSpellId = candidate.spellId;
+                        f53bPriestActionId = candidate.actionId;
+                        std::string possibleReason;
+                        f53bPriestActionCandidatePossible =
+                            selectedRank && candidate.actionId &&
+                            action.IsPossible(
+                                f53bContext, candidate, possibleReason);
+                        std::string usefulReason;
+                        f53bPriestActionCandidateUseful =
+                            f53bPriestActionCandidatePossible &&
+                            action.IsUseful(
+                                f53bContext, candidate, usefulReason);
+                        ThreatImpactEstimate const healThreat =
+                            action.EstimateThreatImpact(f53bContext, candidate);
+                        ThreatImpactBudgetResult const healBudget =
+                            AssessThreatImpactBudget(
+                                f53bSnapshot, healThreat, *f53bCoordinator,
+                                f53bNowMs, 250, nullptr);
+                        f53bPriestActionThreatVetoed =
+                            healThreat.completeness ==
+                                ThreatImpactCompleteness::Unknown &&
+                            healThreat.snapshotEpoch == f53bSnapshot.epoch &&
+                            healBudget.status ==
+                                ThreatImpactBudgetStatus::Unknown &&
+                            healBudget.reason == "threat_impact_estimate_unknown";
+                        f53bPriestActionLivePreflight =
+                            f53bPriestActionCandidateUseful &&
+                            priestHealerAI->CanCastDirectHeal(
+                                f53bContext, candidate.targetGuid,
+                                candidate.spellId);
+
+                        std::shared_ptr<CaptureCoreSpellTerminalListener> listener(
+                            new CaptureCoreSpellTerminalListener());
+                        bool const listenerRegistered =
+                            priestHealerAI->m_partyBotEngine
+                                .AddCoreSpellTerminalListener(listener);
+                        EngineActionTraceEvent attemptEvent;
+                        attemptEvent.stage = EngineActionTraceStage::Attempt;
+                        attemptEvent.actionId = candidate.actionId;
+                        attemptEvent.actionName = candidate.actionName.c_str();
+                        attemptEvent.targetGuid = candidate.targetGuid;
+                        attemptEvent.spellId = candidate.spellId;
+                        attemptEvent.channel = candidate.channel;
+                        attemptEvent.priority = candidate.finalPriority;
+                        attemptEvent.attempted = true;
+                        if (listenerRegistered &&
+                            f53bPriestActionLivePreflight &&
+                            f53bPriestActionThreatVetoed)
+                        {
+                            priestHealerAI->OnEngineActionEvent(
+                                f53bContext, attemptEvent);
+                            ActionExecutionResult const execution =
+                                action.ExecuteDetailed(f53bContext, candidate);
+                            f53bPriestActionCastAccepted =
+                                execution.result == ActionResult::Success &&
+                                execution.reason ==
+                                    "priest_direct_heal_core_cast_started";
+                            EngineActionTraceEvent resultEvent = attemptEvent;
+                            resultEvent.stage = EngineActionTraceStage::Result;
+                            resultEvent.result = execution.result;
+                            resultEvent.reason = execution.reason.c_str();
+                            priestHealerAI->OnEngineActionEvent(
+                                f53bContext, resultEvent);
+                        }
+
+                        for (uint32 tick = 0; tick < 20 &&
+                             priest->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                             ++tick)
+                        {
+                            std::this_thread::sleep_for(
+                                std::chrono::milliseconds(250));
+                            map.Update(250);
+                        }
+                        f53bPriestActionCastCompleted =
+                            f53bPriestActionCastAccepted &&
+                            !priest->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
+                            tank->GetHealth() > tankIt->health;
+                        f53bPriestActionManaSpent =
+                            f53bPriestActionCastCompleted &&
+                            priest->IsUnderLastManaUseEffect();
+                        f53bPriestActionTerminalMatched =
+                            listenerRegistered && listener->events.size() == 1 &&
+                            listener->events[0].actionId == candidate.actionId &&
+                            listener->events[0].encounterId ==
+                                f53bCoordinator->GetEncounterId() &&
+                            listener->events[0].targetGuid ==
+                                candidate.targetGuid &&
+                            listener->events[0].spellId == candidate.spellId &&
+                            listener->events[0].status ==
+                                CoreSpellTerminalStatus::Succeeded;
+                    }
+                }
+            }
+
+            tank->SetHealth(tankHealthBeforeRestore);
+            priest->SetPower(POWER_MANA, priestManaBeforeRestore);
+            priestHealerAI->m_partyCoordinator.reset();
+            priestHealerAI->m_partyCoordinatorMapId = 0;
+            priestHealerAI->m_partyCoordinatorInstanceId = 0;
+            f53bCoordinator->CloseEncounter(
+                WorldTimer::getMSTime(), "f53b_fixture_cleanup");
+        }
+        bool const f53bPriestDirectHealRuntimePassed =
+            f53bPriestActionSnapshotReady &&
+            f53bPriestActionCandidatePossible &&
+            f53bPriestActionCandidateUseful &&
+            f53bPriestActionThreatVetoed &&
+            f53bPriestActionLivePreflight &&
+            f53bPriestActionCastAccepted &&
+            f53bPriestActionCastCompleted &&
+            f53bPriestActionManaSpent &&
+            f53bPriestActionTerminalMatched;
+        sLog.Out(LOG_BASIC,
+            f53bPriestDirectHealRuntimePassed
+                ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F53b Priest direct heal Core action: snapshot=%u possible=%u useful=%u engineThreatVeto=%u livePreflight=%u castAccepted=%u castCompleted=%u manaSpent=%u terminalMatched=%u actionId=%llu spell=%u.",
+            f53bPriestActionSnapshotReady ? 1u : 0u,
+            f53bPriestActionCandidatePossible ? 1u : 0u,
+            f53bPriestActionCandidateUseful ? 1u : 0u,
+            f53bPriestActionThreatVetoed ? 1u : 0u,
+            f53bPriestActionLivePreflight ? 1u : 0u,
+            f53bPriestActionCastAccepted ? 1u : 0u,
+            f53bPriestActionCastCompleted ? 1u : 0u,
+            f53bPriestActionManaSpent ? 1u : 0u,
+            f53bPriestActionTerminalMatched ? 1u : 0u,
+            static_cast<unsigned long long>(f53bPriestActionId),
+            f53bPriestActionSpellId);
+        if (f53bPriestDirectHealRuntimePassed)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: fixture-only PriestDirectHealAction passed same-Group live Core preflight, cast a direct heal, spent Core mana and matched the exact Engine action ID to its successful Core Spell terminal; the threat budget remained Unknown.");
+        else
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSimulator] F53b direct-heal Core action runtime fixture failed.");
+
         f53aPriestSpellSnapshotPassed =
             f53aPriestSpellRankOneLearned &&
             f53aPriestSpellRankTwoLearned &&

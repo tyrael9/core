@@ -425,6 +425,18 @@ for expected in rankOne=1 rankTwo=1 spellbookCaptured=1 sortedUnique=1 coreManaC
         exit 1
     fi
 done
+f53b_priest_state_line="$(grep -F '[PartyBotSimulator] F53b Priest direct heal Core action:' "$LOG_FILE" | tail -n 1)"
+for expected in snapshot=1 possible=1 useful=1 engineThreatVeto=1 livePreflight=1 castAccepted=1 castCompleted=1 manaSpent=1 terminalMatched=1; do
+    if [[ "$f53b_priest_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F53b Priest direct-heal runtime assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+if ! grep -Fq "[PartyBotSimulator] PASS: fixture-only PriestDirectHealAction passed same-Group live Core preflight, cast a direct heal, spent Core mana and matched the exact Engine action ID to its successful Core Spell terminal; the threat budget remained Unknown." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F53b Priest direct-heal Core action PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: the real five-Player Group PartySnapshotBuilder copied a ROLE_HEALER Priest's learned Lesser Heal ranks 2050/2052 with Core-calculated mana costs, sorted unique spell ranks and deterministic affordable rank selection." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F53a real Priest spell snapshot PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

@@ -579,6 +579,18 @@ for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrel
     fi
 done
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C7 Core Spell::update re-resolved the departed corpse GUID;" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52g-C7 target map-departure Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f52g_c7_state_line="$(grep -F '[PartyBotSimulator] F52g-C7 resurrection target left source Map during group resurrection:' "$LOG_FILE" | tail -n 1)"
+for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrelatedReservation=1 targetRemoved=1 interruptedTerminal=1 resurrectionReservationReleased=1 auxiliaryPreserved=1 unrelatedPreserved=1 targetRestored=1 noOffer=1; do
+    if [[ "$f52g_c7_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F52g-C7 target-map-departure assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
 if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

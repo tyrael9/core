@@ -4590,6 +4590,12 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         bool f53bPriestActionCastCompleted = false;
         bool f53bPriestActionManaSpent = false;
         bool f53bPriestActionTerminalMatched = false;
+        bool f53fPriestReservationListenerRegistered = false;
+        bool f53fPriestReservationRowsSeeded = false;
+        bool f53fPriestMatchingActionRowsReleased = false;
+        bool f53fPriestSameBotOtherActionPreserved = false;
+        bool f53fPriestOtherBotActionPreserved = false;
+        bool f53fPriestStaleEncounterIgnored = false;
         uint32 f53bPriestActionSpellId = 0;
         ActionId f53bPriestActionId = 0;
         if (priest && priestHealerAI &&
@@ -4686,6 +4692,66 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         candidate.finalPriority = 80.0f;
                         candidate.channel = ActionChannel::GlobalCooldown;
                         candidate.actionId = f53bCoordinator->NextActionId();
+                        std::shared_ptr<ThreatReservationTerminalListener> f53fThreatListener(
+                            new ThreatReservationTerminalListener(
+                                priest->GetObjectGuid().GetRawValue(), f53bCoordinator));
+                        f53fPriestReservationListenerRegistered =
+                            priestHealerAI->m_partyBotEngine.AddCoreSpellTerminalListener(
+                                f53fThreatListener);
+                        if (f53fPriestReservationListenerRegistered)
+                            priestHealerAI->m_threatReservationTerminalListener =
+                                f53fThreatListener;
+                        std::uint32_t const f53fReserveNow = WorldTimer::getMSTime();
+                        Guid const f53fPriestGuid = priest->GetObjectGuid().GetRawValue();
+                        Guid const f53fOtherBotGuid = players[4]->GetObjectGuid().GetRawValue();
+                        ThreatReservation f53fPrimaryA;
+                        f53fPrimaryA.ownerGuid = f53fPriestGuid;
+                        f53fPrimaryA.threatOwnerGuid = f53fPriestGuid;
+                        f53fPrimaryA.hostileGuid = 0xF53F1001ull;
+                        f53fPrimaryA.actionId = candidate.actionId;
+                        f53fPrimaryA.threatPoints = 29.0f;
+                        f53fPrimaryA.expiresAtMs = f53fReserveNow + 60000u;
+                        ThreatReservation f53fPrimaryB = f53fPrimaryA;
+                        f53fPrimaryB.hostileGuid = 0xF53F1002ull;
+                        f53fPrimaryB.threatOwnerGuid = f53fOtherBotGuid;
+                        f53fPrimaryB.threatPoints = 31.0f;
+                        ThreatReservation f53fSameBotOther;
+                        f53fSameBotOther.ownerGuid = f53fPriestGuid;
+                        f53fSameBotOther.threatOwnerGuid = f53fPriestGuid;
+                        f53fSameBotOther.hostileGuid = 0xF53F1003ull;
+                        ActionId const f53fSameBotOtherActionId = f53bCoordinator->NextActionId();
+                        f53fSameBotOther.actionId = f53fSameBotOtherActionId;
+                        f53fSameBotOther.threatPoints = 37.0f;
+                        f53fSameBotOther.expiresAtMs = f53fReserveNow + 60000u;
+                        ThreatReservation f53fOtherBot;
+                        f53fOtherBot.ownerGuid = f53fOtherBotGuid;
+                        f53fOtherBot.threatOwnerGuid = f53fOtherBotGuid;
+                        f53fOtherBot.hostileGuid = 0xF53F1004ull;
+                        ActionId const f53fOtherBotActionId = f53bCoordinator->NextActionId();
+                        f53fOtherBot.actionId = f53fOtherBotActionId;
+                        f53fOtherBot.threatPoints = 41.0f;
+                        f53fOtherBot.expiresAtMs = f53fReserveNow + 60000u;
+                        ThreatReservation f53fStaleEncounter;
+                        f53fStaleEncounter.ownerGuid = f53fPriestGuid;
+                        f53fStaleEncounter.threatOwnerGuid = f53fPriestGuid;
+                        f53fStaleEncounter.hostileGuid = 0xF53F1005ull;
+                        ActionId const f53fStaleActionId = f53bCoordinator->NextActionId();
+                        f53fStaleEncounter.actionId = f53fStaleActionId;
+                        f53fStaleEncounter.threatPoints = 43.0f;
+                        f53fStaleEncounter.expiresAtMs = f53fReserveNow + 60000u;
+                        bool const f53fPrimaryAAdded =
+                            f53bCoordinator->TryReserveThreatImpact(f53fPrimaryA, f53fReserveNow);
+                        bool const f53fPrimaryBAdded =
+                            f53bCoordinator->TryReserveThreatImpact(f53fPrimaryB, f53fReserveNow);
+                        bool const f53fSameBotOtherAdded =
+                            f53bCoordinator->TryReserveThreatImpact(f53fSameBotOther, f53fReserveNow);
+                        bool const f53fOtherBotAdded =
+                            f53bCoordinator->TryReserveThreatImpact(f53fOtherBot, f53fReserveNow);
+                        bool const f53fStaleAdded =
+                            f53bCoordinator->TryReserveThreatImpact(f53fStaleEncounter, f53fReserveNow);
+                        f53fPriestReservationRowsSeeded =
+                            f53fPrimaryAAdded && f53fPrimaryBAdded &&
+                            f53fSameBotOtherAdded && f53fOtherBotAdded && f53fStaleAdded;
                         f53bPriestActionSpellId = candidate.spellId;
                         f53bPriestActionId = candidate.actionId;
                         std::string possibleReason;
@@ -4758,6 +4824,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         attemptEvent.priority = candidate.finalPriority;
                         attemptEvent.attempted = true;
                         if (listenerRegistered &&
+                            f53fPriestReservationListenerRegistered &&
+                            f53fPriestReservationRowsSeeded &&
                             f53bPriestActionLivePreflight &&
                             f53bPriestActionThreatVetoed)
                         {
@@ -4806,6 +4874,30 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             listener->events[0].spellId == candidate.spellId &&
                             listener->events[0].status ==
                                 CoreSpellTerminalStatus::Succeeded;
+                        std::uint32_t const f53fTerminalNow = WorldTimer::getMSTime();
+                        f53fPriestMatchingActionRowsReleased =
+                            f53fPriestReservationRowsSeeded &&
+                            f53bPriestActionTerminalMatched &&
+                            f53bCoordinator->GetReservedThreatImpact(
+                                0xF53F1001ull, f53fPriestGuid, 0, f53fTerminalNow) <= 0.001f &&
+                            f53bCoordinator->GetReservedThreatImpact(
+                                0xF53F1002ull, f53fOtherBotGuid, 0, f53fTerminalNow) <= 0.001f;
+                        f53fPriestSameBotOtherActionPreserved =
+                            f53fPriestReservationRowsSeeded &&
+                            std::fabs(f53bCoordinator->GetReservedThreatImpact(
+                                0xF53F1003ull, f53fPriestGuid, 0, f53fTerminalNow) - 37.0f) <= 0.001f;
+                        f53fPriestOtherBotActionPreserved =
+                            f53fPriestReservationRowsSeeded &&
+                            std::fabs(f53bCoordinator->GetReservedThreatImpact(
+                                0xF53F1004ull, f53fOtherBotGuid, 0, f53fTerminalNow) - 41.0f) <= 0.001f;
+                        CoreSpellTerminalEvent staleTerminal;
+                        staleTerminal.actionId = f53fStaleActionId;
+                        staleTerminal.encounterId = f53bCoordinator->GetEncounterId() + 1;
+                        staleTerminal.status = CoreSpellTerminalStatus::Succeeded;
+                        f53fThreatListener->OnCoreSpellTerminal(staleTerminal);
+                        f53fPriestStaleEncounterIgnored =
+                            std::fabs(f53bCoordinator->GetReservedThreatImpact(
+                                0xF53F1005ull, f53fPriestGuid, 0, f53fTerminalNow) - 43.0f) <= 0.001f;
                     }
                 }
             }
@@ -4850,6 +4942,26 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         if (f53bPriestDirectHealRuntimePassed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: fixture-only PriestDirectHealAction passed same-Group live Core preflight, rejected the AoE Prayer of Healing spell, cast a single-target direct heal, spent Core mana and matched the exact Engine action ID to its successful Core Spell terminal; the threat budget remained Unknown.");
+        bool const f53fPriestSuccessReservationPassed =
+            f53bPriestActionTerminalMatched &&
+            f53fPriestReservationListenerRegistered &&
+            f53fPriestReservationRowsSeeded &&
+            f53fPriestMatchingActionRowsReleased &&
+            f53fPriestSameBotOtherActionPreserved &&
+            f53fPriestOtherBotActionPreserved &&
+            f53fPriestStaleEncounterIgnored;
+        sLog.Out(LOG_BASIC,
+            f53fPriestSuccessReservationPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F53f real Core successful terminal reservation: listener=%u rowsSeeded=%u matchingActionRowsReleased=%u sameBotOtherActionPreserved=%u otherBotActionPreserved=%u staleEncounterIgnored=%u.",
+            f53fPriestReservationListenerRegistered ? 1u : 0u,
+            f53fPriestReservationRowsSeeded ? 1u : 0u,
+            f53fPriestMatchingActionRowsReleased ? 1u : 0u,
+            f53fPriestSameBotOtherActionPreserved ? 1u : 0u,
+            f53fPriestOtherBotActionPreserved ? 1u : 0u,
+            f53fPriestStaleEncounterIgnored ? 1u : 0u);
+        if (f53fPriestSuccessReservationPassed)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F53f a real successful Core Priest Spell terminal released every matching threat fan-out row and preserved another action by the same Bot, another Bot's row, and a stale cross-encounter event.");
         else
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                 "[PartyBotSimulator] F53b direct-heal Core action runtime fixture failed.");
@@ -11121,6 +11233,12 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52gCNoOfferCreated = false;
     bool f52gCUnrelatedReservationPreserved = false;
     ActionId f52gCActionId = 0;
+    bool f53fThreatReservationListenerReady = false;
+    bool f53fInterruptedThreatReservationsSeeded = false;
+    bool f53fInterruptedThreatRowsReleased = false;
+    bool f53fInterruptedUnrelatedThreatRowsPreserved = false;
+    ActionId f53fInterruptedSameBotOtherActionId = 0;
+    ActionId f53fInterruptedOtherBotActionId = 0;
     bool f52gC2ListenerAdded = false;
     bool f52gC2ActionSelected = false;
     bool f52gC2CastStarted = false;
@@ -11128,6 +11246,11 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
     bool f52gC2ReservationReleased = false;
     bool f52gC2NoOfferCreated = false;
     ActionId f52gC2ActionId = 0;
+    bool f53fFailedThreatReservationsSeeded = false;
+    bool f53fFailedThreatRowReleased = false;
+    bool f53fFailedUnrelatedThreatRowsPreserved = false;
+    ActionId f53fFailedSameBotOtherActionId = 0;
+    ActionId f53fFailedOtherBotActionId = 0;
     bool f52gC3ListenerAdded = false;
     bool f52gC3ActionSelected = false;
     bool f52gC3CastStarted = false;
@@ -11218,6 +11341,22 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         uint32 const legacyDispatchesBefore = resurrectionAI.m_simulatorLegacyPolicyDispatchCount;
         uint32 const ticksBefore = resurrectionAI.m_simulatorNewEngineTickCount;
         uint32 const cyclesBefore = resurrectionAI.m_simulatorEngineDecisionCycleCount;
+
+        if (resurrectionAI.m_threatReservationTerminalListener)
+        {
+            resurrectionAI.m_threatReservationTerminalListener->SetCoordinator(wipeCoordinator);
+            f53fThreatReservationListenerReady = true;
+        }
+        else
+        {
+            std::shared_ptr<ThreatReservationTerminalListener> threatListener(
+                new ThreatReservationTerminalListener(casterGuid, wipeCoordinator));
+            if (resurrectionAI.m_partyBotEngine.AddCoreSpellTerminalListener(threatListener))
+            {
+                resurrectionAI.m_threatReservationTerminalListener = threatListener;
+                f53fThreatReservationListenerReady = true;
+            }
+        }
 
         // Simulator Players start with only their minimal default spell set.
         // Learn the real Vanilla Priest Resurrection chain through Core, then
@@ -11577,6 +11716,49 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                                 row.targetGuid == corpseTargetGuid &&
                                 row.ownerGuid == casterGuid;
                         });
+
+                if (f53fThreatReservationListenerReady)
+                {
+                    std::uint32_t const reserveNow = WorldTimer::getMSTime();
+                    Guid const otherOwnerGuid = players[4]->GetObjectGuid().GetRawValue();
+                    ThreatReservation primaryA;
+                    primaryA.ownerGuid = casterGuid;
+                    primaryA.threatOwnerGuid = casterGuid;
+                    primaryA.hostileGuid = 0xF53F0101ull;
+                    primaryA.actionId = f52gCActionId;
+                    primaryA.threatPoints = 5.0f;
+                    primaryA.expiresAtMs = reserveNow + 60000u;
+                    ThreatReservation primaryB = primaryA;
+                    primaryB.hostileGuid = 0xF53F0102ull;
+                    primaryB.threatOwnerGuid = otherOwnerGuid;
+                    primaryB.threatPoints = 7.0f;
+                    ThreatReservation sameBotOther;
+                    sameBotOther.ownerGuid = casterGuid;
+                    sameBotOther.threatOwnerGuid = casterGuid;
+                    sameBotOther.hostileGuid = 0xF53F0103ull;
+                    f53fInterruptedSameBotOtherActionId = wipeCoordinator->NextActionId();
+                    sameBotOther.actionId = f53fInterruptedSameBotOtherActionId;
+                    sameBotOther.threatPoints = 11.0f;
+                    sameBotOther.expiresAtMs = reserveNow + 60000u;
+                    ThreatReservation otherBot;
+                    otherBot.ownerGuid = otherOwnerGuid;
+                    otherBot.threatOwnerGuid = otherOwnerGuid;
+                    otherBot.hostileGuid = 0xF53F0104ull;
+                    f53fInterruptedOtherBotActionId = wipeCoordinator->NextActionId();
+                    otherBot.actionId = f53fInterruptedOtherBotActionId;
+                    otherBot.threatPoints = 13.0f;
+                    otherBot.expiresAtMs = reserveNow + 60000u;
+                    bool const primaryAAdded =
+                        wipeCoordinator->TryReserveThreatImpact(primaryA, reserveNow);
+                    bool const primaryBAdded =
+                        wipeCoordinator->TryReserveThreatImpact(primaryB, reserveNow);
+                    bool const sameBotOtherAdded =
+                        wipeCoordinator->TryReserveThreatImpact(sameBotOther, reserveNow);
+                    bool const otherBotAdded =
+                        wipeCoordinator->TryReserveThreatImpact(otherBot, reserveNow);
+                    f53fInterruptedThreatReservationsSeeded =
+                        primaryAAdded && primaryBAdded && sameBotOtherAdded && otherBotAdded;
+                }
             }
 
             if (f52gCCastStarted)
@@ -11603,6 +11785,20 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                         });
                 f52gCNoOfferCreated = f52gCInterruptedTerminalMatched &&
                     !corpseTarget->IsRessurectRequested();
+                std::uint32_t const terminalNow = WorldTimer::getMSTime();
+                Guid const f53fOtherOwnerGuid = players[4]->GetObjectGuid().GetRawValue();
+                f53fInterruptedThreatRowsReleased =
+                    f53fInterruptedThreatReservationsSeeded &&
+                    wipeCoordinator->GetReservedThreatImpact(
+                        0xF53F0101ull, casterGuid, 0, terminalNow) <= 0.001f &&
+                    wipeCoordinator->GetReservedThreatImpact(
+                        0xF53F0102ull, f53fOtherOwnerGuid, 0, terminalNow) <= 0.001f;
+                f53fInterruptedUnrelatedThreatRowsPreserved =
+                    f53fInterruptedThreatReservationsSeeded &&
+                    std::fabs(wipeCoordinator->GetReservedThreatImpact(
+                        0xF53F0103ull, casterGuid, 0, terminalNow) - 11.0f) <= 0.001f &&
+                    std::fabs(wipeCoordinator->GetReservedThreatImpact(
+                        0xF53F0104ull, f53fOtherOwnerGuid, 0, terminalNow) - 13.0f) <= 0.001f;
                 f52gCUnrelatedReservationPreserved = unrelatedReserved &&
                     std::any_of(
                         wipeCoordinator->GetReservations().begin(),
@@ -11615,6 +11811,10 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                         });
             }
 
+            wipeCoordinator->ReleaseThreatAction(f53fInterruptedSameBotOtherActionId, casterGuid);
+            wipeCoordinator->ReleaseThreatAction(
+                f53fInterruptedOtherBotActionId, players[4]->GetObjectGuid().GetRawValue());
+            wipeCoordinator->ReleaseThreatAction(f52gCActionId, casterGuid);
             wipeCoordinator->ReleaseReservation(
                 ReservationType::Resurrection, unrelatedTargetGuid, unrelatedOwnerGuid);
             if (!corpseTarget->IsAlive())
@@ -11670,6 +11870,43 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                                 row.targetGuid == corpseTargetGuid &&
                                 row.ownerGuid == casterGuid;
                         });
+
+                if (f53fThreatReservationListenerReady)
+                {
+                    std::uint32_t const reserveNow = WorldTimer::getMSTime();
+                    Guid const otherOwnerGuid = players[4]->GetObjectGuid().GetRawValue();
+                    ThreatReservation primary;
+                    primary.ownerGuid = casterGuid;
+                    primary.threatOwnerGuid = casterGuid;
+                    primary.hostileGuid = 0xF53F0201ull;
+                    primary.actionId = f52gC2ActionId;
+                    primary.threatPoints = 17.0f;
+                    primary.expiresAtMs = reserveNow + 60000u;
+                    ThreatReservation sameBotOther;
+                    sameBotOther.ownerGuid = casterGuid;
+                    sameBotOther.threatOwnerGuid = casterGuid;
+                    sameBotOther.hostileGuid = 0xF53F0202ull;
+                    f53fFailedSameBotOtherActionId = wipeCoordinator->NextActionId();
+                    sameBotOther.actionId = f53fFailedSameBotOtherActionId;
+                    sameBotOther.threatPoints = 19.0f;
+                    sameBotOther.expiresAtMs = reserveNow + 60000u;
+                    ThreatReservation otherBot;
+                    otherBot.ownerGuid = otherOwnerGuid;
+                    otherBot.threatOwnerGuid = otherOwnerGuid;
+                    otherBot.hostileGuid = 0xF53F0203ull;
+                    f53fFailedOtherBotActionId = wipeCoordinator->NextActionId();
+                    otherBot.actionId = f53fFailedOtherBotActionId;
+                    otherBot.threatPoints = 23.0f;
+                    otherBot.expiresAtMs = reserveNow + 60000u;
+                    bool const primaryAdded =
+                        wipeCoordinator->TryReserveThreatImpact(primary, reserveNow);
+                    bool const sameBotOtherAdded =
+                        wipeCoordinator->TryReserveThreatImpact(sameBotOther, reserveNow);
+                    bool const otherBotAdded =
+                        wipeCoordinator->TryReserveThreatImpact(otherBot, reserveNow);
+                    f53fFailedThreatReservationsSeeded =
+                        primaryAdded && sameBotOtherAdded && otherBotAdded;
+                }
             }
 
             if (f52gC2CastStarted)
@@ -11703,7 +11940,24 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
                         });
                 f52gC2NoOfferCreated = f52gC2FailedTerminalMatched &&
                     !corpseTarget->IsRessurectRequested();
+                std::uint32_t const terminalNow = WorldTimer::getMSTime();
+                Guid const f53fOtherOwnerGuid = players[4]->GetObjectGuid().GetRawValue();
+                f53fFailedThreatRowReleased =
+                    f53fFailedThreatReservationsSeeded &&
+                    wipeCoordinator->GetReservedThreatImpact(
+                        0xF53F0201ull, casterGuid, 0, terminalNow) <= 0.001f;
+                f53fFailedUnrelatedThreatRowsPreserved =
+                    f53fFailedThreatReservationsSeeded &&
+                    std::fabs(wipeCoordinator->GetReservedThreatImpact(
+                        0xF53F0202ull, casterGuid, 0, terminalNow) - 19.0f) <= 0.001f &&
+                    std::fabs(wipeCoordinator->GetReservedThreatImpact(
+                        0xF53F0203ull, f53fOtherOwnerGuid, 0, terminalNow) - 23.0f) <= 0.001f;
             }
+
+            wipeCoordinator->ReleaseThreatAction(f53fFailedSameBotOtherActionId, casterGuid);
+            wipeCoordinator->ReleaseThreatAction(
+                f53fFailedOtherBotActionId, players[4]->GetObjectGuid().GetRawValue());
+            wipeCoordinator->ReleaseThreatAction(f52gC2ActionId, casterGuid);
 
             // F52g-C3: a real Core resurrection cast is deliberately left
             // pending while its bounded reservation expires. A second owner
@@ -12778,6 +13032,27 @@ bool RunEngineCoreFiveBotFormationSmokeTest(Map& map)
         if (f52gC2Passed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F52g-C2 depleted mana after a real Core resurrection cast began; Core CheckPower finished the spell as Failed, emitted the matching Engine terminal, released its reservation and created no resurrection offer.");
+        bool const f53fCoreFailureAndInterruptPassed =
+            f53fThreatReservationListenerReady &&
+            f53fInterruptedThreatReservationsSeeded &&
+            f53fInterruptedThreatRowsReleased &&
+            f53fInterruptedUnrelatedThreatRowsPreserved &&
+            f53fFailedThreatReservationsSeeded &&
+            f53fFailedThreatRowReleased &&
+            f53fFailedUnrelatedThreatRowsPreserved;
+        sLog.Out(LOG_BASIC,
+            f53fCoreFailureAndInterruptPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F53f real Core terminal reservation matrix: listener=%u interruptedSeeded=%u interruptedRowsReleased=%u interruptedUnrelatedPreserved=%u failedSeeded=%u failedRowReleased=%u failedUnrelatedPreserved=%u.",
+            f53fThreatReservationListenerReady ? 1u : 0u,
+            f53fInterruptedThreatReservationsSeeded ? 1u : 0u,
+            f53fInterruptedThreatRowsReleased ? 1u : 0u,
+            f53fInterruptedUnrelatedThreatRowsPreserved ? 1u : 0u,
+            f53fFailedThreatReservationsSeeded ? 1u : 0u,
+            f53fFailedThreatRowReleased ? 1u : 0u,
+            f53fFailedUnrelatedThreatRowsPreserved ? 1u : 0u);
+        if (f53fCoreFailureAndInterruptPassed)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F53f real Core Interrupted and Failed Spell terminals released every in-flight threat row owned by the matching Bot/action while preserving another action by the same Bot and unrelated rows owned by another Bot.");
         sLog.Out(LOG_BASIC, f52gC3Passed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
             "[PartyBotSimulator] F52g-C3 expired pending group resurrection: listener=%u selected=%u castStarted=%u actionId=%llu reservationExpired=%u reservationReclaimed=%u lateInterruptedTerminal=%u successorPreserved=%u noOffer=%u.",
             f52gC3ListenerAdded ? 1u : 0u, f52gC3ActionSelected ? 1u : 0u,

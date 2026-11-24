@@ -3607,6 +3607,29 @@ void TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots() {
     assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
 }
 
+void TestDirectHealHelpfulProcRiskClassifier() {
+    constexpr std::uint32_t kDealHelpfulSpell = 1u << 4;
+    constexpr std::uint32_t kTakeHelpfulSpell = 1u << 7;
+    constexpr std::uint32_t kHarmfulSpell = 1u << 10;
+    constexpr std::uint32_t kHelpfulSpellMask =
+        kDealHelpfulSpell | kTakeHelpfulSpell;
+
+    assert(!HasPotentialHelpfulSpellProc(
+        false, false, 0, kDealHelpfulSpell));
+    assert(HasPotentialHelpfulSpellProc(
+        true, false, 0, kDealHelpfulSpell));
+    assert(HasPotentialHelpfulSpellProc(
+        false, true, 0, kDealHelpfulSpell));
+    assert(HasPotentialHelpfulSpellProc(
+        false, false, kDealHelpfulSpell, kDealHelpfulSpell));
+    assert(HasPotentialHelpfulSpellProc(
+        false, false, kTakeHelpfulSpell, kTakeHelpfulSpell));
+    assert(!HasPotentialHelpfulSpellProc(
+        false, false, kHarmfulSpell, kHelpfulSpellMask));
+    assert(!HasPotentialHelpfulSpellProc(
+        false, false, kDealHelpfulSpell, kTakeHelpfulSpell));
+}
+
 void TestDirectHealThreatComponentsSplitAcrossAllHostileReferences() {
     DirectHealThreatComponents components;
 
@@ -6067,6 +6090,7 @@ int main() {
     TestEncounterTraceBudgetConfigurationIsClampedAndBounded();
     TestNonBotPartyMemberStateChangesAreSampledWithoutDuplicates();
     TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots();
+    TestDirectHealHelpfulProcRiskClassifier();
     TestDirectHealThreatComponentsSplitAcrossAllHostileReferences();
     TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure();
     TestPriestDirectHealSelectionUsesAffordableClosestRank();

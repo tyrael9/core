@@ -788,6 +788,11 @@ if ! grep -Fq "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank an
     exit 1
 fi
 
+if ! grep -Fq "[PartyBotSimulator] PASS: a real nonzero positive spell_threat row on Lesser Heal produced the exact per-hostile flat-threat component for both Core ThreatManagers, while total direct-heal threat remained within the assist-plus-flat upper bound and the disposable DB row was restored." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] F53c positive flat spell-threat Core parity marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: one real five-Player Core Group passed initial roster/cache validation, two Core hostile adds switched from Main Tank to healer through assist-threat, final threat values and both reachable/unreachable per-reference melee states matched Core, and all Group/session cleanup succeeded." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The combined five-Player Group and multi-add/healer-threat PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

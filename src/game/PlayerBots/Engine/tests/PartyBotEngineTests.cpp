@@ -7,6 +7,7 @@
 #include "DpsAssistTrigger.h"
 #include "PriestHealingPolicy.h"
 #include "PriestDirectHealAction.h"
+#include "DirectHealThreatComponents.h"
 #include "FollowPartyLeaderTrigger.h"
 #include "BotBehaviorState.h"
 #include "AutoResurrectSelfTrigger.h"
@@ -3606,6 +3607,44 @@ void TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots() {
     assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
 }
 
+void TestDirectHealThreatComponentsSplitAcrossAllHostileReferences() {
+    DirectHealThreatComponents components;
+
+    // Core divides helpful healing assist and positive flat spell threat over
+    // every HostileReference independently; only the assist path receives the
+    // heal's spell threat multiplier before ThreatCalcHelper runs.
+    assert(CalculateDirectHealThreatComponents(
+        200.0f, 0.5f, 1.5f, 24.0f, 4, components));
+    assert(std::fabs(components.assistThreatPerReference - 37.5f) < 0.0001f);
+    assert(std::fabs(components.flatThreatPerReference - 6.0f) < 0.0001f);
+
+    // Paladin's healing-assist coefficient is 25%; a zero flat row contributes
+    // no second component and must not be mistaken for a missing recipient.
+    assert(CalculateDirectHealThreatComponents(
+        100.0f, 0.25f, 2.0f, 0.0f, 2, components));
+    assert(std::fabs(components.assistThreatPerReference - 25.0f) < 0.0001f);
+    assert(components.flatThreatPerReference == 0.0f);
+
+    // No references cannot be treated as a completed estimate: callers must
+    // preserve Unknown until the action's other threat/proc paths are closed.
+    assert(!CalculateDirectHealThreatComponents(
+        100.0f, 0.5f, 1.0f, 0.0f, 0, components));
+    assert(components.assistThreatPerReference == 0.0f);
+    assert(components.flatThreatPerReference == 0.0f);
+
+    assert(!CalculateDirectHealThreatComponents(
+        -1.0f, 0.5f, 1.0f, 0.0f, 1, components));
+    assert(!CalculateDirectHealThreatComponents(
+        100.0f, 1.1f, 1.0f, 0.0f, 1, components));
+    assert(!CalculateDirectHealThreatComponents(
+        100.0f, 0.5f, -1.0f, 0.0f, 1, components));
+    assert(!CalculateDirectHealThreatComponents(
+        100.0f, 0.5f, 1.0f, -1.0f, 1, components));
+    assert(!CalculateDirectHealThreatComponents(
+        std::numeric_limits<float>::max(), 1.0f, 2.0f,
+        0.0f, 1, components));
+}
+
 void TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure() {
     Fixture f;
     f.bot.classId = PriestDirectHealAction::PriestClassId;
@@ -6028,6 +6067,7 @@ int main() {
     TestEncounterTraceBudgetConfigurationIsClampedAndBounded();
     TestNonBotPartyMemberStateChangesAreSampledWithoutDuplicates();
     TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots();
+    TestDirectHealThreatComponentsSplitAcrossAllHostileReferences();
     TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure();
     TestPriestDirectHealSelectionUsesAffordableClosestRank();
     TestHealingTriageShadowStrategy();

@@ -788,8 +788,8 @@ if ! grep -Fq "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank an
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: Lesser Heal with a positive flat spell_threat row completed as a Core self-heal without hostile references, threat impacts or any ThreatManager delta." "$LOG_FILE"; then
-    echo "[PartyBotSimulator] F53d positive-flat/no-hostile-reference Core self-heal marker was not found." | tee -a "$LOG_FILE"
+if ! grep -Fq "[PartyBotSimulator] PASS: Lesser Heal with a positive flat spell_threat row healed a same-Group Player with no hostile references and produced no ThreatManager delta." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] F53d positive-flat/no-hostile-reference Core heal marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 

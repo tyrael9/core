@@ -5278,11 +5278,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                   healSpell, *healAssistSnapshot)
             : ThreatImpactEstimate();
 
-    // F53d records this precondition before the first healing cast gives
-    // the healer hostile references. The actual self-heal is tested below
-    // after the positive flat spell_threat row has been installed.
-    bool const f53dHealerHasNoHostileReferences =
-        healer && healer->GetHostileRefManager().getFirst() == nullptr;
 
     bool f53cInspirationSpellValid = false;
     bool f53cInspirationAuraAttached = false;
@@ -5484,51 +5479,71 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                   healSpell, *healAssistSnapshot)
             : ThreatImpactEstimate();
 
-    // F53d: execute a real self-heal with positive flat spell_threat
-    // present but no hostile references on the healed Player.
-    uint32 const f53dOriginalHealerHealth = healer->GetHealth();
+    // F53d: a positive flat spell_threat row still yields NoThreat when
+    // the healed same-Group Player has no hostile references. The caster may
+    // itself already have threat; Core's helpful threat recipients come from
+    // the healed target's HostileRefManager, not the caster's.
+    Player* f53dNoRefTarget = nullptr;
+    for (Player* candidate : players)
+    {
+        if (!candidate || candidate == healer || candidate == tank ||
+            !candidate->IsAlive() || candidate->GetGroup() != group.get() ||
+            candidate->GetHostileRefManager().getFirst() != nullptr)
+            continue;
+        f53dNoRefTarget = candidate;
+        break;
+    }
+    uint32 const f53dOriginalNoRefTargetHealth =
+        f53dNoRefTarget ? f53dNoRefTarget->GetHealth() : 0u;
     uint32 const f53dOriginalHealerMana = healer->GetPower(POWER_MANA);
-    healer->SetHealth(std::max<uint32>(1u, healer->GetMaxHealth() / 2u));
+    if (f53dNoRefTarget)
+        f53dNoRefTarget->SetHealth(
+            std::max<uint32>(1u, f53dNoRefTarget->GetMaxHealth() / 2u));
     healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
     PartyCoordinator f53dNoRefCoordinator;
     PartySnapshot const* const f53dNoRefSnapshot =
         PartySnapshotBuilder::GetOrBuild(
             healer, f53dNoRefCoordinator, WorldTimer::getMSTime(), 0);
     bool const f53dNoRefsBeforeCast =
-        f53dHealerHasNoHostileReferences &&
-        healer->GetHostileRefManager().getFirst() == nullptr;
-    ThreatImpactEstimate const f53dNoThreatSelfHeal =
+        f53dNoRefTarget &&
+        f53dNoRefTarget->GetHostileRefManager().getFirst() == nullptr;
+    ThreatImpactEstimate const f53dNoThreatHealEstimate =
         f53dNoRefsBeforeCast && f53cFlatThreatRowInstalled &&
                 f53dNoRefSnapshot && healSpell
             ? EstimateDirectHealingThreatComponents(
-                  healer, healer,
-                  static_cast<float>(healer->GetMaxHealth() - healer->GetHealth()),
+                  healer, f53dNoRefTarget,
+                  static_cast<float>(f53dNoRefTarget->GetMaxHealth() -
+                                     f53dNoRefTarget->GetHealth()),
                   healSpell, *f53dNoRefSnapshot)
             : ThreatImpactEstimate();
     ThreatImpactBudgetResult const f53dNoThreatBudget =
         f53dNoRefSnapshot
             ? AssessThreatImpactBudget(
-                  *f53dNoRefSnapshot, f53dNoThreatSelfHeal,
+                  *f53dNoRefSnapshot, f53dNoThreatHealEstimate,
                   f53dNoRefCoordinator, WorldTimer::getMSTime(), 0)
             : ThreatImpactBudgetResult();
     bool const f53dNoThreatAccepted =
         f53cFlatThreatRowInstalled && f53dNoRefSnapshot && f53dNoRefsBeforeCast &&
-        f53dNoThreatSelfHeal.completeness == ThreatImpactCompleteness::NoThreat &&
-        f53dNoThreatSelfHeal.reason ==
+        f53dNoThreatHealEstimate.completeness ==
+            ThreatImpactCompleteness::NoThreat &&
+        f53dNoThreatHealEstimate.reason ==
             "direct_heal_has_no_hostile_references" &&
-        f53dNoThreatSelfHeal.impacts.empty() &&
+        f53dNoThreatHealEstimate.impacts.empty() &&
         IsThreatImpactEstimateForSnapshot(
-            f53dNoThreatSelfHeal, f53dNoRefSnapshot->epoch) &&
+            f53dNoThreatHealEstimate, f53dNoRefSnapshot->epoch) &&
         f53dNoThreatBudget.status == ThreatImpactBudgetStatus::Safe;
     float const f53dHealerThreatBefore0 =
         hostiles[0].creature->GetThreatManager().getThreat(healer);
     float const f53dHealerThreatBefore1 =
         hostiles[1].creature->GetThreatManager().getThreat(healer);
-    uint32 const f53dSelfHealthBefore = healer->GetHealth();
+    uint32 const f53dNoRefTargetHealthBefore =
+        f53dNoRefTarget ? f53dNoRefTarget->GetHealth() : 0u;
     uint32 const f53dSelfManaBefore = healer->GetPower(POWER_MANA);
-    SpellCastResult const f53dSelfHealCastResult =
+    if (f53dNoRefTarget)
+        healer->SetFacingToObject(f53dNoRefTarget);
+    SpellCastResult const f53dNoRefHealCastResult =
         f53dNoThreatAccepted
-            ? healer->CastSpell(healer, healSpell, false)
+            ? healer->CastSpell(f53dNoRefTarget, healSpell, false)
             : SPELL_FAILED_UNKNOWN;
     for (uint32 tick = 0; tick < 20 &&
          healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
@@ -5536,41 +5551,45 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
         map.Update(250);
     }
-    uint32 const f53dSelfHealthAfter = healer->GetHealth();
+    uint32 const f53dNoRefTargetHealthAfter =
+        f53dNoRefTarget ? f53dNoRefTarget->GetHealth() : 0u;
     uint32 const f53dSelfManaAfter = healer->GetPower(POWER_MANA);
-    bool const f53dSelfHealCompleted =
-        f53dSelfHealCastResult == SPELL_CAST_OK &&
+    bool const f53dNoRefHealCompleted =
+        f53dNoRefHealCastResult == SPELL_CAST_OK &&
         !healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
-        f53dSelfHealthAfter > f53dSelfHealthBefore &&
+        f53dNoRefTargetHealthAfter > f53dNoRefTargetHealthBefore &&
         f53dSelfManaAfter < f53dSelfManaBefore;
     bool const f53dNoRefsAfterCast =
-        healer->GetHostileRefManager().getFirst() == nullptr;
+        f53dNoRefTarget &&
+        f53dNoRefTarget->GetHostileRefManager().getFirst() == nullptr;
     bool const f53dNoThreatDelta =
         std::fabs(hostiles[0].creature->GetThreatManager().getThreat(healer) -
                   f53dHealerThreatBefore0) < 0.01f &&
         std::fabs(hostiles[1].creature->GetThreatManager().getThreat(healer) -
                   f53dHealerThreatBefore1) < 0.01f;
     bool const f53dNoReferenceCoreCastPassed =
-        f53dNoThreatAccepted && f53dSelfHealCompleted &&
+        f53dNoThreatAccepted && f53dNoRefHealCompleted &&
         f53dNoRefsAfterCast && f53dNoThreatDelta;
     sLog.Out(LOG_BASIC,
         f53dNoReferenceCoreCastPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F53d NoThreat Core self-heal: positiveFlatRow=%u refsBefore=%u estimateNoThreat=%u impactsEmpty=%u budgetSafe=%u castResult=%u healed=%u manaSpent=%u refsAfter=%u threatUnchanged=%u.",
+        "[PartyBotSimulator] F53d NoThreat Core heal: targetFound=%u positiveFlatRow=%u refsBefore=%u estimateNoThreat=%u impactsEmpty=%u budgetSafe=%u castResult=%u healed=%u manaSpent=%u refsAfter=%u threatUnchanged=%u.",
+        f53dNoRefTarget ? 1u : 0u,
         f53cFlatThreatRowInstalled ? 1u : 0u,
         f53dNoRefsBeforeCast ? 1u : 0u,
-        f53dNoThreatSelfHeal.completeness ==
+        f53dNoThreatHealEstimate.completeness ==
             ThreatImpactCompleteness::NoThreat ? 1u : 0u,
-        f53dNoThreatSelfHeal.impacts.empty() ? 1u : 0u,
+        f53dNoThreatHealEstimate.impacts.empty() ? 1u : 0u,
         f53dNoThreatBudget.status == ThreatImpactBudgetStatus::Safe ? 1u : 0u,
-        static_cast<uint32>(f53dSelfHealCastResult),
-        f53dSelfHealCompleted ? 1u : 0u,
+        static_cast<uint32>(f53dNoRefHealCastResult),
+        f53dNoRefHealCompleted ? 1u : 0u,
         f53dSelfManaAfter < f53dSelfManaBefore ? 1u : 0u,
         f53dNoRefsAfterCast ? 1u : 0u,
         f53dNoThreatDelta ? 1u : 0u);
     if (f53dNoReferenceCoreCastPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: Lesser Heal with a positive flat spell_threat row completed as a Core self-heal without hostile references, threat impacts or any ThreatManager delta.");
-    healer->SetHealth(f53dOriginalHealerHealth);
+            "[PartyBotSimulator] PASS: Lesser Heal with a positive flat spell_threat row healed a same-Group Player with no hostile references and produced no ThreatManager delta.");
+    if (f53dNoRefTarget)
+        f53dNoRefTarget->SetHealth(f53dOriginalNoRefTargetHealth);
     healer->SetPower(POWER_MANA, f53dOriginalHealerMana);
 
     auto findHealAssistBound = [&](Guid hostileGuid) -> float

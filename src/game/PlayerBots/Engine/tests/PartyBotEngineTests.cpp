@@ -18,6 +18,7 @@
 #include "ThreatBudget.h"
 #include "ThreatBudgetPolicy.h"
 #include "ThreatReservationTerminalListener.h"
+#include "HealReservationTerminalListener.h"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -188,6 +189,39 @@ public:
     void OnCoreSpellTerminal(CoreSpellTerminalEvent const& event) override { events.push_back(event); }
     std::vector<CoreSpellTerminalEvent> events;
 };
+class MockDirectHealRuntime final : public CoreActionRuntime
+{
+public:
+    CoreActionResolution ResolveUnitContext(
+        DecisionContext const&, Guid targetGuid) const override
+    {
+        CoreActionResolution result;
+        result.status = CoreActionResolveStatus::Resolved;
+        result.actor = reinterpret_cast<Player*>(const_cast<MockDirectHealRuntime*>(this));
+        result.map = reinterpret_cast<Map*>(const_cast<MockDirectHealRuntime*>(this));
+        result.target = targetGuid
+            ? reinterpret_cast<Unit*>(const_cast<MockDirectHealRuntime*>(this))
+            : nullptr;
+        result.reason = "mock_resolved";
+        return result;
+    }
+    bool CanCastDirectHeal(DecisionContext const&, Guid, std::uint32_t) const override
+    {
+        return canCast;
+    }
+    bool StartDirectHeal(
+        DecisionContext const& context, Guid targetGuid, std::uint32_t) override
+    {
+        observedOwnReservation = context.coordinator.GetReservedAmount(
+            ReservationType::Heal, targetGuid, otherOwnerGuid, context.nowMs);
+        return startSucceeds;
+    }
+    Guid otherOwnerGuid = 0;
+    std::uint32_t observedOwnReservation = 0;
+    bool canCast = true;
+    bool startSucceeds = true;
+};
+
 class CapturePointMovementTerminalListener final : public PointMovementTerminalListener {
 public:
     void OnPointMovementTerminal(PointMovementTerminalEvent const& event) override {
@@ -3072,6 +3106,175 @@ void TestThreatReservationTerminalListenerReleasesNoEncounterTerminalWithoutCros
         9102, ownerGuid, 0, 1000) == 19.0f);
 }
 
+void TestHealReservationsAggregateAcrossBotsAndReleaseOnlyExactCast()
+{
+    auto coordinator = std::make_shared<PartyCoordinator>();
+    Guid const targetGuid = 700;
+    Guid const healerGuid = 701;
+    Guid const otherHealerGuid = 702;
+
+    Reservation first;
+    first.type = ReservationType::Heal;
+    first.targetGuid = targetGuid;
+    first.ownerGuid = healerGuid;
+    first.expiresAtMs = 5000;
+    first.amount = 450;
+    first.spellId = 2050;
+    first.actionId = coordinator->NextActionId();
+    assert(first.actionId && coordinator->TryReserve(first, 1000));
+
+    Reservation other = first;
+    other.ownerGuid = otherHealerGuid;
+    other.amount = 300;
+    other.actionId = coordinator->NextActionId();
+    assert(coordinator->TryReserve(other, 1000));
+    assert(coordinator->GetReservedAmount(
+        ReservationType::Heal, targetGuid, 0, 1100) == 750);
+
+    Reservation successor = first;
+    successor.amount = 125;
+    successor.spellId = 2052;
+    successor.actionId = coordinator->NextActionId();
+    assert(successor.actionId != first.actionId);
+    assert(coordinator->TryReserve(successor, 1200));
+    assert(coordinator->GetReservedAmount(
+        ReservationType::Heal, targetGuid, 0, 1200) == 425);
+
+    HealReservationTerminalListener listener(healerGuid, coordinator);
+    CoreSpellTerminalEvent terminal;
+    terminal.actionId = first.actionId;
+    terminal.encounterId = 0;
+    terminal.targetGuid = targetGuid;
+    terminal.spellId = first.spellId;
+    terminal.status = CoreSpellTerminalStatus::Interrupted;
+    listener.OnCoreSpellTerminal(terminal);
+    assert(coordinator->GetReservedAmount(
+        ReservationType::Heal, targetGuid, 0, 1200) == 425);
+
+    terminal.actionId = successor.actionId;
+    terminal.spellId = first.spellId;
+    listener.OnCoreSpellTerminal(terminal);
+    assert(coordinator->GetReservedAmount(
+        ReservationType::Heal, targetGuid, 0, 1200) == 425);
+
+    terminal.spellId = successor.spellId;
+    terminal.targetGuid = targetGuid + 1;
+    listener.OnCoreSpellTerminal(terminal);
+    assert(coordinator->GetReservedAmount(
+        ReservationType::Heal, targetGuid, 0, 1200) == 425);
+
+    terminal.targetGuid = targetGuid;
+    terminal.encounterId = 1;
+    listener.OnCoreSpellTerminal(terminal);
+    assert(coordinator->GetReservedAmount(
+        ReservationType::Heal, targetGuid, 0, 1200) == 425);
+
+    terminal.encounterId = 0;
+    listener.OnCoreSpellTerminal(terminal);
+    assert(coordinator->GetReservedAmount(
+        ReservationType::Heal, targetGuid, 0, 1200) == 300);
+
+    Reservation huge = other;
+    huge.targetGuid = targetGuid + 2;
+    huge.amount = std::numeric_limits<std::uint32_t>::max();
+    huge.actionId = coordinator->NextActionId();
+    assert(coordinator->TryReserve(huge, 1300));
+    Reservation overflow = huge;
+    overflow.ownerGuid = otherHealerGuid + 1;
+    overflow.amount = 1;
+    overflow.actionId = coordinator->NextActionId();
+    assert(coordinator->TryReserve(overflow, 1300));
+    assert(coordinator->GetReservedAmount(
+        ReservationType::Heal, targetGuid + 2, 0, 1300) ==
+        std::numeric_limits<std::uint32_t>::max());
+}
+
+void TestPriestHealReservationStartRollbackAndTerminalRelease()
+{
+    Fixture successful;
+    successful.bot.classId = PriestDirectHealAction::PriestClassId;
+    successful.bot.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    successful.bot.isPlayerBot = true;
+    successful.bot.power = 500;
+    successful.bot.directHealSpells = {{2050, 120, 25}};
+    PartyMemberSnapshot target;
+    ConfigureMember(target, 22, PartyRole::Tank, 30, 100, true);
+    target.mapId = successful.snapshot.mapId;
+    target.instanceId = successful.snapshot.instanceId;
+    successful.snapshot.members.push_back(target);
+
+    MockDirectHealRuntime successRuntime;
+    successRuntime.otherOwnerGuid = 33;
+    Reservation other;
+    other.type = ReservationType::Heal;
+    other.targetGuid = 22;
+    other.ownerGuid = 33;
+    other.expiresAtMs = 10000;
+    other.amount = 20;
+    other.spellId = 2050;
+    other.actionId = successful.coordinator.NextActionId();
+    assert(successful.coordinator.TryReserve(other, 1000));
+
+    DecisionContext successContext(
+        successful.snapshot, successful.bot, successful.coordinator, 1000,
+        nullptr, nullptr, nullptr, nullptr, &successRuntime);
+    ActionCandidate candidate = Candidate(
+        "core_priest_direct_heal", 80.0f, ActionChannel::GlobalCooldown);
+    candidate.targetGuid = 22;
+    candidate.spellId = 2050;
+    candidate.actionId = successful.coordinator.NextActionId();
+
+    PriestDirectHealAction action;
+    std::string reason;
+    assert(action.IsPossible(successContext, candidate, reason));
+    assert(action.IsUseful(successContext, candidate, reason));
+    ActionExecutionResult started = action.ExecuteDetailed(successContext, candidate);
+    assert(started.result == ActionResult::Success);
+    assert(started.reason == "priest_direct_heal_core_cast_started");
+    assert(successRuntime.observedOwnReservation == 50);
+    assert(successful.coordinator.GetReservedAmount(
+        ReservationType::Heal, 22, 0, 1000) == 70);
+
+    std::shared_ptr<PartyCoordinator> coordinator(
+        &successful.coordinator, [](PartyCoordinator*) {});
+    HealReservationTerminalListener listener(11, coordinator);
+    CoreSpellTerminalEvent terminal;
+    terminal.actionId = candidate.actionId;
+    terminal.encounterId = 0;
+    terminal.targetGuid = candidate.targetGuid;
+    terminal.spellId = candidate.spellId;
+    terminal.status = CoreSpellTerminalStatus::Succeeded;
+    listener.OnCoreSpellTerminal(terminal);
+    assert(successful.coordinator.GetReservedAmount(
+        ReservationType::Heal, 22, 0, 1000) == 20);
+
+    Fixture failed;
+    failed.bot.classId = PriestDirectHealAction::PriestClassId;
+    failed.bot.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    failed.bot.isPlayerBot = true;
+    failed.bot.power = 500;
+    failed.bot.directHealSpells = {{2050, 120, 25}};
+    target.guid = 22;
+    target.health = 30;
+    target.maxHealth = 100;
+    failed.snapshot.members.push_back(target);
+    MockDirectHealRuntime failRuntime;
+    failRuntime.otherOwnerGuid = 33;
+    failRuntime.startSucceeds = false;
+    other.actionId = failed.coordinator.NextActionId();
+    assert(failed.coordinator.TryReserve(other, 1000));
+    DecisionContext failedContext(
+        failed.snapshot, failed.bot, failed.coordinator, 1000,
+        nullptr, nullptr, nullptr, nullptr, &failRuntime);
+    candidate.actionId = failed.coordinator.NextActionId();
+    ActionExecutionResult rejected = action.ExecuteDetailed(failedContext, candidate);
+    assert(rejected.result == ActionResult::Impossible);
+    assert(rejected.reason == "priest_direct_heal_core_cast_rejected");
+    assert(failRuntime.observedOwnReservation == 50);
+    assert(failed.coordinator.GetReservedAmount(
+        ReservationType::Heal, 22, 0, 1000) == 20);
+}
+
 void TestClosingEncounterClearsInFlightThreatReservations()
 {
     PartyCoordinator coordinator;
@@ -4119,6 +4322,73 @@ void TestPriestHealingTargetSelectionIsDeterministicAndSnapshotBounded()
     healerIt->classId = 5;
     healerIt->roleId = static_cast<std::uint8_t>(PartyRole::Tank);
     assert(!SelectPriestHealingDecision(snapshot, healer.guid, decision));
+}
+
+void TestPriestHealingTargetSelectionAccountsForOtherBotHealReservations()
+{
+    PartySnapshot snapshot;
+    snapshot.groupId = 902;
+    snapshot.mapId = 1;
+    snapshot.instanceId = 9;
+    snapshot.epoch = 85;
+    PartyMemberSnapshot healer, tank, ranged;
+    ConfigureMember(healer, 11, PartyRole::Healer, 90, 100);
+    healer.classId = 5;
+    healer.isPlayerBot = true;
+    healer.power = 100;
+    healer.mapId = snapshot.mapId;
+    healer.instanceId = snapshot.instanceId;
+    healer.directHealSpells = {{2050, 100, 20}, {2052, 600, 55}};
+    ConfigureMember(tank, 22, PartyRole::Tank, 100, 1000, true);
+    tank.mapId = snapshot.mapId;
+    tank.instanceId = snapshot.instanceId;
+    ConfigureMember(ranged, 33, PartyRole::RangedDamage, 100, 500);
+    ranged.mapId = snapshot.mapId;
+    ranged.instanceId = snapshot.instanceId;
+    snapshot.members = {healer, tank, ranged};
+
+    PartyCoordinator coordinator;
+    Reservation tankCovered;
+    tankCovered.type = ReservationType::Heal;
+    tankCovered.targetGuid = tank.guid;
+    tankCovered.ownerGuid = 77;
+    tankCovered.expiresAtMs = 5000;
+    tankCovered.amount = 900;
+    tankCovered.spellId = 2050;
+    tankCovered.actionId = coordinator.NextActionId();
+    assert(coordinator.TryReserve(tankCovered, 1000));
+
+    PriestHealingTargetSelection selection;
+    assert(SelectPriestHealingTarget(snapshot, healer.guid, selection));
+    assert(selection.targetGuid == tank.guid && selection.missingHealth == 900);
+    assert(SelectPriestHealingTarget(
+        snapshot, healer.guid, coordinator, 1100, selection));
+    assert(selection.targetGuid == ranged.guid && selection.missingHealth == 400);
+
+    PriestHealingDecisionSelection decision;
+    assert(SelectPriestHealingDecision(
+        snapshot, healer.guid, coordinator, 1100, decision));
+    assert(decision.IsValid() && decision.target.targetGuid == ranged.guid);
+    assert(decision.target.missingHealth == 400 && decision.spell.spellId == 2052);
+
+    Reservation rangedCovered = tankCovered;
+    rangedCovered.targetGuid = ranged.guid;
+    rangedCovered.amount = 400;
+    rangedCovered.actionId = coordinator.NextActionId();
+    assert(coordinator.TryReserve(rangedCovered, 1100));
+    assert(!SelectPriestHealingTarget(
+        snapshot, healer.guid, coordinator, 1200, selection));
+    assert(!selection.IsValid());
+
+    assert(coordinator.ReleaseReservation(
+        ReservationType::Heal, ranged.guid, tankCovered.ownerGuid));
+    rangedCovered.ownerGuid = healer.guid;
+    rangedCovered.amount = 100;
+    rangedCovered.actionId = coordinator.NextActionId();
+    assert(coordinator.TryReserve(rangedCovered, 1200));
+    assert(SelectPriestHealingTarget(
+        snapshot, healer.guid, coordinator, 1300, selection));
+    assert(selection.targetGuid == ranged.guid && selection.missingHealth == 400);
 }
 
 void TestHealingTriageShadowStrategy() {
@@ -6348,6 +6618,8 @@ int main() {
     TestActionResultListenersAreBoundedAndSnapshotDuringDispatch();
     TestThreatReservationTerminalListenerReleasesOnlyMatchingOwnerAndEncounter();
     TestThreatReservationTerminalListenerReleasesNoEncounterTerminalWithoutCrossShardCollision();
+    TestHealReservationsAggregateAcrossBotsAndReleaseOnlyExactCast();
+    TestPriestHealReservationStartRollbackAndTerminalRelease();
     TestClosingEncounterClearsInFlightThreatReservations();
     TestCoreSpellTerminalListenersDeliverOwnedEventsAndAreBounded();
     TestCoreSpellSuccessReleasesAndExecutesBoundedContinuation();
@@ -6415,6 +6687,7 @@ int main() {
     TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure();
     TestPriestDirectHealSelectionUsesAffordableClosestRank();
     TestPriestHealingTargetSelectionIsDeterministicAndSnapshotBounded();
+    TestPriestHealingTargetSelectionAccountsForOtherBotHealReservations();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();

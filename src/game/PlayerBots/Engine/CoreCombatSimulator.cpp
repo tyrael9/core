@@ -4596,6 +4596,12 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         bool f53fPriestSameBotOtherActionPreserved = false;
         bool f53fPriestOtherBotActionPreserved = false;
         bool f53fPriestStaleEncounterIgnored = false;
+        bool f54bHealListenerRegistered = false;
+        bool f54bOtherHealerReservationSeeded = false;
+        bool f54bOwnReservationCreated = false;
+        bool f54bOwnReservationReleased = false;
+        bool f54bOtherHealerReservationPreserved = false;
+        uint32 f54bExpectedOwnReservationAmount = 0;
         uint32 f53bPriestActionSpellId = 0;
         ActionId f53bPriestActionId = 0;
         if (priest && priestHealerAI &&
@@ -4704,6 +4710,34 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         std::uint32_t const f53fReserveNow = WorldTimer::getMSTime();
                         Guid const f53fPriestGuid = priest->GetObjectGuid().GetRawValue();
                         Guid const f53fOtherBotGuid = players[4]->GetObjectGuid().GetRawValue();
+                        std::shared_ptr<HealReservationTerminalListener> f54bHealListener =
+                            priestHealerAI->m_healReservationTerminalListener;
+                        if (f54bHealListener) {
+                            f54bHealListener->SetCoordinator(f53bCoordinator);
+                            f54bHealListenerRegistered = true;
+                        } else {
+                            f54bHealListener.reset(
+                                new HealReservationTerminalListener(f53fPriestGuid, f53bCoordinator));
+                            f54bHealListenerRegistered =
+                                priestHealerAI->m_partyBotEngine.AddCoreSpellTerminalListener(
+                                    f54bHealListener);
+                            if (f54bHealListenerRegistered)
+                                priestHealerAI->m_healReservationTerminalListener = f54bHealListener;
+                        }
+                        Reservation f54bOtherHealerReservation;
+                        f54bOtherHealerReservation.type = ReservationType::Heal;
+                        f54bOtherHealerReservation.targetGuid = tankGuid.GetRawValue();
+                        f54bOtherHealerReservation.ownerGuid = f53fOtherBotGuid;
+                        f54bOtherHealerReservation.expiresAtMs = f53fReserveNow + 60000u;
+                        f54bOtherHealerReservation.amount = 10;
+                        f54bOtherHealerReservation.spellId = candidate.spellId;
+                        f54bOtherHealerReservation.actionId = f53bCoordinator->NextActionId();
+                        f54bOtherHealerReservationSeeded = f53bCoordinator->TryReserve(
+                            f54bOtherHealerReservation, f53fReserveNow);
+                        uint32 const f54bUnreservedMissing =
+                            missingHealth > 10u ? missingHealth - 10u : 0u;
+                        f54bExpectedOwnReservationAmount = std::min(
+                            selectedHeal.baseHealing, f54bUnreservedMissing);
                         ThreatReservation f53fPrimaryA;
                         f53fPrimaryA.ownerGuid = f53fPriestGuid;
                         f53fPrimaryA.threatOwnerGuid = f53fPriestGuid;
@@ -4825,6 +4859,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         attemptEvent.attempted = true;
                         if (listenerRegistered &&
                             f53fPriestReservationListenerRegistered &&
+                            f54bHealListenerRegistered &&
+                            f54bOtherHealerReservationSeeded &&
                             f53fPriestReservationRowsSeeded &&
                             f53bPriestActionLivePreflight &&
                             f53bPriestActionThreatVetoed)
@@ -4837,6 +4873,14 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                                 execution.result == ActionResult::Success &&
                                 execution.reason ==
                                     "priest_direct_heal_core_cast_started";
+                            uint32 const f54bObserveNow = WorldTimer::getMSTime();
+                            f54bOwnReservationCreated =
+                                f53bPriestActionCastAccepted &&
+                                f53bCoordinator->GetReservedAmount(
+                                    ReservationType::Heal, candidate.targetGuid,
+                                    f53fOtherBotGuid, f54bObserveNow) ==
+                                    f54bExpectedOwnReservationAmount &&
+                                f54bExpectedOwnReservationAmount != 0;
                             EngineActionTraceEvent resultEvent = attemptEvent;
                             resultEvent.stage = EngineActionTraceStage::Result;
                             resultEvent.result = execution.result;
@@ -4890,6 +4934,17 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             f53fPriestReservationRowsSeeded &&
                             std::fabs(f53bCoordinator->GetReservedThreatImpact(
                                 0xF53F1004ull, f53fOtherBotGuid, 0, f53fTerminalNow) - 41.0f) <= 0.001f;
+                        f54bOwnReservationReleased =
+                            f54bOwnReservationCreated &&
+                            f53bPriestActionTerminalMatched &&
+                            f53bCoordinator->GetReservedAmount(
+                                ReservationType::Heal, candidate.targetGuid,
+                                f53fOtherBotGuid, f53fTerminalNow) == 0;
+                        f54bOtherHealerReservationPreserved =
+                            f54bOtherHealerReservationSeeded &&
+                            f53bCoordinator->GetReservedAmount(
+                                ReservationType::Heal, candidate.targetGuid,
+                                f53fPriestGuid, f53fTerminalNow) == 10;
                         CoreSpellTerminalEvent staleTerminal;
                         staleTerminal.actionId = f53fStaleActionId;
                         staleTerminal.encounterId = f53bCoordinator->GetEncounterId() + 1;
@@ -4910,7 +4965,14 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             f53bCoordinator->CloseEncounter(
                 WorldTimer::getMSTime(), "f53b_fixture_cleanup");
         }
+        bool const f54bPriestHealReservationPassed =
+            f54bHealListenerRegistered &&
+            f54bOtherHealerReservationSeeded &&
+            f54bOwnReservationCreated &&
+            f54bOwnReservationReleased &&
+            f54bOtherHealerReservationPreserved;
         bool const f53bPriestDirectHealRuntimePassed =
+            f54bPriestHealReservationPassed &&
             f53bPriestActionSnapshotReady &&
             f53bPriestActionEncounterStarted &&
             f53bPriestActionCandidatePossible &&
@@ -4962,6 +5024,18 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         if (f53fPriestSuccessReservationPassed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F53f a real successful Core Priest Spell terminal released every matching threat fan-out row and preserved another action by the same Bot, another Bot's row, and a stale cross-encounter event.");
+        sLog.Out(LOG_BASIC,
+            f54bPriestHealReservationPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F54b real Core heal reservation lifecycle: listener=%u otherHealerSeeded=%u ownReservationCreated=%u expectedOwnAmount=%u ownReservationReleased=%u otherHealerPreserved=%u.",
+            f54bHealListenerRegistered ? 1u : 0u,
+            f54bOtherHealerReservationSeeded ? 1u : 0u,
+            f54bOwnReservationCreated ? 1u : 0u,
+            f54bExpectedOwnReservationAmount,
+            f54bOwnReservationReleased ? 1u : 0u,
+            f54bOtherHealerReservationPreserved ? 1u : 0u);
+        if (f54bPriestHealReservationPassed)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F54b a real Core direct heal created an action-scoped Heal reservation and its exact Core Spell terminal released only that Bot/action/target/spell row while preserving another healer's reservation.");
         else
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                 "[PartyBotSimulator] F53b direct-heal Core action runtime fixture failed.");

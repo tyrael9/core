@@ -591,6 +591,16 @@ for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrel
     fi
 done
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C lifecycle checks retained exclusive NewEngine authority without Legacy policy entry or dispatch." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52g-C exclusive NewEngine authority PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f52g_c_authority_state_line="$(grep -F '[PartyBotSimulator] F52g-C NewEngine authority:' "$LOG_FILE" | tail -n 1)"
+if [[ "$f52g_c_authority_state_line" != *"valid=1"* ]]; then
+    echo "[PartyBotSimulator] F52g-C NewEngine authority assertion missing valid=1." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

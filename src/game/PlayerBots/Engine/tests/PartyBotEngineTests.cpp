@@ -3651,8 +3651,7 @@ void TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure() {
     assert(report.selectedIndices.empty());
     assert(report.candidates.size() == 1);
     assert(report.candidates[0].status == CandidateStatus::RejectedThreatUnknown);
-    assert(report.candidates[0].reason ==
-           "priest_direct_heal_threat_envelope_not_closed");
+    assert(report.candidates[0].reason == "threat_impact_estimate_unknown");
 
     f.bot.power = 1;
     assert(!action.IsPossible(f.context, candidate, reason));

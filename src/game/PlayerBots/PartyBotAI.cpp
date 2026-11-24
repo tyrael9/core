@@ -774,6 +774,7 @@ bool PartyBotAI::CanCastDirectHeal(
     PartyMemberSnapshot const* targetSnapshot =
         context.snapshot.FindMember(targetGuid);
     if (!targetSnapshot || !targetSnapshot->online || !targetSnapshot->alive ||
+        !targetSnapshot->maxHealth ||
         targetSnapshot->mapId != context.snapshot.mapId ||
         targetSnapshot->instanceId != context.snapshot.instanceId ||
         targetSnapshot->health >= targetSnapshot->maxHealth)

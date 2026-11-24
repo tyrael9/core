@@ -5278,33 +5278,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                   healSpell, *healAssistSnapshot)
             : ThreatImpactEstimate();
 
+    // F53d records this precondition before the first healing cast gives
+    // the healer hostile references. The actual self-heal is tested below
+    // after the positive flat spell_threat row has been installed.
     bool const f53dHealerHasNoHostileReferences =
         healer && healer->GetHostileRefManager().getFirst() == nullptr;
-    ThreatImpactEstimate const f53dNoThreatSelfHeal =
-        f53dHealerHasNoHostileReferences && healAssistSnapshot && healSpell
-            ? EstimateDirectHealingThreatComponents(
-                  healer, healer, 1.0f, healSpell, *healAssistSnapshot)
-            : ThreatImpactEstimate();
-    bool const f53dNoThreatAccepted =
-        f53dHealerHasNoHostileReferences &&
-        f53dNoThreatSelfHeal.completeness == ThreatImpactCompleteness::NoThreat &&
-        f53dNoThreatSelfHeal.reason ==
-            "direct_heal_has_no_hostile_references" &&
-        f53dNoThreatSelfHeal.impacts.empty() &&
-        IsThreatImpactEstimateForSnapshot(
-            f53dNoThreatSelfHeal, healAssistSnapshot->epoch);
-    sLog.Out(LOG_BASIC,
-        f53dNoThreatAccepted ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F53d no-hostile-reference direct-heal: noRefs=%u completenessNoThreat=%u impactsEmpty=%u snapshotMatched=%u.",
-        f53dHealerHasNoHostileReferences ? 1u : 0u,
-        f53dNoThreatSelfHeal.completeness ==
-            ThreatImpactCompleteness::NoThreat ? 1u : 0u,
-        f53dNoThreatSelfHeal.impacts.empty() ? 1u : 0u,
-        healAssistSnapshot && IsThreatImpactEstimateForSnapshot(
-            f53dNoThreatSelfHeal, healAssistSnapshot->epoch) ? 1u : 0u);
-    if (f53dNoThreatAccepted)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: a direct self-heal with no live hostile references is represented as an explicit snapshot-matched NoThreat estimate with no impacts.");
 
     bool f53cInspirationSpellValid = false;
     bool f53cInspirationAuraAttached = false;
@@ -5506,6 +5484,95 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                   healSpell, *healAssistSnapshot)
             : ThreatImpactEstimate();
 
+    // F53d: execute a real self-heal with positive flat spell_threat
+    // present but no hostile references on the healed Player.
+    uint32 const f53dOriginalHealerHealth = healer->GetHealth();
+    uint32 const f53dOriginalHealerMana = healer->GetPower(POWER_MANA);
+    healer->SetHealth(std::max<uint32>(1u, healer->GetMaxHealth() / 2u));
+    healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+    PartyCoordinator f53dNoRefCoordinator;
+    PartySnapshot const* const f53dNoRefSnapshot =
+        PartySnapshotBuilder::GetOrBuild(
+            healer, f53dNoRefCoordinator, WorldTimer::getMSTime(), 0);
+    bool const f53dNoRefsBeforeCast =
+        f53dHealerHasNoHostileReferences &&
+        healer->GetHostileRefManager().getFirst() == nullptr;
+    ThreatImpactEstimate const f53dNoThreatSelfHeal =
+        f53dNoRefsBeforeCast && f53cFlatThreatRowInstalled &&
+                f53dNoRefSnapshot && healSpell
+            ? EstimateDirectHealingThreatComponents(
+                  healer, healer,
+                  static_cast<float>(healer->GetMaxHealth() - healer->GetHealth()),
+                  healSpell, *f53dNoRefSnapshot)
+            : ThreatImpactEstimate();
+    ThreatImpactBudgetResult const f53dNoThreatBudget =
+        f53dNoRefSnapshot
+            ? AssessThreatImpactBudget(
+                  *f53dNoRefSnapshot, f53dNoThreatSelfHeal,
+                  f53dNoRefCoordinator, WorldTimer::getMSTime(), 0)
+            : ThreatImpactBudgetResult();
+    bool const f53dNoThreatAccepted =
+        f53cFlatThreatRowInstalled && f53dNoRefSnapshot && f53dNoRefsBeforeCast &&
+        f53dNoThreatSelfHeal.completeness == ThreatImpactCompleteness::NoThreat &&
+        f53dNoThreatSelfHeal.reason ==
+            "direct_heal_has_no_hostile_references" &&
+        f53dNoThreatSelfHeal.impacts.empty() &&
+        IsThreatImpactEstimateForSnapshot(
+            f53dNoThreatSelfHeal, f53dNoRefSnapshot->epoch) &&
+        f53dNoThreatBudget.status == ThreatImpactBudgetStatus::Safe;
+    float const f53dHealerThreatBefore0 =
+        hostiles[0].creature->GetThreatManager().getThreat(healer);
+    float const f53dHealerThreatBefore1 =
+        hostiles[1].creature->GetThreatManager().getThreat(healer);
+    uint32 const f53dSelfHealthBefore = healer->GetHealth();
+    uint32 const f53dSelfManaBefore = healer->GetPower(POWER_MANA);
+    SpellCastResult const f53dSelfHealCastResult =
+        f53dNoThreatAccepted
+            ? healer->CastSpell(healer, healSpell, false)
+            : SPELL_FAILED_UNKNOWN;
+    for (uint32 tick = 0; tick < 20 &&
+         healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+    uint32 const f53dSelfHealthAfter = healer->GetHealth();
+    uint32 const f53dSelfManaAfter = healer->GetPower(POWER_MANA);
+    bool const f53dSelfHealCompleted =
+        f53dSelfHealCastResult == SPELL_CAST_OK &&
+        !healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
+        f53dSelfHealthAfter > f53dSelfHealthBefore &&
+        f53dSelfManaAfter < f53dSelfManaBefore;
+    bool const f53dNoRefsAfterCast =
+        healer->GetHostileRefManager().getFirst() == nullptr;
+    bool const f53dNoThreatDelta =
+        std::fabs(hostiles[0].creature->GetThreatManager().getThreat(healer) -
+                  f53dHealerThreatBefore0) < 0.01f &&
+        std::fabs(hostiles[1].creature->GetThreatManager().getThreat(healer) -
+                  f53dHealerThreatBefore1) < 0.01f;
+    bool const f53dNoReferenceCoreCastPassed =
+        f53dNoThreatAccepted && f53dSelfHealCompleted &&
+        f53dNoRefsAfterCast && f53dNoThreatDelta;
+    sLog.Out(LOG_BASIC,
+        f53dNoReferenceCoreCastPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F53d NoThreat Core self-heal: positiveFlatRow=%u refsBefore=%u estimateNoThreat=%u impactsEmpty=%u budgetSafe=%u castResult=%u healed=%u manaSpent=%u refsAfter=%u threatUnchanged=%u.",
+        f53cFlatThreatRowInstalled ? 1u : 0u,
+        f53dNoRefsBeforeCast ? 1u : 0u,
+        f53dNoThreatSelfHeal.completeness ==
+            ThreatImpactCompleteness::NoThreat ? 1u : 0u,
+        f53dNoThreatSelfHeal.impacts.empty() ? 1u : 0u,
+        f53dNoThreatBudget.status == ThreatImpactBudgetStatus::Safe ? 1u : 0u,
+        static_cast<uint32>(f53dSelfHealCastResult),
+        f53dSelfHealCompleted ? 1u : 0u,
+        f53dSelfManaAfter < f53dSelfManaBefore ? 1u : 0u,
+        f53dNoRefsAfterCast ? 1u : 0u,
+        f53dNoThreatDelta ? 1u : 0u);
+    if (f53dNoReferenceCoreCastPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: Lesser Heal with a positive flat spell_threat row completed as a Core self-heal without hostile references, threat impacts or any ThreatManager delta.");
+    healer->SetHealth(f53dOriginalHealerHealth);
+    healer->SetPower(POWER_MANA, f53dOriginalHealerMana);
+
     auto findHealAssistBound = [&](Guid hostileGuid) -> float
     {
         for (ThreatImpactEntry const& impact : flatHealThreatComponents.impacts)
@@ -5644,6 +5711,149 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         healThreatDelta0 <= totalHealThreatUpperBound0 + 0.01f &&
         healThreatDelta1 <= totalHealThreatUpperBound1 + 0.01f;
 
+    // F53d: a zero spell_threat row suppresses only the flat path; ordinary
+    // healing-assist threat must still be emitted to both HostileReferences.
+    bool f53dZeroFlatRowUpdated = false;
+    if (f53cFlatThreatDbTouched && healFirstRankSpellId && healSpell)
+    {
+        bool const updated = WorldDatabase.PExecute(
+            DbExecMode::MustBeSync,
+            "UPDATE `spell_threat` SET `threat`=0 WHERE `entry`=%u",
+            healFirstRankSpellId);
+        sSpellMgr.LoadSpellThreats();
+        SpellThreatEntry const* zeroFlatEntry =
+            sSpellMgr.GetSpellThreatEntry(healSpell->Id);
+        f53dZeroFlatRowUpdated = updated && zeroFlatEntry &&
+            zeroFlatEntry->threat == 0;
+    }
+
+    uint32 f53dZeroHealHostileRefCount = 0;
+    for (HostileReference* reference = tank->GetHostileRefManager().getFirst();
+         reference; reference = reference->next())
+        ++f53dZeroHealHostileRefCount;
+    uint32 const f53dZeroHealTankDamage =
+        std::max<uint32>(1u, tank->GetMaxHealth() / 8u);
+    hostiles[0].creature->DealDamage(
+        tank, f53dZeroHealTankDamage, nullptr, DIRECT_DAMAGE,
+        SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    uint32 const f53dZeroHealHealthBefore = tank->GetHealth();
+    uint32 const f53dZeroHealManaBefore = healer->GetPower(POWER_MANA);
+    coordinator.InvalidateSnapshot();
+    PartySnapshot const* const f53dZeroHealSnapshot =
+        PartySnapshotBuilder::GetOrBuild(
+            tank, coordinator, WorldTimer::getMSTime(), 0);
+    ThreatImpactEstimate const f53dZeroFlatEstimate =
+        f53dZeroFlatRowUpdated && f53dZeroHealSnapshot && healSpell
+            ? EstimateDirectHealingThreatComponents(
+                  healer, tank,
+                  static_cast<float>(tank->GetMaxHealth() -
+                                     f53dZeroHealHealthBefore),
+                  healSpell, *f53dZeroHealSnapshot)
+            : ThreatImpactEstimate();
+    uint32 f53dZeroAssistImpactCount = 0;
+    uint32 f53dZeroFlatImpactCount = 0;
+    bool f53dZeroImpactIdentityValid = true;
+    for (ThreatImpactEntry const& impact : f53dZeroFlatEstimate.impacts)
+    {
+        if (impact.source == ThreatImpactSource::DirectHealAssist)
+            ++f53dZeroAssistImpactCount;
+        else if (impact.source == ThreatImpactSource::FlatSpellThreat)
+            ++f53dZeroFlatImpactCount;
+        if (impact.threatOwnerGuid != healerGuid.GetRawValue() ||
+            !impact.threatPoints || impact.bound != ThreatImpactBound::UpperBound)
+            f53dZeroImpactIdentityValid = false;
+    }
+    bool const f53dZeroFlatEstimateValid =
+        f53dZeroFlatRowUpdated && f53dZeroHealSnapshot &&
+        f53dZeroHealHostileRefCount == 2 &&
+        f53dZeroFlatEstimate.completeness == ThreatImpactCompleteness::Unknown &&
+        f53dZeroFlatEstimate.reason == "direct_heal_threat_components_only" &&
+        IsThreatImpactEstimateForSnapshot(
+            f53dZeroFlatEstimate, f53dZeroHealSnapshot->epoch) &&
+        f53dZeroFlatEstimate.impacts.size() == 2 &&
+        f53dZeroAssistImpactCount == 2 && f53dZeroFlatImpactCount == 0 &&
+        f53dZeroImpactIdentityValid;
+    float const f53dZeroThreatBefore0 =
+        hostiles[0].creature->GetThreatManager().getThreat(healer);
+    float const f53dZeroThreatBefore1 =
+        hostiles[1].creature->GetThreatManager().getThreat(healer);
+    healer->SetFacingToObject(tank);
+    SpellCastResult const f53dZeroHealCastResult =
+        f53dZeroFlatEstimateValid
+            ? healer->CastSpell(tank, healSpell, false)
+            : SPELL_FAILED_UNKNOWN;
+    for (uint32 tick = 0; tick < 20 &&
+         healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        map.Update(250);
+    }
+    uint32 const f53dZeroHealHealthAfter = tank->GetHealth();
+    uint32 const f53dZeroHealManaAfter = healer->GetPower(POWER_MANA);
+    uint32 const f53dZeroHealEffectiveGain =
+        f53dZeroHealHealthAfter > f53dZeroHealHealthBefore
+            ? f53dZeroHealHealthAfter - f53dZeroHealHealthBefore : 0u;
+    uint32 const f53dZeroHealRefDivisor =
+        f53dZeroHealHostileRefCount ? f53dZeroHealHostileRefCount : 1u;
+    float const f53dZeroHealAssistInput =
+        static_cast<float>(f53dZeroHealEffectiveGain) * classThreatModifier *
+        healSpellThreatMultiplier /
+        static_cast<float>(f53dZeroHealRefDivisor);
+    float const f53dZeroExpectedAssistThreat = healSpell
+        ? ThreatCalcHelper::CalcThreat(
+              healer, f53dZeroHealAssistInput, false,
+              healSpell->GetSpellSchoolMask(), healSpell)
+        : -1.0f;
+    float const f53dZeroThreatDelta0 =
+        hostiles[0].creature->GetThreatManager().getThreat(healer) -
+        f53dZeroThreatBefore0;
+    float const f53dZeroThreatDelta1 =
+        hostiles[1].creature->GetThreatManager().getThreat(healer) -
+        f53dZeroThreatBefore1;
+    auto f53dFindZeroAssistUpperBound = [&](Guid hostileGuid) -> float
+    {
+        for (ThreatImpactEntry const& impact : f53dZeroFlatEstimate.impacts)
+            if (impact.hostileGuid == hostileGuid &&
+                impact.threatOwnerGuid == healerGuid.GetRawValue() &&
+                impact.source == ThreatImpactSource::DirectHealAssist &&
+                impact.bound == ThreatImpactBound::UpperBound)
+                return impact.threatPoints;
+        return -1.0f;
+    };
+    float const f53dZeroAssistUpperBound0 =
+        f53dFindZeroAssistUpperBound(
+            hostiles[0].creature->GetObjectGuid().GetRawValue());
+    float const f53dZeroAssistUpperBound1 =
+        f53dFindZeroAssistUpperBound(
+            hostiles[1].creature->GetObjectGuid().GetRawValue());
+    bool const f53dZeroFlatCoreCastPassed =
+        f53dZeroFlatEstimateValid &&
+        f53dZeroHealCastResult == SPELL_CAST_OK &&
+        !healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
+        f53dZeroHealEffectiveGain > 0 &&
+        f53dZeroHealManaAfter < f53dZeroHealManaBefore &&
+        std::isfinite(f53dZeroExpectedAssistThreat) &&
+        std::fabs(f53dZeroThreatDelta0 - f53dZeroExpectedAssistThreat) < 0.05f &&
+        std::fabs(f53dZeroThreatDelta1 - f53dZeroExpectedAssistThreat) < 0.05f &&
+        f53dZeroAssistUpperBound0 + 0.01f >= f53dZeroThreatDelta0 &&
+        f53dZeroAssistUpperBound1 + 0.01f >= f53dZeroThreatDelta1;
+    sLog.Out(LOG_BASIC,
+        f53dZeroFlatCoreCastPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F53d zero flat direct-heal: rowZero=%u refs=%u estimateUnknown=%u assistImpacts=%u flatImpacts=%u castResult=%u healed=%u manaSpent=%u actualThreat=%.2f/%.2f expectedAssist=%.2f upper=%.2f/%.2f.",
+        f53dZeroFlatRowUpdated ? 1u : 0u,
+        f53dZeroHealHostileRefCount,
+        f53dZeroFlatEstimate.completeness == ThreatImpactCompleteness::Unknown ? 1u : 0u,
+        f53dZeroAssistImpactCount, f53dZeroFlatImpactCount,
+        static_cast<uint32>(f53dZeroHealCastResult),
+        f53dZeroHealEffectiveGain > 0 ? 1u : 0u,
+        f53dZeroHealManaAfter < f53dZeroHealManaBefore ? 1u : 0u,
+        f53dZeroThreatDelta0, f53dZeroThreatDelta1,
+        f53dZeroExpectedAssistThreat,
+        f53dZeroAssistUpperBound0, f53dZeroAssistUpperBound1);
+    if (f53dZeroFlatCoreCastPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: a zero spell_threat Lesser Heal produced only the predicted Core healing-assist threat on both hostile references, with no flat-threat impact.");
+
     uint32 const hostileRefsOnTank = hostileRefsOnTankBeforeHeal;
     float constexpr kScriptedAssistThreat = 400.0f;
     if (healCompleted && hostileRefsOnTank == 2)
@@ -5763,6 +5973,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     healSpellThreatRestoreGuard.reset();
     bool const f53cFlatThreatRuntimeAndCleanupPassed =
         f53cFlatThreatRuntimePassed && f53cFlatThreatDbRestored;
+    bool const f53dZeroFlatRuntimeAndCleanupPassed =
+        f53dZeroFlatCoreCastPassed && f53cFlatThreatDbRestored;
+    if (f53dZeroFlatRuntimeAndCleanupPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: zero flat-threat direct heal matched Core assist-only threat on both hostile references, and the original spell_threat rows were restored.");
     if (f53cFlatThreatRuntimeAndCleanupPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: a real nonzero positive spell_threat row on Lesser Heal produced the exact per-hostile flat-threat component for both Core ThreatManagers, while total direct-heal threat remained within the assist-plus-flat upper bound and the disposable DB row was restored.");
@@ -5775,6 +5990,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         safeBudgetSelectedAndReserved && enginePreservedCoreThreatState &&
         enginePreservedCoreVictims && reservationReleased &&
         tankAliveAndInjured && healCompleted && healAssistBoundValid &&
+        f53dNoReferenceCoreCastPassed && f53dZeroFlatCoreCastPassed &&
+        f53dZeroFlatRuntimeAndCleanupPassed &&
         f53cFlatThreatRuntimeAndCleanupPassed && healerPulledBothAdds &&
         snapshotValid && rosterRoleStateValid && bothAddsResolved && hostileIdentityCopied &&
         currentCastSnapshotValid && threatValuesCopied && coreReachabilityCopied &&

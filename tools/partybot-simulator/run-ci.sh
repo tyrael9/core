@@ -788,8 +788,18 @@ if ! grep -Fq "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank an
     exit 1
 fi
 
-if ! grep -Fq "[PartyBotSimulator] PASS: a direct self-heal with no live hostile references is represented as an explicit snapshot-matched NoThreat estimate with no impacts." "$LOG_FILE"; then
-    echo "[PartyBotSimulator] F53d no-hostile-reference NoThreat marker was not found." | tee -a "$LOG_FILE"
+if ! grep -Fq "[PartyBotSimulator] PASS: Lesser Heal with a positive flat spell_threat row completed as a Core self-heal without hostile references, threat impacts or any ThreatManager delta." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] F53d positive-flat/no-hostile-reference Core self-heal marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+if ! grep -Fq "[PartyBotSimulator] PASS: a zero spell_threat Lesser Heal produced only the predicted Core healing-assist threat on both hostile references, with no flat-threat impact." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] F53d zero-flat Core threat parity marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+if ! grep -Fq "[PartyBotSimulator] PASS: zero flat-threat direct heal matched Core assist-only threat on both hostile references, and the original spell_threat rows were restored." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] F53d zero-flat spell_threat restoration marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 

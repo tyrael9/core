@@ -5,6 +5,7 @@
 #include "Value.h"
 #include "ShadowStrategies.h"
 #include "DpsAssistTrigger.h"
+#include "PriestHealingPolicy.h"
 #include "FollowPartyLeaderTrigger.h"
 #include "BotBehaviorState.h"
 #include "AutoResurrectSelfTrigger.h"
@@ -3604,6 +3605,68 @@ void TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots() {
     assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
 }
 
+void TestPriestDirectHealSelectionUsesAffordableClosestRank() {
+    PartyMemberSnapshot healer;
+    ConfigureMember(healer, 11, PartyRole::Healer, 100, 100);
+    healer.isPlayerBot = true;
+    healer.power = 500;
+    healer.directHealSpells = {
+        {501, 1200, 250},
+        {502, 800, 180},
+        {503, 400, 90},
+        {504, 200, 40}
+    };
+
+    PriestDirectHealSelection selection;
+    assert(SelectPriestDirectHealSpell(healer, 700, selection));
+    assert(selection.spellId == 502);
+    assert(selection.baseHealing == 800);
+    assert(selection.manaCost == 180);
+
+    // When no affordable rank covers the deficit, use the strongest
+    // affordable rank rather than selecting an unaffordable larger spell.
+    healer.power = 100;
+    assert(SelectPriestDirectHealSpell(healer, 700, selection));
+    assert(selection.spellId == 503);
+    assert(selection.baseHealing == 400);
+    assert(selection.manaCost == 90);
+
+    // If all affordable ranks under-heal, choose the strongest one.
+    healer.power = 500;
+    assert(SelectPriestDirectHealSpell(healer, 1300, selection));
+    assert(selection.spellId == 501);
+    assert(selection.baseHealing == 1200);
+
+    // Equal healing chooses lower mana, then lower spell ID deterministically.
+    healer.directHealSpells = {
+        {602, 800, 180},
+        {601, 800, 120},
+        {600, 800, 120}
+    };
+    assert(SelectPriestDirectHealSpell(healer, 700, selection));
+    assert(selection.spellId == 600);
+    assert(selection.manaCost == 120);
+
+    healer.directHealSpells.push_back({600, 1000, 100});
+    assert(!SelectPriestDirectHealSpell(healer, 700, selection));
+    assert(!selection.IsValid());
+
+    healer.directHealSpells.clear();
+    assert(!SelectPriestDirectHealSpell(healer, 700, selection));
+    healer.directHealSpells = {{700, 800, 180}};
+    healer.isPlayerBot = false;
+    assert(!SelectPriestDirectHealSpell(healer, 700, selection));
+    healer.isPlayerBot = true;
+    healer.online = false;
+    assert(!SelectPriestDirectHealSpell(healer, 700, selection));
+    healer.online = true;
+    healer.alive = false;
+    assert(!SelectPriestDirectHealSpell(healer, 700, selection));
+    healer.alive = true;
+    healer.roleId = static_cast<std::uint8_t>(PartyRole::Tank);
+    assert(!SelectPriestDirectHealSpell(healer, 700, selection));
+}
+
 void TestHealingTriageShadowStrategy() {
     PartySnapshot snapshot; snapshot.epoch = 81;
     PartyMemberSnapshot healer, tank, damage;
@@ -5890,6 +5953,7 @@ int main() {
     TestEncounterTraceBudgetConfigurationIsClampedAndBounded();
     TestNonBotPartyMemberStateChangesAreSampledWithoutDuplicates();
     TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots();
+    TestPriestDirectHealSelectionUsesAffordableClosestRank();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();

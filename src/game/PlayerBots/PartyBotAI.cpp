@@ -793,7 +793,8 @@ bool PartyBotAI::CanCastDirectHeal(
         target->GetMap() != me->GetMap() ||
         target->GetMapId() != context.snapshot.mapId ||
         target->GetInstanceId() != context.snapshot.instanceId ||
-        !spell || m_spellListDirectHeal.find(spell) == m_spellListDirectHeal.end() ||
+        !spell || spell->IsAreaOfEffectSpell() ||
+        m_spellListDirectHeal.find(spell) == m_spellListDirectHeal.end() ||
         !me->IsWithinLOSInMap(target))
         return false;
 

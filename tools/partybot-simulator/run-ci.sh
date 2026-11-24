@@ -555,6 +555,18 @@ for expected in listener=1 selected=1 castStarted=1 reservationCreated=1 targetR
     fi
 done
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F52g-C5 Core interrupted the dead resurrection caster's pending spell and PartyBotAI::OnAliveStateChanged released all of that Bot's reservations" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F52g-C5 owner-death cleanup Core PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f52g_c5_state_line="$(grep -F '[PartyBotSimulator] F52g-C5 resurrection caster died during group resurrection:' "$LOG_FILE" | tail -n 1)"
+for expected in listener=1 selected=1 castStarted=1 auxiliaryReservation=1 unrelatedReservation=1 ownerDied=1 interruptedTerminal=1 ownerRowsReleased=1 unrelatedPreserved=1 noOffer=1; do
+    if [[ "$f52g_c5_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F52g-C5 owner-death assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
 if ! grep -Fq "[PartyBotSimulator] PASS: StopFollowingAction rejected a stale follow-target snapshot, expired only the matching native FollowMovementGenerator through MovementExpired(false), and preserved an unrelated PointMovementGenerator." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The StopFollowingAction Core PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

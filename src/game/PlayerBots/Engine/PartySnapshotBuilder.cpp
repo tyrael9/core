@@ -205,8 +205,11 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
                     DirectHealSpellSnapshot healSpell;
                     healSpell.spellId = spell->Id;
                     healSpell.baseHealing = static_cast<std::uint32_t>(baseHealing);
-                    healSpell.manaCost = spell->GetManaCost();
-                    healSpell.manaCostPercentage = spell->ManaCostPercentage;
+                    // Reuse Core's cost calculation with charge consumption
+                    // disabled; the pure selector then sees the exact current
+                    // mana cost, including level and aura modifiers.
+                    healSpell.manaCost =
+                        Spell::CalculatePowerCost(spell, member, nullptr, nullptr, false);
                     memberData.directHealSpells.push_back(healSpell);
                 }
 

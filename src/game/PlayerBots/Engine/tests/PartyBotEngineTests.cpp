@@ -3658,6 +3658,26 @@ void TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure() {
     f.bot.power = 500;
     f.snapshot.members[0].health = f.snapshot.members[0].maxHealth;
     assert(!action.IsPossible(f.context, candidate, reason));
+    f.snapshot.members[0].health = 30;
+
+    // Every boundary remains snapshot-local and fail-closed before Core.
+    candidate.channel = ActionChannel::Utility;
+    assert(!action.IsPossible(f.context, candidate, reason));
+    candidate.channel = ActionChannel::GlobalCooldown;
+    f.bot.currentSpellId = 2050;
+    assert(!action.IsPossible(f.context, candidate, reason));
+    f.bot.currentSpellId = 0;
+    f.bot.directHealSpells.clear();
+    assert(!action.IsPossible(f.context, candidate, reason));
+    f.bot.directHealSpells = {{2050, 120, 25}};
+    f.snapshot.members[0].alive = false;
+    assert(!action.IsPossible(f.context, candidate, reason));
+    f.snapshot.members[0].alive = true;
+    f.snapshot.members[0].online = false;
+    assert(!action.IsPossible(f.context, candidate, reason));
+    f.snapshot.members[0].online = true;
+    f.snapshot.members[0].mapId += 1;
+    assert(!action.IsPossible(f.context, candidate, reason));
 }
 
 void TestPriestDirectHealSelectionUsesAffordableClosestRank() {

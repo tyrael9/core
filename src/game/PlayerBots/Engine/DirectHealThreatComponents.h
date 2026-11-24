@@ -28,6 +28,18 @@ inline bool HasUnboundedDirectHealSpellScript(bool hasConfiguredScript)
     return hasConfiguredScript;
 }
 
+// The pinned Core's TriggerSpell and TriggerMissile handlers create nested
+// casts. Dummy and ScriptEffect handlers can also dispatch arbitrary spells
+// through hard-coded cases or ScriptMgr callbacks. Until their child spell,
+// caster and recipient closure is audited, any such effect makes the direct
+// heal's secondary threat recipients unbounded.
+inline bool HasUnboundedDirectHealSecondarySpellEffect(
+    bool triggerSpell, bool triggerMissile,
+    bool dummyEffect, bool scriptEffect)
+{
+    return triggerSpell || triggerMissile || dummyEffect || scriptEffect;
+}
+
 // Spell::HandleAddTargetTriggerAuras scans active caster auras by their
 // individual effect index, not only effect zero. A matching effect can cast a
 // secondary spell against each successful target (or the caster on reflect).

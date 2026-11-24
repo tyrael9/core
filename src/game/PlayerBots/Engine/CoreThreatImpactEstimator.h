@@ -201,6 +201,22 @@ inline ThreatImpactEstimate EstimateDirectHealingThreatComponents(
         return estimate;
     }
 
+    // Spell effects can create nested casts independently of SpellScript
+    // and aura proc handling. Inspect every effect slot: TriggerSpell and
+    // TriggerMissile dispatch child spells directly; Dummy and ScriptEffect
+    // include hard-coded and ScriptMgr paths with arbitrary recipients.
+    for (std::uint8_t effectIndex = 0;
+         effectIndex < MAX_EFFECT_INDEX; ++effectIndex) {
+        if (HasUnboundedDirectHealSecondarySpellEffect(
+                spellInfo->Effect[effectIndex] == SPELL_EFFECT_TRIGGER_SPELL,
+                spellInfo->Effect[effectIndex] == SPELL_EFFECT_TRIGGER_MISSILE,
+                spellInfo->Effect[effectIndex] == SPELL_EFFECT_DUMMY,
+                spellInfo->Effect[effectIndex] == SPELL_EFFECT_SCRIPT_EFFECT)) {
+            estimate.reason = "direct_heal_secondary_spell_effect_closure_unbounded";
+            return estimate;
+        }
+    }
+
     // Helpful proc processing runs on both the caster and the healed target.
     // Do not emit even the known direct components when either side has a
     // scripted, DB-driven or hard-coded helpful proc whose secondary effects

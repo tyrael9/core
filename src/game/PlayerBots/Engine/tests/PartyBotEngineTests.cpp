@@ -3634,6 +3634,19 @@ void TestDirectHealHelpfulProcRiskClassifier() {
     assert(!HasUnboundedDirectHealSpellScript(false));
     assert(HasUnboundedDirectHealSpellScript(true));
 
+    // TriggerSpell/Missile explicitly dispatch child casts, while Dummy and
+    // ScriptEffect can issue hard-coded or ScriptMgr-driven nested casts.
+    assert(!HasUnboundedDirectHealSecondarySpellEffect(
+        false, false, false, false));
+    assert(HasUnboundedDirectHealSecondarySpellEffect(
+        true, false, false, false));
+    assert(HasUnboundedDirectHealSecondarySpellEffect(
+        false, true, false, false));
+    assert(HasUnboundedDirectHealSecondarySpellEffect(
+        false, false, true, false));
+    assert(HasUnboundedDirectHealSecondarySpellEffect(
+        false, false, false, true));
+
     // Add-target-trigger auras are checked at their actual active effect
     // index, including nonzero slots; inactive or nonmatching slots are safe.
     assert(!HasMatchingAddTargetTriggerAuraEffect(false, true, true));

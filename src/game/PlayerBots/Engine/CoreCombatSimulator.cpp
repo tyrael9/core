@@ -4584,6 +4584,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         bool f53bPriestActionThreatVetoed = false;
         bool f53bPriestActionEncounterStarted = false;
         bool f53bPriestActionLivePreflight = false;
+        bool f53bPriestAoeHealRejected = false;
         bool f53bPriestActionCastAccepted = false;
         bool f53bPriestActionCastCompleted = false;
         bool f53bPriestActionManaSpent = false;
@@ -4716,6 +4717,31 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                                 f53bContext, candidate.targetGuid,
                                 candidate.spellId);
 
+                        // Prayer of Healing is a direct heal effect but its
+                        // actual effect target set is group-wide. Inject it
+                        // into the temporary learned-spell set to ensure the
+                        // live adapter rejects AoE by SpellEntry metadata.
+                        SpellEntry const* const prayerOfHealing =
+                            sSpellMgr.GetSpellEntry(596);
+                        if (prayerOfHealing &&
+                            prayerOfHealing->IsAreaOfEffectSpell())
+                        {
+                            bool const alreadyListed =
+                                priestHealerAI->m_spellListDirectHeal.find(
+                                    prayerOfHealing) !=
+                                priestHealerAI->m_spellListDirectHeal.end();
+                            if (!alreadyListed)
+                                priestHealerAI->m_spellListDirectHeal.insert(
+                                    prayerOfHealing);
+                            f53bPriestAoeHealRejected =
+                                !priestHealerAI->CanCastDirectHeal(
+                                    f53bContext, tankGuid.GetRawValue(),
+                                    prayerOfHealing->Id);
+                            if (!alreadyListed)
+                                priestHealerAI->m_spellListDirectHeal.erase(
+                                    prayerOfHealing);
+                        }
+
                         std::shared_ptr<CaptureCoreSpellTerminalListener> listener(
                             new CaptureCoreSpellTerminalListener());
                         bool const listenerRegistered =
@@ -4798,6 +4824,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             f53bPriestActionCandidateUseful &&
             f53bPriestActionThreatVetoed &&
             f53bPriestActionLivePreflight &&
+            f53bPriestAoeHealRejected &&
             f53bPriestActionCastAccepted &&
             f53bPriestActionCastCompleted &&
             f53bPriestActionManaSpent &&
@@ -4805,13 +4832,14 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC,
             f53bPriestDirectHealRuntimePassed
                 ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-            "[PartyBotSimulator] F53b Priest direct heal Core action: snapshot=%u encounterStarted=%u possible=%u useful=%u engineThreatVeto=%u livePreflight=%u castAccepted=%u castCompleted=%u manaSpent=%u terminalMatched=%u actionId=%llu spell=%u.",
+            "[PartyBotSimulator] F53b Priest direct heal Core action: snapshot=%u encounterStarted=%u possible=%u useful=%u engineThreatVeto=%u livePreflight=%u aoeHealRejected=%u castAccepted=%u castCompleted=%u manaSpent=%u terminalMatched=%u actionId=%llu spell=%u.",
             f53bPriestActionSnapshotReady ? 1u : 0u,
             f53bPriestActionEncounterStarted ? 1u : 0u,
             f53bPriestActionCandidatePossible ? 1u : 0u,
             f53bPriestActionCandidateUseful ? 1u : 0u,
             f53bPriestActionThreatVetoed ? 1u : 0u,
             f53bPriestActionLivePreflight ? 1u : 0u,
+            f53bPriestAoeHealRejected ? 1u : 0u,
             f53bPriestActionCastAccepted ? 1u : 0u,
             f53bPriestActionCastCompleted ? 1u : 0u,
             f53bPriestActionManaSpent ? 1u : 0u,
@@ -4820,7 +4848,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             f53bPriestActionSpellId);
         if (f53bPriestDirectHealRuntimePassed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                "[PartyBotSimulator] PASS: fixture-only PriestDirectHealAction passed same-Group live Core preflight, cast a direct heal, spent Core mana and matched the exact Engine action ID to its successful Core Spell terminal; the threat budget remained Unknown.");
+                "[PartyBotSimulator] PASS: fixture-only PriestDirectHealAction passed same-Group live Core preflight, rejected the AoE Prayer of Healing spell, cast a single-target direct heal, spent Core mana and matched the exact Engine action ID to its successful Core Spell terminal; the threat budget remained Unknown.");
         else
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                 "[PartyBotSimulator] F53b direct-heal Core action runtime fixture failed.");
@@ -5223,10 +5251,12 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     }
 
     // The healer performs a normal non-triggered Lesser Heal. Before the cast,
-    // estimate only its direct healing-assist component from the real Core
+    // estimate its direct helpful-threat components from the real Core
     // HostileRefManager fan-out and ThreatCalcHelper. The maximum possible
-    // health gain is bounded by the target's currently missing health; this intentionally
-    // conservative component does not claim to cover flat spell threat/procs.
+    // health gain is bounded by the target's currently missing health. This
+    // fixture uses a zero-flat-threat spell to isolate the assist delta; F53c
+    // separately tests the positive flat-threat arithmetic. Proc closure is
+    // still absent, so this component estimate remains Unknown.
     uint32 const patientHealthBeforeDamage = tank->GetHealth();
     uint32 const scriptedTankDamage = std::max<uint32>(1u, tank->GetMaxHealth() / 5u);
     hostiles[0].creature->DealDamage(
@@ -5239,7 +5269,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     coordinator.InvalidateSnapshot();
     PartySnapshot const* healAssistSnapshot =
         PartySnapshotBuilder::GetOrBuild(tank, coordinator, 15600, 250);
-    ThreatImpactEstimate const healAssistComponent =
+    ThreatImpactEstimate const healThreatComponents =
         healAssistSnapshot && healSpell
             ? EstimateDirectHealingAssistComponent(
                   healer, tank,
@@ -5248,7 +5278,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             : ThreatImpactEstimate();
     auto findHealAssistBound = [&](Guid hostileGuid) -> float
     {
-        for (ThreatImpactEntry const& impact : healAssistComponent.impacts)
+        for (ThreatImpactEntry const& impact : healThreatComponents.impacts)
             if (impact.threatOwnerGuid == healerGuid.GetRawValue() &&
                 impact.hostileGuid == hostileGuid &&
                 impact.source == ThreatImpactSource::DirectHealAssist &&
@@ -5316,9 +5346,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         healSpell ? sSpellMgr.GetSpellThreatEntry(healSpell->Id) : nullptr;
     bool const noFlatSpellThreat = !healThreatEntry || healThreatEntry->threat == 0.0f;
     bool const healAssistBoundValid = healCompleted && noFlatSpellThreat &&
-        healAssistSnapshot && healAssistComponent.completeness == ThreatImpactCompleteness::Unknown &&
-        IsThreatImpactEstimateForSnapshot(healAssistComponent, healAssistSnapshot->epoch) &&
-        healAssistComponent.impacts.size() == 2 &&
+        healAssistSnapshot && healThreatComponents.completeness == ThreatImpactCompleteness::Unknown &&
+        IsThreatImpactEstimateForSnapshot(healThreatComponents, healAssistSnapshot->epoch) &&
+        healThreatComponents.impacts.size() == 2 &&
         healAssistUpperBound0 >= 0.0f && healAssistUpperBound1 >= 0.0f &&
         patientHealthAfterHeal - patientHealthBeforeHeal <= tank->GetMaxHealth() &&
         healThreatDelta0 >= -0.01f && healThreatDelta1 >= -0.01f &&

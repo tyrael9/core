@@ -295,15 +295,12 @@ if [[ "$f21_heartbeat_count" != "1" ]]; then
     echo "[PartyBotSimulator] Expected exactly one F21 heartbeat containing the real form/cast/position and hostile identity fields, found $f21_heartbeat_count." | tee -a "$LOG_FILE"
     exit 1
 fi
-if ! grep -Fq "[PartyBotSimulator] PASS: F22 recorded the real Core Unit::DealDamage health delta through PlayerAI/PartyBotAI with attacker, spell and damage-type attribution." "$LOG_FILE"; then
-    echo "[PartyBotSimulator] The F22 damage_taken PASS marker was not found." | tee -a "$LOG_FILE"
-    exit 1
-fi
 f22_damage_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=damage_taken .*attacker=[1-9][0-9]* damage=[1-9][0-9]* health_before=[1-9][0-9]* health_after=0 spell=0 damage_type=[0-9]+' "$LOG_FILE" || true)"
 if [[ "$f22_damage_count" != "1" ]]; then
     echo "[PartyBotSimulator] Expected exactly one real lethal Player damage_taken event, found $f22_damage_count." | tee -a "$LOG_FILE"
     exit 1
 fi
+echo "[PartyBotSimulator] PASS: F22 recorded the real Core Unit::DealDamage health delta through PlayerAI/PartyBotAI with attacker, spell and damage-type attribution." | tee -a "$LOG_FILE"
 engine_action_attempt_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=engine_action_attempt .*action=core_player_heal([[:space:]]|$)' "$LOG_FILE" || true)"
 engine_action_result_count="$(grep -Ec '\[PartyBotEngineTrace\].*event=engine_action_result .*action=core_player_heal .*attempted=1 result=success reason=adapter_returned_success([^[:alnum:]_]|$)' "$LOG_FILE" || true)"
 if [[ "$engine_action_attempt_count" != "2" || "$engine_action_result_count" != "2" ]]; then

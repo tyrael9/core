@@ -4611,6 +4611,36 @@ void TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal()
     assert(projection.simultaneousArrivalGroups == 1);
     assert(projection.concurrentAttributionUnknown);
 
+    // Explicit damage between heal arrivals changes the later heal's effective
+    // amount. The projection must process distinct timestamps chronologically.
+    std::vector<HealingTimelineEvent> interleaved;
+    assert(AppendDirectHealForecastEvent(33, 2050, 100, 20, interleaved));
+    assert(AppendDamageTimelineEvent(55, 0, 150, 30, interleaved));
+    assert(AppendDirectHealForecastEvent(44, 2052, 200, 20, interleaved));
+    assert(ProjectHealingTimeline(70, 100, interleaved, projection));
+    assert(projection.finalHealth == 80);
+    assert(projection.effectiveHealing == 40);
+    assert(projection.overheal == 0);
+    assert(projection.appliedDamage == 30);
+
+    // Damage before the first heal creates a larger deficit, but the heal still
+    // caps effective healing at the health missing when it arrives.
+    std::vector<HealingTimelineEvent> damageBeforeHeal;
+    assert(AppendDamageTimelineEvent(55, 133, 50, 40, damageBeforeHeal));
+    assert(AppendDirectHealForecastEvent(44, 2052, 100, 50, damageBeforeHeal));
+    assert(ProjectHealingTimeline(100, 100, damageBeforeHeal, projection));
+    assert(projection.finalHealth == 100);
+    assert(projection.appliedDamage == 40);
+    assert(projection.effectiveHealing == 40);
+    assert(projection.overheal == 10);
+
+    // Heal and damage sharing a timestamp have no proven Core order; fail closed.
+    std::vector<HealingTimelineEvent> ambiguousSameTime;
+    assert(AppendDirectHealForecastEvent(33, 2050, 100, 15, ambiguousSameTime));
+    assert(AppendDamageTimelineEvent(55, 133, 100, 15, ambiguousSameTime));
+    assert(!ProjectHealingTimeline(50, 100, ambiguousSameTime, projection));
+    assert(!projection.valid);
+
     std::size_t const eventCountBeforeInvalid = events.size();
     PeriodicHealForecastSnapshot invalid = renew;
     invalid.periodMs = 0;

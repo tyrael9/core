@@ -12,12 +12,19 @@ namespace PartyBotEngine
 {
 constexpr std::size_t MAX_HEALING_TIMELINE_EVENTS = 256;
 
+enum class HealingTimelineEventKind : std::uint8_t
+{
+    Heal,
+    Damage
+};
+
 struct HealingTimelineEvent
 {
     std::uint32_t arrivalMs = 0;
     std::uint32_t amount = 0;
     Guid sourceGuid = 0;
     std::uint32_t spellId = 0;
+    HealingTimelineEventKind kind = HealingTimelineEventKind::Heal;
 };
 
 struct HealingTimelineProjection
@@ -27,6 +34,7 @@ struct HealingTimelineProjection
     std::size_t simultaneousArrivalGroups = 0;
     std::uint64_t effectiveHealing = 0;
     std::uint64_t overheal = 0;
+    std::uint64_t appliedDamage = 0;
     bool concurrentAttributionUnknown = false;
     bool valid = false;
 };
@@ -77,6 +85,24 @@ inline bool AppendDirectHealForecastEvent(
     return true;
 }
 
+inline bool AppendDamageTimelineEvent(
+    Guid sourceGuid, std::uint32_t spellId, std::uint32_t arrivalMs,
+    std::uint32_t amount, std::vector<HealingTimelineEvent>& events)
+{
+    if (!sourceGuid || !amount ||
+        events.size() >= MAX_HEALING_TIMELINE_EVENTS)
+        return false;
+
+    HealingTimelineEvent event;
+    event.arrivalMs = arrivalMs;
+    event.amount = amount;
+    event.sourceGuid = sourceGuid;
+    event.spellId = spellId;
+    event.kind = HealingTimelineEventKind::Damage;
+    events.push_back(event);
+    return true;
+}
+
 inline bool AppendInFlightDirectHealForecastEvent(
     PartyMemberSnapshot const& caster, Guid targetGuid,
     std::vector<HealingTimelineEvent>& events)
@@ -94,8 +120,10 @@ inline bool AppendInFlightDirectHealForecastEvent(
         caster.currentSpellHealingAmount, events);
 }
 
-// Healing-only projection against a fixed health ceiling. Damage between
-// events, Core batching and simultaneous per-cast attribution are not guessed.
+// Project explicitly supplied heal/damage arrivals against a fixed health
+// ceiling. Mixed heal/damage events at one timestamp are rejected because the
+// snapshot does not prove Core's application order. Core batching and
+// simultaneous per-cast attribution are not guessed.
 inline bool ProjectHealingTimeline(
     std::uint32_t currentHealth, std::uint32_t maxHealth,
     std::vector<HealingTimelineEvent> const& input,
@@ -108,8 +136,15 @@ inline bool ProjectHealingTimeline(
 
     std::vector<HealingTimelineEvent> events = input;
     for (HealingTimelineEvent const& event : events)
-        if (!event.sourceGuid || !event.spellId || !event.amount)
+    {
+        if (!event.sourceGuid || !event.amount)
             return false;
+        if (event.kind == HealingTimelineEventKind::Heal && !event.spellId)
+            return false;
+        if (event.kind != HealingTimelineEventKind::Heal &&
+            event.kind != HealingTimelineEventKind::Damage)
+            return false;
+    }
 
     std::sort(events.begin(), events.end(),
         [](HealingTimelineEvent const& left,
@@ -117,6 +152,9 @@ inline bool ProjectHealingTimeline(
         {
             if (left.arrivalMs != right.arrivalMs)
                 return left.arrivalMs < right.arrivalMs;
+            if (left.kind != right.kind)
+                return static_cast<std::uint8_t>(left.kind) <
+                       static_cast<std::uint8_t>(right.kind);
             if (left.sourceGuid != right.sourceGuid)
                 return left.sourceGuid < right.sourceGuid;
             if (left.spellId != right.spellId)
@@ -124,32 +162,52 @@ inline bool ProjectHealingTimeline(
             return left.amount < right.amount;
         });
 
-    std::uint64_t missing = maxHealth - currentHealth;
+    std::uint64_t health = currentHealth;
     std::size_t index = 0;
     while (index < events.size())
     {
         std::size_t end = index + 1;
         std::uint64_t simultaneousAmount = events[index].amount;
+        bool const firstIsDamage =
+            events[index].kind == HealingTimelineEventKind::Damage;
         while (end < events.size() &&
                events[end].arrivalMs == events[index].arrivalMs)
         {
+            if ((events[end].kind == HealingTimelineEventKind::Damage) !=
+                firstIsDamage)
+            {
+                projection = HealingTimelineProjection();
+                return false;
+            }
             simultaneousAmount += events[end].amount;
             ++end;
         }
-        if (end - index > 1)
+
+        if (firstIsDamage)
         {
-            ++projection.simultaneousArrivalGroups;
-            projection.concurrentAttributionUnknown = true;
+            std::uint64_t const applied =
+                std::min(health, simultaneousAmount);
+            health -= applied;
+            projection.appliedDamage += applied;
         }
-        std::uint64_t const effective =
-            std::min(missing, simultaneousAmount);
-        projection.effectiveHealing += effective;
-        projection.overheal += simultaneousAmount - effective;
-        missing -= effective;
+        else
+        {
+            if (end - index > 1)
+            {
+                ++projection.simultaneousArrivalGroups;
+                projection.concurrentAttributionUnknown = true;
+            }
+            std::uint64_t const missing = maxHealth - health;
+            std::uint64_t const effective =
+                std::min(missing, simultaneousAmount);
+            projection.effectiveHealing += effective;
+            projection.overheal += simultaneousAmount - effective;
+            health += effective;
+        }
         index = end;
     }
 
-    projection.finalHealth = maxHealth - static_cast<std::uint32_t>(missing);
+    projection.finalHealth = static_cast<std::uint32_t>(health);
     projection.eventCount = events.size();
     projection.valid = true;
     return true;

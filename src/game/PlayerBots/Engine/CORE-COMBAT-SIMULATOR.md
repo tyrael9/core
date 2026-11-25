@@ -1,5 +1,15 @@
 # Core-backed PartyBot combat simulator
 
+## Latest Phase 6 runtime evidence — F54d (2026-11-24 PT / 2026-11-25 UTC)
+
+The F54d timer/schedule slice passed trusted Core runtime in [push #45541255150](https://github.com/tyrael9/core/actions/runs/45541255150), confirming a 1,500 ms live direct-cast remainder and a real Renew schedule of first tick 3,000 ms, period 3,000 ms and five remaining ticks. Artifact [#14990075861](https://github.com/tyrael9/core/actions/runs/45541255150/artifacts/14990075861).
+
+The actual effective-healing/concurrency slice passed in [push #45547778038](https://github.com/tyrael9/core/actions/runs/45547778038). The trusted log recorded direct actual gain 69/direct overheal 99, one actual Renew tick with effective gain 1 from an expected 9 and conservative overheal lower bound 8, and concurrent same-time healing effective total 150/overheal 50 with attribution unknown. The dedicated F54d PASS marker and final `Runtime PASS` were present. Artifact [#14992557137](https://github.com/tyrael9/core/actions/runs/45547778038/artifacts/14992557137).
+
+These are isolated fixture-backed Core observations only. No Priest healing policy is enabled in production. Damage interleaving, pushback/interruption after a forecast snapshot, same-time Heal/Damage Core ordering and complete threat/proc/recipient closure remain open.
+
+---
+
 ## Current Core runtime validation status (2026-11-22)
 
 **F46/F47/F48 are closed; F49

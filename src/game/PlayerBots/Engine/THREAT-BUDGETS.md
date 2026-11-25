@@ -499,3 +499,8 @@ The simulator temporarily turns the real Priest Inspiration spell row into a gen
 ### F54f lifecycle ordering correction
 
 The F54f run on 845cc94 built successfully but the trusted simulator terminated with Core assertion `Object.cpp:2401 GetMap: m_currMap` immediately after the Group death-recovery summary, before the F54f marker. Artifact `partybot-simulator-845cc94...` shows F54e's marker passed. Root cause: F54f attempted `Player::ResurrectPlayer` after the shared fixture's `cleanup()` logged out both sessions and detached the Players from the source Map. F54f has been moved before `cleanup()`, after shared Group/death/point assertions; actor Map membership is now a hard fixture precondition. Runtime rerun is pending.
+
+
+### F54f Core delayed-proc scheduling correction (trusted runtime pending)
+
+Source audit of `SpellCaster::ProcDamageAndSpell` confirms that, when `CONFIG_UINT32_SPELL_PROC_DELAY` is configured, Core first evaluates only caster AuraHolders tagged `SPELL_ATTR_EX3_INSTANT_TARGET_PROCS`, then stores ordinary proc checks in the owning SpellCaster's pending queue. The delayed pass re-resolves the original target GUID, evaluates ordinary caster AuraHolders and recipient/victim AuraHolders, then dispatches queued proc effects through `HandleTriggers`. The F54f fixture drains this real Core queue with `healer->UpdatePendingProcs(procDelay + 1)`: after a zero-flag root control (before enabling the proc flag) and after each real proc cast. In delayed mode it captures root heal/threat synchronously, then records additional child healing/threat after the delayed pass. The fixture is test-only; no production proc handling or PriestDirectHealAction registration changes are made.

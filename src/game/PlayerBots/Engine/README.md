@@ -4,7 +4,7 @@ Independent party-coordinated AI for the pinned Vanilla 1.12.1 / build 5875 vMaN
 
 ## Current status (2026-11-24)
 
-## Latest verified status — F54d timer/schedule, effective-healing/concurrency, SELF_DAMAGE and hostile Creature interleaving trusted-runtime validated; F54e side-effect closure open
+## Latest verified status — F54d health/timing/threat interleaving trusted-runtime validated; F54e recipient-side proc guard trusted-runtime validated; F54f actual triggered-child proc parity pending
 
 **Phase 5 is closed; Phase 6 is in progress.** The Engine, asynchronous dispatcher, 17 reusable generic CoreAction adapters and real five-Player simulator are established. Only FollowPartyMemberAction and StopFollowingAction are registered in production NewEngine. The remaining generic adapters, class/role strategies and combat actions are not production gameplay behavior.
 
@@ -176,3 +176,8 @@ A CI pass is not an in-game test and does not authorize deployment.
 ## Operational boundaries
 
 The simulator uses disposable `partybot_sim_*` database schemas and never connects to the Oracle realm. Repository development does not publish an image, restart a server, change deployment configuration or mutate live database volumes. Image publication and deployment remain separate, explicitly authorized operations.
+
+
+### Current F54e/F54f boundary
+
+F54e recipient-side helpful-proc discovery/classification passed trusted Core runtime in push #45581482050. F54f exercises real generic `SPELL_AURA_PROC_TRIGGER_SPELL` child healing on both caster and recipient sides. The fixture runs before shared Group cleanup and explicitly flushes Core's configured delayed-proc queue after the no-proc control and after the proc root cast. It measures root-only healing/threat separately from child healing/threat. The trusted runtime rerun is pending; no child-heal or child-threat closure is claimed until the dedicated F54f marker and final Runtime PASS are present. `PriestDirectHealAction` remains unregistered and its whole-action threat estimate remains Unknown.

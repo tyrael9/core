@@ -510,7 +510,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54f executed real Core PROC_TRIGGER_SP
     exit 1
 fi
 f54f_line="$(grep -F '[PartyBotSimulator] F54f triggered child heal:' "$LOG_FILE" | tail -n 1)"
-for expected in "rowReady=1" "casterAura=1" "casterVeto=1" "casterChild=1" "casterThreat=1" "recipientAura=1" "recipientVeto=1" "recipientChild=1" "recipientThreat=1" "rowRestored=1"; do
+for expected in "rowReady=1" "procEventPresent=1" "procEventRestored=1" "casterAura=1" "casterVeto=1" "casterChild=1" "casterProcFlush=1" "casterThreat=1" "recipientAura=1" "recipientVeto=1" "recipientChild=1" "recipientProcFlush=1" "recipientThreat=1" "rowRestored=1"; do
     if ! printf '%s\n' "$f54f_line" | grep -F "$expected" >/dev/null; then
         echo "[PartyBotSimulator] F54f triggered-child assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1

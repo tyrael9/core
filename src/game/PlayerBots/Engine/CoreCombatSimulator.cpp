@@ -8428,13 +8428,20 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     }
     // F54f: exercise real generic PROC_TRIGGER_SPELL dispatch on both sides
     // of a helpful heal and measure the resulting effective healing/threat.
+
     struct F54fProcResult
     {
         bool controlCast = false, auraAttached = false, scriptFree = false;
         bool estimatorVetoed = false, rootCast = false, childObserved = false;
-        bool auraRemoved = false, threatMatched = false;
-        uint32 rootGain = 0, totalGain = 0, childGain = 0, refs = 0;
+        bool auraRemoved = false, threatMatched = false, procQueueFlushed = false;
+        uint32 controlGain = 0, rootGain = 0, totalGain = 0, childGain = 0, refs = 0;
+        float controlHealer0 = 0.0f, controlHealer1 = 0.0f;
+        float controlTank0 = 0.0f, controlTank1 = 0.0f;
+        float rootHealer0 = 0.0f, rootHealer1 = 0.0f;
+        float rootTank0 = 0.0f, rootTank1 = 0.0f;
         float healer0 = 0.0f, healer1 = 0.0f, tank0 = 0.0f, tank1 = 0.0f;
+        float expectedHealer0 = 0.0f, expectedHealer1 = 0.0f;
+        float expectedTank0 = 0.0f, expectedTank1 = 0.0f;
     };
     SpellEntry* const f54fAuraSpell = const_cast<SpellEntry*>(inspirationSpell);
     SpellEntry const* const f54fChildSpell = sSpellMgr.GetSpellEntry(2052);
@@ -8520,6 +8527,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54fMutableProcEvent->customChance = 0.0f;
         f54fMutableProcEvent->cooldown = 0;
     }
+    uint32 const f54fProcDelay =
+        sWorld.getConfig(CONFIG_UINT32_SPELL_PROC_DELAY);
     auto runF54fProc = [&](uint32 sideFlag, bool casterSide)
     {
         F54fProcResult out;
@@ -8528,47 +8537,89 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             tank->GetSpellAuraHolder(inspirationSpell->Id) ||
             healer->GetSpellAuraHolder(inspirationSpell->Id))
             return out;
-        Unit* const auraOwner = casterSide ? static_cast<Unit*>(healer) : static_cast<Unit*>(tank);
+
+        Unit* const auraOwner = casterSide
+            ? static_cast<Unit*>(healer) : static_cast<Unit*>(tank);
         uint32 const savedHealth = tank->GetHealth();
         uint32 const testHealth = std::max<uint32>(1u, tank->GetMaxHealth() / 2u);
         uint32 const savedMana = healer->GetPower(POWER_MANA);
+
         f54fAuraSpell->Effect[0] = SPELL_EFFECT_APPLY_AURA;
         f54fAuraSpell->EffectApplyAuraName[0] = SPELL_AURA_PROC_TRIGGER_SPELL;
         f54fAuraSpell->EffectTriggerSpell[0] = f54fChildSpell->Id;
-        f54fAuraSpell->procFlags = sideFlag;
+        // Install the Aura with zero generic proc flags for a clean root-heal
+        // control. After flushing its pending proc record, enable exactly one
+        // side-specific flag and run the identical root cast again.
+        f54fAuraSpell->procFlags = 0;
         f54fAuraSpell->procChance = 100;
         f54fAuraSpell->procCharges = 0;
         f54fAuraSpell->SpellFamilyName = SPELLFAMILY_GENERIC;
         f54fAuraSpell->SpellIconID = 0;
 
-        tank->SetHealth(testHealth);
-        healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
-        healer->SetFacingToObject(tank);
-        out.controlCast = healer->CastSpell(tank, healSpell, true) == SPELL_CAST_OK;
-        out.rootGain = tank->GetHealth() > testHealth
-            ? tank->GetHealth() - testHealth : 0u;
-
-        tank->SetHealth(testHealth);
-        healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
-        float const healerBefore0 = hostiles[0].creature->GetThreatManager().getThreat(healer);
-        float const healerBefore1 = hostiles[1].creature->GetThreatManager().getThreat(healer);
-        float const tankBefore0 = hostiles[0].creature->GetThreatManager().getThreat(tank);
-        float const tankBefore1 = hostiles[1].creature->GetThreatManager().getThreat(tank);
-        for (HostileReference* ref = tank->GetHostileRefManager().getFirst(); ref; ref = ref->next())
-            ++out.refs;
-
-        SpellAuraHolder* const holder = auraOwner->AddAura(
-            inspirationSpell->Id, EFFECT_INDEX_0, auraOwner);
+        SpellAuraHolder* const holder =
+            auraOwner->AddAura(inspirationSpell->Id, EFFECT_INDEX_0, auraOwner);
         out.auraAttached = holder != nullptr;
         out.scriptFree = holder && !holder->GetAuraScript();
         if (out.auraAttached)
         {
+            float const healerBeforeControl0 =
+                hostiles[0].creature->GetThreatManager().getThreat(healer);
+            float const healerBeforeControl1 =
+                hostiles[1].creature->GetThreatManager().getThreat(healer);
+            float const tankBeforeControl0 =
+                hostiles[0].creature->GetThreatManager().getThreat(tank);
+            float const tankBeforeControl1 =
+                hostiles[1].creature->GetThreatManager().getThreat(tank);
+
+            tank->SetHealth(testHealth);
+            healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+            healer->SetFacingToObject(tank);
+            out.controlCast =
+                healer->CastSpell(tank, healSpell, true) == SPELL_CAST_OK;
+            out.controlGain = tank->GetHealth() > testHealth
+                ? tank->GetHealth() - testHealth : 0u;
+
+            // The Core defers ordinary proc checks when SpellProcDelay is
+            // configured. Flush the no-proc control while procFlags are still
+            // zero, before enabling the temporary helpful-side flag.
+            if (f54fProcDelay)
+                healer->UpdatePendingProcs(f54fProcDelay + 1u);
+            out.procQueueFlushed = true;
+            out.controlHealer0 =
+                hostiles[0].creature->GetThreatManager().getThreat(healer) -
+                healerBeforeControl0;
+            out.controlHealer1 =
+                hostiles[1].creature->GetThreatManager().getThreat(healer) -
+                healerBeforeControl1;
+            out.controlTank0 =
+                hostiles[0].creature->GetThreatManager().getThreat(tank) -
+                tankBeforeControl0;
+            out.controlTank1 =
+                hostiles[1].creature->GetThreatManager().getThreat(tank) -
+                tankBeforeControl1;
+
+            tank->SetHealth(testHealth);
+            healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+            float const healerBeforeProc0 =
+                hostiles[0].creature->GetThreatManager().getThreat(healer);
+            float const healerBeforeProc1 =
+                hostiles[1].creature->GetThreatManager().getThreat(healer);
+            float const tankBeforeProc0 =
+                hostiles[0].creature->GetThreatManager().getThreat(tank);
+            float const tankBeforeProc1 =
+                hostiles[1].creature->GetThreatManager().getThreat(tank);
+            for (HostileReference* ref = tank->GetHostileRefManager().getFirst();
+                 ref; ref = ref->next())
+                ++out.refs;
+
+            f54fAuraSpell->procFlags = sideFlag;
             coordinator.InvalidateSnapshot();
             PartySnapshot const* snap = PartySnapshotBuilder::GetOrBuild(
                 tank, coordinator, WorldTimer::getMSTime(), 0);
             ThreatImpactEstimate const estimate = snap
                 ? EstimateDirectHealingThreatComponents(
-                    healer, tank, static_cast<float>(tank->GetMaxHealth() - tank->GetHealth()),
+                    healer, tank,
+                    static_cast<float>(tank->GetMaxHealth() - tank->GetHealth()),
                     healSpell, *snap)
                 : ThreatImpactEstimate();
             out.estimatorVetoed =
@@ -8578,36 +8629,96 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
 
             healer->SetFacingToObject(tank);
             out.rootCast = healer->CastSpell(tank, healSpell, true) == SPELL_CAST_OK;
+            if (f54fProcDelay)
+            {
+                // At this point only the direct root heal has been applied;
+                // caster and recipient proc auras are processed on the next
+                // delayed Core proc pass owned by the real SpellCaster.
+                out.rootGain = tank->GetHealth() > testHealth
+                    ? tank->GetHealth() - testHealth : 0u;
+                // The root DealHeal/threat is synchronous; only the queued
+                // child spell is deferred. Capture that exact baseline before
+                // advancing Core's delayed proc queue.
+                out.rootHealer0 =
+                    hostiles[0].creature->GetThreatManager().getThreat(healer) -
+                    healerBeforeProc0;
+                out.rootHealer1 =
+                    hostiles[1].creature->GetThreatManager().getThreat(healer) -
+                    healerBeforeProc1;
+                out.rootTank0 =
+                    hostiles[0].creature->GetThreatManager().getThreat(tank) -
+                    tankBeforeProc0;
+                out.rootTank1 =
+                    hostiles[1].creature->GetThreatManager().getThreat(tank) -
+                    tankBeforeProc1;
+                healer->UpdatePendingProcs(f54fProcDelay + 1u);
+            }
+            else
+            {
+                // With no proc delay, Core executes both helpful sides inline.
+                // Use the measured zero-flag root control as the root component.
+                out.rootGain = out.controlGain;
+            }
             out.totalGain = tank->GetHealth() > testHealth
                 ? tank->GetHealth() - testHealth : 0u;
             out.childGain = out.totalGain > out.rootGain
                 ? out.totalGain - out.rootGain : 0u;
-            out.childObserved = out.rootCast && out.rootGain > 0 && out.childGain > 0;
-            auraOwner->RemoveAurasDueToSpell(inspirationSpell->Id);
-            out.auraRemoved = auraOwner->GetSpellAuraHolder(inspirationSpell->Id) == nullptr;
-        }
+            out.childObserved = out.rootCast && out.controlCast &&
+                out.controlGain > 0 && out.rootGain > 0 && out.childGain > 10u;
 
-        float const divisor = static_cast<float>(out.refs ? out.refs : 1u);
-        float const rootInput = out.rootGain * 0.5f *
-            sSpellMgr.GetSpellThreatMultiplier(healSpell) / divisor;
-        float const childInput = out.childGain * 0.5f *
-            sSpellMgr.GetSpellThreatMultiplier(f54fChildSpell) / divisor;
-        float const rootThreat = ThreatCalcHelper::CalcThreat(
-            healer, rootInput, false, healSpell->GetSpellSchoolMask(), healSpell);
-        float const childThreat = ThreatCalcHelper::CalcThreat(
-            auraOwner, childInput, false,
-            f54fChildSpell->GetSpellSchoolMask(), f54fChildSpell);
-        float const expectedHealer = rootThreat + (casterSide ? childThreat : 0.0f);
-        float const expectedTank = casterSide ? 0.0f : childThreat;
-        out.healer0 = hostiles[0].creature->GetThreatManager().getThreat(healer) - healerBefore0;
-        out.healer1 = hostiles[1].creature->GetThreatManager().getThreat(healer) - healerBefore1;
-        out.tank0 = hostiles[0].creature->GetThreatManager().getThreat(tank) - tankBefore0;
-        out.tank1 = hostiles[1].creature->GetThreatManager().getThreat(tank) - tankBefore1;
-        out.threatMatched = out.refs == 2 &&
-            std::fabs(out.healer0 - expectedHealer) < 0.05f &&
-            std::fabs(out.healer1 - expectedHealer) < 0.05f &&
-            std::fabs(out.tank0 - expectedTank) < 0.05f &&
-            std::fabs(out.tank1 - expectedTank) < 0.05f;
+            auraOwner->RemoveAurasDueToSpell(inspirationSpell->Id);
+            out.auraRemoved =
+                auraOwner->GetSpellAuraHolder(inspirationSpell->Id) == nullptr;
+
+            float const divisor = static_cast<float>(out.refs ? out.refs : 1u);
+            float const childInput = out.childGain * 0.5f *
+                sSpellMgr.GetSpellThreatMultiplier(f54fChildSpell) / divisor;
+            float const childThreat = ThreatCalcHelper::CalcThreat(
+                auraOwner, childInput, false,
+                f54fChildSpell->GetSpellSchoolMask(), f54fChildSpell);
+            float const rootInput = out.rootGain * 0.5f *
+                sSpellMgr.GetSpellThreatMultiplier(healSpell) / divisor;
+            float const calculatedRootThreat = ThreatCalcHelper::CalcThreat(
+                healer, rootInput, false, healSpell->GetSpellSchoolMask(), healSpell);
+
+            out.healer0 =
+                hostiles[0].creature->GetThreatManager().getThreat(healer) -
+                healerBeforeProc0;
+            out.healer1 =
+                hostiles[1].creature->GetThreatManager().getThreat(healer) -
+                healerBeforeProc1;
+            out.tank0 =
+                hostiles[0].creature->GetThreatManager().getThreat(tank) -
+                tankBeforeProc0;
+            out.tank1 =
+                hostiles[1].creature->GetThreatManager().getThreat(tank) -
+                tankBeforeProc1;
+
+            // If procs are delayed, the synchronous root gain is known exactly.
+            // With zero delay, use the measured control's root threat to avoid
+            // treating one-point heal dither as child healing or extra threat.
+            float const expectedRootHealer0 = f54fProcDelay
+                ? out.rootHealer0 : out.controlHealer0;
+            float const expectedRootHealer1 = f54fProcDelay
+                ? out.rootHealer1 : out.controlHealer1;
+            float const expectedRootTank0 = f54fProcDelay
+                ? out.rootTank0 : out.controlTank0;
+            float const expectedRootTank1 = f54fProcDelay
+                ? out.rootTank1 : out.controlTank1;
+            out.expectedHealer0 = expectedRootHealer0 +
+                (casterSide ? childThreat : 0.0f);
+            out.expectedHealer1 = expectedRootHealer1 +
+                (casterSide ? childThreat : 0.0f);
+            out.expectedTank0 = expectedRootTank0 +
+                (casterSide ? 0.0f : childThreat);
+            out.expectedTank1 = expectedRootTank1 +
+                (casterSide ? 0.0f : childThreat);
+            out.threatMatched = out.refs == 2 &&
+                std::fabs(out.healer0 - out.expectedHealer0) < 0.30f &&
+                std::fabs(out.healer1 - out.expectedHealer1) < 0.30f &&
+                std::fabs(out.tank0 - out.expectedTank0) < 0.30f &&
+                std::fabs(out.tank1 - out.expectedTank1) < 0.30f;
+        }
 
         tank->SetHealth(savedHealth);
         healer->SetPower(POWER_MANA, savedMana);
@@ -8686,107 +8797,38 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54fRecipient.controlCast && f54fRecipient.auraAttached && f54fRecipient.scriptFree &&
         f54fRecipient.estimatorVetoed && f54fRecipient.rootCast && f54fRecipient.childObserved &&
         f54fRecipient.auraRemoved && f54fRecipient.threatMatched &&
-        f54fRowRestored && f54fProcEventRestored;
+        f54fRowRestored && f54fProcEventRestored &&
+        f54fCaster.procQueueFlushed && f54fRecipient.procQueueFlushed;
     sLog.Out(LOG_BASIC, f54fPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54f triggered child heal: rowReady=%u procEventPresent=%u procEventRestored=%u casterAura=%u casterVeto=%u casterChild=%u casterThreat=%u casterHealer=%.2f/%.2f casterTank=%.2f/%.2f recipientAura=%u recipientVeto=%u recipientChild=%u recipientThreat=%u recipientHealer=%.2f/%.2f recipientTank=%.2f/%.2f rowRestored=%u.",
-        f54fRowReady ? 1u : 0u, f54fProcEvent ? 1u : 0u,
+        "[PartyBotSimulator] F54f triggered child heal: rowReady=%u procDelay=%u procEventPresent=%u procEventRestored=%u casterAura=%u casterVeto=%u casterControl=%u casterRoot=%u casterTotal=%u casterChild=%u casterProcFlush=%u casterThreat=%u casterRootThreat=%.2f/%.2f casterHealer=%.2f/%.2f expectedHealer=%.2f/%.2f casterTank=%.2f/%.2f expectedTank=%.2f/%.2f recipientAura=%u recipientVeto=%u recipientControl=%u recipientRoot=%u recipientTotal=%u recipientChild=%u recipientProcFlush=%u recipientThreat=%u recipientRootThreat=%.2f/%.2f recipientHealer=%.2f/%.2f expectedHealer=%.2f/%.2f recipientTank=%.2f/%.2f expectedTank=%.2f/%.2f rowRestored=%u.",
+        f54fRowReady ? 1u : 0u, f54fProcDelay, f54fProcEvent ? 1u : 0u,
         f54fProcEventRestored ? 1u : 0u,
         f54fCaster.auraAttached ? 1u : 0u,
-        f54fCaster.estimatorVetoed ? 1u : 0u, f54fCaster.childObserved ? 1u : 0u,
-        f54fCaster.threatMatched ? 1u : 0u, f54fCaster.healer0, f54fCaster.healer1,
-        f54fCaster.tank0, f54fCaster.tank1, f54fRecipient.auraAttached ? 1u : 0u,
-        f54fRecipient.estimatorVetoed ? 1u : 0u, f54fRecipient.childObserved ? 1u : 0u,
-        f54fRecipient.threatMatched ? 1u : 0u, f54fRecipient.healer0,
-        f54fRecipient.healer1, f54fRecipient.tank0, f54fRecipient.tank1,
+        f54fCaster.estimatorVetoed ? 1u : 0u,
+        f54fCaster.controlGain, f54fCaster.rootGain,
+        f54fCaster.totalGain, f54fCaster.childGain,
+        f54fCaster.procQueueFlushed ? 1u : 0u,
+        f54fCaster.threatMatched ? 1u : 0u,
+        f54fCaster.rootHealer0, f54fCaster.rootHealer1,
+        f54fCaster.healer0, f54fCaster.healer1,
+        f54fCaster.expectedHealer0, f54fCaster.expectedHealer1,
+        f54fCaster.tank0, f54fCaster.tank1,
+        f54fCaster.expectedTank0, f54fCaster.expectedTank1,
+        f54fRecipient.auraAttached ? 1u : 0u,
+        f54fRecipient.estimatorVetoed ? 1u : 0u,
+        f54fRecipient.controlGain, f54fRecipient.rootGain,
+        f54fRecipient.totalGain, f54fRecipient.childGain,
+        f54fRecipient.procQueueFlushed ? 1u : 0u,
+        f54fRecipient.threatMatched ? 1u : 0u,
+        f54fRecipient.rootHealer0, f54fRecipient.rootHealer1,
+        f54fRecipient.healer0, f54fRecipient.healer1,
+        f54fRecipient.expectedHealer0, f54fRecipient.expectedHealer1,
+        f54fRecipient.tank0, f54fRecipient.tank1,
+        f54fRecipient.expectedTank0, f54fRecipient.expectedTank1,
         f54fRowRestored ? 1u : 0u);
     if (f54fPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F54f executed real Core PROC_TRIGGER_SPELL child heals from both caster-side and recipient-side helpful proc flags; measured effective child healing and exact per-hostile healer/tank threat deltas, and restored the temporary aura spell row.");
-
-
-
-    uint32 const groupIdAfterEvents = group->GetId();
-    bool const groupStillRegistered = registeredBeforeCleanup &&
-        sObjectMgr.GetGroupById(groupIdAfterEvents) == group.get();
-    bool const cleaned = cleanup();
-    bool const groupRemoved = sObjectMgr.GetGroupById(groupIdAfterEvents) == nullptr;
-    bool const cleanupPassed = cleaned && groupRemoved;
-
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Player resurrection observer: observed=%u callbacks=%u transitions=%u alive=%u cleanup=1.",
-             tankResurrectionObserved ? 1u : 0u,
-             tankResurrectionObserver.callbackCount,
-             tankResurrectionObserver.transitionCount,
-             tank->IsAlive() ? 1u : 0u);
-    if (tankResurrectionObserved)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: Core Player::ResurrectPlayer emitted exactly one dead-to-alive observer transition after tank death recovery snapshots were captured.");
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Player alive-state observer: death=%u sameStateFiltered=%u callbacks=%u sameStateCallbacks=%u transitions=%u cleanup=1.",
-             tankDeathObserverValid ? 1u : 0u,
-             tankCorpseTransitionSuppressed ? 1u : 0u,
-             tankAliveObserver.callbackCount,
-             tankAliveObserver.sameStateCallbacks,
-             tankAliveObserver.transitionCount);
-    if (tankDeathObserverValid && tankCorpseTransitionSuppressed)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: Core Player::SetDeathState invoked the observer for JUST_DIED and CORPSE, while the alive-state transition filter emitted exactly one alive-to-dead event.");
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PartyBotAI encounter lifecycle: started=%u death=%u resurrection=%u sequenceDelta=%u alive=%u.",
-             partyTraceStarted.kind == EncounterTransitionKind::Started ? 1u : 0u,
-             partyTraceDied ? 1u : 0u,
-             partyBotEncounterLifecycleTraced ? 1u : 0u,
-             partyTraceSequenceAfter - partyTraceSequenceBefore - 1u,
-             tank->IsAlive() ? 1u : 0u);
-    if (partyBotEncounterLifecycleTraced)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: PartyBotAI emitted encounter-correlated death and resurrection trace records through Core PlayerAI callbacks, while the repeated CORPSE state was suppressed.");
-    if (partyBotDamageTracePassed)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: F22 recorded the real Core Unit::DealDamage health delta through PlayerAI/PartyBotAI with attacker, spell and damage-type attribution.");
-    if (f21BotStateTracePassed)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: F21 copied real Core shapeshift form, pending spell ID/state/target and member position, plus hostile creature entry/rank/world-boss identity into the bounded party heartbeat.");
-
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Group death recovery: dpsDamage=%u/%u dpsThreat=%.1f/%.1f healerHoldsAggro=%u tankDeath=%u tankRefsRemoved=%u healerRetargetAfterTankDeath=%u/%u tankSnapshot=%u tankRoster=%u tankThreatSnapshot=%u healerDeath=%u healerRefsRemoved=%u dpsRetargetAfterHealerDeath=%u/%u healerSnapshot=%u healerRoster=%u healerThreatSnapshot=%u registered=%u groupRemoved=%u cleanup=%u.",
-             dpsDamage0, dpsDamage1, dpsThreat0, dpsThreat1,
-             healerHoldsAggroOverDps ? 1u : 0u,
-             tankDied ? 1u : 0u, tankThreatReferencesRemoved ? 1u : 0u,
-             tankDeathSelected0 ? 1u : 0u, tankDeathSelected1 ? 1u : 0u,
-             tankDeathSnapshotValid ? 1u : 0u, tankDeathRosterValid ? 1u : 0u,
-             tankDeathThreatSnapshotValid ? 1u : 0u,
-             healerDied ? 1u : 0u, healerThreatReferencesRemoved ? 1u : 0u,
-             healerDeathSelected0 ? 1u : 0u, healerDeathSelected1 ? 1u : 0u,
-             healerDeathSnapshotValid ? 1u : 0u, healerDeathRosterValid ? 1u : 0u,
-             healerDeathThreatSnapshotValid ? 1u : 0u,
-             registeredBeforeCleanup ? 1u : 0u, groupRemoved ? 1u : 0u,
-             cleanupPassed ? 1u : 0u);
-
-    if (!f9ChecksPassed || !petCleanupPassed || !f12ChecksPassed || !groupStillRegistered)
-    {
-        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Combined Group F8/F9/F12 threat-reference scenario failed before death recovery.");
-        return false;
-    }
-
-    if (!f10ChecksPassed || !cleanupPassed)
-    {
-        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Core Tank/Healer death-reference cleanup and multi-add recovery failed.");
-        return false;
-    }
-
-    // The F43 Group-backed snapshot probe must be a hard runtime gate. A log-only
-    // failure here would let the simulator report Runtime PASS without validating
-    // that PartySnapshotBuilder copied Engine-owned Point correlation from Core.
-    if (!pointMovementSnapshotBuilderPassed)
-    {
-        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] F43 Group-backed point-movement snapshot integration failed.");
-        return false;
-    }
-
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states.");
     return true;

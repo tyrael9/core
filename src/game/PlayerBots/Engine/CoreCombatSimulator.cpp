@@ -59,6 +59,7 @@
 #include "SpellMgr.h"
 #include "Database/DatabaseEnv.h"
 #include "Timer.h"
+#include "World.h"
 
 #include <algorithm>
 #include <chrono>

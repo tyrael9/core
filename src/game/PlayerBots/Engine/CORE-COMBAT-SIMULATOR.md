@@ -1,5 +1,14 @@
 # Core-backed PartyBot combat simulator
 
+## Latest F54f runtime attempt — fixture assertions passed; shutdown failed (2026-11-25 PT)
+
+Push [#45701485971](https://github.com/tyrael9/core/actions/runs/45701485971) passed the pure Engine tests, report-collector tests, configure, full Linux ARM64 / Vanilla 5875 build and simulator harness syntax. The real Core simulator emitted the dedicated F54f PASS marker for both caster-side and recipient-side PROC_TRIGGER_SPELL child heals. Each side produced 76 effective child healing; the per-hostile healer/tank ThreatManager deltas matched exactly, the estimator remained fail-closed, and the temporary Aura/proc spell rows were restored.
+
+The run is **not** an overall Runtime PASS: after all fixture PASS markers and normal world/map/database shutdown messages, mangosd segfaulted at process halt (exit 139). The full log artifact is [partybot-simulator-7cc14cfd](https://github.com/tyrael9/core/actions/runs/45701485971/artifacts/15064455508). A follow-up now installs GDB and runs the simulator under batch GDB so the next artifact captures all-thread native backtraces. Keep F54f's functional assertions distinguished from the still-failing end-to-end process lifecycle; do not suppress exit 139 or mark the milestone fully closed until shutdown is clean and the runner emits its final Runtime PASS.
+
+---
+
+
 ## Latest Phase 6 runtime evidence — F54d (2026-11-24 PT / 2026-11-25 UTC)
 
 The F54d timer/schedule slice passed trusted Core runtime in [push #45541255150](https://github.com/tyrael9/core/actions/runs/45541255150), confirming a 1,500 ms live direct-cast remainder and a real Renew schedule of first tick 3,000 ms, period 3,000 ms and five remaining ticks. Artifact [#14990075861](https://github.com/tyrael9/core/actions/runs/45541255150/artifacts/14990075861).
@@ -628,7 +637,7 @@ Trusted push [#45561037244](https://github.com/tyrael9/core/actions/runs/4556103
 This validates only the tested ordered arrival sequence and assist-threat recipients. It does not prove all possible caster/recipient proc auras, SpellScript/AuraScript callbacks, `SPELL_AURA_ADD_TARGET_TRIGGER` child casts, nested children or complete action-level threat closure. Those remain F54e work; the production Priest healing action and strategy remain disabled.
 
 
-### F54f triggered-child proc fixture (trusted Core runtime pending)
+### F54f triggered-child proc fixture (functional assertions passed; overall shutdown validation pending)
 
 The simulator creates a temporary generic `SPELL_AURA_PROC_TRIGGER_SPELL` aura using the real Inspiration spell row and child spell 2052. It runs both caster-side `PROC_FLAG_DEAL_HELPFUL_SPELL` and recipient-side `PROC_FLAG_TAKE_HELPFUL_SPELL` variants. Each variant first installs the Aura with proc flags zero and records a real no-proc root-heal control, then enables only the tested helpful-side flag and repeats the root cast. The fixture requires the estimator to remain `Unknown` with no partial impacts, records control/root/total/child effective healing, and compares both hostile ThreatManagers' healer/tank deltas against the observed root component plus the child's Core healing-assist component.
 

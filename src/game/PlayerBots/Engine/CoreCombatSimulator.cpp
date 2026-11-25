@@ -6238,6 +6238,14 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     uint32 const f54fSavedCharges = f54fAuraSpell ? f54fAuraSpell->procCharges : 0;
     uint32 const f54fSavedFamily = f54fAuraSpell ? f54fAuraSpell->SpellFamilyName : 0;
     uint32 const f54fSavedIcon = f54fAuraSpell ? f54fAuraSpell->SpellIconID : 0;
+    SpellEntry* const f54fMutableChildSpell =
+        const_cast<SpellEntry*>(f54fChildSpell);
+    uint32 const f54fSavedChildAttributesEx3 =
+        f54fMutableChildSpell ? f54fMutableChildSpell->AttributesEx3 : 0;
+    if (f54fMutableChildSpell)
+        f54fMutableChildSpell->AttributesEx3 |=
+            SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
+            SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
     auto runF54fProc = [&](uint32 sideFlag, bool casterSide)
     {
         F54fProcResult out;
@@ -6249,6 +6257,20 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         uint32 const savedHealth = tank->GetHealth();
         uint32 const testHealth = std::max<uint32>(1u, tank->GetMaxHealth() / 2u);
         uint32 const savedMana = healer->GetPower(POWER_MANA);
+        auto const savedReact0 = hostiles[0].creature->GetCreatureReactState();
+        auto const savedReact1 = hostiles[1].creature->GetCreatureReactState();
+        hostiles[0].creature->SetCreatureReactState(REACT_PASSIVE);
+        hostiles[1].creature->SetCreatureReactState(REACT_PASSIVE);
+        auto waitForRootHeal = [&]()
+        {
+            for (uint32 tick = 0; tick < 20 &&
+                 healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                map.Update(250);
+            }
+            return !healer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        };
 
         f54fAuraSpell->Effect[0] = SPELL_EFFECT_APPLY_AURA;
         f54fAuraSpell->EffectApplyAuraName[0] = SPELL_AURA_PROC_TRIGGER_SPELL;
@@ -6262,8 +6284,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         tank->SetHealth(testHealth);
         healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
         healer->SetFacingToObject(tank);
-        out.controlCast = healer->CastSpell(tank, healSpell, true) == SPELL_CAST_OK;
-        out.rootGain = tank->GetHealth() > testHealth ? tank->GetHealth() - testHealth : 0u;
+        SpellCastResult const controlResult =
+            healer->CastSpell(tank, healSpell, false);
+        out.controlCast = controlResult == SPELL_CAST_OK && waitForRootHeal();
+        out.rootGain = tank->GetHealth() > testHealth
+            ? tank->GetHealth() - testHealth : 0u;
 
         tank->SetHealth(testHealth);
         healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
@@ -6294,7 +6319,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 estimate.impacts.empty();
 
             healer->SetFacingToObject(tank);
-            out.rootCast = healer->CastSpell(tank, healSpell, true) == SPELL_CAST_OK;
+            SpellCastResult const rootResult =
+                healer->CastSpell(tank, healSpell, false);
+            out.rootCast = rootResult == SPELL_CAST_OK && waitForRootHeal();
             out.totalGain = tank->GetHealth() > testHealth
                 ? tank->GetHealth() - testHealth : 0u;
             out.childGain = out.totalGain > out.rootGain
@@ -6328,6 +6355,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
 
         tank->SetHealth(savedHealth);
         healer->SetPower(POWER_MANA, savedMana);
+        hostiles[0].creature->SetCreatureReactState(savedReact0);
+        hostiles[1].creature->SetCreatureReactState(savedReact1);
         return out;
     };
     F54fProcResult const f54fCaster =
@@ -6345,6 +6374,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54fAuraSpell->SpellFamilyName = f54fSavedFamily;
         f54fAuraSpell->SpellIconID = f54fSavedIcon;
     }
+    if (f54fMutableChildSpell)
+        f54fMutableChildSpell->AttributesEx3 = f54fSavedChildAttributesEx3;
+    bool const f54fChildAttributesRestored =
+        f54fMutableChildSpell &&
+        f54fMutableChildSpell->AttributesEx3 == f54fSavedChildAttributesEx3;
     bool const f54fRowRestored = f54fAuraSpell &&
         f54fAuraSpell->Effect[0] == f54fSavedEffect0 &&
         f54fAuraSpell->EffectApplyAuraName[0] == f54fSavedAuraType0 &&
@@ -6353,7 +6387,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54fAuraSpell->procChance == f54fSavedChance &&
         f54fAuraSpell->procCharges == f54fSavedCharges &&
         f54fAuraSpell->SpellFamilyName == f54fSavedFamily &&
-        f54fAuraSpell->SpellIconID == f54fSavedIcon;
+        f54fAuraSpell->SpellIconID == f54fSavedIcon &&
+        f54fChildAttributesRestored;
     bool const f54fPassed = f54fRowReady &&
         f54fCaster.controlCast && f54fCaster.auraAttached && f54fCaster.scriptFree &&
         f54fCaster.estimatorVetoed && f54fCaster.rootCast && f54fCaster.childObserved &&

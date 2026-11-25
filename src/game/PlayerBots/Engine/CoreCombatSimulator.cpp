@@ -4629,6 +4629,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         bool f54dHotTickCaptured = false;
         uint32 f54dHotActualGain = 0;
         uint32 f54dHotOverhealLowerBound = 0;
+        uint32 f54dHotUpdatePolls = 0;
+        uint32 f54dHotTicksBefore = 0;
+        uint32 f54dHotTicksAfter = 0;
         bool f54dConcurrentHealingCaptured = false;
         uint32 f54dConcurrentEffectiveGain = 0;
         uint32 f54dConcurrentOverheal = 0;
@@ -5255,29 +5258,50 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         {
                             tank->SetHealth(tank->GetMaxHealth() - 1u);
                             uint32 const hotHealthBefore = tank->GetHealth();
-                            uint32 const hotTicksBefore =
+                            f54dHotTicksBefore =
                                 f54dLiveRenewAura->GetAuraTicks();
-                            map.Update(f54dHotFirstTickMs);
+
+                            // Player::Update is wall-clock throttled. A single
+                            // map.Update(firstTickMs) may therefore skip the
+                            // Player's Aura scheduler entirely. Drive bounded
+                            // normal updates like the proven periodic-heal
+                            // fixture and reacquire the Aura after every tick.
                             Aura* renewedAuraAfterTick = nullptr;
-                            for (Aura* aura : tank->GetAurasByType(
-                                     SPELL_AURA_PERIODIC_HEAL))
+                            while (f54dHotUpdatePolls < 128u)
                             {
-                                if (aura && aura->GetId() == 139 &&
-                                    aura->GetCaster() == priest)
+                                map.Update(250);
+                                std::this_thread::sleep_for(
+                                    std::chrono::milliseconds(100));
+                                ++f54dHotUpdatePolls;
+
+                                renewedAuraAfterTick = nullptr;
+                                for (Aura* aura : tank->GetAurasByType(
+                                         SPELL_AURA_PERIODIC_HEAL))
                                 {
-                                    renewedAuraAfterTick = aura;
-                                    break;
+                                    if (aura && aura->GetId() == 139 &&
+                                        aura->GetCaster() == priest)
+                                    {
+                                        renewedAuraAfterTick = aura;
+                                        break;
+                                    }
                                 }
+
+                                if (!renewedAuraAfterTick ||
+                                    renewedAuraAfterTick->GetAuraTicks() >
+                                        f54dHotTicksBefore)
+                                    break;
                             }
+
                             uint32 const hotHealthAfter = tank->GetHealth();
-                            uint32 const hotTicksAfter = renewedAuraAfterTick
-                                ? renewedAuraAfterTick->GetAuraTicks() : hotTicksBefore;
+                            f54dHotTicksAfter = renewedAuraAfterTick
+                                ? renewedAuraAfterTick->GetAuraTicks()
+                                : f54dHotTicksBefore;
                             f54dHotActualGain =
                                 hotHealthAfter > hotHealthBefore
                                     ? hotHealthAfter - hotHealthBefore : 0u;
                             f54dHotTickCaptured =
                                 renewedAuraAfterTick &&
-                                hotTicksAfter == hotTicksBefore + 1u &&
+                                f54dHotTicksAfter == f54dHotTicksBefore + 1u &&
                                 f54dHotActualGain == 1u;
                             f54dHotOverhealLowerBound =
                                 f54dHotHealingPerTick > f54dHotActualGain
@@ -5489,7 +5513,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             f54dConcurrentHealingCaptured;
         sLog.Out(LOG_BASIC,
             f54dEffectiveHealingRuntimePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-            "[PartyBotSimulator] F54d Core effective healing: directActualCaptured=%u directActualGain=%u directOneHealthCap=%u directOverheal=%u hotTickCaptured=%u hotActualGain=%u hotExpectedPerTick=%u hotOverhealLowerBound=%u concurrentHealingCaptured=%u concurrentEffective=%u concurrentOverheal=%u concurrentAttributionUnknown=%u.",
+            "[PartyBotSimulator] F54d Core effective healing: directActualCaptured=%u directActualGain=%u directOneHealthCap=%u directOverheal=%u hotTickCaptured=%u hotActualGain=%u hotExpectedPerTick=%u hotOverhealLowerBound=%u hotUpdatePolls=%u hotTicks=%u>%u concurrentHealingCaptured=%u concurrentEffective=%u concurrentOverheal=%u concurrentAttributionUnknown=%u.",
             f54dDirectActualCaptured ? 1u : 0u,
             f54dDirectActualGain,
             f54dDirectOverhealCaptured ? 1u : 0u,
@@ -5498,6 +5522,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             f54dHotActualGain,
             f54dHotHealingPerTick,
             f54dHotOverhealLowerBound,
+            f54dHotUpdatePolls,
+            f54dHotTicksBefore,
+            f54dHotTicksAfter,
             f54dConcurrentHealingCaptured ? 1u : 0u,
             f54dConcurrentEffectiveGain,
             f54dConcurrentOverheal,

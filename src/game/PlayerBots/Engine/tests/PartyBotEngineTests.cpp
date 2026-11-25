@@ -4580,7 +4580,16 @@ void TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal()
     assert(events[0].arrivalMs == 50);
     assert(events[1].arrivalMs == 150);
     assert(events[2].arrivalMs == 250);
-    assert(AppendDirectHealForecastEvent(22, 2052, 100, 20, events));
+    PartyMemberSnapshot directCaster;
+    directCaster.guid = 22;
+    directCaster.currentSpellId = 2052;
+    directCaster.currentSpellState = 1; // Core snapshot says preparing/casting.
+    directCaster.currentSpellTargetGuid = 99;
+    directCaster.currentSpellHealingAmount = 20;
+    directCaster.currentSpellRemainingCastMs = 100;
+    assert(AppendInFlightDirectHealForecastEvent(directCaster, 99, events));
+    assert(events.back().arrivalMs == 100);
+    assert(events.back().sourceGuid == directCaster.guid);
 
     HealingTimelineProjection projection;
     assert(ProjectHealingTimeline(75, 100, events, projection));
@@ -4608,6 +4617,14 @@ void TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal()
     assert(!AppendPeriodicHealForecastEvents(invalid, events));
     assert(events.size() == eventCountBeforeInvalid);
     assert(!AppendDirectHealForecastEvent(0, 2052, 100, 20, events));
+    directCaster.currentSpellEngineAction = true;
+    std::size_t const beforeEngineCast = events.size();
+    assert(!AppendInFlightDirectHealForecastEvent(directCaster, 99, events));
+    assert(events.size() == beforeEngineCast);
+    directCaster.currentSpellEngineAction = false;
+    assert(!AppendInFlightDirectHealForecastEvent(directCaster, 100, events));
+    directCaster.currentSpellRemainingCastMs = 0;
+    assert(!AppendInFlightDirectHealForecastEvent(directCaster, 99, events));
 
     std::vector<HealingTimelineEvent> malformed(1);
     assert(!ProjectHealingTimeline(10, 100, malformed, projection));

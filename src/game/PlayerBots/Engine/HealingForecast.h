@@ -80,6 +80,23 @@ inline bool AppendDirectHealForecastEvent(
 // Healing-only projection against a fixed health ceiling. Damage between
 // events, Core batching and simultaneous per-cast attribution are not guessed.
 inline bool ProjectHealingTimeline(
+inline bool AppendInFlightDirectHealForecastEvent(
+    PartyMemberSnapshot const& caster, Guid targetGuid,
+    std::vector<HealingTimelineEvent>& events)
+{
+    if (!caster.guid || !targetGuid || caster.currentSpellEngineAction ||
+        !caster.currentSpellId || !caster.currentSpellState ||
+        caster.currentSpellTargetGuid != targetGuid ||
+        !caster.currentSpellHealingAmount ||
+        !caster.currentSpellRemainingCastMs)
+        return false;
+
+    return AppendDirectHealForecastEvent(
+        caster.guid, caster.currentSpellId,
+        caster.currentSpellRemainingCastMs,
+        caster.currentSpellHealingAmount, events);
+}
+
     std::uint32_t currentHealth, std::uint32_t maxHealth,
     std::vector<HealingTimelineEvent> const& input,
     HealingTimelineProjection& projection)

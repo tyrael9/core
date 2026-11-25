@@ -28,6 +28,9 @@ struct PartyMemberSnapshot {
     std::uint8_t classId = 0, roleId = 0, level = 0, powerType = 0;
     std::uint32_t mapId = 0, instanceId = 0;
     std::uint32_t health = 0, maxHealth = 0, power = 0, maxPower = 0;
+    // Conservative F54c forecast values copied from live Core state; no Core pointers survive the build.
+    std::uint32_t periodicHealRemainingAmount = 0;
+    std::uint32_t allSchoolAbsorbRemainingAmount = 0;
     Guid victimGuid = 0;
     Guid selectionGuid = 0;
     Guid followTargetGuid = 0;
@@ -40,6 +43,9 @@ struct PartyMemberSnapshot {
     std::uint32_t resurrectionSpellId = 0;
     std::vector<DirectHealSpellSnapshot> directHealSpells;
     Guid currentSpellTargetGuid = 0;
+    // Core-calculated heal amount for a currently preparing/casting, explicit single-target direct heal.
+    // Engine-owned casts are excluded because their F54b Heal reservation already represents them.
+    std::uint32_t currentSpellHealingAmount = 0;
     ActionId currentSpellActionId = 0;
     std::uint64_t currentSpellEncounterId = 0;
     Guid currentSpellTraceTargetGuid = 0;

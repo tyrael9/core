@@ -10,9 +10,12 @@
 #include "Pet.h"
 #include "Player.h"
 #include "Spell.h"
+#include "SpellDefines.h"
 #include "ThreatManager.h"
 #include "Unit.h"
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <map>
 #include <utility>
 
@@ -28,6 +31,145 @@ PartyRole ToPartyRole(CombatBotRoles role)
         case ROLE_RANGE_DPS: return PartyRole::RangedDamage;
         case ROLE_MELEE_DPS: return PartyRole::MeleeDamage;
         default: return PartyRole::Unknown;
+    }
+}
+
+bool IsSingleUnitHealTarget(std::uint32_t target)
+{
+    return target == TARGET_UNIT_CASTER ||
+        target == TARGET_UNIT_FRIEND || target == TARGET_UNIT;
+}
+
+std::uint32_t EstimateInFlightDirectHeal(
+    Spell* currentSpell, Unit* target)
+{
+    if (!currentSpell || !currentSpell->m_spellInfo || !target ||
+        currentSpell->IsChanneled() ||
+        (currentSpell->getState() != SPELL_STATE_PREPARING &&
+         currentSpell->getState() != SPELL_STATE_CASTING))
+        return 0;
+
+    SpellEntry const* spellInfo = currentSpell->m_spellInfo;
+    // Only a plain one-effect direct heal is predictable here. Scripted,
+    // group/chain, mixed-effect and implicit-area heals stay uncredited.
+    if (spellInfo->ScriptId)
+        return 0;
+
+    std::uint32_t healEffect = MAX_SPELL_EFFECTS;
+    std::uint32_t healEffectCount = 0;
+    for (std::uint32_t i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (spellInfo->Effect[i] == SPELL_EFFECT_NONE)
+            continue;
+        if (spellInfo->Effect[i] != SPELL_EFFECT_HEAL)
+            return 0;
+
+        ++healEffectCount;
+        if (healEffectCount != 1)
+            return 0;
+
+        std::uint32_t const targetA = spellInfo->EffectImplicitTargetA[i];
+        std::uint32_t const targetB = spellInfo->EffectImplicitTargetB[i];
+        std::uint32_t const targetCount =
+            (targetA != TARGET_NONE ? 1u : 0u) +
+            (targetB != TARGET_NONE ? 1u : 0u);
+        if (targetCount != 1 ||
+            !IsSingleUnitHealTarget(targetA ? targetA : targetB))
+            return 0;
+
+        healEffect = i;
+    }
+
+    if (healEffectCount != 1 || healEffect >= MAX_SPELL_EFFECTS)
+        return 0;
+
+    float const amount = currentSpell->CalculateDamage(
+        SpellEffectIndex(healEffect), target);
+    if (!std::isfinite(amount) || amount <= 0.0f)
+        return 0;
+
+    double const rounded = std::ceil(static_cast<double>(amount));
+    if (rounded >= static_cast<double>(
+            std::numeric_limits<std::uint32_t>::max()))
+        return std::numeric_limits<std::uint32_t>::max();
+    return static_cast<std::uint32_t>(rounded);
+}
+
+void AddSaturatedHealingAmount(
+    std::uint32_t& total, std::uint64_t amount)
+{
+    std::uint64_t const maximum =
+        std::numeric_limits<std::uint32_t>::max();
+    std::uint64_t const combined =
+        static_cast<std::uint64_t>(total) + amount;
+    total = static_cast<std::uint32_t>(
+        combined > maximum ? maximum : combined);
+}
+
+void CaptureHealingForecast(Player* member, Map* map,
+                            PartyMemberSnapshot& memberData)
+{
+    if (!member || !map || member->GetMap() != map ||
+        !member->IsInWorld())
+        return;
+
+    // F54c: the current Aura amount already includes the 1.11+ caster-side
+    // healing bonus. Apply Core's current target-side bonus and count only
+    // finite remaining ticks. Scripted or otherwise unresolvable HoTs are
+    // intentionally omitted rather than assigned a guessed value.
+    AuraList const& periodicHeals =
+        member->GetAurasByType(SPELL_AURA_PERIODIC_HEAL);
+    for (Aura* aura : periodicHeals)
+    {
+        if (!aura || aura->GetAuraScript())
+            continue;
+        SpellEntry const* spellInfo = aura->GetSpellProto();
+        Unit* caster = aura->GetCaster();
+        Modifier const* modifier = aura->GetModifier();
+        if (!spellInfo || spellInfo->ScriptId || !caster || !modifier ||
+            aura->GetAuraDuration() <= 0 || modifier->periodictime <= 0)
+            continue;
+
+        std::uint32_t const maxTicks = aura->GetAuraMaxTicks();
+        std::uint32_t const completedTicks = aura->GetAuraTicks();
+        if (!maxTicks || completedTicks >= maxTicks ||
+            !std::isfinite(modifier->m_amount) || modifier->m_amount <= 0.0f)
+            continue;
+
+        float const targetAdjusted = member->SpellHealingBonusTaken(
+            caster, spellInfo, aura->GetEffIndex(), modifier->m_amount,
+            DOT, aura->GetStackAmount());
+        if (!std::isfinite(targetAdjusted) || targetAdjusted <= 0.0f)
+            continue;
+
+        std::uint64_t const perTick = static_cast<std::uint64_t>(
+            std::ceil(static_cast<double>(targetAdjusted)));
+        std::uint64_t const remainingTicks = maxTicks - completedTicks;
+        AddSaturatedHealingAmount(
+            memberData.periodicHealRemainingAmount,
+            perTick * remainingTicks);
+    }
+
+    // Only non-scripted, all-seven-school absorbs are treated as generally
+    // applicable effective health. School-specific shields and Mana Shield
+    // have resource/school constraints and are not credited by this baseline.
+    AuraList const& absorbs =
+        member->GetAurasByType(SPELL_AURA_SCHOOL_ABSORB);
+    for (Aura* aura : absorbs)
+    {
+        if (!aura || aura->GetAuraScript())
+            continue;
+        SpellEntry const* spellInfo = aura->GetSpellProto();
+        Modifier const* modifier = aura->GetModifier();
+        if (!spellInfo || spellInfo->ScriptId || !modifier ||
+            modifier->m_miscvalue != 0x7f ||
+            !std::isfinite(modifier->m_amount) || modifier->m_amount <= 0.0f)
+            continue;
+
+        std::uint64_t const remainingAbsorb = static_cast<std::uint64_t>(
+            std::ceil(static_cast<double>(modifier->m_amount)));
+        AddSaturatedHealingAmount(
+            memberData.allSchoolAbsorbRemainingAmount, remainingAbsorb);
     }
 }
 }
@@ -340,7 +482,29 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
             memberData.currentSpellEngineAction =
                 currentSpell->IsPartyBotTraceEngineAction() &&
                 memberData.currentSpellActionId != 0;
+
+            // F54b reservations already account for Engine-owned casts. Only
+            // estimate a non-Engine direct heal with an exact same-Group Player
+            // target; this avoids double counting the Bot's own reservation.
+            if (!memberData.currentSpellEngineAction)
+            {
+                Unit* healTarget = currentSpell->m_targets.getUnitTarget();
+                if (healTarget && healTarget->IsInWorld() &&
+                    healTarget->GetTypeId() == TYPEID_PLAYER &&
+                    healTarget->GetMap() == map &&
+                    healTarget->GetMapId() == snapshot.mapId &&
+                    healTarget->GetInstanceId() == snapshot.instanceId &&
+                    group->IsMember(healTarget->GetObjectGuid()) &&
+                    healTarget->GetObjectGuid().GetRawValue() ==
+                        memberData.currentSpellTargetGuid)
+                {
+                    memberData.currentSpellHealingAmount =
+                        EstimateInFlightDirectHeal(currentSpell, healTarget);
+                }
+            }
         }
+
+        CaptureHealingForecast(member, map, memberData);
         memberData.online = member->IsInWorld();
         memberData.alive = member->IsAlive();
         switch (member->GetDeathState())

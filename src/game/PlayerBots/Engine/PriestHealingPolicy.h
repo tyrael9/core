@@ -79,11 +79,25 @@ inline bool SelectPriestHealingTargetWithReservations(
             continue;
 
         std::uint32_t const rawMissing = member.maxHealth - member.health;
-        std::uint32_t const reserved = coordinator
+        std::uint64_t incoming = member.periodicHealRemainingAmount;
+        incoming += member.allSchoolAbsorbRemainingAmount;
+        for (PartyMemberSnapshot const& caster : snapshot.members)
+        {
+            // Engine-owned direct casts are represented by their F54b shared
+            // reservation, not by a second in-flight cast credit.
+            if (!caster.currentSpellEngineAction &&
+                caster.currentSpellTargetGuid == member.guid)
+                incoming += caster.currentSpellHealingAmount;
+        }
+
+        std::uint64_t const reserved = coordinator
             ? coordinator->GetReservedAmount(
                 ReservationType::Heal, member.guid, healerGuid, nowMs)
             : 0u;
-        std::uint32_t const credited = std::min(reserved, rawMissing);
+        std::uint64_t const creditedTotal = std::min<std::uint64_t>(
+            rawMissing, reserved + incoming);
+        std::uint32_t const credited =
+            static_cast<std::uint32_t>(creditedTotal);
         std::uint32_t const remaining = rawMissing - credited;
         if (!remaining)
             continue;

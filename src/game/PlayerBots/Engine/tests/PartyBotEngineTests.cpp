@@ -4397,6 +4397,95 @@ void TestPriestHealingTargetSelectionAccountsForOtherBotHealReservations()
     assert(selection.targetGuid == ranged.guid && selection.missingHealth == 400);
 }
 
+void TestPriestHealingTargetSelectionAccountsForIncomingHealsHotsAndAbsorbs()
+{
+    PartySnapshot snapshot;
+    snapshot.groupId = 903;
+    snapshot.mapId = 1;
+    snapshot.instanceId = 9;
+    snapshot.epoch = 86;
+
+    PartyMemberSnapshot healer, tank, ranged, humanCaster, engineCaster;
+    ConfigureMember(healer, 11, PartyRole::Healer, 100, 100);
+    healer.classId = 5;
+    healer.isPlayerBot = true;
+    healer.mapId = snapshot.mapId;
+    healer.instanceId = snapshot.instanceId;
+
+    ConfigureMember(tank, 22, PartyRole::Tank, 400, 1000, true);
+    tank.mapId = snapshot.mapId;
+    tank.instanceId = snapshot.instanceId;
+    tank.periodicHealRemainingAmount = 180;
+    tank.allSchoolAbsorbRemainingAmount = 120;
+
+    ConfigureMember(ranged, 33, PartyRole::RangedDamage, 400, 500);
+    ranged.mapId = snapshot.mapId;
+    ranged.instanceId = snapshot.instanceId;
+
+    // A human healer's non-Engine direct cast is visible through the caster's
+    // target GUID and Core-derived amount. Engine casts are intentionally not
+    // counted here because their shared reservation is authoritative.
+    ConfigureMember(humanCaster, 44, PartyRole::Unknown, 100, 100);
+    humanCaster.mapId = snapshot.mapId;
+    humanCaster.instanceId = snapshot.instanceId;
+    humanCaster.currentSpellTargetGuid = tank.guid;
+    humanCaster.currentSpellHealingAmount = 200;
+
+    ConfigureMember(engineCaster, 55, PartyRole::Healer, 100, 100);
+    engineCaster.isPlayerBot = true;
+    engineCaster.mapId = snapshot.mapId;
+    engineCaster.instanceId = snapshot.instanceId;
+    engineCaster.currentSpellTargetGuid = tank.guid;
+    engineCaster.currentSpellHealingAmount = 900;
+    engineCaster.currentSpellEngineAction = true;
+
+    snapshot.members = {healer, tank, ranged, humanCaster, engineCaster};
+
+    PartyCoordinator coordinator;
+    Reservation engineReservation;
+    engineReservation.type = ReservationType::Heal;
+    engineReservation.targetGuid = tank.guid;
+    engineReservation.ownerGuid = engineCaster.guid;
+    engineReservation.expiresAtMs = 5000;
+    engineReservation.amount = 100;
+    engineReservation.spellId = 2050;
+    engineReservation.actionId = coordinator.NextActionId();
+    assert(coordinator.TryReserve(engineReservation, 1000));
+
+    PriestHealingTargetSelection selection;
+    // 200 pending cast + 180 remaining HoT + 120 all-school absorb +
+    // 100 Engine reservation exactly cover the Tank's 600 health deficit.
+    // The Engine cast's deliberately huge amount is not double counted.
+    assert(SelectPriestHealingTarget(
+        snapshot, healer.guid, coordinator, 1100, selection));
+    assert(selection.targetGuid == ranged.guid);
+    assert(selection.missingHealth == 100);
+
+    // A Bot cast without its matching reservation is not credited twice:
+    // the cast amount is ignored while currentSpellEngineAction is true.
+    snapshot.members[1].periodicHealRemainingAmount = 0;
+    snapshot.members[1].allSchoolAbsorbRemainingAmount = 0;
+    snapshot.members[3].currentSpellHealingAmount = 0;
+    assert(SelectPriestHealingTarget(
+        snapshot, healer.guid, selection));
+    assert(selection.targetGuid == tank.guid);
+    assert(selection.missingHealth == 600);
+
+    // Non-Engine concurrent casts are additive, but the aggregate is capped
+    // at the target's current missing health and cannot wrap uint32 arithmetic.
+    snapshot.members[3].currentSpellEngineAction = false;
+    snapshot.members[3].currentSpellHealingAmount =
+        std::numeric_limits<std::uint32_t>::max();
+    snapshot.members[1].periodicHealRemainingAmount =
+        std::numeric_limits<std::uint32_t>::max();
+    snapshot.members[1].allSchoolAbsorbRemainingAmount =
+        std::numeric_limits<std::uint32_t>::max();
+    assert(SelectPriestHealingTarget(
+        snapshot, healer.guid, selection));
+    assert(selection.targetGuid == ranged.guid);
+    assert(selection.missingHealth == 100);
+}
+
 void TestHealingTriageShadowStrategy() {
     PartySnapshot snapshot; snapshot.epoch = 81;
     PartyMemberSnapshot healer, tank, damage;
@@ -6694,6 +6783,7 @@ int main() {
     TestPriestDirectHealSelectionUsesAffordableClosestRank();
     TestPriestHealingTargetSelectionIsDeterministicAndSnapshotBounded();
     TestPriestHealingTargetSelectionAccountsForOtherBotHealReservations();
+    TestPriestHealingTargetSelectionAccountsForIncomingHealsHotsAndAbsorbs();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();

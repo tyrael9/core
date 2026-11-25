@@ -11,9 +11,9 @@ Legacy PartyBot fixes are maintenance work only. They do not count as new-engine
 - [ ] Not started.
 - CI, in-game testing and deployment are separate evidence categories.
 
-## Current overall position (2026-11-24, F53f trusted-runtime validated; F54a passed; F54b validation pending)
+## Current overall position (2026-11-24, F53f trusted-runtime validated; F54a passed; F54b trusted-runtime validated; F54c implementation in progress)
 
-**Phase 6 / Priest Healer vertical slice remains in progress.** F53a–F53f now have trusted Core-runtime evidence. F53e remains conservative: no triggered child heal is allowlisted and unknown nested casts remain Unknown. F53f closes real Core success, interruption and failure terminal reservation cleanup, including out-of-encounter (`encounterId=0`) casts and stale cross-encounter isolation. F54a adds deterministic snapshot-only Priest target/rank composition; its pure tests and ARM64 build pass, but it remains a policy primitive rather than executable healing. F54b now adds cross-Bot Heal commitment accounting, exact Core Spell terminal cleanup and synchronous cast-start rollback. Pure tests and a required real-Core fixture have been added, but their CI/runtime validation is pending.
+**Phase 6 / Priest Healer vertical slice remains in progress.** F53a–F53f now have trusted Core-runtime evidence. F53e remains conservative: no triggered child heal is allowlisted and unknown nested casts remain Unknown. F53f closes real Core success, interruption and failure terminal reservation cleanup, including out-of-encounter (`encounterId=0`) casts and stale cross-encounter isolation. F54a adds deterministic snapshot-only Priest target/rank composition; its pure tests and ARM64 build pass, but it remains a policy primitive rather than executable healing. F54b adds cross-Bot Heal commitment accounting, exact Core Spell terminal cleanup and synchronous cast-start rollback; trusted push #45504709979 passed the real-Core fixture through final Runtime PASS. F54c is now implementing value-only forecasts for supported in-flight direct heals, ordinary HoTs and all-school absorbs.
 
 - **F53d NoThreat:** a positive temporary spell_threat=24 row was present, but the healed same-Group Player had no hostile references. The estimator returned snapshot-matched NoThreat with empty impacts and Safe budget admission; real Lesser Heal succeeded, Mana was spent, and no hostile reference or ThreatManager delta appeared (refsBefore=1 on the caster, refsAfter=1).
 - **F53d zero flat threat:** with the temporary row set to zero and two hostile references on the healed target, the estimator emitted exactly two healing-assist impacts and no flat-threat impacts. Both real Core ThreatManager deltas were 12.25, matching the assist-only estimate; the original DB row was restored.
@@ -238,7 +238,7 @@ The runtime pointer is carried through all four Engine-created DecisionContext c
 All classes and roles are composed within one PartyBotEngine queue; this is not a rollout boundary between old and new AI.
 
 - [ ] Warrior: tank and damage strategies, stance/resource/threat/taunt logic.
-- [~] Priest: F53a–F53f have trusted-runtime evidence. F53f verifies successful, interrupted and failed Core Spell terminals, including valid encounterId=0 out-of-encounter cleanup and cross-shard action-ID isolation. F54a deterministic target/rank selection has pure tests and ARM64 build evidence. F54b adds cross-Bot Heal commitments, exact owner/action/target/spell terminal cleanup, failed-start rollback and reservation-aware triage; validation is pending. HoTs, shields/absorbs, incoming human casts and effective-heal/overheal remain open. PriestDirectHealAction remains unregistered and its whole-action threat estimate remains Unknown.
+- [~] Priest: F53a–F53f have trusted-runtime evidence. F53f verifies successful, interrupted and failed Core Spell terminals, including valid encounterId=0 out-of-encounter cleanup and cross-shard action-ID isolation. F54a deterministic target/rank selection has pure tests and ARM64 build evidence. F54b adds cross-Bot Heal commitments, exact owner/action/target/spell terminal cleanup, failed-start rollback and reservation-aware triage; trusted Core runtime passed in #45504709979. F54c adds conservative in-flight direct-heal, remaining HoT and all-school absorb credits to triage; F54d still owns timing, effective healing, overheal and concurrent-arrival boundaries. PriestDirectHealAction remains unregistered and its whole-action threat estimate remains Unknown.
 - [ ] Druid: healing, caster and feral forms/roles, form-aware transitions.
 - [ ] Shaman: healing and damage roles, totems, shocks and utility.
 - [ ] Paladin: healing, tanking and damage roles, blessings/seals and utility.
@@ -282,6 +282,21 @@ Trusted push [#45353641584](https://github.com/tyrael9/core/actions/runs/4535364
 - Uses integer cross multiplication to rank the lowest health fraction without floating-point drift. Exact percentage ties prefer Main Tank, then greater absolute missing health, then lower GUID; a value-only deficit basis-point field is returned for diagnostics.
 - Composes target selection with the affordable learned direct-heal rank selector. If either selection fails, the entire decision is cleared.
 - Pure tests and ARM64 build passed in trusted push [#45492414602](https://github.com/tyrael9/core/actions/runs/45492414602). This is only a baseline triage primitive: incoming heals, HoTs, absorbs, effective healing, healer movement/range/LOS and the whole-action threat envelope are not modeled. PriestDirectHealAction remains unregistered and its estimate remains Unknown.
+
+### F54b — cross-Bot Heal reservations and exact Core terminal cleanup (trusted-runtime validated 2026-11-24)
+
+- The trusted push [#45504709979](https://github.com/tyrael9/core/actions/runs/45504709979) passed the Linux ARM64 / Vanilla 5875 build and complete Core-backed simulator through final `Runtime PASS`.
+- The real Core trace requires `listener=1`, `otherHealerSeeded=1`, `ownReservationCreated=1`, `ownReservationReleased=1` and `otherHealerPreserved=1`; the log confirms the exact action/target/spell terminal released only the owning Bot's reservation.
+- Artifact [partybot-simulator-cafbbe0d196ecd503d146be0ade3d0e9e473586d](https://github.com/tyrael9/core/actions/runs/45504709979/artifacts/14973233551). PR-safe workflow skips trusted fixture execution by design.
+- The Engine-owned in-flight cast is represented by its shared reservation; downstream triage must not credit that same cast a second time.
+
+### F54c — in-flight heals, HoTs and absorb-aware Priest triage (implementation in progress)
+
+- `PartySnapshotBuilder` now copies only value data. It estimates a current non-Engine direct heal only when the Core Spell is preparing/casting, has one explicit single-Player `SPELL_EFFECT_HEAL`, and has no script or additional effects. Group/chain/area/mixed/scripted casts are excluded. Engine-owned casts are left to their F54b reservation.
+- Ordinary non-scripted `SPELL_AURA_PERIODIC_HEAL` entries contribute Core target-adjusted amounts over their remaining finite ticks. Scripted, expired, malformed or unresolvable HoTs are omitted rather than guessed.
+- Only non-scripted `SPELL_AURA_SCHOOL_ABSORB` auras with the complete seven-school mask contribute their current remaining absorb amount. School-specific shields and Mana Shield are not treated as universal effective health.
+- Triage adds these supported contributions to other-Bot Heal reservations, saturates the aggregate, and caps credit at the target's current missing health. Pure tests cover additive sources, Engine-cast de-duplication and overflow/cap behavior.
+- F54c deliberately does not yet model arrival time, tick ordering, target health changes before arrival, actual effective healing, overheal, absorb-school match against predicted incoming damage, or threat generation from the heal. Those are F54d/full-threat-envelope work. `PriestDirectHealAction` and production Priest registration remain fail-closed/unregistered pending trusted Core validation.
 
 ## Phase 7 — party-wide coordination
 ## Phase 7 — party-wide coordination

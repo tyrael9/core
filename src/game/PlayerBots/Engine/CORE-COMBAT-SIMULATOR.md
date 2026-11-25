@@ -650,3 +650,8 @@ F54f same-second aura guard correction: the caster-side proc Aura is attached to
 ## Runner gate note — F22 damage_taken marker (2026-11-25)
 
 The trusted runtime log showed the actual lethal Player event (`damage_taken`, nonzero attacker and damage, health transition 1717→0, spell 0, damage type 0), and GDB reported normal process exit. The shell gate had incorrectly required a fixture-emitted PASS sentence before checking that same structured event; the fixture emits the event but not that sentence. The runner now checks for exactly one matching structured event first, then prints the PASS sentence itself. The count and field constraints remain strict; only the redundant impossible marker prerequisite was removed. A fresh trusted run is required to validate the revised gate.
+
+
+## Player alive-state observer marker correction (2026-11-25)
+
+The latest log audit found three shell-gated PASS sentences absent from the fixture output even though the corresponding assertions already existed and contributed to the final F10 acceptance conjunction: death/CORPSE callback filtering, one resurrection observer transition, and PartyBotAI encounter-correlated death/resurrection records. Commit `6519359` adds each PASS sentence conditionally under its existing assertion. This is a fixture observability correction only; it does not bypass or weaken any assertion. Trusted runtime validation is pending.

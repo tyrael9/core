@@ -4612,6 +4612,12 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         uint32 f54cExternalDirectAmount = 0;
         uint32 f54cHotAmount = 0;
         uint32 f54cAbsorbAmount = 0;
+        bool f54dDirectTimerCaptured = false;
+        bool f54dHotTimerCaptured = false;
+        uint32 f54dDirectRemainingCastMs = 0;
+        uint32 f54dHotFirstTickMs = 0;
+        uint32 f54dHotPeriodMs = 0;
+        uint32 f54dHotRemainingTicks = 0;
         uint32 f53bPriestActionSpellId = 0;
         ActionId f53bPriestActionId = 0;
         if (priest && priestHealerAI &&
@@ -5019,6 +5025,19 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                                 (f54cExternalCaster->currentSpellState == SPELL_STATE_PREPARING ||
                                  f54cExternalCaster->currentSpellState == SPELL_STATE_CASTING) &&
                                 f54cExternalDirectAmount > 0;
+                            Spell* const f54dExternalDirectSpell =
+                                priest->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                            f54dDirectRemainingCastMs = f54cExternalCaster
+                                ? f54cExternalCaster->currentSpellRemainingCastMs : 0u;
+                            f54dDirectTimerCaptured =
+                                f54cExternalDirectCaptured &&
+                                f54dExternalDirectSpell &&
+                                f54dExternalDirectSpell->GetCastTime() > 0 &&
+                                f54dDirectRemainingCastMs > 0 &&
+                                f54dDirectRemainingCastMs ==
+                                    f54dExternalDirectSpell->GetCastedTime() &&
+                                f54dDirectRemainingCastMs <=
+                                    static_cast<uint32>(f54dExternalDirectSpell->GetCastTime());
                         }
                         if (priest->GetCurrentSpell(CURRENT_GENERIC_SPELL))
                             priest->InterruptSpell(CURRENT_GENERIC_SPELL, true);
@@ -5111,6 +5130,51 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         f54cHotCaptured = renewAccepted && f54cHotAmount > 0;
                         f54cAllSchoolAbsorbCaptured =
                             shieldAccepted && f54cAbsorbAmount > 0;
+                        Aura* f54dLiveRenewAura = nullptr;
+                        for (Aura* aura : tank->GetAurasByType(
+                                 SPELL_AURA_PERIODIC_HEAL))
+                        {
+                            if (aura && aura->GetId() == 139 &&
+                                aura->GetCaster() == priest)
+                            {
+                                f54dLiveRenewAura = aura;
+                                break;
+                            }
+                        }
+                        if (f54dLiveRenewAura && f54cTankSnapshot &&
+                            !f54cTankSnapshot->periodicHealForecastsTruncated)
+                        {
+                            Modifier const* const renewModifier =
+                                f54dLiveRenewAura->GetModifier();
+                            uint32 const renewMaxTicks =
+                                f54dLiveRenewAura->GetAuraMaxTicks();
+                            uint32 const renewCompletedTicks =
+                                f54dLiveRenewAura->GetAuraTicks();
+                            int32 const renewTimer =
+                                f54dLiveRenewAura->GetAuraPeriodicTimer();
+                            f54dHotFirstTickMs = renewTimer > 0
+                                ? static_cast<uint32>(renewTimer) : 0u;
+                            f54dHotPeriodMs = renewModifier &&
+                                renewModifier->periodictime > 0
+                                ? static_cast<uint32>(renewModifier->periodictime) : 0u;
+                            f54dHotRemainingTicks = renewMaxTicks >= renewCompletedTicks
+                                ? renewMaxTicks - renewCompletedTicks : 0u;
+                            for (PeriodicHealForecastSnapshot const& forecast :
+                                 f54cTankSnapshot->periodicHealForecasts)
+                            {
+                                if (forecast.casterGuid ==
+                                        priest->GetObjectGuid().GetRawValue() &&
+                                    forecast.spellId == 139 &&
+                                    forecast.firstTickMs == f54dHotFirstTickMs &&
+                                    forecast.periodMs == f54dHotPeriodMs &&
+                                    forecast.remainingTicks == f54dHotRemainingTicks &&
+                                    forecast.healingPerTick > 0)
+                                {
+                                    f54dHotTimerCaptured = true;
+                                    break;
+                                }
+                            }
+                        }
                         tank->RemoveAurasDueToSpell(139);
                         tank->RemoveAurasDueToSpell(17);
 
@@ -5228,6 +5292,24 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         else
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                 "[PartyBotSimulator] F54c real Core healing forecast fixture failed.");
+
+        bool const f54dTimelineCapturePassed =
+            f54dDirectTimerCaptured && f54dHotTimerCaptured;
+        sLog.Out(LOG_BASIC,
+            f54dTimelineCapturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F54d Core healing timeline capture: directTimerCaptured=%u directRemainingMs=%u hotTimerCaptured=%u hotFirstTickMs=%u hotPeriodMs=%u hotRemainingTicks=%u.",
+            f54dDirectTimerCaptured ? 1u : 0u,
+            f54dDirectRemainingCastMs,
+            f54dHotTimerCaptured ? 1u : 0u,
+            f54dHotFirstTickMs,
+            f54dHotPeriodMs,
+            f54dHotRemainingTicks);
+        if (f54dTimelineCapturePassed)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F54d copied the live Core direct-heal remaining cast timer and the real Renew aura first-tick timer, period and remaining tick count into bounded value-only snapshot fields.");
+        else
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSimulator] F54d Core healing timeline capture fixture failed.");
 
         f53aPriestSpellSnapshotPassed =
             f53aPriestSpellRankOneLearned &&

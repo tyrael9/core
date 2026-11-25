@@ -179,6 +179,23 @@ void CaptureHealingForecast(Player* member, Map* map,
         AddSaturatedHealingAmount(
             memberData.periodicHealRemainingAmount,
             perTick * remainingTicks);
+        if (memberData.periodicHealForecasts.size() <
+            MAX_PERIODIC_HEAL_FORECASTS_PER_MEMBER)
+        {
+            PeriodicHealForecastSnapshot forecast;
+            forecast.casterGuid = caster->GetObjectGuid().GetRawValue();
+            forecast.spellId = spellInfo->Id;
+            int32 const firstTickTimer = aura->GetAuraPeriodicTimer();
+            forecast.firstTickMs = firstTickTimer > 0
+                ? static_cast<std::uint32_t>(firstTickTimer) : 0u;
+            forecast.periodMs = static_cast<std::uint32_t>(
+                modifier->periodictime);
+            forecast.remainingTicks = remainingTicks;
+            forecast.healingPerTick = static_cast<std::uint32_t>(perTick);
+            memberData.periodicHealForecasts.push_back(forecast);
+        }
+        else
+            memberData.periodicHealForecastsTruncated = true;
     }
 
     // Only non-scripted, all-seven-school absorbs are treated as generally
@@ -207,6 +224,26 @@ void CaptureHealingForecast(Player* member, Map* map,
         AddSaturatedHealingAmount(
             memberData.allSchoolAbsorbRemainingAmount, remainingAbsorb);
     }
+}
+}        AddSaturatedHealingAmount(
+            memberData.allSchoolAbsorbRemainingAmount, remainingAbsorb);
+    }
+
+    std::sort(memberData.periodicHealForecasts.begin(),
+        memberData.periodicHealForecasts.end(),
+        [](PeriodicHealForecastSnapshot const& left,
+           PeriodicHealForecastSnapshot const& right)
+        {
+            if (left.firstTickMs != right.firstTickMs)
+                return left.firstTickMs < right.firstTickMs;
+            if (left.casterGuid != right.casterGuid)
+                return left.casterGuid < right.casterGuid;
+            if (left.spellId != right.spellId)
+                return left.spellId < right.spellId;
+            if (left.remainingTicks != right.remainingTicks)
+                return left.remainingTicks < right.remainingTicks;
+            return left.healingPerTick < right.healingPerTick;
+        });
 }
 }
 
@@ -536,6 +573,9 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
                 {
                     memberData.currentSpellHealingAmount =
                         EstimateInFlightDirectHeal(currentSpell, healTarget);
+                    if (memberData.currentSpellHealingAmount)
+                        memberData.currentSpellRemainingCastMs =
+                            currentSpell->GetCastedTime();
                 }
             }
         }

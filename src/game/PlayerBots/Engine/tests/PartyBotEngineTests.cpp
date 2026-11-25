@@ -6,6 +6,7 @@
 #include "ShadowStrategies.h"
 #include "DpsAssistTrigger.h"
 #include "PriestHealingPolicy.h"
+#include "HealingForecast.h"
 #include "PriestDirectHealAction.h"
 #include "DirectHealThreatComponents.h"
 #include "FollowPartyLeaderTrigger.h"
@@ -4564,6 +4565,59 @@ void TestPriestHealingTargetSelectionAccountsForIncomingHealsHotsAndAbsorbs()
 }
 
 void TestHealingTriageShadowStrategy() {
+void TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal()
+{
+    PeriodicHealForecastSnapshot renew;
+    renew.casterGuid = 11;
+    renew.spellId = 139;
+    renew.firstTickMs = 50;
+    renew.periodMs = 100;
+    renew.remainingTicks = 3;
+    renew.healingPerTick = 15;
+
+    std::vector<HealingTimelineEvent> events;
+    assert(AppendPeriodicHealForecastEvents(renew, events));
+    assert(events.size() == 3);
+    assert(events[0].arrivalMs == 50);
+    assert(events[1].arrivalMs == 150);
+    assert(events[2].arrivalMs == 250);
+    assert(AppendDirectHealForecastEvent(22, 2052, 100, 20, events));
+
+    HealingTimelineProjection projection;
+    assert(ProjectHealingTimeline(75, 100, events, projection));
+    assert(projection.valid);
+    assert(projection.eventCount == 4);
+    assert(projection.finalHealth == 100);
+    assert(projection.effectiveHealing == 25);
+    assert(projection.overheal == 40);
+    assert(!projection.concurrentAttributionUnknown);
+    assert(projection.simultaneousArrivalGroups == 0);
+
+    std::vector<HealingTimelineEvent> concurrent;
+    assert(AppendDirectHealForecastEvent(33, 2050, 100, 30, concurrent));
+    assert(AppendDirectHealForecastEvent(44, 2052, 100, 30, concurrent));
+    assert(ProjectHealingTimeline(60, 100, concurrent, projection));
+    assert(projection.finalHealth == 100);
+    assert(projection.effectiveHealing == 40);
+    assert(projection.overheal == 20);
+    assert(projection.simultaneousArrivalGroups == 1);
+    assert(projection.concurrentAttributionUnknown);
+
+    std::size_t const eventCountBeforeInvalid = events.size();
+    PeriodicHealForecastSnapshot invalid = renew;
+    invalid.periodMs = 0;
+    assert(!AppendPeriodicHealForecastEvents(invalid, events));
+    assert(events.size() == eventCountBeforeInvalid);
+    assert(!AppendDirectHealForecastEvent(0, 2052, 100, 20, events));
+
+    std::vector<HealingTimelineEvent> malformed(1);
+    assert(!ProjectHealingTimeline(10, 100, malformed, projection));
+    assert(!projection.valid);
+    assert(!ProjectHealingTimeline(101, 100, concurrent, projection));
+    assert(!projection.valid);
+}
+
+void TestHealingTriageShadowStrategy() {
     PartySnapshot snapshot; snapshot.epoch = 81;
     PartyMemberSnapshot healer, tank, damage;
     ConfigureMember(healer, 11, PartyRole::Healer, 100, 100);
@@ -6861,6 +6915,7 @@ int main() {
     TestPriestHealingTargetSelectionIsDeterministicAndSnapshotBounded();
     TestPriestHealingTargetSelectionAccountsForOtherBotHealReservations();
     TestPriestHealingTargetSelectionAccountsForIncomingHealsHotsAndAbsorbs();
+    TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal();
     TestPriestDirectHealReservationSubtractsIncomingForecasts();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();

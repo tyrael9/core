@@ -442,6 +442,18 @@ if ! grep -Fq "[PartyBotSimulator] PASS: fixture-only PriestDirectHealAction pas
     exit 1
 fi
 
+f54d_timeline_state_line="$(grep -F '[PartyBotSimulator] F54d Core healing timeline capture:' "$LOG_FILE" | tail -n 1)"
+for expected in directTimerCaptured=1 hotTimerCaptured=1; do
+    if [[ "$f54d_timeline_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F54d Core timeline assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+if ! grep -Fq "[PartyBotSimulator] PASS: F54d copied the live Core direct-heal remaining cast timer and the real Renew aura first-tick timer, period and remaining tick count into bounded value-only snapshot fields." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F54d Core healing timeline PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: F53f a real successful Core Priest Spell terminal released every matching threat fan-out row and preserved another action by the same Bot, another Bot's row, and a stale cross-encounter event." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F53f successful Core threat-reservation terminal PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

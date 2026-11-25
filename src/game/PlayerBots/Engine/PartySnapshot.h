@@ -1,6 +1,8 @@
 #ifndef MANGOS_PARTYBOT_PARTY_SNAPSHOT_H
 #define MANGOS_PARTYBOT_PARTY_SNAPSHOT_H
 #include "DecisionTypes.h"
+#include <cstddef>
+#include <vector>
 namespace PartyBotEngine {
 enum class PartyMemberDeathState : std::uint8_t
 {
@@ -23,6 +25,18 @@ struct DirectHealSpellSnapshot
                             std::uint32_t mana)
         : spellId(spell), baseHealing(healing), manaCost(mana) {}
 };
+constexpr std::size_t MAX_PERIODIC_HEAL_FORECASTS_PER_MEMBER = 32;
+
+struct PeriodicHealForecastSnapshot
+{
+    Guid casterGuid = 0;
+    std::uint32_t spellId = 0;
+    std::uint32_t firstTickMs = 0;
+    std::uint32_t periodMs = 0;
+    std::uint32_t remainingTicks = 0;
+    std::uint32_t healingPerTick = 0;
+};
+
 struct PartyMemberSnapshot {
     Guid guid = 0;
     std::uint8_t classId = 0, roleId = 0, level = 0, powerType = 0;
@@ -31,6 +45,9 @@ struct PartyMemberSnapshot {
     // Conservative F54c forecast values copied from live Core state; no Core pointers survive the build.
     std::uint32_t periodicHealRemainingAmount = 0;
     std::uint32_t allSchoolAbsorbRemainingAmount = 0;
+    // Bounded F54d timing detail. A truncated list is never a complete timeline.
+    std::vector<PeriodicHealForecastSnapshot> periodicHealForecasts;
+    bool periodicHealForecastsTruncated = false;
     Guid victimGuid = 0;
     Guid selectionGuid = 0;
     Guid followTargetGuid = 0;
@@ -40,6 +57,8 @@ struct PartyMemberSnapshot {
     std::uint32_t pointMovementPointId = 0;
     float x = 0.0f, y = 0.0f, z = 0.0f, orientation = 0.0f;
     std::uint32_t currentSpellId = 0, currentSpellState = 0;
+    // Core Spell::m_timer copied while the current direct heal is preparing/casting.
+    std::uint32_t currentSpellRemainingCastMs = 0;
     std::uint32_t resurrectionSpellId = 0;
     std::vector<DirectHealSpellSnapshot> directHealSpells;
     Guid currentSpellTargetGuid = 0;

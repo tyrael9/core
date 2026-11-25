@@ -7445,6 +7445,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         partyTraceAI.m_decisionTrace.IsEnabled() && initialFormCopied &&
         currentCastSnapshotValid && hostileIdentityCopied &&
         f21CastStateTraceSnapshot.members.size() == MAX_GROUP_SIZE;
+    if (f21BotStateTracePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F21 copied real Core shapeshift form, pending spell ID/state/target and member position, plus hostile creature entry/rank/world-boss identity into the bounded party heartbeat.");
 
     // Exercise the actual PartyBotAI target-change callback across two distinct
     // bots sharing the same map/instance PartyCoordinator. The first 1,024

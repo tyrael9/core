@@ -501,6 +501,17 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54d matched two non-triggered Core Les
     echo "[PartyBotSimulator] The F54d hostile damage/Heal interleaving PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
+if ! grep -Fq "[PartyBotSimulator] PASS: F54e a real Core helpful-heal recipient aura with TAKE_HELPFUL_SPELL proc flags makes the direct-heal threat estimate fail closed; aura removal restores the clean recipient state and the temporary proc flags are restored." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F54e recipient-side helpful-proc PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f54e_recipient_line="$(grep -F '[PartyBotSimulator] F54e recipient-side helpful proc:' "$LOG_FILE" | tail -n 1)"
+for expected in "auraAttached=1" "procVeto=1" "impactsEmpty=1" "auraRemoved=1" "procFlagsRestored=1"; do
+    if ! printf '%s\n' "$f54e_recipient_line" | grep -F "$expected" >/dev/null; then
+        echo "[PartyBotSimulator] F54e recipient-side proc assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
 
 if ! grep -Fq "[PartyBotSimulator] PASS: F53f a real successful Core Priest Spell terminal released every matching threat fan-out row and preserved another action by the same Bot, another Bot's row, and a stale cross-encounter event." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F53f successful Core threat-reservation terminal PASS marker was not found." | tee -a "$LOG_FILE"

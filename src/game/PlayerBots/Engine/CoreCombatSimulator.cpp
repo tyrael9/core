@@ -6149,6 +6149,57 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: real Core Priest Inspiration aura on the healer vetoes the direct-heal threat estimate with no impacts; after aura removal the component-only estimate is restored.");
 
+
+    // F54e recipient-side proc closure: temporarily configure the real
+    // Inspiration aura with TAKE_HELPFUL_SPELL and attach it to the healed
+    // Player. This isolates recipient-side aura discovery.
+    bool f54eRecipientAuraAttached = false;
+    bool f54eRecipientProcVetoed = false;
+    bool f54eRecipientAuraRemoved = false;
+    bool f54eRecipientProcFlagsRestored = false;
+    uint32 f54eSavedInspirationProcFlags = 0;
+    if (f53cInspirationSpellValid && tank && healSpell && healAssistSnapshot)
+    {
+        SpellEntry* const mutableInspirationSpell =
+            const_cast<SpellEntry*>(inspirationSpell);
+        f54eSavedInspirationProcFlags = mutableInspirationSpell->procFlags;
+        mutableInspirationSpell->procFlags = PROC_FLAG_TAKE_HELPFUL_SPELL;
+        SpellAuraHolder* const recipientAura =
+            tank->AddAura(inspirationSpell->Id, EFFECT_INDEX_0, tank);
+        f54eRecipientAuraAttached = recipientAura != nullptr;
+        if (f54eRecipientAuraAttached)
+        {
+            PartySnapshot const* recipientSnapshot =
+                PartySnapshotBuilder::GetOrBuild(healer, coordinator, 26500, 250);
+            ThreatImpactEstimate const recipientEstimate = recipientSnapshot
+                ? EstimateDirectHealingThreatComponents(
+                    healer, tank, static_cast<float>(tank->GetMaxHealth() -
+                    tank->GetHealth()), healSpell, *recipientSnapshot)
+                : ThreatImpactEstimate();
+            f54eRecipientProcVetoed =
+                recipientEstimate.completeness == ThreatImpactCompleteness::Unknown &&
+                recipientEstimate.reason == "direct_heal_proc_closure_unbounded" &&
+                recipientEstimate.impacts.empty();
+            tank->RemoveAurasDueToSpell(inspirationSpell->Id);
+            f54eRecipientAuraRemoved =
+                tank->GetSpellAuraHolder(inspirationSpell->Id) == nullptr;
+        }
+        mutableInspirationSpell->procFlags = f54eSavedInspirationProcFlags;
+        f54eRecipientProcFlagsRestored =
+            mutableInspirationSpell->procFlags == f54eSavedInspirationProcFlags;
+    }
+    bool const f54eRecipientProcRuntimePassed =
+        f54eRecipientAuraAttached && f54eRecipientProcVetoed &&
+        f54eRecipientAuraRemoved && f54eRecipientProcFlagsRestored;
+    sLog.Out(LOG_BASIC, f54eRecipientProcRuntimePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54e recipient-side helpful proc: auraAttached=%u procVeto=%u impactsEmpty=%u auraRemoved=%u procFlagsRestored=%u.",
+        f54eRecipientAuraAttached ? 1u : 0u, f54eRecipientProcVetoed ? 1u : 0u,
+        f54eRecipientProcVetoed ? 1u : 0u, f54eRecipientAuraRemoved ? 1u : 0u,
+        f54eRecipientProcFlagsRestored ? 1u : 0u);
+    if (f54eRecipientProcRuntimePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F54e a real Core helpful-heal recipient aura with TAKE_HELPFUL_SPELL proc flags makes the direct-heal threat estimate fail closed; aura removal restores the clean recipient state and the temporary proc flags are restored.");
+
     // Inject a positive spell_threat row only into the disposable simulator DB.
     // The first Lesser Heal rank is used so SpellRankHelper propagates the row
     // to the rank cast below; the original rows are restored before later tests.

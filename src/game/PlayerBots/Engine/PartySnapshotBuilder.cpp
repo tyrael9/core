@@ -89,7 +89,7 @@ std::uint32_t EstimateInFlightDirectHeal(
     if (!std::isfinite(amount) || amount <= 0.0f)
         return 0;
 
-    double const rounded = std::ceil(static_cast<double>(amount));
+    double const rounded = std::floor(static_cast<double>(amount));
     if (rounded >= static_cast<double>(
             std::numeric_limits<std::uint32_t>::max()))
         return std::numeric_limits<std::uint32_t>::max();
@@ -118,7 +118,7 @@ void CaptureHealingForecast(Player* member, Map* map,
     // healing bonus. Apply Core's current target-side bonus and count only
     // finite remaining ticks. Scripted or otherwise unresolvable HoTs are
     // intentionally omitted rather than assigned a guessed value.
-    AuraList const& periodicHeals =
+    auto const& periodicHeals =
         member->GetAurasByType(SPELL_AURA_PERIODIC_HEAL);
     for (Aura* aura : periodicHeals)
     {
@@ -144,7 +144,7 @@ void CaptureHealingForecast(Player* member, Map* map,
             continue;
 
         std::uint64_t const perTick = static_cast<std::uint64_t>(
-            std::ceil(static_cast<double>(targetAdjusted)));
+            std::floor(static_cast<double>(targetAdjusted)));
         std::uint64_t const remainingTicks = maxTicks - completedTicks;
         AddSaturatedHealingAmount(
             memberData.periodicHealRemainingAmount,
@@ -154,7 +154,7 @@ void CaptureHealingForecast(Player* member, Map* map,
     // Only non-scripted, all-seven-school absorbs are treated as generally
     // applicable effective health. School-specific shields and Mana Shield
     // have resource/school constraints and are not credited by this baseline.
-    AuraList const& absorbs =
+    auto const& absorbs =
         member->GetAurasByType(SPELL_AURA_SCHOOL_ABSORB);
     for (Aura* aura : absorbs)
     {
@@ -168,7 +168,7 @@ void CaptureHealingForecast(Player* member, Map* map,
             continue;
 
         std::uint64_t const remainingAbsorb = static_cast<std::uint64_t>(
-            std::ceil(static_cast<double>(modifier->m_amount)));
+            std::floor(static_cast<double>(modifier->m_amount)));
         AddSaturatedHealingAmount(
             memberData.allSchoolAbsorbRemainingAmount, remainingAbsorb);
     }

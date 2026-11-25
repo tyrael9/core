@@ -6215,12 +6215,33 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     SpellEntry const* const f54fChildSpell = sSpellMgr.GetSpellEntry(2052);
     SpellProcEventEntry const* const f54fProcEvent = f54fAuraSpell
         ? sSpellMgr.GetSpellProcEvent(f54fAuraSpell->Id) : nullptr;
+    SpellProcEventEntry* const f54fMutableProcEvent =
+        const_cast<SpellProcEventEntry*>(f54fProcEvent);
+    uint32 const f54fSavedProcSchoolMask =
+        f54fProcEvent ? f54fProcEvent->schoolMask : 0;
+    uint32 const f54fSavedProcFamilyName =
+        f54fProcEvent ? f54fProcEvent->spellFamilyName : 0;
+    uint64 const f54fSavedProcFamilyMask0 =
+        f54fProcEvent ? f54fProcEvent->spellFamilyMask[0] : 0;
+    uint64 const f54fSavedProcFamilyMask1 =
+        f54fProcEvent ? f54fProcEvent->spellFamilyMask[1] : 0;
+    uint64 const f54fSavedProcFamilyMask2 =
+        f54fProcEvent ? f54fProcEvent->spellFamilyMask[2] : 0;
+    uint32 const f54fSavedProcEventFlags =
+        f54fProcEvent ? f54fProcEvent->procFlags : 0;
+    uint32 const f54fSavedProcEventEx =
+        f54fProcEvent ? f54fProcEvent->procEx : 0;
+    float const f54fSavedProcPpm = f54fProcEvent ? f54fProcEvent->ppmRate : 0.0f;
+    float const f54fSavedProcChance =
+        f54fProcEvent ? f54fProcEvent->customChance : 0.0f;
+    uint32 const f54fSavedProcCooldown =
+        f54fProcEvent ? f54fProcEvent->cooldown : 0;
     SpellThreatEntry const* const f54fRootThreat =
         healSpell ? sSpellMgr.GetSpellThreatEntry(healSpell->Id) : nullptr;
     SpellThreatEntry const* const f54fChildThreat =
         f54fChildSpell ? sSpellMgr.GetSpellThreatEntry(f54fChildSpell->Id) : nullptr;
     bool const f54fRowReady = f53cInspirationSpellValid && f54fAuraSpell &&
-        f54fAuraSpell->ScriptId == 0 && !f54fProcEvent && healSpell &&
+        f54fAuraSpell->ScriptId == 0 && healSpell &&
         healSpell->Effect[0] == SPELL_EFFECT_HEAL && f54fChildSpell &&
         f54fChildSpell->ScriptId == 0 &&
         f54fChildSpell->Effect[0] == SPELL_EFFECT_HEAL &&
@@ -6246,6 +6267,19 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54fMutableChildSpell->AttributesEx3 |=
             SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
             SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
+    if (f54fMutableProcEvent)
+    {
+        f54fMutableProcEvent->schoolMask = 0;
+        f54fMutableProcEvent->spellFamilyName = 0;
+        f54fMutableProcEvent->spellFamilyMask[0] = 0;
+        f54fMutableProcEvent->spellFamilyMask[1] = 0;
+        f54fMutableProcEvent->spellFamilyMask[2] = 0;
+        f54fMutableProcEvent->procFlags = 0;
+        f54fMutableProcEvent->procEx = PROC_EX_NONE;
+        f54fMutableProcEvent->ppmRate = 0.0f;
+        f54fMutableProcEvent->customChance = 0.0f;
+        f54fMutableProcEvent->cooldown = 0;
+    }
     auto runF54fProc = [&](uint32 sideFlag, bool casterSide)
     {
         F54fProcResult out;
@@ -6376,6 +6410,30 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     }
     if (f54fMutableChildSpell)
         f54fMutableChildSpell->AttributesEx3 = f54fSavedChildAttributesEx3;
+    if (f54fMutableProcEvent)
+    {
+        f54fMutableProcEvent->schoolMask = f54fSavedProcSchoolMask;
+        f54fMutableProcEvent->spellFamilyName = f54fSavedProcFamilyName;
+        f54fMutableProcEvent->spellFamilyMask[0] = f54fSavedProcFamilyMask0;
+        f54fMutableProcEvent->spellFamilyMask[1] = f54fSavedProcFamilyMask1;
+        f54fMutableProcEvent->spellFamilyMask[2] = f54fSavedProcFamilyMask2;
+        f54fMutableProcEvent->procFlags = f54fSavedProcEventFlags;
+        f54fMutableProcEvent->procEx = f54fSavedProcEventEx;
+        f54fMutableProcEvent->ppmRate = f54fSavedProcPpm;
+        f54fMutableProcEvent->customChance = f54fSavedProcChance;
+        f54fMutableProcEvent->cooldown = f54fSavedProcCooldown;
+    }
+    bool const f54fProcEventRestored = !f54fMutableProcEvent ||
+        (f54fMutableProcEvent->schoolMask == f54fSavedProcSchoolMask &&
+         f54fMutableProcEvent->spellFamilyName == f54fSavedProcFamilyName &&
+         f54fMutableProcEvent->spellFamilyMask[0] == f54fSavedProcFamilyMask0 &&
+         f54fMutableProcEvent->spellFamilyMask[1] == f54fSavedProcFamilyMask1 &&
+         f54fMutableProcEvent->spellFamilyMask[2] == f54fSavedProcFamilyMask2 &&
+         f54fMutableProcEvent->procFlags == f54fSavedProcEventFlags &&
+         f54fMutableProcEvent->procEx == f54fSavedProcEventEx &&
+         f54fMutableProcEvent->ppmRate == f54fSavedProcPpm &&
+         f54fMutableProcEvent->customChance == f54fSavedProcChance &&
+         f54fMutableProcEvent->cooldown == f54fSavedProcCooldown);
     bool const f54fChildAttributesRestored =
         f54fMutableChildSpell &&
         f54fMutableChildSpell->AttributesEx3 == f54fSavedChildAttributesEx3;
@@ -6395,10 +6453,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54fCaster.auraRemoved && f54fCaster.threatMatched &&
         f54fRecipient.controlCast && f54fRecipient.auraAttached && f54fRecipient.scriptFree &&
         f54fRecipient.estimatorVetoed && f54fRecipient.rootCast && f54fRecipient.childObserved &&
-        f54fRecipient.auraRemoved && f54fRecipient.threatMatched && f54fRowRestored;
+        f54fRecipient.auraRemoved && f54fRecipient.threatMatched &&
+        f54fRowRestored && f54fProcEventRestored;
     sLog.Out(LOG_BASIC, f54fPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54f triggered child heal: rowReady=%u casterAura=%u casterVeto=%u casterChild=%u casterThreat=%u casterHealer=%.2f/%.2f casterTank=%.2f/%.2f recipientAura=%u recipientVeto=%u recipientChild=%u recipientThreat=%u recipientHealer=%.2f/%.2f recipientTank=%.2f/%.2f rowRestored=%u.",
-        f54fRowReady ? 1u : 0u, f54fCaster.auraAttached ? 1u : 0u,
+        "[PartyBotSimulator] F54f triggered child heal: rowReady=%u procEventPresent=%u procEventRestored=%u casterAura=%u casterVeto=%u casterChild=%u casterThreat=%u casterHealer=%.2f/%.2f casterTank=%.2f/%.2f recipientAura=%u recipientVeto=%u recipientChild=%u recipientThreat=%u recipientHealer=%.2f/%.2f recipientTank=%.2f/%.2f rowRestored=%u.",
+        f54fRowReady ? 1u : 0u, f54fProcEvent ? 1u : 0u,
+        f54fProcEventRestored ? 1u : 0u,
+        f54fCaster.auraAttached ? 1u : 0u,
         f54fCaster.estimatorVetoed ? 1u : 0u, f54fCaster.childObserved ? 1u : 0u,
         f54fCaster.threatMatched ? 1u : 0u, f54fCaster.healer0, f54fCaster.healer1,
         f54fCaster.tank0, f54fCaster.tank1, f54fRecipient.auraAttached ? 1u : 0u,

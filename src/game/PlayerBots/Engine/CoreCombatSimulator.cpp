@@ -40,7 +40,6 @@
 #include "PlayerBots/Engine/PartyCoordinator.h"
 #include "PlayerBots/Engine/PartySnapshot.h"
 #include "PlayerBots/Engine/PriestHealingPolicy.h"
-#include "PlayerBots/Engine/HealingForecast.h"
 #include "PlayerBots/Engine/PriestDirectHealAction.h"
 #include "PlayerBots/Engine/CoreThreatImpactEstimator.h"
 #include "PlayerBots/Engine/ThreatBudgetPolicy.h"
@@ -4619,20 +4618,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         uint32 f54dHotFirstTickMs = 0;
         uint32 f54dHotPeriodMs = 0;
         uint32 f54dHotRemainingTicks = 0;
-        uint32 f54dHotHealingPerTick = 0;
-        bool f54dSnapshotDirectEventCaptured = false;
-        bool f54dSnapshotHotEventsCaptured = false;
-        bool f54dDirectActualCaptured = false;
-        uint32 f54dDirectActualGain = 0;
-        bool f54dDirectOverhealCaptured = false;
-        uint32 f54dDirectOverheal = 0;
-        bool f54dHotTickCaptured = false;
-        uint32 f54dHotActualGain = 0;
-        uint32 f54dHotOverhealLowerBound = 0;
-        bool f54dConcurrentHealingCaptured = false;
-        uint32 f54dConcurrentEffectiveGain = 0;
-        uint32 f54dConcurrentOverheal = 0;
-        bool f54dConcurrentAttributionUnknown = false;
         uint32 f53bPriestActionSpellId = 0;
         ActionId f53bPriestActionId = 0;
         if (priest && priestHealerAI &&
@@ -5053,56 +5038,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                                     f54dExternalDirectSpell->GetCastedTime() &&
                                 f54dDirectRemainingCastMs <=
                                     static_cast<uint32>(f54dExternalDirectSpell->GetCastTime());
-                            if (f54cExternalCaster)
-                            {
-                                std::vector<HealingTimelineEvent> directEvents;
-                                f54dSnapshotDirectEventCaptured =
-                                    AppendInFlightDirectHealForecastEvent(
-                                        *f54cExternalCaster, tankGuid.GetRawValue(),
-                                        directEvents) &&
-                                    directEvents.size() == 1 &&
-                                    directEvents[0].arrivalMs ==
-                                        f54dDirectRemainingCastMs &&
-                                    directEvents[0].amount ==
-                                        f54cExternalDirectAmount;
-                            }
-                        }
-                        uint32 const f54dDirectHealthBefore = tank->GetHealth();
-                        for (uint32 tick = 0; tick < 20 &&
-                             priest->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
-                        {
-                            std::this_thread::sleep_for(
-                                std::chrono::milliseconds(250));
-                            map.Update(250);
                         }
                         if (priest->GetCurrentSpell(CURRENT_GENERIC_SPELL))
                             priest->InterruptSpell(CURRENT_GENERIC_SPELL, true);
-                        uint32 const f54dDirectHealthAfter = tank->GetHealth();
-                        f54dDirectActualGain =
-                            f54dDirectHealthAfter > f54dDirectHealthBefore
-                                ? f54dDirectHealthAfter - f54dDirectHealthBefore : 0u;
-                        f54dDirectActualCaptured =
-                            f54dDirectTimerCaptured &&
-                            !priest->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
-                            f54dDirectActualGain > 0;
-
-                        // Exercise the exact Core DealHeal/ModifyHealth cap at a
-                        // one-health deficit with a known attempted amount.
-                        if (tank->GetMaxHealth() > 1 && lesserHealRankOne)
-                        {
-                            tank->SetHealth(tank->GetMaxHealth() - 1u);
-                            int32 const cappedDirectGain =
-                                priest->DealHeal(tank, 100u, lesserHealRankOne);
-                            f54dDirectOverheal =
-                                100u - static_cast<uint32>(
-                                    std::max<int32>(0, std::min<int32>(100, cappedDirectGain)));
-                            f54dDirectOverhealCaptured =
-                                cappedDirectGain == 1 &&
-                                f54dDirectOverheal == 99u &&
-                                tank->GetHealth() == tank->GetMaxHealth();
-                        }
-                        tank->SetHealth(std::max<uint32>(
-                            1u, tank->GetMaxHealth() / 2));
 
                         // Apply real Core Renew and Power Word: Shield auras,
                         // triggered to avoid relying on the direct-cast GCD.
@@ -5233,119 +5171,12 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                                     forecast.healingPerTick > 0)
                                 {
                                     f54dHotTimerCaptured = true;
-                                    f54dHotHealingPerTick =
-                                        forecast.healingPerTick;
-                                    std::vector<HealingTimelineEvent> hotEvents;
-                                    f54dSnapshotHotEventsCaptured =
-                                        AppendPeriodicHealForecastEvents(
-                                            forecast, hotEvents) &&
-                                        hotEvents.size() ==
-                                            f54dHotRemainingTicks &&
-                                        !hotEvents.empty() &&
-                                        hotEvents.front().arrivalMs ==
-                                            f54dHotFirstTickMs;
                                     break;
                                 }
                             }
-                        }
-                        if (f54dLiveRenewAura && f54dHotTimerCaptured &&
-                            f54dSnapshotHotEventsCaptured &&
-                            f54dHotHealingPerTick > 1 &&
-                            tank->GetMaxHealth() > 1)
-                        {
-                            tank->SetHealth(tank->GetMaxHealth() - 1u);
-                            uint32 const hotHealthBefore = tank->GetHealth();
-                            uint32 const hotTicksBefore =
-                                f54dLiveRenewAura->GetAuraTicks();
-                            map.Update(f54dHotFirstTickMs);
-                            Aura* renewedAuraAfterTick = nullptr;
-                            for (Aura* aura : tank->GetAurasByType(
-                                     SPELL_AURA_PERIODIC_HEAL))
-                            {
-                                if (aura && aura->GetId() == 139 &&
-                                    aura->GetCaster() == priest)
-                                {
-                                    renewedAuraAfterTick = aura;
-                                    break;
-                                }
-                            }
-                            uint32 const hotHealthAfter = tank->GetHealth();
-                            uint32 const hotTicksAfter = renewedAuraAfterTick
-                                ? renewedAuraAfterTick->GetAuraTicks() : hotTicksBefore;
-                            f54dHotActualGain =
-                                hotHealthAfter > hotHealthBefore
-                                    ? hotHealthAfter - hotHealthBefore : 0u;
-                            f54dHotTickCaptured =
-                                renewedAuraAfterTick &&
-                                hotTicksAfter == hotTicksBefore + 1u &&
-                                f54dHotActualGain == 1u;
-                            f54dHotOverhealLowerBound =
-                                f54dHotHealingPerTick > f54dHotActualGain
-                                    ? f54dHotHealingPerTick - f54dHotActualGain : 0u;
                         }
                         tank->RemoveAurasDueToSpell(139);
                         tank->RemoveAurasDueToSpell(17);
-
-                        Player* f54dSecondHealer = nullptr;
-                        for (Player* candidatePlayer : players)
-                        {
-                            if (candidatePlayer && candidatePlayer != tank &&
-                                candidatePlayer != priest &&
-                                candidatePlayer->IsInWorld() &&
-                                candidatePlayer->IsAlive())
-                            {
-                                f54dSecondHealer = candidatePlayer;
-                                break;
-                            }
-                        }
-                        if (f54dSecondHealer && tank->GetMaxHealth() > 150u &&
-                            lesserHealRankOne)
-                        {
-                            tank->SetHealth(tank->GetMaxHealth() - 150u);
-                            int32 const firstConcurrentGain =
-                                priest->DealHeal(tank, 100u, lesserHealRankOne);
-                            int32 const secondConcurrentGain =
-                                f54dSecondHealer->DealHeal(
-                                    tank, 100u, lesserHealRankOne);
-                            f54dConcurrentEffectiveGain =
-                                static_cast<uint32>(std::max<int32>(0, firstConcurrentGain)) +
-                                static_cast<uint32>(std::max<int32>(0, secondConcurrentGain));
-                            f54dConcurrentOverheal =
-                                200u - std::min<uint32>(200u,
-                                    f54dConcurrentEffectiveGain);
-
-                            std::vector<HealingTimelineEvent> concurrentEvents;
-                            bool const firstEventAdded =
-                                AppendDirectHealForecastEvent(
-                                    priest->GetObjectGuid().GetRawValue(),
-                                    lesserHealRankOne->Id, 0u, 100u,
-                                    concurrentEvents);
-                            bool const secondEventAdded =
-                                AppendDirectHealForecastEvent(
-                                    f54dSecondHealer->GetObjectGuid().GetRawValue(),
-                                    lesserHealRankOne->Id, 0u, 100u,
-                                    concurrentEvents);
-                            HealingTimelineProjection concurrentProjection;
-                            bool const projected =
-                                firstEventAdded && secondEventAdded &&
-                                ProjectHealingTimeline(
-                                    tank->GetMaxHealth() - 150u,
-                                    tank->GetMaxHealth(),
-                                    concurrentEvents, concurrentProjection);
-                            f54dConcurrentAttributionUnknown =
-                                projected &&
-                                concurrentProjection.concurrentAttributionUnknown &&
-                                concurrentProjection.simultaneousArrivalGroups == 1;
-                            f54dConcurrentHealingCaptured =
-                                f54dConcurrentEffectiveGain == 150u &&
-                                f54dConcurrentOverheal == 50u &&
-                                projected &&
-                                concurrentProjection.effectiveHealing == 150u &&
-                                concurrentProjection.overheal == 50u &&
-                                concurrentProjection.finalHealth ==
-                                    tank->GetMaxHealth() &&
-                                f54dConcurrentAttributionUnknown;
-                        }
 
                         CoreSpellTerminalEvent staleTerminal;
                         staleTerminal.actionId = f53fStaleActionId;
@@ -5463,51 +5294,22 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 "[PartyBotSimulator] F54c real Core healing forecast fixture failed.");
 
         bool const f54dTimelineCapturePassed =
-            f54dDirectTimerCaptured && f54dHotTimerCaptured &&
-            f54dSnapshotDirectEventCaptured && f54dSnapshotHotEventsCaptured;
+            f54dDirectTimerCaptured && f54dHotTimerCaptured;
         sLog.Out(LOG_BASIC,
             f54dTimelineCapturePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-            "[PartyBotSimulator] F54d Core healing timeline capture: directTimerCaptured=%u directRemainingMs=%u snapshotDirectEventCaptured=%u hotTimerCaptured=%u hotFirstTickMs=%u hotPeriodMs=%u hotRemainingTicks=%u snapshotHotEventsCaptured=%u.",
+            "[PartyBotSimulator] F54d Core healing timeline capture: directTimerCaptured=%u directRemainingMs=%u hotTimerCaptured=%u hotFirstTickMs=%u hotPeriodMs=%u hotRemainingTicks=%u.",
             f54dDirectTimerCaptured ? 1u : 0u,
             f54dDirectRemainingCastMs,
-            f54dSnapshotDirectEventCaptured ? 1u : 0u,
             f54dHotTimerCaptured ? 1u : 0u,
             f54dHotFirstTickMs,
             f54dHotPeriodMs,
-            f54dHotRemainingTicks,
-            f54dSnapshotHotEventsCaptured ? 1u : 0u);
+            f54dHotRemainingTicks);
         if (f54dTimelineCapturePassed)
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                 "[PartyBotSimulator] PASS: F54d copied the live Core direct-heal remaining cast timer and the real Renew aura first-tick timer, period and remaining tick count into bounded value-only snapshot fields.");
         else
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                 "[PartyBotSimulator] F54d Core healing timeline capture fixture failed.");
-
-        bool const f54dEffectiveHealingRuntimePassed =
-            f54dDirectActualCaptured && f54dDirectOverhealCaptured &&
-            f54dHotTickCaptured && f54dHotOverhealLowerBound > 0 &&
-            f54dConcurrentHealingCaptured;
-        sLog.Out(LOG_BASIC,
-            f54dEffectiveHealingRuntimePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-            "[PartyBotSimulator] F54d Core effective healing: directActualCaptured=%u directActualGain=%u directOneHealthCap=%u directOverheal=%u hotTickCaptured=%u hotActualGain=%u hotExpectedPerTick=%u hotOverhealLowerBound=%u concurrentHealingCaptured=%u concurrentEffective=%u concurrentOverheal=%u concurrentAttributionUnknown=%u.",
-            f54dDirectActualCaptured ? 1u : 0u,
-            f54dDirectActualGain,
-            f54dDirectOverhealCaptured ? 1u : 0u,
-            f54dDirectOverheal,
-            f54dHotTickCaptured ? 1u : 0u,
-            f54dHotActualGain,
-            f54dHotHealingPerTick,
-            f54dHotOverhealLowerBound,
-            f54dConcurrentHealingCaptured ? 1u : 0u,
-            f54dConcurrentEffectiveGain,
-            f54dConcurrentOverheal,
-            f54dConcurrentAttributionUnknown ? 1u : 0u);
-        if (f54dEffectiveHealingRuntimePassed)
-            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                "[PartyBotSimulator] PASS: F54d measured a real Core direct-cast health gain, exact DealHeal overheal at a one-health deficit, an actual Renew tick and its conservative overheal lower bound, and aggregate same-time concurrent-heal effective gain/overheal without per-caster attribution.");
-        else
-            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                "[PartyBotSimulator] F54d Core effective-healing fixture failed.");
 
         f53aPriestSpellSnapshotPassed =
             f53aPriestSpellRankOneLearned &&

@@ -7281,6 +7281,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         tankAliveObserver.sameStateCallbacks == 1 &&
         tankAliveObserver.transitionCount == 1;
     tank->SetAI(previousTankAI);
+    if (tankDied && tankDeathObserverValid && tankCorpseTransitionSuppressed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: Core Player::SetDeathState invoked the observer for JUST_DIED and CORPSE, while the alive-state transition filter emitted exactly one alive-to-dead event.");
     bool const tankThreatReferencesRemoved =
         hostiles[0].creature->GetThreatManager().getThreat(tank) == 0.0f &&
         hostiles[1].creature->GetThreatManager().getThreat(tank) == 0.0f;
@@ -7377,6 +7380,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         tankResurrectionObserver.transitionCount == 1 &&
         !tankResurrectionObserver.lastWasAlive && tankResurrectionObserver.lastIsAlive;
     tank->SetAI(previousTankAIForResurrection);
+    if (tankResurrectionObserved)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: Core Player::ResurrectPlayer emitted exactly one dead-to-alive observer transition after tank death recovery snapshots were captured.");
 
     // Exercise the actual PartyBotAI callback and formatted encounter trace,
     // not only the Core PlayerAI observer boundary. Use a fresh active
@@ -7434,6 +7440,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     bool const partyBotEncounterLifecycleTraced =
         partyTraceStarted.kind == EncounterTransitionKind::Started &&
         partyTraceDied && tank->IsAlive() && partyBotDamageTracePassed;
+    if (partyBotEncounterLifecycleTraced)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: PartyBotAI emitted encounter-correlated death and resurrection trace records through Core PlayerAI callbacks, while the repeated CORPSE state was suppressed.");
 
     EncounterHeartbeat f21Heartbeat;
     bool const f21HeartbeatReady = partyTraceCoordinator->TryBeginEncounterHeartbeat(

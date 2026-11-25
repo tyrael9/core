@@ -530,12 +530,13 @@ read_f54f_metric() {
     printf '%s\n' "$f54f_line" | sed -n "s/.*$1=\\([0-9][0-9]*\\).*/\\1/p"
 }
 for side in caster recipient; do
+    control="$(read_f54f_metric "${side}Control")"
     root="$(read_f54f_metric "${side}Root")"
     total="$(read_f54f_metric "${side}Total")"
     child="$(read_f54f_metric "${side}Child")"
-    if ! [[ "$root" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ && "$child" =~ ^[0-9]+$ ]] ||
-       (( root <= 0 || child <= 10 || total != root + child )); then
-        echo "[PartyBotSimulator] F54f ${side}-side effective-heal accounting invalid: root=${root:-missing} child=${child:-missing} total=${total:-missing}." | tee -a "$LOG_FILE"
+    if ! [[ "$control" =~ ^[0-9]+$ && "$root" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ && "$child" =~ ^[0-9]+$ ]] ||
+       (( control <= 0 || root <= 0 || child <= 10 || total != root + child )); then
+        echo "[PartyBotSimulator] F54f ${side}-side effective-heal accounting invalid: control=${control:-missing} root=${root:-missing} child=${child:-missing} total=${total:-missing}." | tee -a "$LOG_FILE"
         exit 1
     fi
 done

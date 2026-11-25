@@ -466,6 +466,18 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54d measured a real Core direct-cast h
     exit 1
 fi
 
+f54d_effective_state_line="$(grep -F '[PartyBotSimulator] F54d Core effective healing:' "$LOG_FILE" | tail -n 1)"
+for expected in directActualCaptured=1 directOneHealthCap=1 hotTickCaptured=1 concurrentHealingCaptured=1 concurrentAttributionUnknown=1; do
+    if [[ "$f54d_effective_state_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F54d actual effective-healing assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+if ! grep -Fq "[PartyBotSimulator] PASS: F54d measured a real Core direct-cast health gain, exact DealHeal overheal at a one-health deficit, an actual Renew tick and its conservative overheal lower bound, and aggregate same-time concurrent-heal effective gain/overheal without per-caster attribution." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F54d Core effective-healing PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: F53f a real successful Core Priest Spell terminal released every matching threat fan-out row and preserved another action by the same Bot, another Bot's row, and a stale cross-encounter event." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F53f successful Core threat-reservation terminal PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

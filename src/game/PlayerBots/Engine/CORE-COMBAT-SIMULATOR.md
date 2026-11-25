@@ -645,3 +645,8 @@ Two harness defects were found and fixed before this run: the fixture had crosse
 
 
 F54f same-second aura guard correction: the caster-side proc Aura is attached to the healer but applied by the tank. Core's delayed-proc stale-aura guard compares second-resolution apply/proc timestamps and suppresses a same-second aura when its caster GUID equals the proc owner. This test setup avoids that unrelated guard while preserving the healer as the caster-side proc owner. Production Core proc behavior is unchanged.
+
+
+## Runner gate note — F22 damage_taken marker (2026-11-25)
+
+The trusted runtime log showed the actual lethal Player event (`damage_taken`, nonzero attacker and damage, health transition 1717→0, spell 0, damage type 0), and GDB reported normal process exit. The shell gate had incorrectly required a fixture-emitted PASS sentence before checking that same structured event; the fixture emits the event but not that sentence. The runner now checks for exactly one matching structured event first, then prints the PASS sentence itself. The count and field constraints remain strict; only the redundant impossible marker prerequisite was removed. A fresh trusted run is required to validate the revised gate.

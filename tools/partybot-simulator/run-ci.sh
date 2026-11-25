@@ -516,9 +516,26 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54f executed real Core PROC_TRIGGER_SP
     exit 1
 fi
 f54f_line="$(grep -F '[PartyBotSimulator] F54f triggered child heal:' "$LOG_FILE" | tail -n 1)"
-for expected in "rowReady=1" "procEventPresent=1" "procEventRestored=1" "casterAura=1" "casterVeto=1" "casterChild=1" "casterProcFlush=1" "casterThreat=1" "recipientAura=1" "recipientVeto=1" "recipientChild=1" "recipientProcFlush=1" "recipientThreat=1" "rowRestored=1"; do
+for expected in "rowReady=1" "procEventPresent=1" "procEventRestored=1" "casterAura=1" "casterVeto=1" "casterProcFlush=1" "casterThreat=1" "recipientAura=1" "recipientVeto=1" "recipientProcFlush=1" "recipientThreat=1" "rowRestored=1"; do
     if ! printf '%s\n' "$f54f_line" | grep -F "$expected" >/dev/null; then
         echo "[PartyBotSimulator] F54f triggered-child assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
+# These fields are measured effective-health deltas, not boolean flags. Match
+# the fixture's own childObserved contract: a positive root heal, more than ten
+# points of actual child healing, and an exact root + child = total accounting.
+read_f54f_metric() {
+    printf '%s\n' "$f54f_line" | sed -n "s/.*$1=\\([0-9][0-9]*\\).*/\\1/p"
+}
+for side in caster recipient; do
+    root="$(read_f54f_metric "${side}Root")"
+    total="$(read_f54f_metric "${side}Total")"
+    child="$(read_f54f_metric "${side}Child")"
+    if ! [[ "$root" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ && "$child" =~ ^[0-9]+$ ]] ||
+       (( root <= 0 || child <= 10 || total != root + child )); then
+        echo "[PartyBotSimulator] F54f ${side}-side effective-heal accounting invalid: root=${root:-missing} child=${child:-missing} total=${total:-missing}." | tee -a "$LOG_FILE"
         exit 1
     fi
 done

@@ -224,10 +224,6 @@ void CaptureHealingForecast(Player* member, Map* map,
         AddSaturatedHealingAmount(
             memberData.allSchoolAbsorbRemainingAmount, remainingAbsorb);
     }
-}
-}        AddSaturatedHealingAmount(
-            memberData.allSchoolAbsorbRemainingAmount, remainingAbsorb);
-    }
 
     std::sort(memberData.periodicHealForecasts.begin(),
         memberData.periodicHealForecasts.end(),

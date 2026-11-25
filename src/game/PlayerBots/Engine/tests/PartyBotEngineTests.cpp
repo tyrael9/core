@@ -4564,7 +4564,6 @@ void TestPriestHealingTargetSelectionAccountsForIncomingHealsHotsAndAbsorbs()
     assert(selection.missingHealth == 100);
 }
 
-void TestHealingTriageShadowStrategy() {
 void TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal()
 {
     PeriodicHealForecastSnapshot renew;

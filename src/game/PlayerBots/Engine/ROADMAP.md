@@ -834,3 +834,8 @@ The real Player fixture selects this candidate through `PartyBotEngine`, destroy
 ### F22 runner-gate correction (2026-11-25)
 
 The latest trusted runtime emitted exactly one real lethal Player `damage_taken` trace with nonzero attacker/damage/health-before, zero health-after, non-spell ID 0 and a concrete damage type. The process then shut down normally under GDB. The run failed only because the shell gate demanded a dedicated F22 PASS line that the fixture never emitted; its structured-event assertion was placed after that impossible marker check. The runner now validates the exact-one structured trace first and emits the dedicated PASS marker only after that assertion succeeds. This changes no Core behavior and does not weaken the event-field/count gate. Re-run trusted runtime validation before treating this correction as verified.
+
+
+### Player alive-state observer marker correction (2026-11-25)
+
+A structured-log audit of the F22 rerun also found three later shell gates whose PASS sentences were no longer emitted after the observer fixture was consolidated. The underlying fixture still computes and includes the relevant booleans in its final F10 acceptance conjunction: one alive-to-dead transition plus a suppressed duplicate JUST_DIED→CORPSE transition, one dead-to-alive resurrection transition, and PartyBotAI's encounter-correlated death/resurrection sequence. Commit `6519359` now emits each existing PASS sentence only under its corresponding assertion. No behavior or acceptance predicate was weakened; the trusted runtime must verify all three markers and the final Runtime PASS.

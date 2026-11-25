@@ -8416,20 +8416,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         if (!healer->IsAlive())
             healer->ResurrectPlayer(1.0f, false);
     }
-    // All shared Group/death/point-snapshot assertions above are complete.
-    // Run F54f while both Players still belong to the source Map: cleanup()
-    // below logs both sessions out and clears m_currMap, so no Core resurrection
-    // or spell processing may be attempted after that lifecycle boundary.
-    bool const f54fActorsOnMap = tank && healer &&
-        tank->IsInWorld() && healer->IsInWorld() &&
-        tank->GetMap() == &map && healer->GetMap() == &map;
-    if (f54fActorsOnMap)
-    {
-        if (!tank->IsAlive())
-            tank->ResurrectPlayer(1.0f, false);
-        if (!healer->IsAlive())
-            healer->ResurrectPlayer(1.0f, false);
-    }
     // Re-establish isolated hostile references after the earlier Group/death
     // lifecycle fixtures have finished; F54f runs last so its measured threat
     // deltas cannot perturb any of those shared-state assertions.

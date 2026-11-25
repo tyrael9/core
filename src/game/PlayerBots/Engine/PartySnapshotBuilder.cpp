@@ -10,6 +10,7 @@
 #include "Pet.h"
 #include "Player.h"
 #include "Spell.h"
+#include "SpellAuras.h"
 #include "SpellDefines.h"
 #include "ThreatManager.h"
 #include "Unit.h"

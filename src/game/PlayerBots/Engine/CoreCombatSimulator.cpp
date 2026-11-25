@@ -8838,6 +8838,17 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             "[PartyBotSimulator] PASS: F54f executed real Core PROC_TRIGGER_SPELL child heals from both caster-side and recipient-side helpful proc flags; measured effective child healing and exact per-hostile healer/tank threat deltas, and restored the temporary aura spell row.");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states.");
+
+    // F54f must run before this boundary so its real proc/child Spell work
+    // still has live source-Map Players. Restore the original Group/session
+    // teardown immediately afterward; otherwise the five Players, Group and
+    // temporary actors survive until global Core shutdown.
+    bool const finalGroupCleanupPassed = cleanup();
+    sLog.Out(LOG_BASIC, finalGroupCleanupPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+             "[PartyBotSimulator] Final five-Player Group/session cleanup: passed=%u.",
+             finalGroupCleanupPassed ? 1u : 0u);
+    if (!finalGroupCleanupPassed)
+        return false;
     return true;
 }
 

@@ -8557,8 +8557,14 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54fAuraSpell->SpellFamilyName = SPELLFAMILY_GENERIC;
         f54fAuraSpell->SpellIconID = 0;
 
+        // Core's delayed-proc guard skips a same-second aura when the
+        // proc owner is also its caster. Keep the caster-side aura attached
+        // to the healer, but have the tank apply it so the fixture exercises
+        // caster-side dispatch rather than that unrelated timestamp guard.
+        Unit* const procAuraCaster = casterSide
+            ? static_cast<Unit*>(tank) : auraOwner;
         SpellAuraHolder* const holder =
-            auraOwner->AddAura(inspirationSpell->Id, EFFECT_INDEX_0, auraOwner);
+            auraOwner->AddAura(inspirationSpell->Id, EFFECT_INDEX_0, procAuraCaster);
         out.auraAttached = holder != nullptr;
         out.scriptFree = holder && !holder->GetAuraScript();
         if (out.auraAttached)

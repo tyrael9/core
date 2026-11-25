@@ -42,3 +42,8 @@ Random HoT tick amount exactness, cast pushback/interruption after the snapshot,
 ## Shared uncovered-deficit accounting
 
 F54c uses one pure helper, `GetPriestUncoveredMissingHealth`, for both target triage and the direct-heal action adapter. It subtracts supported non-Engine direct casts, ordinary remaining HoT ticks, universal absorbs and other Bots' Heal reservations from the current deficit, with 64-bit accumulation and a deficit cap. `PriestDirectHealAction::IsUseful` and `ExecuteCore` use that same result before deciding whether a cast is useful and how much to reserve. This prevents the selector and action adapter from disagreeing or reserving healing already covered by known incoming effects.
+
+
+### F54e/F54f proc-closure validation
+
+F54e recipient-side Aura discovery/classification is trusted-runtime validated in push #45581482050. F54f adds a generic PROC_TRIGGER_SPELL child-heal runtime test for caster-side and recipient-side helpful-heal procs. It must measure actual effective child healing and each hostile's healer/tank ThreatManager deltas against Core's class coefficient, spell threat multiplier and hostile-reference fan-out. Until the F54f runtime artifact contains its dedicated PASS marker, triggered-child healing and threat remain outside the forecast's closed envelope.

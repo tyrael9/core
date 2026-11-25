@@ -486,6 +486,11 @@ Trusted push [#45561037244](https://github.com/tyrael9/core/actions/runs/4556103
 This proves the tested sequence and its two-recipient assist path only. It does not close active caster/recipient proc possibilities, `SPELL_AURA_ADD_TARGET_TRIGGER`, recursively triggered children, other flat-threat rows/target sets, same-timestamp Heal/Damage ordering or the full action threat envelope. Keep `PriestDirectHealAction` and Priest Healing Strategy unregistered and the full estimate `Unknown`. F54e should instrument those remaining Core side-effect paths and exercise controlled proc/trigger cases before any completeness promotion.
 
  
-### F54e recipient-side proc guard (runtime pending)
+### F54e recipient-side proc guard (trusted-runtime validated in #45581482050)
 
 The direct-heal estimator must inspect healer Aura holders with PROC_FLAG_DEAL_HELPFUL_SPELL and healed-target Aura holders with PROC_FLAG_TAKE_HELPFUL_SPELL. The F54e fixture temporarily sets the real Priest Inspiration spell row to the recipient-side proc flag, attaches that aura to the healed Player, asserts Unknown with no partial impacts, removes the aura, and restores the original proc flags. This verifies recipient-side discovery/classification only; it does not claim the aura actually procced or that child-spell threat fan-out has been measured. The entire action remains Unknown and unregistered.
+
+
+### F54f real triggered-child proc parity (trusted runtime pending)
+
+The simulator temporarily turns the real Priest Inspiration spell row into a generic `SPELL_AURA_PROC_TRIGGER_SPELL` aura with a controlled Lesser Heal rank-2 child. It runs separate caster-side `PROC_FLAG_DEAL_HELPFUL_SPELL` and recipient-side `PROC_FLAG_TAKE_HELPFUL_SPELL` scenarios, compares each against a no-proc root-heal control, and checks actual per-hostile threat deltas for both healer and healed recipient. The fixture also requires estimator fail-closed behavior, script-free aura attachment, aura removal and restoration of every mutated spell-row field. This is test-only mutation in the disposable simulator; it does not register or allowlist PriestDirectHealAction.

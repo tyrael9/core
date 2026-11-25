@@ -505,6 +505,17 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54e a real Core helpful-heal recipient
     echo "[PartyBotSimulator] The F54e recipient-side helpful-proc PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
+if ! grep -Fq "[PartyBotSimulator] PASS: F54f executed real Core PROC_TRIGGER_SPELL child heals from both caster-side and recipient-side helpful proc flags; measured effective child healing and exact per-hostile healer/tank threat deltas, and restored the temporary aura spell row." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F54f real triggered-child proc PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f54f_line="$(grep -F '[PartyBotSimulator] F54f triggered child heal:' "$LOG_FILE" | tail -n 1)"
+for expected in "rowReady=1" "casterAura=1" "casterVeto=1" "casterChild=1" "casterThreat=1" "recipientAura=1" "recipientVeto=1" "recipientChild=1" "recipientThreat=1" "rowRestored=1"; do
+    if ! printf '%s\n' "$f54f_line" | grep -F "$expected" >/dev/null; then
+        echo "[PartyBotSimulator] F54f triggered-child assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
 f54e_recipient_line="$(grep -F '[PartyBotSimulator] F54e recipient-side helpful proc:' "$LOG_FILE" | tail -n 1)"
 for expected in "auraAttached=1" "procVeto=1" "impactsEmpty=1" "auraRemoved=1" "procFlagsRestored=1"; do
     if ! printf '%s\n' "$f54e_recipient_line" | grep -F "$expected" >/dev/null; then

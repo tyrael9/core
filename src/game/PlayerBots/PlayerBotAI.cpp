@@ -112,12 +112,14 @@ bool PlayerBotAI::SpawnNewPlayer(WorldSession* sess, uint8 class_, uint32 race_,
     newChar->SetLocationInstanceId(instanceId);
     newChar->SetAutoInstanceSwitch(false);
     newChar->GetMotionMaster()->Initialize();
-    // Set instance
+    // Temporary PartyBots must never create permanent instance binds.
+    // In particular, a PartyBot promoted to group leader must not transfer
+    // an artificial permanent bind into the group's saved instance state.
     if (instanceId && mapId > 1) // Not a continent
     {
         DungeonPersistentState* state = (DungeonPersistentState*)sMapPersistentStateMgr
-                .AddPersistentState(sMapStorage.LookupEntry<MapEntry>(mapId), instanceId, time(nullptr) + 3600, false, true);
-        newChar->BindToInstance(state, true, true);
+                .AddPersistentState(sMapStorage.LookupEntry<MapEntry>(mapId), instanceId, time(nullptr) + 3600, true, true);
+        newChar->BindToInstance(state, false, true);
     }
     // Generate position
     Map* map = sMapMgr.FindMap(mapId, instanceId);

@@ -6201,276 +6201,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             "[PartyBotSimulator] PASS: F54e a real Core helpful-heal recipient aura with TAKE_HELPFUL_SPELL proc flags makes the direct-heal threat estimate fail closed; aura removal restores the clean recipient state and the temporary proc flags are restored.");
 
 
-    // F54f: exercise real generic PROC_TRIGGER_SPELL dispatch on both sides
-    // of a helpful heal and measure the resulting effective healing/threat.
-    struct F54fProcResult
-    {
-        bool controlCast = false, auraAttached = false, scriptFree = false;
-        bool estimatorVetoed = false, rootCast = false, childObserved = false;
-        bool auraRemoved = false, threatMatched = false;
-        uint32 rootGain = 0, totalGain = 0, childGain = 0, refs = 0;
-        float healer0 = 0.0f, healer1 = 0.0f, tank0 = 0.0f, tank1 = 0.0f;
-    };
-    SpellEntry* const f54fAuraSpell = const_cast<SpellEntry*>(inspirationSpell);
-    SpellEntry const* const f54fChildSpell = sSpellMgr.GetSpellEntry(2052);
-    SpellProcEventEntry const* const f54fProcEvent = f54fAuraSpell
-        ? sSpellMgr.GetSpellProcEvent(f54fAuraSpell->Id) : nullptr;
-    SpellProcEventEntry* const f54fMutableProcEvent =
-        const_cast<SpellProcEventEntry*>(f54fProcEvent);
-    uint32 const f54fSavedProcSchoolMask =
-        f54fProcEvent ? f54fProcEvent->schoolMask : 0;
-    uint32 const f54fSavedProcFamilyName =
-        f54fProcEvent ? f54fProcEvent->spellFamilyName : 0;
-    uint64 const f54fSavedProcFamilyMask0 =
-        f54fProcEvent ? f54fProcEvent->spellFamilyMask[0] : 0;
-    uint64 const f54fSavedProcFamilyMask1 =
-        f54fProcEvent ? f54fProcEvent->spellFamilyMask[1] : 0;
-    uint64 const f54fSavedProcFamilyMask2 =
-        f54fProcEvent ? f54fProcEvent->spellFamilyMask[2] : 0;
-    uint32 const f54fSavedProcEventFlags =
-        f54fProcEvent ? f54fProcEvent->procFlags : 0;
-    uint32 const f54fSavedProcEventEx =
-        f54fProcEvent ? f54fProcEvent->procEx : 0;
-    float const f54fSavedProcPpm = f54fProcEvent ? f54fProcEvent->ppmRate : 0.0f;
-    float const f54fSavedProcChance =
-        f54fProcEvent ? f54fProcEvent->customChance : 0.0f;
-    uint32 const f54fSavedProcCooldown =
-        f54fProcEvent ? f54fProcEvent->cooldown : 0;
-    SpellThreatEntry const* const f54fRootThreat =
-        healSpell ? sSpellMgr.GetSpellThreatEntry(healSpell->Id) : nullptr;
-    SpellThreatEntry const* const f54fChildThreat =
-        f54fChildSpell ? sSpellMgr.GetSpellThreatEntry(f54fChildSpell->Id) : nullptr;
-    bool const f54fRowReady = f53cInspirationSpellValid && f54fAuraSpell &&
-        f54fAuraSpell->ScriptId == 0 && healSpell &&
-        healSpell->Effect[0] == SPELL_EFFECT_HEAL && f54fChildSpell &&
-        f54fChildSpell->ScriptId == 0 &&
-        f54fChildSpell->Effect[0] == SPELL_EFFECT_HEAL &&
-        Spells::IsPositiveSpell(f54fChildSpell->Id) &&
-        (!f54fRootThreat || !f54fRootThreat->threat) &&
-        (!f54fChildThreat || !f54fChildThreat->threat) &&
-        tank && healer && tank->IsAlive() && healer->IsAlive() &&
-        !tank->GetSpellAuraHolder(inspirationSpell->Id) &&
-        !healer->GetSpellAuraHolder(inspirationSpell->Id);
-    uint32 const f54fSavedEffect0 = f54fAuraSpell ? f54fAuraSpell->Effect[0] : 0;
-    uint32 const f54fSavedAuraType0 = f54fAuraSpell ? f54fAuraSpell->EffectApplyAuraName[0] : 0;
-    uint32 const f54fSavedTrigger0 = f54fAuraSpell ? f54fAuraSpell->EffectTriggerSpell[0] : 0;
-    uint32 const f54fSavedFlags = f54fAuraSpell ? f54fAuraSpell->procFlags : 0;
-    uint32 const f54fSavedChance = f54fAuraSpell ? f54fAuraSpell->procChance : 0;
-    uint32 const f54fSavedCharges = f54fAuraSpell ? f54fAuraSpell->procCharges : 0;
-    uint32 const f54fSavedFamily = f54fAuraSpell ? f54fAuraSpell->SpellFamilyName : 0;
-    uint32 const f54fSavedIcon = f54fAuraSpell ? f54fAuraSpell->SpellIconID : 0;
-    SpellEntry* const f54fMutableChildSpell =
-        const_cast<SpellEntry*>(f54fChildSpell);
-    uint32 const f54fSavedChildAttributesEx3 =
-        f54fMutableChildSpell ? f54fMutableChildSpell->AttributesEx3 : 0;
-    if (f54fMutableChildSpell)
-        f54fMutableChildSpell->AttributesEx3 |=
-            SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
-            SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
-    if (f54fMutableProcEvent)
-    {
-        f54fMutableProcEvent->schoolMask = 0;
-        f54fMutableProcEvent->spellFamilyName = 0;
-        f54fMutableProcEvent->spellFamilyMask[0] = 0;
-        f54fMutableProcEvent->spellFamilyMask[1] = 0;
-        f54fMutableProcEvent->spellFamilyMask[2] = 0;
-        f54fMutableProcEvent->procFlags = 0;
-        f54fMutableProcEvent->procEx = PROC_EX_NONE;
-        f54fMutableProcEvent->ppmRate = 0.0f;
-        f54fMutableProcEvent->customChance = 0.0f;
-        f54fMutableProcEvent->cooldown = 0;
-    }
-    auto runF54fProc = [&](uint32 sideFlag, bool casterSide)
-    {
-        F54fProcResult out;
-        if (!f54fRowReady || !hostiles[0].creature || !hostiles[1].creature ||
-            tank->GetSpellAuraHolder(inspirationSpell->Id) ||
-            healer->GetSpellAuraHolder(inspirationSpell->Id))
-            return out;
-        Unit* const auraOwner = casterSide ? static_cast<Unit*>(healer) : static_cast<Unit*>(tank);
-        uint32 const savedHealth = tank->GetHealth();
-        uint32 const testHealth = std::max<uint32>(1u, tank->GetMaxHealth() / 2u);
-        uint32 const savedMana = healer->GetPower(POWER_MANA);
-        auto const savedReact0 = hostiles[0].creature->GetCreatureReactState();
-        auto const savedReact1 = hostiles[1].creature->GetCreatureReactState();
-        hostiles[0].creature->SetCreatureReactState(REACT_PASSIVE);
-        hostiles[1].creature->SetCreatureReactState(REACT_PASSIVE);
-        auto waitForRootHeal = [&]()
-        {
-            for (uint32 tick = 0; tick < 20 &&
-                 healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(250));
-                map.Update(250);
-            }
-            return !healer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
-        };
-
-        f54fAuraSpell->Effect[0] = SPELL_EFFECT_APPLY_AURA;
-        f54fAuraSpell->EffectApplyAuraName[0] = SPELL_AURA_PROC_TRIGGER_SPELL;
-        f54fAuraSpell->EffectTriggerSpell[0] = f54fChildSpell->Id;
-        f54fAuraSpell->procFlags = sideFlag;
-        f54fAuraSpell->procChance = 100;
-        f54fAuraSpell->procCharges = 0;
-        f54fAuraSpell->SpellFamilyName = SPELLFAMILY_GENERIC;
-        f54fAuraSpell->SpellIconID = 0;
-
-        tank->SetHealth(testHealth);
-        healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
-        healer->SetFacingToObject(tank);
-        SpellCastResult const controlResult =
-            healer->CastSpell(tank, healSpell, false);
-        out.controlCast = controlResult == SPELL_CAST_OK && waitForRootHeal();
-        out.rootGain = tank->GetHealth() > testHealth
-            ? tank->GetHealth() - testHealth : 0u;
-
-        tank->SetHealth(testHealth);
-        healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
-        float const healerBefore0 = hostiles[0].creature->GetThreatManager().getThreat(healer);
-        float const healerBefore1 = hostiles[1].creature->GetThreatManager().getThreat(healer);
-        float const tankBefore0 = hostiles[0].creature->GetThreatManager().getThreat(tank);
-        float const tankBefore1 = hostiles[1].creature->GetThreatManager().getThreat(tank);
-        for (HostileReference* ref = tank->GetHostileRefManager().getFirst(); ref; ref = ref->next())
-            ++out.refs;
-
-        SpellAuraHolder* const holder = auraOwner->AddAura(
-            inspirationSpell->Id, EFFECT_INDEX_0, auraOwner);
-        out.auraAttached = holder != nullptr;
-        out.scriptFree = holder && !holder->GetAuraScript();
-        if (out.auraAttached)
-        {
-            coordinator.InvalidateSnapshot();
-            PartySnapshot const* snap = PartySnapshotBuilder::GetOrBuild(
-                tank, coordinator, WorldTimer::getMSTime(), 0);
-            ThreatImpactEstimate const estimate = snap
-                ? EstimateDirectHealingThreatComponents(
-                    healer, tank, static_cast<float>(tank->GetMaxHealth() - tank->GetHealth()),
-                    healSpell, *snap)
-                : ThreatImpactEstimate();
-            out.estimatorVetoed =
-                estimate.completeness == ThreatImpactCompleteness::Unknown &&
-                estimate.reason == "direct_heal_proc_closure_unbounded" &&
-                estimate.impacts.empty();
-
-            healer->SetFacingToObject(tank);
-            SpellCastResult const rootResult =
-                healer->CastSpell(tank, healSpell, false);
-            out.rootCast = rootResult == SPELL_CAST_OK && waitForRootHeal();
-            out.totalGain = tank->GetHealth() > testHealth
-                ? tank->GetHealth() - testHealth : 0u;
-            out.childGain = out.totalGain > out.rootGain
-                ? out.totalGain - out.rootGain : 0u;
-            out.childObserved = out.rootCast && out.rootGain > 0 && out.childGain > 0;
-            auraOwner->RemoveAurasDueToSpell(inspirationSpell->Id);
-            out.auraRemoved = auraOwner->GetSpellAuraHolder(inspirationSpell->Id) == nullptr;
-        }
-
-        float const divisor = static_cast<float>(out.refs ? out.refs : 1u);
-        float const rootInput = out.rootGain * 0.5f *
-            sSpellMgr.GetSpellThreatMultiplier(healSpell) / divisor;
-        float const childInput = out.childGain * 0.5f *
-            sSpellMgr.GetSpellThreatMultiplier(f54fChildSpell) / divisor;
-        float const rootThreat = ThreatCalcHelper::CalcThreat(
-            healer, rootInput, false, healSpell->GetSpellSchoolMask(), healSpell);
-        float const childThreat = ThreatCalcHelper::CalcThreat(
-            auraOwner, childInput, false,
-            f54fChildSpell->GetSpellSchoolMask(), f54fChildSpell);
-        float const expectedHealer = rootThreat + (casterSide ? childThreat : 0.0f);
-        float const expectedTank = casterSide ? 0.0f : childThreat;
-        out.healer0 = hostiles[0].creature->GetThreatManager().getThreat(healer) - healerBefore0;
-        out.healer1 = hostiles[1].creature->GetThreatManager().getThreat(healer) - healerBefore1;
-        out.tank0 = hostiles[0].creature->GetThreatManager().getThreat(tank) - tankBefore0;
-        out.tank1 = hostiles[1].creature->GetThreatManager().getThreat(tank) - tankBefore1;
-        out.threatMatched = out.refs == 2 &&
-            std::fabs(out.healer0 - expectedHealer) < 0.05f &&
-            std::fabs(out.healer1 - expectedHealer) < 0.05f &&
-            std::fabs(out.tank0 - expectedTank) < 0.05f &&
-            std::fabs(out.tank1 - expectedTank) < 0.05f;
-
-        tank->SetHealth(savedHealth);
-        healer->SetPower(POWER_MANA, savedMana);
-        hostiles[0].creature->SetCreatureReactState(savedReact0);
-        hostiles[1].creature->SetCreatureReactState(savedReact1);
-        return out;
-    };
-    F54fProcResult const f54fCaster =
-        runF54fProc(PROC_FLAG_DEAL_HELPFUL_SPELL, true);
-    F54fProcResult const f54fRecipient =
-        runF54fProc(PROC_FLAG_TAKE_HELPFUL_SPELL, false);
-    if (f54fAuraSpell)
-    {
-        f54fAuraSpell->Effect[0] = f54fSavedEffect0;
-        f54fAuraSpell->EffectApplyAuraName[0] = f54fSavedAuraType0;
-        f54fAuraSpell->EffectTriggerSpell[0] = f54fSavedTrigger0;
-        f54fAuraSpell->procFlags = f54fSavedFlags;
-        f54fAuraSpell->procChance = f54fSavedChance;
-        f54fAuraSpell->procCharges = f54fSavedCharges;
-        f54fAuraSpell->SpellFamilyName = f54fSavedFamily;
-        f54fAuraSpell->SpellIconID = f54fSavedIcon;
-    }
-    if (f54fMutableChildSpell)
-        f54fMutableChildSpell->AttributesEx3 = f54fSavedChildAttributesEx3;
-    if (f54fMutableProcEvent)
-    {
-        f54fMutableProcEvent->schoolMask = f54fSavedProcSchoolMask;
-        f54fMutableProcEvent->spellFamilyName = f54fSavedProcFamilyName;
-        f54fMutableProcEvent->spellFamilyMask[0] = f54fSavedProcFamilyMask0;
-        f54fMutableProcEvent->spellFamilyMask[1] = f54fSavedProcFamilyMask1;
-        f54fMutableProcEvent->spellFamilyMask[2] = f54fSavedProcFamilyMask2;
-        f54fMutableProcEvent->procFlags = f54fSavedProcEventFlags;
-        f54fMutableProcEvent->procEx = f54fSavedProcEventEx;
-        f54fMutableProcEvent->ppmRate = f54fSavedProcPpm;
-        f54fMutableProcEvent->customChance = f54fSavedProcChance;
-        f54fMutableProcEvent->cooldown = f54fSavedProcCooldown;
-    }
-    bool const f54fProcEventRestored = !f54fMutableProcEvent ||
-        (f54fMutableProcEvent->schoolMask == f54fSavedProcSchoolMask &&
-         f54fMutableProcEvent->spellFamilyName == f54fSavedProcFamilyName &&
-         f54fMutableProcEvent->spellFamilyMask[0] == f54fSavedProcFamilyMask0 &&
-         f54fMutableProcEvent->spellFamilyMask[1] == f54fSavedProcFamilyMask1 &&
-         f54fMutableProcEvent->spellFamilyMask[2] == f54fSavedProcFamilyMask2 &&
-         f54fMutableProcEvent->procFlags == f54fSavedProcEventFlags &&
-         f54fMutableProcEvent->procEx == f54fSavedProcEventEx &&
-         f54fMutableProcEvent->ppmRate == f54fSavedProcPpm &&
-         f54fMutableProcEvent->customChance == f54fSavedProcChance &&
-         f54fMutableProcEvent->cooldown == f54fSavedProcCooldown);
-    bool const f54fChildAttributesRestored =
-        f54fMutableChildSpell &&
-        f54fMutableChildSpell->AttributesEx3 == f54fSavedChildAttributesEx3;
-    bool const f54fRowRestored = f54fAuraSpell &&
-        f54fAuraSpell->Effect[0] == f54fSavedEffect0 &&
-        f54fAuraSpell->EffectApplyAuraName[0] == f54fSavedAuraType0 &&
-        f54fAuraSpell->EffectTriggerSpell[0] == f54fSavedTrigger0 &&
-        f54fAuraSpell->procFlags == f54fSavedFlags &&
-        f54fAuraSpell->procChance == f54fSavedChance &&
-        f54fAuraSpell->procCharges == f54fSavedCharges &&
-        f54fAuraSpell->SpellFamilyName == f54fSavedFamily &&
-        f54fAuraSpell->SpellIconID == f54fSavedIcon &&
-        f54fChildAttributesRestored;
-    bool const f54fPassed = f54fRowReady &&
-        f54fCaster.controlCast && f54fCaster.auraAttached && f54fCaster.scriptFree &&
-        f54fCaster.estimatorVetoed && f54fCaster.rootCast && f54fCaster.childObserved &&
-        f54fCaster.auraRemoved && f54fCaster.threatMatched &&
-        f54fRecipient.controlCast && f54fRecipient.auraAttached && f54fRecipient.scriptFree &&
-        f54fRecipient.estimatorVetoed && f54fRecipient.rootCast && f54fRecipient.childObserved &&
-        f54fRecipient.auraRemoved && f54fRecipient.threatMatched &&
-        f54fRowRestored && f54fProcEventRestored;
-    sLog.Out(LOG_BASIC, f54fPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54f triggered child heal: rowReady=%u procEventPresent=%u procEventRestored=%u casterAura=%u casterVeto=%u casterChild=%u casterThreat=%u casterHealer=%.2f/%.2f casterTank=%.2f/%.2f recipientAura=%u recipientVeto=%u recipientChild=%u recipientThreat=%u recipientHealer=%.2f/%.2f recipientTank=%.2f/%.2f rowRestored=%u.",
-        f54fRowReady ? 1u : 0u, f54fProcEvent ? 1u : 0u,
-        f54fProcEventRestored ? 1u : 0u,
-        f54fCaster.auraAttached ? 1u : 0u,
-        f54fCaster.estimatorVetoed ? 1u : 0u, f54fCaster.childObserved ? 1u : 0u,
-        f54fCaster.threatMatched ? 1u : 0u, f54fCaster.healer0, f54fCaster.healer1,
-        f54fCaster.tank0, f54fCaster.tank1, f54fRecipient.auraAttached ? 1u : 0u,
-        f54fRecipient.estimatorVetoed ? 1u : 0u, f54fRecipient.childObserved ? 1u : 0u,
-        f54fRecipient.threatMatched ? 1u : 0u, f54fRecipient.healer0,
-        f54fRecipient.healer1, f54fRecipient.tank0, f54fRecipient.tank1,
-        f54fRowRestored ? 1u : 0u);
-    if (f54fPassed)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: F54f executed real Core PROC_TRIGGER_SPELL child heals from both caster-side and recipient-side helpful proc flags; measured effective child healing and exact per-hostile healer/tank threat deltas, and restored the temporary aura spell row.");
-
     // Inject a positive spell_threat row only into the disposable simulator DB.
     // The first Lesser Heal rank is used so SpellRankHelper propagates the row
     // to the rank cast below; the original rows are restored before later tests.
@@ -8753,6 +8483,276 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                  "[PartyBotSimulator] F43 Group-backed point-movement snapshot integration failed.");
         return false;
     }
+
+    // Re-establish isolated hostile references after the earlier Group/death
+    // lifecycle fixtures have finished; F54f runs last so its measured threat
+    // deltas cannot perturb any of those shared-state assertions.
+    if (tank && tank->IsAlive())
+    {
+        if (hostiles[0].creature && hostiles[0].creature->IsAlive())
+            hostiles[0].creature->AddThreat(tank, 100.0f);
+        if (hostiles[1].creature && hostiles[1].creature->IsAlive())
+            hostiles[1].creature->AddThreat(tank, 100.0f);
+    }
+    // F54f: exercise real generic PROC_TRIGGER_SPELL dispatch on both sides
+    // of a helpful heal and measure the resulting effective healing/threat.
+    struct F54fProcResult
+    {
+        bool controlCast = false, auraAttached = false, scriptFree = false;
+        bool estimatorVetoed = false, rootCast = false, childObserved = false;
+        bool auraRemoved = false, threatMatched = false;
+        uint32 rootGain = 0, totalGain = 0, childGain = 0, refs = 0;
+        float healer0 = 0.0f, healer1 = 0.0f, tank0 = 0.0f, tank1 = 0.0f;
+    };
+    SpellEntry* const f54fAuraSpell = const_cast<SpellEntry*>(inspirationSpell);
+    SpellEntry const* const f54fChildSpell = sSpellMgr.GetSpellEntry(2052);
+    SpellProcEventEntry const* const f54fProcEvent = f54fAuraSpell
+        ? sSpellMgr.GetSpellProcEvent(f54fAuraSpell->Id) : nullptr;
+    SpellProcEventEntry* const f54fMutableProcEvent =
+        const_cast<SpellProcEventEntry*>(f54fProcEvent);
+    uint32 const f54fSavedProcSchoolMask =
+        f54fProcEvent ? f54fProcEvent->schoolMask : 0;
+    uint32 const f54fSavedProcFamilyName =
+        f54fProcEvent ? f54fProcEvent->spellFamilyName : 0;
+    uint64 const f54fSavedProcFamilyMask0 =
+        f54fProcEvent ? f54fProcEvent->spellFamilyMask[0] : 0;
+    uint64 const f54fSavedProcFamilyMask1 =
+        f54fProcEvent ? f54fProcEvent->spellFamilyMask[1] : 0;
+    uint64 const f54fSavedProcFamilyMask2 =
+        f54fProcEvent ? f54fProcEvent->spellFamilyMask[2] : 0;
+    uint32 const f54fSavedProcEventFlags =
+        f54fProcEvent ? f54fProcEvent->procFlags : 0;
+    uint32 const f54fSavedProcEventEx =
+        f54fProcEvent ? f54fProcEvent->procEx : 0;
+    float const f54fSavedProcPpm = f54fProcEvent ? f54fProcEvent->ppmRate : 0.0f;
+    float const f54fSavedProcChance =
+        f54fProcEvent ? f54fProcEvent->customChance : 0.0f;
+    uint32 const f54fSavedProcCooldown =
+        f54fProcEvent ? f54fProcEvent->cooldown : 0;
+    SpellThreatEntry const* const f54fRootThreat =
+        healSpell ? sSpellMgr.GetSpellThreatEntry(healSpell->Id) : nullptr;
+    SpellThreatEntry const* const f54fChildThreat =
+        f54fChildSpell ? sSpellMgr.GetSpellThreatEntry(f54fChildSpell->Id) : nullptr;
+    bool const f54fRowReady = f53cInspirationSpellValid && f54fAuraSpell &&
+        f54fAuraSpell->ScriptId == 0 && healSpell &&
+        healSpell->Effect[0] == SPELL_EFFECT_HEAL && f54fChildSpell &&
+        f54fChildSpell->ScriptId == 0 &&
+        f54fChildSpell->Effect[0] == SPELL_EFFECT_HEAL &&
+        Spells::IsPositiveSpell(f54fChildSpell->Id) &&
+        (!f54fRootThreat || !f54fRootThreat->threat) &&
+        (!f54fChildThreat || !f54fChildThreat->threat) &&
+        tank && healer && tank->IsAlive() && healer->IsAlive() &&
+        !tank->GetSpellAuraHolder(inspirationSpell->Id) &&
+        !healer->GetSpellAuraHolder(inspirationSpell->Id);
+    uint32 const f54fSavedEffect0 = f54fAuraSpell ? f54fAuraSpell->Effect[0] : 0;
+    uint32 const f54fSavedAuraType0 = f54fAuraSpell ? f54fAuraSpell->EffectApplyAuraName[0] : 0;
+    uint32 const f54fSavedTrigger0 = f54fAuraSpell ? f54fAuraSpell->EffectTriggerSpell[0] : 0;
+    uint32 const f54fSavedFlags = f54fAuraSpell ? f54fAuraSpell->procFlags : 0;
+    uint32 const f54fSavedChance = f54fAuraSpell ? f54fAuraSpell->procChance : 0;
+    uint32 const f54fSavedCharges = f54fAuraSpell ? f54fAuraSpell->procCharges : 0;
+    uint32 const f54fSavedFamily = f54fAuraSpell ? f54fAuraSpell->SpellFamilyName : 0;
+    uint32 const f54fSavedIcon = f54fAuraSpell ? f54fAuraSpell->SpellIconID : 0;
+    SpellEntry* const f54fMutableRootSpell = const_cast<SpellEntry*>(healSpell);
+    uint32 const f54fSavedRootAttributesEx3 =
+        f54fMutableRootSpell ? f54fMutableRootSpell->AttributesEx3 : 0;
+    if (f54fMutableRootSpell)
+        f54fMutableRootSpell->AttributesEx3 |= SPELL_ATTR_EX3_NOT_A_PROC;
+    SpellEntry* const f54fMutableChildSpell =
+        const_cast<SpellEntry*>(f54fChildSpell);
+    uint32 const f54fSavedChildAttributesEx3 =
+        f54fMutableChildSpell ? f54fMutableChildSpell->AttributesEx3 : 0;
+    if (f54fMutableChildSpell)
+        f54fMutableChildSpell->AttributesEx3 |=
+            SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
+            SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
+    if (f54fMutableProcEvent)
+    {
+        f54fMutableProcEvent->schoolMask = 0;
+        f54fMutableProcEvent->spellFamilyName = 0;
+        f54fMutableProcEvent->spellFamilyMask[0] = 0;
+        f54fMutableProcEvent->spellFamilyMask[1] = 0;
+        f54fMutableProcEvent->spellFamilyMask[2] = 0;
+        f54fMutableProcEvent->procFlags = 0;
+        f54fMutableProcEvent->procEx = PROC_EX_NONE;
+        f54fMutableProcEvent->ppmRate = 0.0f;
+        f54fMutableProcEvent->customChance = 0.0f;
+        f54fMutableProcEvent->cooldown = 0;
+    }
+    auto runF54fProc = [&](uint32 sideFlag, bool casterSide)
+    {
+        F54fProcResult out;
+        if (!f54fRowReady || !hostiles[0].creature || !hostiles[1].creature ||
+            !hostiles[0].creature->IsAlive() || !hostiles[1].creature->IsAlive() ||
+            tank->GetSpellAuraHolder(inspirationSpell->Id) ||
+            healer->GetSpellAuraHolder(inspirationSpell->Id))
+            return out;
+        Unit* const auraOwner = casterSide ? static_cast<Unit*>(healer) : static_cast<Unit*>(tank);
+        uint32 const savedHealth = tank->GetHealth();
+        uint32 const testHealth = std::max<uint32>(1u, tank->GetMaxHealth() / 2u);
+        uint32 const savedMana = healer->GetPower(POWER_MANA);
+        f54fAuraSpell->Effect[0] = SPELL_EFFECT_APPLY_AURA;
+        f54fAuraSpell->EffectApplyAuraName[0] = SPELL_AURA_PROC_TRIGGER_SPELL;
+        f54fAuraSpell->EffectTriggerSpell[0] = f54fChildSpell->Id;
+        f54fAuraSpell->procFlags = sideFlag;
+        f54fAuraSpell->procChance = 100;
+        f54fAuraSpell->procCharges = 0;
+        f54fAuraSpell->SpellFamilyName = SPELLFAMILY_GENERIC;
+        f54fAuraSpell->SpellIconID = 0;
+
+        tank->SetHealth(testHealth);
+        healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+        healer->SetFacingToObject(tank);
+        out.controlCast = healer->CastSpell(tank, healSpell, true) == SPELL_CAST_OK;
+        out.rootGain = tank->GetHealth() > testHealth
+            ? tank->GetHealth() - testHealth : 0u;
+
+        tank->SetHealth(testHealth);
+        healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+        float const healerBefore0 = hostiles[0].creature->GetThreatManager().getThreat(healer);
+        float const healerBefore1 = hostiles[1].creature->GetThreatManager().getThreat(healer);
+        float const tankBefore0 = hostiles[0].creature->GetThreatManager().getThreat(tank);
+        float const tankBefore1 = hostiles[1].creature->GetThreatManager().getThreat(tank);
+        for (HostileReference* ref = tank->GetHostileRefManager().getFirst(); ref; ref = ref->next())
+            ++out.refs;
+
+        SpellAuraHolder* const holder = auraOwner->AddAura(
+            inspirationSpell->Id, EFFECT_INDEX_0, auraOwner);
+        out.auraAttached = holder != nullptr;
+        out.scriptFree = holder && !holder->GetAuraScript();
+        if (out.auraAttached)
+        {
+            coordinator.InvalidateSnapshot();
+            PartySnapshot const* snap = PartySnapshotBuilder::GetOrBuild(
+                tank, coordinator, WorldTimer::getMSTime(), 0);
+            ThreatImpactEstimate const estimate = snap
+                ? EstimateDirectHealingThreatComponents(
+                    healer, tank, static_cast<float>(tank->GetMaxHealth() - tank->GetHealth()),
+                    healSpell, *snap)
+                : ThreatImpactEstimate();
+            out.estimatorVetoed =
+                estimate.completeness == ThreatImpactCompleteness::Unknown &&
+                estimate.reason == "direct_heal_proc_closure_unbounded" &&
+                estimate.impacts.empty();
+
+            healer->SetFacingToObject(tank);
+            out.rootCast = healer->CastSpell(tank, healSpell, true) == SPELL_CAST_OK;
+            out.totalGain = tank->GetHealth() > testHealth
+                ? tank->GetHealth() - testHealth : 0u;
+            out.childGain = out.totalGain > out.rootGain
+                ? out.totalGain - out.rootGain : 0u;
+            out.childObserved = out.rootCast && out.rootGain > 0 && out.childGain > 0;
+            auraOwner->RemoveAurasDueToSpell(inspirationSpell->Id);
+            out.auraRemoved = auraOwner->GetSpellAuraHolder(inspirationSpell->Id) == nullptr;
+        }
+
+        float const divisor = static_cast<float>(out.refs ? out.refs : 1u);
+        float const rootInput = out.rootGain * 0.5f *
+            sSpellMgr.GetSpellThreatMultiplier(healSpell) / divisor;
+        float const childInput = out.childGain * 0.5f *
+            sSpellMgr.GetSpellThreatMultiplier(f54fChildSpell) / divisor;
+        float const rootThreat = ThreatCalcHelper::CalcThreat(
+            healer, rootInput, false, healSpell->GetSpellSchoolMask(), healSpell);
+        float const childThreat = ThreatCalcHelper::CalcThreat(
+            auraOwner, childInput, false,
+            f54fChildSpell->GetSpellSchoolMask(), f54fChildSpell);
+        float const expectedHealer = rootThreat + (casterSide ? childThreat : 0.0f);
+        float const expectedTank = casterSide ? 0.0f : childThreat;
+        out.healer0 = hostiles[0].creature->GetThreatManager().getThreat(healer) - healerBefore0;
+        out.healer1 = hostiles[1].creature->GetThreatManager().getThreat(healer) - healerBefore1;
+        out.tank0 = hostiles[0].creature->GetThreatManager().getThreat(tank) - tankBefore0;
+        out.tank1 = hostiles[1].creature->GetThreatManager().getThreat(tank) - tankBefore1;
+        out.threatMatched = out.refs == 2 &&
+            std::fabs(out.healer0 - expectedHealer) < 0.05f &&
+            std::fabs(out.healer1 - expectedHealer) < 0.05f &&
+            std::fabs(out.tank0 - expectedTank) < 0.05f &&
+            std::fabs(out.tank1 - expectedTank) < 0.05f;
+
+        tank->SetHealth(savedHealth);
+        healer->SetPower(POWER_MANA, savedMana);
+        return out;
+    };
+    F54fProcResult const f54fCaster =
+        runF54fProc(PROC_FLAG_DEAL_HELPFUL_SPELL, true);
+    F54fProcResult const f54fRecipient =
+        runF54fProc(PROC_FLAG_TAKE_HELPFUL_SPELL, false);
+    if (f54fAuraSpell)
+    {
+        f54fAuraSpell->Effect[0] = f54fSavedEffect0;
+        f54fAuraSpell->EffectApplyAuraName[0] = f54fSavedAuraType0;
+        f54fAuraSpell->EffectTriggerSpell[0] = f54fSavedTrigger0;
+        f54fAuraSpell->procFlags = f54fSavedFlags;
+        f54fAuraSpell->procChance = f54fSavedChance;
+        f54fAuraSpell->procCharges = f54fSavedCharges;
+        f54fAuraSpell->SpellFamilyName = f54fSavedFamily;
+        f54fAuraSpell->SpellIconID = f54fSavedIcon;
+    }
+    if (f54fMutableRootSpell)
+        f54fMutableRootSpell->AttributesEx3 = f54fSavedRootAttributesEx3;
+    bool const f54fRootAttributesRestored = f54fMutableRootSpell &&
+        f54fMutableRootSpell->AttributesEx3 == f54fSavedRootAttributesEx3;
+    if (f54fMutableChildSpell)
+        f54fMutableChildSpell->AttributesEx3 = f54fSavedChildAttributesEx3;
+    if (f54fMutableProcEvent)
+    {
+        f54fMutableProcEvent->schoolMask = f54fSavedProcSchoolMask;
+        f54fMutableProcEvent->spellFamilyName = f54fSavedProcFamilyName;
+        f54fMutableProcEvent->spellFamilyMask[0] = f54fSavedProcFamilyMask0;
+        f54fMutableProcEvent->spellFamilyMask[1] = f54fSavedProcFamilyMask1;
+        f54fMutableProcEvent->spellFamilyMask[2] = f54fSavedProcFamilyMask2;
+        f54fMutableProcEvent->procFlags = f54fSavedProcEventFlags;
+        f54fMutableProcEvent->procEx = f54fSavedProcEventEx;
+        f54fMutableProcEvent->ppmRate = f54fSavedProcPpm;
+        f54fMutableProcEvent->customChance = f54fSavedProcChance;
+        f54fMutableProcEvent->cooldown = f54fSavedProcCooldown;
+    }
+    bool const f54fProcEventRestored = !f54fMutableProcEvent ||
+        (f54fMutableProcEvent->schoolMask == f54fSavedProcSchoolMask &&
+         f54fMutableProcEvent->spellFamilyName == f54fSavedProcFamilyName &&
+         f54fMutableProcEvent->spellFamilyMask[0] == f54fSavedProcFamilyMask0 &&
+         f54fMutableProcEvent->spellFamilyMask[1] == f54fSavedProcFamilyMask1 &&
+         f54fMutableProcEvent->spellFamilyMask[2] == f54fSavedProcFamilyMask2 &&
+         f54fMutableProcEvent->procFlags == f54fSavedProcEventFlags &&
+         f54fMutableProcEvent->procEx == f54fSavedProcEventEx &&
+         f54fMutableProcEvent->ppmRate == f54fSavedProcPpm &&
+         f54fMutableProcEvent->customChance == f54fSavedProcChance &&
+         f54fMutableProcEvent->cooldown == f54fSavedProcCooldown);
+    bool const f54fChildAttributesRestored =
+        f54fMutableChildSpell &&
+        f54fMutableChildSpell->AttributesEx3 == f54fSavedChildAttributesEx3;
+    bool const f54fRowRestored = f54fAuraSpell &&
+        f54fAuraSpell->Effect[0] == f54fSavedEffect0 &&
+        f54fAuraSpell->EffectApplyAuraName[0] == f54fSavedAuraType0 &&
+        f54fAuraSpell->EffectTriggerSpell[0] == f54fSavedTrigger0 &&
+        f54fAuraSpell->procFlags == f54fSavedFlags &&
+        f54fAuraSpell->procChance == f54fSavedChance &&
+        f54fAuraSpell->procCharges == f54fSavedCharges &&
+        f54fAuraSpell->SpellFamilyName == f54fSavedFamily &&
+        f54fAuraSpell->SpellIconID == f54fSavedIcon &&
+        f54fRootAttributesRestored && f54fChildAttributesRestored;
+    bool const f54fPassed = f54fRowReady &&
+        f54fCaster.controlCast && f54fCaster.auraAttached && f54fCaster.scriptFree &&
+        f54fCaster.estimatorVetoed && f54fCaster.rootCast && f54fCaster.childObserved &&
+        f54fCaster.auraRemoved && f54fCaster.threatMatched &&
+        f54fRecipient.controlCast && f54fRecipient.auraAttached && f54fRecipient.scriptFree &&
+        f54fRecipient.estimatorVetoed && f54fRecipient.rootCast && f54fRecipient.childObserved &&
+        f54fRecipient.auraRemoved && f54fRecipient.threatMatched &&
+        f54fRowRestored && f54fProcEventRestored;
+    sLog.Out(LOG_BASIC, f54fPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54f triggered child heal: rowReady=%u procEventPresent=%u procEventRestored=%u casterAura=%u casterVeto=%u casterChild=%u casterThreat=%u casterHealer=%.2f/%.2f casterTank=%.2f/%.2f recipientAura=%u recipientVeto=%u recipientChild=%u recipientThreat=%u recipientHealer=%.2f/%.2f recipientTank=%.2f/%.2f rowRestored=%u.",
+        f54fRowReady ? 1u : 0u, f54fProcEvent ? 1u : 0u,
+        f54fProcEventRestored ? 1u : 0u,
+        f54fCaster.auraAttached ? 1u : 0u,
+        f54fCaster.estimatorVetoed ? 1u : 0u, f54fCaster.childObserved ? 1u : 0u,
+        f54fCaster.threatMatched ? 1u : 0u, f54fCaster.healer0, f54fCaster.healer1,
+        f54fCaster.tank0, f54fCaster.tank1, f54fRecipient.auraAttached ? 1u : 0u,
+        f54fRecipient.estimatorVetoed ? 1u : 0u, f54fRecipient.childObserved ? 1u : 0u,
+        f54fRecipient.threatMatched ? 1u : 0u, f54fRecipient.healer0,
+        f54fRecipient.healer1, f54fRecipient.tank0, f54fRecipient.tank1,
+        f54fRowRestored ? 1u : 0u);
+    if (f54fPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F54f executed real Core PROC_TRIGGER_SPELL child heals from both caster-side and recipient-side helpful proc flags; measured effective child healing and exact per-hostile healer/tank threat deltas, and restored the temporary aura spell row.");
+
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states.");

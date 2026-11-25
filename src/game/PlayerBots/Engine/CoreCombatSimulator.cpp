@@ -5036,8 +5036,52 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         priest->SetPower(POWER_MANA, priest->GetMaxPower(POWER_MANA));
                         bool const renewAccepted = renewSpell &&
                             priest->CastSpell(tank, renewSpell, true) == SPELL_CAST_OK;
-                        bool const shieldAccepted = powerWordShield &&
-                            priest->CastSpell(tank, powerWordShield, true) == SPELL_CAST_OK;
+                        SpellCastResult const shieldCastResult = powerWordShield
+                            ? priest->CastSpell(tank, powerWordShield, true)
+                            : SPELL_FAILED_SPELL_UNAVAILABLE;
+                        bool const shieldAccepted = shieldCastResult == SPELL_CAST_OK;
+
+                        // Emit the exact live DBC/Aura values so the fixture can
+                        // distinguish an unapplied shield from a mask/filter bug.
+                        auto const& f54cSchoolAbsorbs =
+                            tank->GetAurasByType(SPELL_AURA_SCHOOL_ABSORB);
+                        uint32 f54cSchoolAbsorbAuraCount = 0;
+                        uint32 f54cPowerWordShieldAuraCount = 0;
+                        uint32 f54cPowerWordShieldMask = 0;
+                        uint32 f54cPowerWordShieldEffect = 0;
+                        uint32 f54cPowerWordShieldAuraType = 0;
+                        float f54cPowerWordShieldAuraAmount = 0.0f;
+                        for (Aura* aura : f54cSchoolAbsorbs)
+                        {
+                            if (!aura)
+                                continue;
+                            ++f54cSchoolAbsorbAuraCount;
+                            if (aura->GetId() != 17)
+                                continue;
+                            ++f54cPowerWordShieldAuraCount;
+                            if (Modifier const* modifier = aura->GetModifier())
+                            {
+                                f54cPowerWordShieldMask =
+                                    static_cast<uint32>(modifier->m_miscvalue);
+                                f54cPowerWordShieldAuraAmount = modifier->m_amount;
+                                f54cPowerWordShieldEffect = aura->GetEffIndex();
+                                f54cPowerWordShieldAuraType = modifier->m_auraname;
+                            }
+                        }
+                        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                            "[PartyBotSimulator] F54c Power Word: Shield Core probe: spellPresent=%u effect0=%u aura0=%u misc0=%d castResult=%u accepted=%u auraCount=%u shieldAuraCount=%u shieldAuraMask=%u shieldAuraType=%u shieldAuraEffect=%u shieldAuraAmount=%.1f.",
+                            powerWordShield ? 1u : 0u,
+                            powerWordShield ? powerWordShield->Effect[0] : 0u,
+                            powerWordShield ? powerWordShield->EffectApplyAuraName[0] : 0u,
+                            powerWordShield ? powerWordShield->EffectMiscValue[0] : 0,
+                            static_cast<uint32>(shieldCastResult),
+                            shieldAccepted ? 1u : 0u,
+                            f54cSchoolAbsorbAuraCount,
+                            f54cPowerWordShieldAuraCount,
+                            f54cPowerWordShieldMask,
+                            f54cPowerWordShieldAuraType,
+                            f54cPowerWordShieldEffect,
+                            f54cPowerWordShieldAuraAmount);
                         f53bCoordinator->InvalidateSnapshot();
                         PartySnapshot const* const f54cAuraSnapshot =
                             PartySnapshotBuilder::GetOrBuild(

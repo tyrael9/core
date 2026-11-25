@@ -3281,6 +3281,72 @@ void TestPriestHealReservationStartRollbackAndTerminalRelease()
         ReservationType::Heal, 22, 0, 1000) == 20);
 }
 
+void TestPriestDirectHealReservationSubtractsIncomingForecasts()
+{
+    Fixture f;
+    f.bot.classId = PriestDirectHealAction::PriestClassId;
+    f.bot.roleId = static_cast<std::uint8_t>(PartyRole::Healer);
+    f.bot.isPlayerBot = true;
+    f.bot.power = 500;
+    f.bot.directHealSpells = {{2050, 120, 25}};
+
+    PartyMemberSnapshot target;
+    ConfigureMember(target, 22, PartyRole::Tank, 30, 100, true);
+    target.mapId = f.snapshot.mapId;
+    target.instanceId = f.snapshot.instanceId;
+    target.periodicHealRemainingAmount = 10;
+    target.allSchoolAbsorbRemainingAmount = 5;
+    f.snapshot.members.push_back(target);
+
+    PartyMemberSnapshot humanCaster;
+    ConfigureMember(humanCaster, 44, PartyRole::Unknown, 100, 100);
+    humanCaster.mapId = f.snapshot.mapId;
+    humanCaster.instanceId = f.snapshot.instanceId;
+    humanCaster.currentSpellTargetGuid = target.guid;
+    humanCaster.currentSpellHealingAmount = 10;
+    f.snapshot.members.push_back(humanCaster);
+
+    Reservation other;
+    other.type = ReservationType::Heal;
+    other.targetGuid = target.guid;
+    other.ownerGuid = 33;
+    other.expiresAtMs = 10000;
+    other.amount = 20;
+    other.spellId = 2050;
+    other.actionId = f.coordinator.NextActionId();
+    assert(f.coordinator.TryReserve(other, 1000));
+
+    MockDirectHealRuntime runtime;
+    runtime.otherOwnerGuid = other.ownerGuid;
+    DecisionContext context(
+        f.snapshot, f.bot, f.coordinator, 1000,
+        nullptr, nullptr, nullptr, nullptr, &runtime);
+    ActionCandidate candidate = Candidate(
+        "core_priest_direct_heal", 80.0f, ActionChannel::GlobalCooldown);
+    candidate.targetGuid = target.guid;
+    candidate.spellId = 2050;
+    candidate.actionId = f.coordinator.NextActionId();
+
+    PriestDirectHealAction action;
+    std::string reason;
+    assert(action.IsPossible(context, candidate, reason));
+    assert(action.IsUseful(context, candidate, reason));
+    ActionExecutionResult started = action.ExecuteDetailed(context, candidate);
+    assert(started.result == ActionResult::Success);
+    assert(runtime.observedOwnReservation == 25);
+    assert(f.coordinator.GetReservedAmount(
+        ReservationType::Heal, target.guid, 0, 1000) == 45);
+
+    // Once the forecast and reservations cover the remaining deficit, the
+    // action becomes useless and cannot create another Heal reservation.
+    f.snapshot.members[0].periodicHealRemainingAmount = 40;
+    f.snapshot.members[0].allSchoolAbsorbRemainingAmount = 15;
+    f.snapshot.members[1].currentSpellHealingAmount = 10;
+    // Keep the test's original second reservation and the Bot's own reservation:
+    // the aggregate now covers 70 missing health exactly.
+    assert(!action.IsUseful(context, candidate, reason));
+}
+
 void TestClosingEncounterClearsInFlightThreatReservations()
 {
     PartyCoordinator coordinator;
@@ -6784,6 +6850,7 @@ int main() {
     TestPriestHealingTargetSelectionIsDeterministicAndSnapshotBounded();
     TestPriestHealingTargetSelectionAccountsForOtherBotHealReservations();
     TestPriestHealingTargetSelectionAccountsForIncomingHealsHotsAndAbsorbs();
+    TestPriestDirectHealReservationSubtractsIncomingForecasts();
     TestHealingTriageShadowStrategy();
     TestTankPeelTargetShadowStrategy();
     TestDpsAssistTargetShadowStrategy();

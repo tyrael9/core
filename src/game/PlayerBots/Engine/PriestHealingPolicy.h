@@ -36,11 +36,50 @@ inline bool SelectPriestDirectHealSpell(
     PartyMemberSnapshot const& healer, std::uint32_t missingHealth,
     PriestDirectHealSelection& selection);
 
-// F54a: the Vanilla Priest class ID is 5. Select a same-shard Player from the
-// immutable party roster. Lowest health fraction wins; exact percentage ties
-// prefer Main Tank, then larger absolute deficit, then lower GUID. Integer
-// cross multiplication avoids floating-point ordering drift. Incoming heals,
-// HoTs, absorbs and effective healing are not predicted by this baseline.
+// F54a/F54c: the Vanilla Priest class ID is 5. Select a same-shard Player
+// from the immutable party roster. Lowest projected health fraction wins;
+// exact ties prefer Main Tank, then larger uncovered deficit, then lower GUID.
+// F54c credits supported incoming casts, HoTs, absorbs and shared reservations.
+// Timing and effective healing remain F54d work.
+// Return the deficit that is not already covered by supported incoming
+// healing/absorb values or another Bot's active Heal reservation. This single
+// calculation is shared by target triage and reservation creation so they
+// cannot disagree about how much healing is still needed.
+inline std::uint32_t GetPriestUncoveredMissingHealth(
+    PartySnapshot const& snapshot,
+    PartyMemberSnapshot const& target,
+    Guid healerGuid,
+    PartyCoordinator* coordinator,
+    std::uint32_t nowMs)
+{
+    if (!target.guid || !target.online || !target.alive ||
+        !target.maxHealth || target.health >= target.maxHealth ||
+        target.mapId != snapshot.mapId ||
+        target.instanceId != snapshot.instanceId)
+        return 0;
+
+    std::uint32_t const rawMissing = target.maxHealth - target.health;
+    std::uint64_t incoming = target.periodicHealRemainingAmount;
+    incoming += target.allSchoolAbsorbRemainingAmount;
+    for (PartyMemberSnapshot const& caster : snapshot.members)
+    {
+        if (caster.guid && caster.online && caster.alive &&
+            caster.mapId == snapshot.mapId &&
+            caster.instanceId == snapshot.instanceId &&
+            !caster.currentSpellEngineAction &&
+            caster.currentSpellTargetGuid == target.guid)
+            incoming += caster.currentSpellHealingAmount;
+    }
+
+    std::uint64_t const reserved = coordinator
+        ? coordinator->GetReservedAmount(
+            ReservationType::Heal, target.guid, healerGuid, nowMs)
+        : 0u;
+    std::uint64_t const credited = std::min<std::uint64_t>(
+        rawMissing, incoming + reserved);
+    return rawMissing - static_cast<std::uint32_t>(credited);
+}
+
 inline bool SelectPriestHealingTargetWithReservations(
     PartySnapshot const& snapshot, Guid healerGuid,
     PartyCoordinator* coordinator, std::uint32_t nowMs,
@@ -79,26 +118,10 @@ inline bool SelectPriestHealingTargetWithReservations(
             continue;
 
         std::uint32_t const rawMissing = member.maxHealth - member.health;
-        std::uint64_t incoming = member.periodicHealRemainingAmount;
-        incoming += member.allSchoolAbsorbRemainingAmount;
-        for (PartyMemberSnapshot const& caster : snapshot.members)
-        {
-            // Engine-owned direct casts are represented by their F54b shared
-            // reservation, not by a second in-flight cast credit.
-            if (!caster.currentSpellEngineAction &&
-                caster.currentSpellTargetGuid == member.guid)
-                incoming += caster.currentSpellHealingAmount;
-        }
-
-        std::uint64_t const reserved = coordinator
-            ? coordinator->GetReservedAmount(
-                ReservationType::Heal, member.guid, healerGuid, nowMs)
-            : 0u;
-        std::uint64_t const creditedTotal = std::min<std::uint64_t>(
-            rawMissing, reserved + incoming);
-        std::uint32_t const credited =
-            static_cast<std::uint32_t>(creditedTotal);
-        std::uint32_t const remaining = rawMissing - credited;
+        std::uint32_t const remaining =
+            GetPriestUncoveredMissingHealth(
+                snapshot, member, healerGuid, coordinator, nowMs);
+        std::uint32_t const credited = rawMissing - remaining;
         if (!remaining)
             continue;
         std::uint32_t const effectiveHealth = member.health + credited;

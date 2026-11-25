@@ -143,8 +143,11 @@ void CaptureHealingForecast(Player* member, Map* map,
         if (!std::isfinite(targetAdjusted) || targetAdjusted <= 0.0f)
             continue;
 
+        double const flooredPerTick =
+            std::floor(static_cast<double>(targetAdjusted));
         std::uint64_t const perTick = static_cast<std::uint64_t>(
-            std::floor(static_cast<double>(targetAdjusted)));
+            std::min(flooredPerTick, static_cast<double>(
+                std::numeric_limits<std::uint32_t>::max())));
         std::uint64_t const remainingTicks = maxTicks - completedTicks;
         AddSaturatedHealingAmount(
             memberData.periodicHealRemainingAmount,
@@ -167,8 +170,11 @@ void CaptureHealingForecast(Player* member, Map* map,
             !std::isfinite(modifier->m_amount) || modifier->m_amount <= 0.0f)
             continue;
 
+        double const flooredAbsorb =
+            std::floor(static_cast<double>(modifier->m_amount));
         std::uint64_t const remainingAbsorb = static_cast<std::uint64_t>(
-            std::floor(static_cast<double>(modifier->m_amount)));
+            std::min(flooredAbsorb, static_cast<double>(
+                std::numeric_limits<std::uint32_t>::max())));
         AddSaturatedHealingAmount(
             memberData.allSchoolAbsorbRemainingAmount, remainingAbsorb);
     }

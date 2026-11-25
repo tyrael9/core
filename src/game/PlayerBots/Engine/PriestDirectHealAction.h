@@ -2,6 +2,7 @@
 #define MANGOS_PARTYBOT_PRIEST_DIRECT_HEAL_ACTION_H
 
 #include "CoreAction.h"
+#include "PriestHealingPolicy.h"
 #include <algorithm>
 
 namespace PartyBotEngine
@@ -82,12 +83,11 @@ public:
             reason = "priest_direct_heal_no_missing_health";
             return false;
         }
-        std::uint32_t const missing = target->maxHealth - target->health;
-        std::uint32_t const reserved = context.coordinator.GetReservedAmount(
-            ReservationType::Heal, candidate.targetGuid, context.bot.guid,
-            context.nowMs);
-        if (reserved >= missing) {
-            reason = "priest_direct_heal_deficit_already_reserved";
+        std::uint32_t const uncovered = GetPriestUncoveredMissingHealth(
+            context.snapshot, *target, context.bot.guid,
+            &context.coordinator, context.nowMs);
+        if (!uncovered) {
+            reason = "priest_direct_heal_deficit_already_committed";
             return false;
         }
         return true;
@@ -127,17 +127,15 @@ protected:
         if (!selectedSpell || selectedSpell->manaCost > context.bot.power)
             return Reject("priest_direct_heal_spell_snapshot_invalid");
 
-        std::uint32_t const missing = target->maxHealth - target->health;
-        std::uint32_t const reserved = context.coordinator.GetReservedAmount(
-            ReservationType::Heal, candidate.targetGuid, context.bot.guid,
-            context.nowMs);
-        if (reserved >= missing)
-            return Reject("priest_direct_heal_deficit_already_reserved");
-        std::uint32_t const unreservedMissing = missing - reserved;
+        std::uint32_t const uncovered = GetPriestUncoveredMissingHealth(
+            context.snapshot, *target, context.bot.guid,
+            &context.coordinator, context.nowMs);
+        if (!uncovered)
+            return Reject("priest_direct_heal_deficit_already_committed");
         std::uint32_t const amount = std::min(
-            selectedSpell->baseHealing, unreservedMissing);
+            selectedSpell->baseHealing, uncovered);
         if (!amount)
-            return Reject("priest_direct_heal_no_unreserved_amount");
+            return Reject("priest_direct_heal_no_uncovered_amount");
 
         Reservation reservation;
         reservation.type = ReservationType::Heal;

@@ -23,3 +23,7 @@ The direct-cast, HoT and all-school absorb amounts are added to the shared reser
 F54c is a coarse amount forecast, not a time simulation. It does not infer when a cast will land, when each HoT tick will occur, whether the target takes damage before arrival, which absorb school will match future damage, whether a heal will be partly or wholly overheal, or how competing heals resolve in Core order. It also does not estimate helpful-threat fan-out or proc/script side effects. Unknown or unsupported values are never upgraded to a complete threat estimate.
 
 F54d must introduce the time/effective-healing/overheal/concurrent-arrival boundary model and corresponding Core fixtures. Priest production registration remains blocked until the complete heal threat envelope is proven and the action returns a snapshot-matched, complete estimate.
+
+## Shared uncovered-deficit accounting
+
+F54c uses one pure helper, `GetPriestUncoveredMissingHealth`, for both target triage and the direct-heal action adapter. It subtracts supported non-Engine direct casts, ordinary remaining HoT ticks, universal absorbs and other Bots' Heal reservations from the current deficit, with 64-bit accumulation and a deficit cap. `PriestDirectHealAction::IsUseful` and `ExecuteCore` use that same result before deciding whether a cast is useful and how much to reserve. This prevents the selector and action adapter from disagreeing or reserving healing already covered by known incoming effects.

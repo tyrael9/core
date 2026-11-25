@@ -2508,9 +2508,14 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
         for (uint32 tick = 0; mindFlayPrepared && tick < 12; ++tick)
         {
             Spell* current = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+            bool const mindFlayAuraActive =
+                patient.creature->HasAura(15407);
             if (current && current->getState() == SPELL_STATE_CASTING &&
-                current->IsChannelActive())
+                current->IsChannelActive() && mindFlayAuraActive)
             {
+                // IsChannelActive can become true before the first channel
+                // tick has installed the target aura. Only claim that the
+                // live channel fixture is ready once both Core states exist.
                 mindFlayChannelStarted = true;
                 break;
             }

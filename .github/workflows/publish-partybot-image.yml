@@ -1,4 +1,4 @@
-name: Publish PartyBot ARM64 container
+name: Publish PartyBot legacy-safe ARM64 container
 
 on:
   push:
@@ -16,15 +16,16 @@ concurrency:
   group: partybot-image-publish
   cancel-in-progress: false
 
-# This workflow-file update is the explicit publish trigger. Build the exact
-# branch tree at the triggering commit and tag the image with that full SHA.
+# One-shot release trigger: publish the legacy-safe Core commit below.
+# This revision includes owner disconnect grace/reconnect protection and the
+# temporary-Bot bind fix, but predates the unfinished New AI Engine implementation.
 env:
   CORE_REPOSITORY: tyrael9/core
-  CORE_REVISION: ${{ github.sha }}
+  CORE_REVISION: 46890eb77a3e452fcd0638beb43e5bab4940108d
   DEPLOY_REPOSITORY: tyrael9/vmangos-deploy
   DEPLOY_REVISION: ebaa560951459419c35140e20d787ec5db2905b8
   IMAGE_NAME: ghcr.io/tyrael9/vmangos-server
-  IMAGE_TAG: partybot-shadow-${{ github.sha }}
+  IMAGE_TAG: partybot-instance-bind-46890eb77a3e
 
 jobs:
   build-and-publish:
@@ -40,9 +41,15 @@ jobs:
           path: core
           persist-credentials: false
 
-      - name: Run standalone PartyBot engine tests
+      - name: Run standalone PartyBot engine tests when included in this Core revision
         working-directory: core
-        run: bash src/game/PlayerBots/Engine/tests/run_tests.sh
+        shell: bash
+        run: |
+          if [[ -f src/game/PlayerBots/Engine/tests/run_tests.sh ]]; then
+            bash src/game/PlayerBots/Engine/tests/run_tests.sh
+          else
+            echo "Legacy-safe release: New AI Engine implementation and its tests are intentionally excluded."
+          fi
 
       - name: Check out pinned deployment wrapper
         uses: actions/checkout@v4
@@ -78,4 +85,4 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ env.CORE_REPOSITORY }}
             org.opencontainers.image.revision=${{ env.CORE_REVISION }}
-            org.opencontainers.image.description=vMaNGOS Vanilla 5875 PartyBot role-aware Shadow strategy test image
+            org.opencontainers.image.description=vMaNGOS Vanilla 5875 PartyBot legacy policy with owner disconnect grace; temporary bot instance binds are non-permanent; New AI Engine excluded

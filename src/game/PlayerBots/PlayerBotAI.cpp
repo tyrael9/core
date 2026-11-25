@@ -112,12 +112,13 @@ bool PlayerBotAI::SpawnNewPlayer(WorldSession* sess, uint8 class_, uint32 race_,
     newChar->SetLocationInstanceId(instanceId);
     newChar->SetAutoInstanceSwitch(false);
     newChar->GetMotionMaster()->Initialize();
-    // Set instance
+    // Temporary bot instance membership must remain resettable and must not
+    // turn into a permanent group bind if the bot is promoted to leader.
     if (instanceId && mapId > 1) // Not a continent
     {
         DungeonPersistentState* state = (DungeonPersistentState*)sMapPersistentStateMgr
-                .AddPersistentState(sMapStorage.LookupEntry<MapEntry>(mapId), instanceId, time(nullptr) + 3600, false, true);
-        newChar->BindToInstance(state, true, true);
+                .AddPersistentState(sMapStorage.LookupEntry<MapEntry>(mapId), instanceId, time(nullptr) + 3600, true, true);
+        newChar->BindToInstance(state, false, true);
     }
     // Generate position
     Map* map = sMapMgr.FindMap(mapId, instanceId);
@@ -233,145 +234,4 @@ void MageOrgrimmarAttackerAI::UpdateAI(uint32 const diff)
         me->CastSpell(target, spellId, false);
         return;
     }
-    // OUT OF COMBAT REGEN
-    if (!me->IsInCombat() && me->GetPower(POWER_MANA) < 150)
-    {
-        if (!me->movespline->Finalized())
-            me->StopMoving();
-        me->CastSpell(target, AURA_REGEN_MANA, false);
-        return;
-    }
-    // MOVEMENT AI
-
-    // Target pos (where to go)
-    float x = 0;
-    float y = 0;
-    float z = 0;
-
-    float r = 10;
-    if (me->movespline->Finalized())
-    {
-        if (me->GetPositionX() < 1000.0f)
-        {
-            x = 1176;
-            y = -4404;
-        }
-        else if (me->GetPositionX() + 10 < 1176.0f)
-        {
-            x = 1176;
-            y = -4404;
-        }
-        else if (me->GetPositionX() + 10 < 1357.0f)
-        {
-            switch (urand(0, 2))
-            {
-                case 0:
-                    x = 1357;
-                    y = -4376;
-                    break;
-                case 1:
-                    x = 1354;
-                    y = -4412;
-                    break;
-                case 2:
-                    x = 1346;
-                    y = -4339;
-                    break;
-            }
-        }
-        else if (me->GetPositionX() + 10 < 1421.0f)
-        {
-            // Porte orgri
-            x = 1427;
-            y = -4362;
-            z = 25.0f;
-            r = 4;
-        }
-        else
-        {
-            switch (urand(0, 2))
-            {
-                case 0:
-                    x = 1516;
-                    y = -4410;
-                    z = 17.0f;
-                    r = 4;
-                    break;
-                case 1:
-                    x = 1538;
-                    y = -4347;
-                    z = 18;
-                    r = 3;
-                    break;
-                case 2:
-                    x = 1617;
-                    y = -4426;
-                    z = 12;
-                    r = 4;
-                    break;
-            }
-        }
-        if (!z)
-        {
-            z = me->GetPositionZ();
-            me->UpdateGroundPositionZ(x, y, z);
-        }
-        r = 20;
-        if (!me->GetMap()->GetWalkRandomPosition(nullptr, x, y, z, r))
-            return;
-    }
-    else
-    {
-        return;
-        if (urand(0, 20) == 0) // random move
-        {
-            me->GetPosition(x, y, z);
-            r = frand(0, 2);
-            float angle = me->GetOrientation() + frand(-M_PI_F / 2, M_PI_F / 2);
-            x += r * cos(angle);
-            y += r * sin(angle);
-            if (!me->GetMap()->GetWalkHitPosition(nullptr, me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), x, y, z))
-                return;
-        }
-        else
-            return;
-    }
-    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
-}
-
-void PopulateAreaBotAI::BeforeAddToMap(Player* player)
-{
-    if (player->GetInstanceId() || player->GetTeam() != _team)
-        return;
-    if (player->GetMapId() != _map || !player->IsWithinDist3d(_x, _y, _z, _radius * 2))
-    {
-        float x = _x;
-        float y = _y;
-        float z = _z;
-        Map* map = sMapMgr.CreateMap(_map, player);
-        while (!map->GetWalkRandomPosition(nullptr, x, y, z, _radius));
-        player->Relocate(x, y, z);
-        player->SetLocationMapId(_map);
-    }
-}
-
-void PopulateAreaBotAI::OnPlayerLogin()
-{
-    if (urand(0, 1))
-        me->GetMotionMaster()->MoveConfused();
-}
-
-PlayerBotAI* CreatePlayerBotAI(std::string ainame)
-{
-    if (ainame == "MageOrgrimmarAttackerAI")
-        return new MageOrgrimmarAttackerAI();
-    if (ainame == "IronforgePopulationAI")
-        return new PopulateAreaBotAI(0, -4928.5f, -946.6f, 501.6f, ALLIANCE, 100.0f);
-    if (ainame == "StormwindPopulationAI")
-        return new PopulateAreaBotAI(0, -8829.5f, 625.6f, 93.9f, ALLIANCE, 50.0f);
-    if (ainame == "OrgrimmarPopulationAI")
-        return new PopulateAreaBotAI(1, 1568, -4405.87f, 8.13f, HORDE, 150.0f);
-    if (ainame == "PlayerBotFleeingAI")
-        return new PlayerBotFleeingAI();
-    return new PlayerBotAI();
 }

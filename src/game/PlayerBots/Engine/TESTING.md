@@ -1,5 +1,11 @@
 # PartyBot Core build, runtime and trace testing
 
+## F54d damage-aware healing forecast runtime evidence
+
+Trusted Core push [#45558184533](https://github.com/tyrael9/core/actions/runs/45558184533) passed the real health-order fixture: two `SpellCaster::DealHeal` calls with an intervening Core `Unit::DealDamage` SELF_DAMAGE event. The observed deltas were +40 / -30 / +40; the explicit timeline projected effective healing 80, damage 30, overheal 0 and final health 1667, matching observed final health 1667. Artifact [#14996164672](https://github.com/tyrael9/core/actions/runs/45558184533/artifacts/14996164672).
+
+This validates ordered Core health application for direct calls only. It does not validate hostile Creature damage, spell cast arrival order, helpful-threat fan-out, procs, absorb-school matching or simultaneous Heal/Damage order. Those remain separate gates.
+
 ## Automated compile CI
 
 The focused workflow at .github/workflows/partybot-core-build.yml runs the standalone PartyBot Engine tests, Python unit tests for the read-only encounter report collector, and builds the pinned Vanilla 1.12.1 / build 5875 C++14 Core on Linux ARM64, matching the Oracle A1 target. Trusted branch pushes additionally run the fixture-backed simulator when the extracted-data URL and checksum secrets are available; PR jobs deliberately skip that fixture runtime because secrets are not exposed.

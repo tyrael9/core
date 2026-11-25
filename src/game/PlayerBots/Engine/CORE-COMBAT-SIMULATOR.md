@@ -6,7 +6,7 @@ The F54d timer/schedule slice passed trusted Core runtime in [push #45541255150]
 
 The actual effective-healing/concurrency slice passed in [push #45547778038](https://github.com/tyrael9/core/actions/runs/45547778038). The trusted log recorded direct actual gain 69/direct overheal 99, one actual Renew tick with effective gain 1 from an expected 9 and conservative overheal lower bound 8, and concurrent same-time healing effective total 150/overheal 50 with attribution unknown. The dedicated F54d PASS marker and final `Runtime PASS` were present. Artifact [#14992557137](https://github.com/tyrael9/core/actions/runs/45547778038/artifacts/14992557137).
 
-These are isolated fixture-backed Core observations only. The branch adds a fixture with two Core DealHeal calls and intervening SELF_DAMAGE DealDamage, compared against the explicit timeline; trusted runtime validation is pending. No Priest healing policy is enabled in production. Pushback/interruption after a forecast snapshot, same-time Heal/Damage Core ordering and complete threat/proc/recipient closure remain open.
+These are isolated fixture-backed Core observations only. Push #45558184533 passed two Core DealHeal calls separated by SELF_DAMAGE DealDamage; projected effective=80/damage=30/overheal=0 matched observed and projected final HP 1667. This proves ordered health application for this fixture only, not hostile attack interleaving, simultaneous Heal/Damage ordering or threat generation. No Priest healing policy is enabled in production. Pushback/interruption after a forecast snapshot and complete threat/proc/recipient closure remain open.
 
 ---
 

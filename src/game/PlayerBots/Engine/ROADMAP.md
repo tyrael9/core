@@ -290,12 +290,12 @@ Trusted push [#45353641584](https://github.com/tyrael9/core/actions/runs/4535364
 - Artifact [partybot-simulator-cafbbe0d196ecd503d146be0ade3d0e9e473586d](https://github.com/tyrael9/core/actions/runs/45504709979/artifacts/14973233551). PR-safe workflow skips trusted fixture execution by design.
 - The Engine-owned in-flight cast is represented by its shared reservation; downstream triage must not credit that same cast a second time.
 
-### F54c — in-flight heals, HoTs and absorb-aware Priest triage (implementation in progress)
+### F54c — in-flight heals, HoTs and absorb-aware Priest triage (Core runtime fixture added; validation pending)
 
 - `PartySnapshotBuilder` now copies only value data. It estimates a current non-Engine direct heal only when the Core Spell is preparing/casting, has one explicit single-Player `SPELL_EFFECT_HEAL`, and has no script or additional effects. Group/chain/area/mixed/scripted casts are excluded. Engine-owned casts are left to their F54b reservation.
 - Ordinary non-scripted `SPELL_AURA_PERIODIC_HEAL` entries contribute Core target-adjusted amounts over their remaining finite ticks. Scripted, expired, malformed or unresolvable HoTs are omitted rather than guessed.
 - Only non-scripted `SPELL_AURA_SCHOOL_ABSORB` auras with the complete seven-school mask contribute their current remaining absorb amount. School-specific shields and Mana Shield are not treated as universal effective health.
-- Triage adds these supported contributions to other-Bot Heal reservations, saturates the aggregate, and caps credit at the target's current missing health. Pure tests cover additive sources, Engine-cast de-duplication and overflow/cap behavior.
+- Triage adds these supported contributions to other-Bot Heal reservations, saturates the aggregate, and caps credit at the target's current missing health. Pure tests cover additive sources, Engine-cast de-duplication and overflow/cap behavior. A trusted Core fixture now verifies an Engine-owned live cast is credited only by reservation, a non-Engine direct cast is captured from live Spell state, and real Renew/Power Word: Shield auras appear in the snapshot.
 - F54c deliberately does not yet model arrival time, tick ordering, target health changes before arrival, actual effective healing, overheal, absorb-school match against predicted incoming damage, or threat generation from the heal. Those are F54d/full-threat-envelope work. `PriestDirectHealAction` and production Priest registration remain fail-closed/unregistered pending trusted Core validation.
 
 ## Phase 7 — party-wide coordination

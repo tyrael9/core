@@ -4605,6 +4605,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         bool f54bOwnReservationReleased = false;
         bool f54bOtherHealerReservationPreserved = false;
         uint32 f54bExpectedOwnReservationAmount = 0;
+        bool f54cEngineCastSkipped = false;
+        bool f54cExternalDirectCaptured = false;
+        bool f54cHotCaptured = false;
+        bool f54cAllSchoolAbsorbCaptured = false;
+        uint32 f54cExternalDirectAmount = 0;
+        uint32 f54cHotAmount = 0;
+        uint32 f54cAbsorbAmount = 0;
         uint32 f53bPriestActionSpellId = 0;
         ActionId f53bPriestActionId = 0;
         if (priest && priestHealerAI &&
@@ -4884,6 +4891,33 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                                     f53fOtherBotGuid, f54bObserveNow) ==
                                     f54bExpectedOwnReservationAmount &&
                                 f54bExpectedOwnReservationAmount != 0;
+
+                            // F54c: the live Engine-owned Core Spell is covered
+                            // by its shared reservation and must not be credited
+                            // again through currentSpellHealingAmount.
+                            f53bCoordinator->InvalidateSnapshot();
+                            PartySnapshot const* const f54cEngineCastSnapshot =
+                                PartySnapshotBuilder::GetOrBuild(
+                                    tank, *f53bCoordinator,
+                                    WorldTimer::getMSTime(), 0);
+                            PartyMemberSnapshot const* const f54cEngineCaster =
+                                f54cEngineCastSnapshot
+                                    ? f54cEngineCastSnapshot->FindMember(f53fPriestGuid)
+                                    : nullptr;
+                            f54cEngineCastSkipped =
+                                f53bPriestActionCastAccepted &&
+                                f54bOwnReservationCreated &&
+                                f54cEngineCaster &&
+                                f54cEngineCaster->currentSpellId == candidate.spellId &&
+                                f54cEngineCaster->currentSpellActionId == candidate.actionId &&
+                                f54cEngineCaster->currentSpellTargetGuid == tankGuid.GetRawValue() &&
+                                f54cEngineCaster->currentSpellEngineAction &&
+                                f54cEngineCaster->currentSpellHealingAmount == 0 &&
+                                f53bCoordinator->GetReservedAmount(
+                                    ReservationType::Heal, candidate.targetGuid,
+                                    f53fOtherBotGuid, WorldTimer::getMSTime()) ==
+                                    f54bExpectedOwnReservationAmount;
+
                             EngineActionTraceEvent resultEvent = attemptEvent;
                             resultEvent.stage = EngineActionTraceStage::Result;
                             resultEvent.result = execution.result;
@@ -4948,6 +4982,81 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             f53bCoordinator->GetReservedAmount(
                                 ReservationType::Heal, candidate.targetGuid,
                                 f53fPriestGuid, f53fTerminalNow) == 10;
+                        // F54c: capture a non-Engine direct heal while Core
+                        // still owns its preparing/casting Spell. This cast is
+                        // issued outside PriestDirectHealAction.
+                        for (uint32 tick = 0; tick < 20 &&
+                             (priest->GetCurrentSpell(CURRENT_GENERIC_SPELL) ||
+                              priest->HasGCD(lesserHealRankOne)); ++tick)
+                        {
+                            std::this_thread::sleep_for(
+                                std::chrono::milliseconds(250));
+                            map.Update(250);
+                        }
+                        tank->SetHealth(std::max<uint32>(
+                            1u, tank->GetMaxHealth() / 2));
+                        SpellCastResult const f54cExternalCastResult =
+                            priest->CastSpell(tank, lesserHealRankOne, false);
+                        if (f54cExternalCastResult == SPELL_CAST_OK)
+                        {
+                            f53bCoordinator->InvalidateSnapshot();
+                            PartySnapshot const* const f54cExternalSnapshot =
+                                PartySnapshotBuilder::GetOrBuild(
+                                    tank, *f53bCoordinator,
+                                    WorldTimer::getMSTime(), 0);
+                            PartyMemberSnapshot const* const f54cExternalCaster =
+                                f54cExternalSnapshot
+                                    ? f54cExternalSnapshot->FindMember(f53fPriestGuid)
+                                    : nullptr;
+                            f54cExternalDirectAmount = f54cExternalCaster
+                                ? f54cExternalCaster->currentSpellHealingAmount : 0;
+                            f54cExternalDirectCaptured =
+                                f54cExternalCaster &&
+                                f54cExternalCaster->currentSpellId == lesserHealRankOne->Id &&
+                                f54cExternalCaster->currentSpellTargetGuid ==
+                                    tankGuid.GetRawValue() &&
+                                !f54cExternalCaster->currentSpellEngineAction &&
+                                (f54cExternalCaster->currentSpellState == SPELL_STATE_PREPARING ||
+                                 f54cExternalCaster->currentSpellState == SPELL_STATE_CASTING) &&
+                                f54cExternalDirectAmount > 0;
+                        }
+                        if (priest->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+                            priest->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+
+                        // Apply real Core Renew and Power Word: Shield auras,
+                        // triggered to avoid relying on the direct-cast GCD.
+                        SpellEntry const* const renewSpell = sSpellMgr.GetSpellEntry(139);
+                        SpellEntry const* const powerWordShield = sSpellMgr.GetSpellEntry(17);
+                        if (renewSpell && !priest->HasSpell(renewSpell->Id))
+                            priest->LearnSpell(renewSpell->Id, false);
+                        if (powerWordShield && !priest->HasSpell(powerWordShield->Id))
+                            priest->LearnSpell(powerWordShield->Id, false);
+                        tank->RemoveAurasDueToSpell(139);
+                        tank->RemoveAurasDueToSpell(17);
+                        priest->SetPower(POWER_MANA, priest->GetMaxPower(POWER_MANA));
+                        bool const renewAccepted = renewSpell &&
+                            priest->CastSpell(tank, renewSpell, true) == SPELL_CAST_OK;
+                        bool const shieldAccepted = powerWordShield &&
+                            priest->CastSpell(tank, powerWordShield, true) == SPELL_CAST_OK;
+                        f53bCoordinator->InvalidateSnapshot();
+                        PartySnapshot const* const f54cAuraSnapshot =
+                            PartySnapshotBuilder::GetOrBuild(
+                                tank, *f53bCoordinator,
+                                WorldTimer::getMSTime(), 0);
+                        PartyMemberSnapshot const* const f54cTankSnapshot =
+                            f54cAuraSnapshot
+                                ? f54cAuraSnapshot->FindMember(tankGuid.GetRawValue())
+                                : nullptr;
+                        f54cHotAmount = f54cTankSnapshot
+                            ? f54cTankSnapshot->periodicHealRemainingAmount : 0;
+                        f54cAbsorbAmount = f54cTankSnapshot
+                            ? f54cTankSnapshot->allSchoolAbsorbRemainingAmount : 0;
+                        f54cHotCaptured = renewAccepted && f54cHotAmount > 0;
+                        f54cAllSchoolAbsorbCaptured =
+                            shieldAccepted && f54cAbsorbAmount > 0;
+                        tank->RemoveAurasDueToSpell(139);
+                        tank->RemoveAurasDueToSpell(17);
+
                         CoreSpellTerminalEvent staleTerminal;
                         staleTerminal.actionId = f53fStaleActionId;
                         staleTerminal.encounterId = f53bCoordinator->GetEncounterId() + 1;
@@ -5042,6 +5151,26 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         else
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                 "[PartyBotSimulator] F53b direct-heal Core action runtime fixture failed.");
+
+        bool const f54cPriestHealingForecastRuntimePassed =
+            f54cEngineCastSkipped && f54cExternalDirectCaptured &&
+            f54cHotCaptured && f54cAllSchoolAbsorbCaptured;
+        sLog.Out(LOG_BASIC,
+            f54cPriestHealingForecastRuntimePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F54c real Core healing forecast: engineCastSkipped=%u externalDirectCaptured=%u externalAmount=%u hotCaptured=%u hotAmount=%u allSchoolAbsorbCaptured=%u absorbAmount=%u.",
+            f54cEngineCastSkipped ? 1u : 0u,
+            f54cExternalDirectCaptured ? 1u : 0u,
+            f54cExternalDirectAmount,
+            f54cHotCaptured ? 1u : 0u,
+            f54cHotAmount,
+            f54cAllSchoolAbsorbCaptured ? 1u : 0u,
+            f54cAbsorbAmount);
+        if (f54cPriestHealingForecastRuntimePassed)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F54c live Core snapshot skipped an Engine-owned heal already covered by its Heal reservation, captured a non-Engine single-target direct cast, and copied real Renew HoT plus all-school Power Word: Shield absorb values.");
+        else
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSimulator] F54c real Core healing forecast fixture failed.");
 
         f53aPriestSpellSnapshotPassed =
             f53aPriestSpellRankOneLearned &&

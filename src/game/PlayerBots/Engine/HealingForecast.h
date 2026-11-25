@@ -192,6 +192,13 @@ inline bool ProjectHealingTimeline(
         }
         else
         {
+            // Ordinary healing cannot resurrect a target killed by an earlier
+            // damage event. Resurrection is intentionally outside this model.
+            if (!health)
+            {
+                projection = HealingTimelineProjection();
+                return false;
+            }
             if (end - index > 1)
             {
                 ++projection.simultaneousArrivalGroups;

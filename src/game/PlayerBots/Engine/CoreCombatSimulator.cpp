@@ -4636,6 +4636,15 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         uint32 f54dConcurrentEffectiveGain = 0;
         uint32 f54dConcurrentOverheal = 0;
         bool f54dConcurrentAttributionUnknown = false;
+        bool f54dDamageInterleavingCaptured = false;
+        uint32 f54dInterleavingFirstHeal = 0;
+        uint32 f54dInterleavingDamage = 0;
+        uint32 f54dInterleavingSecondHeal = 0;
+        uint32 f54dInterleavingProjectedEffective = 0;
+        uint32 f54dInterleavingProjectedDamage = 0;
+        uint32 f54dInterleavingProjectedOverheal = 0;
+        uint32 f54dInterleavingObservedHealth = 0;
+        uint32 f54dInterleavingProjectedHealth = 0;
         uint32 f53bPriestActionSpellId = 0;
         ActionId f53bPriestActionId = 0;
         if (priest && priestHealerAI &&
@@ -5383,6 +5392,88 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                                 f54dConcurrentAttributionUnknown;
                         }
 
+                        // F54d: compare an ordered timeline with real Core
+                        // health changes. SELF_DAMAGE avoids introducing a
+                        // hostile reference or target-selection side effect.
+                        if (tank->IsAlive() && priest->IsAlive() &&
+                            tank->GetMaxHealth() > 100u && lesserHealRankOne)
+                        {
+                            uint32 const maxHealth = tank->GetMaxHealth();
+                            tank->SetHealth(maxHealth - 100u);
+                            uint32 const initialHealth = tank->GetHealth();
+
+                            int32 const firstHeal = priest->DealHeal(
+                                tank, 40u, lesserHealRankOne);
+                            uint32 const afterFirstHeal = tank->GetHealth();
+
+                            uint32 const actualDamage = tank->DealDamage(
+                                tank, 30u, nullptr, SELF_DAMAGE,
+                                SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+                            uint32 const afterDamage = tank->GetHealth();
+
+                            int32 const secondHeal = priest->DealHeal(
+                                tank, 40u, lesserHealRankOne);
+                            uint32 const afterSecondHeal = tank->GetHealth();
+
+                            f54dInterleavingFirstHeal = firstHeal > 0
+                                ? static_cast<uint32>(firstHeal) : 0u;
+                            f54dInterleavingDamage = actualDamage;
+                            f54dInterleavingSecondHeal = secondHeal > 0
+                                ? static_cast<uint32>(secondHeal) : 0u;
+                            f54dInterleavingObservedHealth = afterSecondHeal;
+
+                            std::vector<HealingTimelineEvent> interleavedEvents;
+                            bool const firstEventAdded = firstHeal > 0 &&
+                                AppendDirectHealForecastEvent(
+                                    priest->GetObjectGuid().GetRawValue(),
+                                    lesserHealRankOne->Id, 100u,
+                                    static_cast<uint32>(firstHeal), interleavedEvents);
+                            bool const damageEventAdded = actualDamage > 0 &&
+                                AppendDamageTimelineEvent(
+                                    tankGuid.GetRawValue(), 0u, 150u,
+                                    actualDamage, interleavedEvents);
+                            bool const secondEventAdded = secondHeal > 0 &&
+                                AppendDirectHealForecastEvent(
+                                    priest->GetObjectGuid().GetRawValue(),
+                                    lesserHealRankOne->Id, 200u,
+                                    static_cast<uint32>(secondHeal), interleavedEvents);
+
+                            HealingTimelineProjection interleavedProjection;
+                            bool const projected =
+                                firstEventAdded && damageEventAdded && secondEventAdded &&
+                                ProjectHealingTimeline(
+                                    initialHealth, maxHealth, interleavedEvents,
+                                    interleavedProjection);
+                            if (projected)
+                            {
+                                f54dInterleavingProjectedEffective =
+                                    static_cast<uint32>(interleavedProjection.effectiveHealing);
+                                f54dInterleavingProjectedDamage =
+                                    static_cast<uint32>(interleavedProjection.appliedDamage);
+                                f54dInterleavingProjectedOverheal =
+                                    static_cast<uint32>(interleavedProjection.overheal);
+                                f54dInterleavingProjectedHealth =
+                                    interleavedProjection.finalHealth;
+                            }
+
+                            bool const firstDeltaMatches = firstHeal == 40 &&
+                                afterFirstHeal >= initialHealth &&
+                                afterFirstHeal - initialHealth == static_cast<uint32>(firstHeal);
+                            bool const damageDeltaMatches = actualDamage == 30u &&
+                                afterDamage <= afterFirstHeal &&
+                                afterFirstHeal - afterDamage == actualDamage;
+                            bool const secondDeltaMatches = secondHeal == 40 &&
+                                afterSecondHeal >= afterDamage &&
+                                afterSecondHeal - afterDamage == static_cast<uint32>(secondHeal);
+                            f54dDamageInterleavingCaptured =
+                                firstDeltaMatches && damageDeltaMatches && secondDeltaMatches &&
+                                projected && interleavedProjection.eventCount == 3u &&
+                                interleavedProjection.effectiveHealing == 80u &&
+                                interleavedProjection.appliedDamage == 30u &&
+                                interleavedProjection.overheal == 0u &&
+                                interleavedProjection.finalHealth == afterSecondHeal;
+                        }
+
                         CoreSpellTerminalEvent staleTerminal;
                         staleTerminal.actionId = f53fStaleActionId;
                         staleTerminal.encounterId = f53bCoordinator->GetEncounterId() + 1;
@@ -5547,6 +5638,21 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         else
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                 "[PartyBotSimulator] F54d Core effective-healing fixture failed.");
+
+        sLog.Out(LOG_BASIC,
+            f54dDamageInterleavingCaptured ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+            "[PartyBotSimulator] F54d Core damage interleaving: captured=%u firstHeal=%u coreDamage=%u secondHeal=%u projectedEffective=%u projectedDamage=%u projectedOverheal=%u observedHealth=%u projectedHealth=%u.",
+            f54dDamageInterleavingCaptured ? 1u : 0u,
+            f54dInterleavingFirstHeal, f54dInterleavingDamage,
+            f54dInterleavingSecondHeal, f54dInterleavingProjectedEffective,
+            f54dInterleavingProjectedDamage, f54dInterleavingProjectedOverheal,
+            f54dInterleavingObservedHealth, f54dInterleavingProjectedHealth);
+        if (f54dDamageInterleavingCaptured)
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "[PartyBotSimulator] PASS: F54d matched two real Core DealHeal applications with a real Core SELF_DAMAGE DealDamage event between them; explicit distinct-time arrivals reproduced the observed health.");
+        else
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSimulator] F54d Core damage-interleaving fixture failed.");
 
         f53aPriestSpellSnapshotPassed =
             f53aPriestSpellRankOneLearned &&

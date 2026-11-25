@@ -4641,6 +4641,13 @@ void TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal()
     assert(!ProjectHealingTimeline(50, 100, ambiguousSameTime, projection));
     assert(!projection.valid);
 
+    // A normal heal must not be projected as a resurrection after lethal damage.
+    std::vector<HealingTimelineEvent> lethalDamageThenHeal;
+    assert(AppendDamageTimelineEvent(55, 0, 100, 20, lethalDamageThenHeal));
+    assert(AppendDirectHealForecastEvent(44, 2052, 200, 20, lethalDamageThenHeal));
+    assert(!ProjectHealingTimeline(20, 100, lethalDamageThenHeal, projection));
+    assert(!projection.valid);
+
     std::size_t const eventCountBeforeInvalid = events.size();
     PeriodicHealForecastSnapshot invalid = renew;
     invalid.periodMs = 0;

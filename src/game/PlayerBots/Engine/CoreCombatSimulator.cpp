@@ -8484,6 +8484,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         return false;
     }
 
+    // The preceding death-reference fixture intentionally leaves the healer
+    // dead after verifying retargeting. Resurrect both actors now, after all
+    // shared Group assertions, so this isolated proc fixture can run last.
+    if (tank && !tank->IsAlive())
+        tank->ResurrectPlayer(1.0f, false);
+    if (healer && !healer->IsAlive())
+        healer->ResurrectPlayer(1.0f, false);
     // Re-establish isolated hostile references after the earlier Group/death
     // lifecycle fixtures have finished; F54f runs last so its measured threat
     // deltas cannot perturb any of those shared-state assertions.
@@ -8555,16 +8562,26 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     SpellEntry* const f54fMutableRootSpell = const_cast<SpellEntry*>(healSpell);
     uint32 const f54fSavedRootAttributesEx3 =
         f54fMutableRootSpell ? f54fMutableRootSpell->AttributesEx3 : 0;
+    uint32 const f54fSavedRootDieSides0 =
+        f54fMutableRootSpell ? f54fMutableRootSpell->EffectDieSides[0] : 0;
     if (f54fMutableRootSpell)
+    {
         f54fMutableRootSpell->AttributesEx3 |= SPELL_ATTR_EX3_NOT_A_PROC;
+        f54fMutableRootSpell->EffectDieSides[0] = 0;
+    }
     SpellEntry* const f54fMutableChildSpell =
         const_cast<SpellEntry*>(f54fChildSpell);
     uint32 const f54fSavedChildAttributesEx3 =
         f54fMutableChildSpell ? f54fMutableChildSpell->AttributesEx3 : 0;
+    uint32 const f54fSavedChildDieSides0 =
+        f54fMutableChildSpell ? f54fMutableChildSpell->EffectDieSides[0] : 0;
     if (f54fMutableChildSpell)
+    {
         f54fMutableChildSpell->AttributesEx3 |=
             SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
             SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
+        f54fMutableChildSpell->EffectDieSides[0] = 0;
+    }
     if (f54fMutableProcEvent)
     {
         f54fMutableProcEvent->schoolMask = 0;
@@ -8687,11 +8704,18 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54fAuraSpell->SpellIconID = f54fSavedIcon;
     }
     if (f54fMutableRootSpell)
+    {
         f54fMutableRootSpell->AttributesEx3 = f54fSavedRootAttributesEx3;
+        f54fMutableRootSpell->EffectDieSides[0] = f54fSavedRootDieSides0;
+    }
     bool const f54fRootAttributesRestored = f54fMutableRootSpell &&
-        f54fMutableRootSpell->AttributesEx3 == f54fSavedRootAttributesEx3;
+        f54fMutableRootSpell->AttributesEx3 == f54fSavedRootAttributesEx3 &&
+        f54fMutableRootSpell->EffectDieSides[0] == f54fSavedRootDieSides0;
     if (f54fMutableChildSpell)
+    {
         f54fMutableChildSpell->AttributesEx3 = f54fSavedChildAttributesEx3;
+        f54fMutableChildSpell->EffectDieSides[0] = f54fSavedChildDieSides0;
+    }
     if (f54fMutableProcEvent)
     {
         f54fMutableProcEvent->schoolMask = f54fSavedProcSchoolMask;
@@ -8718,7 +8742,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
          f54fMutableProcEvent->cooldown == f54fSavedProcCooldown);
     bool const f54fChildAttributesRestored =
         f54fMutableChildSpell &&
-        f54fMutableChildSpell->AttributesEx3 == f54fSavedChildAttributesEx3;
+        f54fMutableChildSpell->AttributesEx3 == f54fSavedChildAttributesEx3 &&
+        f54fMutableChildSpell->EffectDieSides[0] == f54fSavedChildDieSides0;
     bool const f54fRowRestored = f54fAuraSpell &&
         f54fAuraSpell->Effect[0] == f54fSavedEffect0 &&
         f54fAuraSpell->EffectApplyAuraName[0] == f54fSavedAuraType0 &&

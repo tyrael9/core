@@ -5261,14 +5261,22 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             f54dHotTicksBefore =
                                 f54dLiveRenewAura->GetAuraTicks();
 
+                            // This fixture's Group has no hostile references.
+                            // Hold a rolling Core combat timer during the wait
+                            // so ordinary two-second Player health regeneration
+                            // cannot consume the one-point deficit before Renew.
+                            bool const f54dTankWasInCombat = tank->IsInCombat();
+                            uint32 const f54dTankCombatTimerBefore =
+                                tank->GetCombatTimer();
+
                             // Player::Update is wall-clock throttled. A single
-                            // map.Update(firstTickMs) may therefore skip the
-                            // Player's Aura scheduler entirely. Drive bounded
-                            // normal updates like the proven periodic-heal
-                            // fixture and reacquire the Aura after every tick.
+                            // map.Update(firstTickMs) may skip the Player Aura
+                            // scheduler. Use normal bounded updates and reacquire
+                            // the Aura after every update.
                             Aura* renewedAuraAfterTick = nullptr;
                             while (f54dHotUpdatePolls < 128u)
                             {
+                                tank->SetInCombatState(UNIT_PVP_COMBAT_TIMER);
                                 map.Update(250);
                                 std::this_thread::sleep_for(
                                     std::chrono::milliseconds(100));
@@ -5296,6 +5304,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             f54dHotTicksAfter = renewedAuraAfterTick
                                 ? renewedAuraAfterTick->GetAuraTicks()
                                 : f54dHotTicksBefore;
+                            if (f54dTankWasInCombat)
+                                tank->SetCombatTimer(f54dTankCombatTimerBefore);
+                            else
+                                tank->ClearInCombat();
                             f54dHotActualGain =
                                 hotHealthAfter > hotHealthBefore
                                     ? hotHealthAfter - hotHealthBefore : 0u;

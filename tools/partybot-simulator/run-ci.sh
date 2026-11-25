@@ -165,7 +165,16 @@ PY
 
 echo "[PartyBotSimulator] Running one-shot Stages A-F27 Core simulator on disposable schemas." | tee -a "$LOG_FILE"
 set +e
-timeout --signal=TERM --kill-after=15s 10m "$MANGOSD_BIN" -c "$CONFIG_FILE" 2>&1 | tee -a "$LOG_FILE"
+# Run under GDB so a post-scenario shutdown crash produces a useful native
+# backtrace in the uploaded artifact. --return-child-result preserves the
+# inferior's exit status; a signal is still a hard CI failure.
+timeout --signal=TERM --kill-after=15s 10m gdb --batch --return-child-result \
+    -ex "set pagination off" \
+    -ex "set print thread-events off" \
+    -ex "handle SIGPIPE nostop noprint pass" \
+    -ex run \
+    -ex "thread apply all bt full" \
+    --args "$MANGOSD_BIN" -c "$CONFIG_FILE" 2>&1 | tee -a "$LOG_FILE"
 simulator_status=${PIPESTATUS[0]}
 set -e
 

@@ -494,3 +494,8 @@ The direct-heal estimator must inspect healer Aura holders with PROC_FLAG_DEAL_H
 ### F54f real triggered-child proc parity (trusted runtime pending)
 
 The simulator temporarily turns the real Priest Inspiration spell row into a generic `SPELL_AURA_PROC_TRIGGER_SPELL` aura with a controlled Lesser Heal rank-2 child. It runs separate caster-side `PROC_FLAG_DEAL_HELPFUL_SPELL` and recipient-side `PROC_FLAG_TAKE_HELPFUL_SPELL` scenarios, compares each against a no-proc root-heal control, and checks actual per-hostile threat deltas for both healer and healed recipient. The fixture also requires estimator fail-closed behavior, script-free aura attachment, aura removal and restoration of every mutated spell-row field. This is test-only mutation in the disposable simulator; it does not register or allowlist PriestDirectHealAction.
+
+
+### F54f lifecycle ordering correction
+
+The F54f run on 845cc94 built successfully but the trusted simulator terminated with Core assertion `Object.cpp:2401 GetMap: m_currMap` immediately after the Group death-recovery summary, before the F54f marker. Artifact `partybot-simulator-845cc94...` shows F54e's marker passed. Root cause: F54f attempted `Player::ResurrectPlayer` after the shared fixture's `cleanup()` logged out both sessions and detached the Players from the source Map. F54f has been moved before `cleanup()`, after shared Group/death/point assertions; actor Map membership is now a hard fixture precondition. Runtime rerun is pending.

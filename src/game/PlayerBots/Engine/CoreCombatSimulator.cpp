@@ -8402,99 +8402,38 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
             "[PartyBotSimulator] Group PartySnapshotBuilder point-movement integration failed after Group threat/death checks.");
 
-    uint32 const groupIdAfterEvents = group->GetId();
-    bool const groupStillRegistered = registeredBeforeCleanup &&
-        sObjectMgr.GetGroupById(groupIdAfterEvents) == group.get();
-    bool const cleaned = cleanup();
-    bool const groupRemoved = sObjectMgr.GetGroupById(groupIdAfterEvents) == nullptr;
-    bool const cleanupPassed = cleaned && groupRemoved;
-
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Player resurrection observer: observed=%u callbacks=%u transitions=%u alive=%u cleanup=1.",
-             tankResurrectionObserved ? 1u : 0u,
-             tankResurrectionObserver.callbackCount,
-             tankResurrectionObserver.transitionCount,
-             tank->IsAlive() ? 1u : 0u);
-    if (tankResurrectionObserved)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: Core Player::ResurrectPlayer emitted exactly one dead-to-alive observer transition after tank death recovery snapshots were captured.");
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Player alive-state observer: death=%u sameStateFiltered=%u callbacks=%u sameStateCallbacks=%u transitions=%u cleanup=1.",
-             tankDeathObserverValid ? 1u : 0u,
-             tankCorpseTransitionSuppressed ? 1u : 0u,
-             tankAliveObserver.callbackCount,
-             tankAliveObserver.sameStateCallbacks,
-             tankAliveObserver.transitionCount);
-    if (tankDeathObserverValid && tankCorpseTransitionSuppressed)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: Core Player::SetDeathState invoked the observer for JUST_DIED and CORPSE, while the alive-state transition filter emitted exactly one alive-to-dead event.");
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] PartyBotAI encounter lifecycle: started=%u death=%u resurrection=%u sequenceDelta=%u alive=%u.",
-             partyTraceStarted.kind == EncounterTransitionKind::Started ? 1u : 0u,
-             partyTraceDied ? 1u : 0u,
-             partyBotEncounterLifecycleTraced ? 1u : 0u,
-             partyTraceSequenceAfter - partyTraceSequenceBefore - 1u,
-             tank->IsAlive() ? 1u : 0u);
-    if (partyBotEncounterLifecycleTraced)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: PartyBotAI emitted encounter-correlated death and resurrection trace records through Core PlayerAI callbacks, while the repeated CORPSE state was suppressed.");
-    if (partyBotDamageTracePassed)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: F22 recorded the real Core Unit::DealDamage health delta through PlayerAI/PartyBotAI with attacker, spell and damage-type attribution.");
-    if (f21BotStateTracePassed)
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[PartyBotSimulator] PASS: F21 copied real Core shapeshift form, pending spell ID/state/target and member position, plus hostile creature entry/rank/world-boss identity into the bounded party heartbeat.");
-
-    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-             "[PartyBotSimulator] Group death recovery: dpsDamage=%u/%u dpsThreat=%.1f/%.1f healerHoldsAggro=%u tankDeath=%u tankRefsRemoved=%u healerRetargetAfterTankDeath=%u/%u tankSnapshot=%u tankRoster=%u tankThreatSnapshot=%u healerDeath=%u healerRefsRemoved=%u dpsRetargetAfterHealerDeath=%u/%u healerSnapshot=%u healerRoster=%u healerThreatSnapshot=%u registered=%u groupRemoved=%u cleanup=%u.",
-             dpsDamage0, dpsDamage1, dpsThreat0, dpsThreat1,
-             healerHoldsAggroOverDps ? 1u : 0u,
-             tankDied ? 1u : 0u, tankThreatReferencesRemoved ? 1u : 0u,
-             tankDeathSelected0 ? 1u : 0u, tankDeathSelected1 ? 1u : 0u,
-             tankDeathSnapshotValid ? 1u : 0u, tankDeathRosterValid ? 1u : 0u,
-             tankDeathThreatSnapshotValid ? 1u : 0u,
-             healerDied ? 1u : 0u, healerThreatReferencesRemoved ? 1u : 0u,
-             healerDeathSelected0 ? 1u : 0u, healerDeathSelected1 ? 1u : 0u,
-             healerDeathSnapshotValid ? 1u : 0u, healerDeathRosterValid ? 1u : 0u,
-             healerDeathThreatSnapshotValid ? 1u : 0u,
-             registeredBeforeCleanup ? 1u : 0u, groupRemoved ? 1u : 0u,
-             cleanupPassed ? 1u : 0u);
-
-    if (!f9ChecksPassed || !petCleanupPassed || !f12ChecksPassed || !groupStillRegistered)
+    // All shared Group/death/point-snapshot assertions above are complete.
+    // Run F54f while both Players still belong to the source Map: cleanup()
+    // below logs both sessions out and clears m_currMap, so no Core resurrection
+    // or spell processing may be attempted after that lifecycle boundary.
+    bool const f54fActorsOnMap = tank && healer &&
+        tank->IsInWorld() && healer->IsInWorld() &&
+        tank->GetMap() == &map && healer->GetMap() == &map;
+    if (f54fActorsOnMap)
     {
-        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Combined Group F8/F9/F12 threat-reference scenario failed before death recovery.");
-        return false;
+        if (!tank->IsAlive())
+            tank->ResurrectPlayer(1.0f, false);
+        if (!healer->IsAlive())
+            healer->ResurrectPlayer(1.0f, false);
     }
-
-    if (!f10ChecksPassed || !cleanupPassed)
+    // All shared Group/death/point-snapshot assertions above are complete.
+    // Run F54f while both Players still belong to the source Map: cleanup()
+    // below logs both sessions out and clears m_currMap, so no Core resurrection
+    // or spell processing may be attempted after that lifecycle boundary.
+    bool const f54fActorsOnMap = tank && healer &&
+        tank->IsInWorld() && healer->IsInWorld() &&
+        tank->GetMap() == &map && healer->GetMap() == &map;
+    if (f54fActorsOnMap)
     {
-        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Core Tank/Healer death-reference cleanup and multi-add recovery failed.");
-        return false;
+        if (!tank->IsAlive())
+            tank->ResurrectPlayer(1.0f, false);
+        if (!healer->IsAlive())
+            healer->ResurrectPlayer(1.0f, false);
     }
-
-    // The F43 Group-backed snapshot probe must be a hard runtime gate. A log-only
-    // failure here would let the simulator report Runtime PASS without validating
-    // that PartySnapshotBuilder copied Engine-owned Point correlation from Core.
-    if (!pointMovementSnapshotBuilderPassed)
-    {
-        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] F43 Group-backed point-movement snapshot integration failed.");
-        return false;
-    }
-
-    // The preceding death-reference fixture intentionally leaves the healer
-    // dead after verifying retargeting. Resurrect both actors now, after all
-    // shared Group assertions, so this isolated proc fixture can run last.
-    if (tank && !tank->IsAlive())
-        tank->ResurrectPlayer(1.0f, false);
-    if (healer && !healer->IsAlive())
-        healer->ResurrectPlayer(1.0f, false);
     // Re-establish isolated hostile references after the earlier Group/death
     // lifecycle fixtures have finished; F54f runs last so its measured threat
     // deltas cannot perturb any of those shared-state assertions.
-    if (tank && tank->IsAlive())
+    if (f54fActorsOnMap && tank->IsAlive())
     {
         if (hostiles[0].creature && hostiles[0].creature->IsAlive())
             hostiles[0].creature->AddThreat(tank, 100.0f);
@@ -8540,7 +8479,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         healSpell ? sSpellMgr.GetSpellThreatEntry(healSpell->Id) : nullptr;
     SpellThreatEntry const* const f54fChildThreat =
         f54fChildSpell ? sSpellMgr.GetSpellThreatEntry(f54fChildSpell->Id) : nullptr;
-    bool const f54fRowReady = f53cInspirationSpellValid && f54fAuraSpell &&
+    bool const f54fRowReady = f54fActorsOnMap && f53cInspirationSpellValid && f54fAuraSpell &&
         f54fAuraSpell->ScriptId == 0 && healSpell &&
         healSpell->Effect[0] == SPELL_EFFECT_HEAL && f54fChildSpell &&
         f54fChildSpell->ScriptId == 0 &&
@@ -8778,6 +8717,89 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F54f executed real Core PROC_TRIGGER_SPELL child heals from both caster-side and recipient-side helpful proc flags; measured effective child healing and exact per-hostile healer/tank threat deltas, and restored the temporary aura spell row.");
 
+
+
+    uint32 const groupIdAfterEvents = group->GetId();
+    bool const groupStillRegistered = registeredBeforeCleanup &&
+        sObjectMgr.GetGroupById(groupIdAfterEvents) == group.get();
+    bool const cleaned = cleanup();
+    bool const groupRemoved = sObjectMgr.GetGroupById(groupIdAfterEvents) == nullptr;
+    bool const cleanupPassed = cleaned && groupRemoved;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Player resurrection observer: observed=%u callbacks=%u transitions=%u alive=%u cleanup=1.",
+             tankResurrectionObserved ? 1u : 0u,
+             tankResurrectionObserver.callbackCount,
+             tankResurrectionObserver.transitionCount,
+             tank->IsAlive() ? 1u : 0u);
+    if (tankResurrectionObserved)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: Core Player::ResurrectPlayer emitted exactly one dead-to-alive observer transition after tank death recovery snapshots were captured.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Player alive-state observer: death=%u sameStateFiltered=%u callbacks=%u sameStateCallbacks=%u transitions=%u cleanup=1.",
+             tankDeathObserverValid ? 1u : 0u,
+             tankCorpseTransitionSuppressed ? 1u : 0u,
+             tankAliveObserver.callbackCount,
+             tankAliveObserver.sameStateCallbacks,
+             tankAliveObserver.transitionCount);
+    if (tankDeathObserverValid && tankCorpseTransitionSuppressed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: Core Player::SetDeathState invoked the observer for JUST_DIED and CORPSE, while the alive-state transition filter emitted exactly one alive-to-dead event.");
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] PartyBotAI encounter lifecycle: started=%u death=%u resurrection=%u sequenceDelta=%u alive=%u.",
+             partyTraceStarted.kind == EncounterTransitionKind::Started ? 1u : 0u,
+             partyTraceDied ? 1u : 0u,
+             partyBotEncounterLifecycleTraced ? 1u : 0u,
+             partyTraceSequenceAfter - partyTraceSequenceBefore - 1u,
+             tank->IsAlive() ? 1u : 0u);
+    if (partyBotEncounterLifecycleTraced)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: PartyBotAI emitted encounter-correlated death and resurrection trace records through Core PlayerAI callbacks, while the repeated CORPSE state was suppressed.");
+    if (partyBotDamageTracePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F22 recorded the real Core Unit::DealDamage health delta through PlayerAI/PartyBotAI with attacker, spell and damage-type attribution.");
+    if (f21BotStateTracePassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBotSimulator] PASS: F21 copied real Core shapeshift form, pending spell ID/state/target and member position, plus hostile creature entry/rank/world-boss identity into the bounded party heartbeat.");
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Group death recovery: dpsDamage=%u/%u dpsThreat=%.1f/%.1f healerHoldsAggro=%u tankDeath=%u tankRefsRemoved=%u healerRetargetAfterTankDeath=%u/%u tankSnapshot=%u tankRoster=%u tankThreatSnapshot=%u healerDeath=%u healerRefsRemoved=%u dpsRetargetAfterHealerDeath=%u/%u healerSnapshot=%u healerRoster=%u healerThreatSnapshot=%u registered=%u groupRemoved=%u cleanup=%u.",
+             dpsDamage0, dpsDamage1, dpsThreat0, dpsThreat1,
+             healerHoldsAggroOverDps ? 1u : 0u,
+             tankDied ? 1u : 0u, tankThreatReferencesRemoved ? 1u : 0u,
+             tankDeathSelected0 ? 1u : 0u, tankDeathSelected1 ? 1u : 0u,
+             tankDeathSnapshotValid ? 1u : 0u, tankDeathRosterValid ? 1u : 0u,
+             tankDeathThreatSnapshotValid ? 1u : 0u,
+             healerDied ? 1u : 0u, healerThreatReferencesRemoved ? 1u : 0u,
+             healerDeathSelected0 ? 1u : 0u, healerDeathSelected1 ? 1u : 0u,
+             healerDeathSnapshotValid ? 1u : 0u, healerDeathRosterValid ? 1u : 0u,
+             healerDeathThreatSnapshotValid ? 1u : 0u,
+             registeredBeforeCleanup ? 1u : 0u, groupRemoved ? 1u : 0u,
+             cleanupPassed ? 1u : 0u);
+
+    if (!f9ChecksPassed || !petCleanupPassed || !f12ChecksPassed || !groupStillRegistered)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Combined Group F8/F9/F12 threat-reference scenario failed before death recovery.");
+        return false;
+    }
+
+    if (!f10ChecksPassed || !cleanupPassed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Core Tank/Healer death-reference cleanup and multi-add recovery failed.");
+        return false;
+    }
+
+    // The F43 Group-backed snapshot probe must be a hard runtime gate. A log-only
+    // failure here would let the simulator report Runtime PASS without validating
+    // that PartySnapshotBuilder copied Engine-owned Point correlation from Core.
+    if (!pointMovementSnapshotBuilderPassed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] F43 Group-backed point-movement snapshot integration failed.");
+        return false;
+    }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states.");

@@ -47,3 +47,8 @@ F54c uses one pure helper, `GetPriestUncoveredMissingHealth`, for both target tr
 ### F54e/F54f proc-closure validation
 
 F54e recipient-side Aura discovery/classification is trusted-runtime validated in push #45581482050. F54f adds a generic PROC_TRIGGER_SPELL child-heal runtime test for caster-side and recipient-side helpful-heal procs. It must measure actual effective child healing and each hostile's healer/tank ThreatManager deltas against Core's class coefficient, spell threat multiplier and hostile-reference fan-out. Until the F54f runtime artifact contains its dedicated PASS marker, triggered-child healing and threat remain outside the forecast's closed envelope.
+
+
+### F54f runtime status
+
+The F54f run on 845cc94 built successfully but the trusted simulator terminated with Core assertion `Object.cpp:2401 GetMap: m_currMap` immediately after the Group death-recovery summary, before the F54f marker. Artifact `partybot-simulator-845cc94...` shows F54e's marker passed. Root cause: F54f attempted `Player::ResurrectPlayer` after the shared fixture's `cleanup()` logged out both sessions and detached the Players from the source Map. F54f has been moved before `cleanup()`, after shared Group/death/point assertions; actor Map membership is now a hard fixture precondition. Runtime rerun is pending.

@@ -655,3 +655,15 @@ The trusted runtime log showed the actual lethal Player event (`damage_taken`, n
 ## Player alive-state observer marker correction (2026-11-25)
 
 The latest log audit found three shell-gated PASS sentences absent from the fixture output even though the corresponding assertions already existed and contributed to the final F10 acceptance conjunction: death/CORPSE callback filtering, one resurrection observer transition, and PartyBotAI encounter-correlated death/resurrection records. Commit `6519359` adds each PASS sentence conditionally under its existing assertion. This is a fixture observability correction only; it does not bypass or weaken any assertion. Trusted runtime validation is pending.
+
+
+## F54f runner metric-type correction (2026-11-25)
+
+Trusted runtime #45714829493 passed the real Core F54f fixture and emitted its dedicated PASS marker. The measured values were:
+
+- Caster-side: control/root/child/total effective healing = 48/70/76/146.
+- Recipient-side: control/root/child/total effective healing = 48/48/77/125.
+- Both root+child totals reconcile exactly; both hostile ThreatManager healer/tank deltas match the corresponding Core-derived expected values.
+- Temporary Aura/SpellProcEvent state was restored; the five-Player Group/session cleanup passed; GDB reported normal process exit.
+
+The run still exited nonzero because the shell gate mistakenly treated `casterChild` and `recipientChild` as boolean fields equal to 1, while the fixture intentionally logs their measured effective-health amounts. Commit `35224fc` removes those invalid boolean expectations and instead checks positive control/root heals, child healing greater than the fixture's existing 10-point threshold, and exact `root + child = total` accounting for both sides. This preserves the real measurement and does not weaken `f54fPassed` or its threat-parity assertions. A new trusted runtime run is required before F54f is marked complete.

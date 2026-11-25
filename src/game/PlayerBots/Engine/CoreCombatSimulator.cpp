@@ -5050,6 +5050,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         uint32 f54cPowerWordShieldMask = 0;
                         uint32 f54cPowerWordShieldEffect = 0;
                         uint32 f54cPowerWordShieldAuraType = 0;
+                        uint32 f54cPowerWordShieldScriptId = 0;
+                        bool f54cPowerWordShieldAuraScript = false;
+                        bool f54cPowerWordShieldCasterPresent = false;
                         float f54cPowerWordShieldAuraAmount = 0.0f;
                         for (Aura* aura : f54cSchoolAbsorbs)
                         {
@@ -5059,6 +5062,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             if (aura->GetId() != 17)
                                 continue;
                             ++f54cPowerWordShieldAuraCount;
+                            SpellEntry const* auraSpell = aura->GetSpellProto();
+                            f54cPowerWordShieldScriptId =
+                                auraSpell ? auraSpell->ScriptId : 0;
+                            f54cPowerWordShieldAuraScript =
+                                aura->GetAuraScript() != nullptr;
+                            f54cPowerWordShieldCasterPresent =
+                                aura->GetCaster() != nullptr;
                             if (Modifier const* modifier = aura->GetModifier())
                             {
                                 f54cPowerWordShieldMask =
@@ -5069,11 +5079,12 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             }
                         }
                         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                            "[PartyBotSimulator] F54c Power Word: Shield Core probe: spellPresent=%u effect0=%u aura0=%u misc0=%d castResult=%u accepted=%u auraCount=%u shieldAuraCount=%u shieldAuraMask=%u shieldAuraType=%u shieldAuraEffect=%u shieldAuraAmount=%.1f.",
+                            "[PartyBotSimulator] F54c Power Word: Shield Core probe: spellPresent=%u effect0=%u aura0=%u misc0=%d scriptId=%u castResult=%u accepted=%u auraCount=%u shieldAuraCount=%u shieldAuraMask=%u shieldAuraType=%u shieldAuraEffect=%u shieldAuraAmount=%.1f shieldAuraScript=%u shieldAuraCaster=%u.",
                             powerWordShield ? 1u : 0u,
                             powerWordShield ? powerWordShield->Effect[0] : 0u,
                             powerWordShield ? powerWordShield->EffectApplyAuraName[0] : 0u,
                             powerWordShield ? powerWordShield->EffectMiscValue[0] : 0,
+                            powerWordShield ? powerWordShield->ScriptId : 0u,
                             static_cast<uint32>(shieldCastResult),
                             shieldAccepted ? 1u : 0u,
                             f54cSchoolAbsorbAuraCount,
@@ -5081,7 +5092,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             f54cPowerWordShieldMask,
                             f54cPowerWordShieldAuraType,
                             f54cPowerWordShieldEffect,
-                            f54cPowerWordShieldAuraAmount);
+                            f54cPowerWordShieldAuraAmount,
+                            f54cPowerWordShieldAuraScript ? 1u : 0u,
+                            f54cPowerWordShieldCasterPresent ? 1u : 0u);
                         f53bCoordinator->InvalidateSnapshot();
                         PartySnapshot const* const f54cAuraSnapshot =
                             PartySnapshotBuilder::GetOrBuild(

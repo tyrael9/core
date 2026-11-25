@@ -41,6 +41,33 @@ bool IsSingleUnitHealTarget(std::uint32_t target)
         target == TARGET_UNIT_FRIEND || target == TARGET_UNIT;
 }
 
+// These Vanilla Power Word: Shield ranks share the registered
+// spell_priest_power_word_shield SpellScript. Its only OnHit side effect is
+// applying Weakened Soul after a successful shield hit; it does not alter the
+// already-created absorb Aura or its remaining amount. AuraScript is still
+// rejected independently below. Keep this allowlist limited to the exact
+// ranks registered by spell_priest.cpp.
+bool IsKnownPowerWordShieldSpellScript(std::uint32_t spellId)
+{
+    switch (spellId)
+    {
+        case 17:
+        case 592:
+        case 600:
+        case 3747:
+        case 6065:
+        case 6066:
+        case 10898:
+        case 10899:
+        case 10900:
+        case 10901:
+        case 27607:
+            return true;
+        default:
+            return false;
+    }
+}
+
 std::uint32_t EstimateInFlightDirectHeal(
     Spell* currentSpell, Unit* target)
 {
@@ -165,7 +192,9 @@ void CaptureHealingForecast(Player* member, Map* map,
             continue;
         SpellEntry const* spellInfo = aura->GetSpellProto();
         Modifier const* modifier = aura->GetModifier();
-        if (!spellInfo || spellInfo->ScriptId || !modifier ||
+        if (!spellInfo || !modifier ||
+            (spellInfo->ScriptId &&
+             !IsKnownPowerWordShieldSpellScript(spellInfo->Id)) ||
             modifier->m_miscvalue != 0x7f ||
             !std::isfinite(modifier->m_amount) || modifier->m_amount <= 0.0f)
             continue;

@@ -490,6 +490,18 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54d matched two real Core DealHeal app
     exit 1
 fi
 
+f54d_hostile_interleaving_line="$(grep -F '[PartyBotSimulator] F54d hostile damage interleaving:' "$LOG_FILE" | tail -n 1)"
+for expected in captured=1 firstCast=1 hostileDamage=30 secondCast=1 healRefs=2 flatThreatZero=1 healthMatches=1 threatMatches=1 projectedDamage=30 projectedOverheal=0; do
+    if [[ "$f54d_hostile_interleaving_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F54d hostile damage interleaving assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+if ! grep -Fq "[PartyBotSimulator] PASS: F54d matched two non-triggered Core Lesser Heal casts with a real hostile Creature DealDamage event between them; observed health and both hostile assist-threat deltas matched the projection." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F54d hostile damage/Heal interleaving PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 if ! grep -Fq "[PartyBotSimulator] PASS: F53f a real successful Core Priest Spell terminal released every matching threat fan-out row and preserved another action by the same Bot, another Bot's row, and a stale cross-encounter event." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F53f successful Core threat-reservation terminal PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

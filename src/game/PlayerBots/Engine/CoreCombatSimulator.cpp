@@ -6673,6 +6673,212 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: a zero spell_threat Lesser Heal produced only the predicted Core healing-assist threat on both hostile references, with no flat-threat impact.");
 
+    // F54d: exercise a hostile damage arrival between two real, non-triggered
+    // Lesser Heal casts. The temporary zero flat-threat row isolates the
+    // Core healing-assist fan-out from the separate flat spell_threat path.
+    bool f54dHostileHealInterleavingCaptured = false;
+    bool f54dHostileHealHealthMatches = false;
+    bool f54dHostileHealThreatMatches = false;
+    SpellCastResult f54dHostileFirstCastResult = SPELL_FAILED_UNKNOWN;
+    SpellCastResult f54dHostileSecondCastResult = SPELL_FAILED_UNKNOWN;
+    uint32 f54dHostileFirstHealGain = 0;
+    uint32 f54dHostileDamage = 0;
+    uint32 f54dHostileSecondHealGain = 0;
+    uint32 f54dHostileHealRefs = 0;
+    uint32 f54dHostileObservedHealth = 0;
+    uint32 f54dHostileProjectedHealth = 0;
+    uint64 f54dHostileProjectedEffective = 0;
+    uint64 f54dHostileProjectedDamage = 0;
+    uint64 f54dHostileProjectedOverheal = 0;
+    float f54dHostileActualThreat0First = 0.0f;
+    float f54dHostileActualThreat1First = 0.0f;
+    float f54dHostileActualThreat0Second = 0.0f;
+    float f54dHostileActualThreat1Second = 0.0f;
+    float f54dHostileExpectedThreat0First = 0.0f;
+    float f54dHostileExpectedThreat1First = 0.0f;
+    float f54dHostileExpectedThreat0Second = 0.0f;
+    float f54dHostileExpectedThreat1Second = 0.0f;
+    SpellThreatEntry const* f54dHostileThreatRow =
+        healSpell ? sSpellMgr.GetSpellThreatEntry(healSpell->Id) : nullptr;
+    bool const f54dZeroFlatThreatEntry = f53dZeroFlatRowUpdated &&
+        f54dHostileThreatRow && f54dHostileThreatRow->threat == 0;
+    if (f53dZeroFlatCoreCastPassed && f54dZeroFlatThreatEntry &&
+        tank->IsAlive() && healer->IsAlive() && hostileAIReady &&
+        hostileRefsOnTankBeforeHeal == 2 && healSpell)
+    {
+        healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+        uint32 const f54dMaxHealth = tank->GetMaxHealth();
+        tank->SetHealth(std::max<uint32>(1u, f54dMaxHealth / 2u));
+        uint32 const f54dInitialHealth = tank->GetHealth();
+        float const f54dThreatBefore0 =
+            hostiles[0].creature->GetThreatManager().getThreat(healer);
+        float const f54dThreatBefore1 =
+            hostiles[1].creature->GetThreatManager().getThreat(healer);
+
+        auto waitForHealCast = [&]()
+        {
+            for (uint32 tick = 0; tick < 20 &&
+                 healer->GetCurrentSpell(CURRENT_GENERIC_SPELL); ++tick)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                map.Update(250);
+            }
+            return !healer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        };
+
+        healer->SetFacingToObject(tank);
+        f54dHostileFirstCastResult = healer->CastSpell(tank, healSpell, false);
+        bool const firstCastFinished =
+            f54dHostileFirstCastResult == SPELL_CAST_OK && waitForHealCast();
+        uint32 const afterFirstHeal = tank->GetHealth();
+        f54dHostileFirstHealGain = afterFirstHeal > f54dInitialHealth
+            ? afterFirstHeal - f54dInitialHealth : 0u;
+        float const f54dThreatAfterFirst0 =
+            hostiles[0].creature->GetThreatManager().getThreat(healer);
+        float const f54dThreatAfterFirst1 =
+            hostiles[1].creature->GetThreatManager().getThreat(healer);
+        f54dHostileActualThreat0First = f54dThreatAfterFirst0 - f54dThreatBefore0;
+        f54dHostileActualThreat1First = f54dThreatAfterFirst1 - f54dThreatBefore1;
+
+        if (firstCastFinished && f54dHostileFirstHealGain)
+            f54dHostileDamage = hostiles[0].creature->DealDamage(
+                tank, 30u, nullptr, DIRECT_DAMAGE,
+                SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        uint32 const afterHostileDamage = tank->GetHealth();
+        float const f54dThreatBeforeSecond0 =
+            hostiles[0].creature->GetThreatManager().getThreat(healer);
+        float const f54dThreatBeforeSecond1 =
+            hostiles[1].creature->GetThreatManager().getThreat(healer);
+
+        bool secondCastFinished = false;
+        if (f54dHostileDamage == 30u)
+        {
+            healer->SetFacingToObject(tank);
+            f54dHostileSecondCastResult = healer->CastSpell(tank, healSpell, false);
+            secondCastFinished =
+                f54dHostileSecondCastResult == SPELL_CAST_OK && waitForHealCast();
+        }
+        uint32 const afterSecondHeal = tank->GetHealth();
+        f54dHostileSecondHealGain = afterSecondHeal > afterHostileDamage
+            ? afterSecondHeal - afterHostileDamage : 0u;
+        f54dHostileObservedHealth = afterSecondHeal;
+        float const f54dThreatAfterSecond0 =
+            hostiles[0].creature->GetThreatManager().getThreat(healer);
+        float const f54dThreatAfterSecond1 =
+            hostiles[1].creature->GetThreatManager().getThreat(healer);
+        f54dHostileActualThreat0Second =
+            f54dThreatAfterSecond0 - f54dThreatBeforeSecond0;
+        f54dHostileActualThreat1Second =
+            f54dThreatAfterSecond1 - f54dThreatBeforeSecond1;
+
+        std::vector<HealingTimelineEvent> hostileInterleavingEvents;
+        bool const firstEventAdded = f54dHostileFirstHealGain &&
+            AppendDirectHealForecastEvent(
+                healerGuid.GetRawValue(), healSpell->Id, 100u,
+                f54dHostileFirstHealGain, hostileInterleavingEvents);
+        bool const damageEventAdded = f54dHostileDamage &&
+            AppendDamageTimelineEvent(
+                hostiles[0].creature->GetObjectGuid().GetRawValue(),
+                0u, 150u, f54dHostileDamage, hostileInterleavingEvents);
+        bool const secondEventAdded = f54dHostileSecondHealGain &&
+            AppendDirectHealForecastEvent(
+                healerGuid.GetRawValue(), healSpell->Id, 200u,
+                f54dHostileSecondHealGain, hostileInterleavingEvents);
+
+        HealingTimelineProjection hostileProjection;
+        bool const hostileProjectionValid =
+            firstEventAdded && damageEventAdded && secondEventAdded &&
+            ProjectHealingTimeline(
+                f54dInitialHealth, f54dMaxHealth,
+                hostileInterleavingEvents, hostileProjection);
+        if (hostileProjectionValid)
+        {
+            f54dHostileProjectedEffective = hostileProjection.effectiveHealing;
+            f54dHostileProjectedDamage = hostileProjection.appliedDamage;
+            f54dHostileProjectedOverheal = hostileProjection.overheal;
+            f54dHostileProjectedHealth = hostileProjection.finalHealth;
+        }
+
+        f54dHostileHealRefs = 0;
+        for (HostileReference* reference = tank->GetHostileRefManager().getFirst();
+             reference; reference = reference->next())
+            ++f54dHostileHealRefs;
+
+        float const f54dClassThreatModifier =
+            healer->GetClass() == CLASS_PALADIN ? 0.25f : 0.5f;
+        float const f54dSpellThreatMultiplier =
+            sSpellMgr.GetSpellThreatMultiplier(healSpell);
+        auto expectedAssistThreat = [&](uint32 effectiveGain) -> float
+        {
+            float const input = static_cast<float>(effectiveGain) *
+                f54dClassThreatModifier * f54dSpellThreatMultiplier /
+                static_cast<float>(f54dHostileHealRefs ? f54dHostileHealRefs : 1u);
+            return ThreatCalcHelper::CalcThreat(
+                healer, input, false, healSpell->GetSpellSchoolMask(), healSpell);
+        };
+        f54dHostileExpectedThreat0First =
+            expectedAssistThreat(f54dHostileFirstHealGain);
+        f54dHostileExpectedThreat1First =
+            expectedAssistThreat(f54dHostileFirstHealGain);
+        f54dHostileExpectedThreat0Second =
+            expectedAssistThreat(f54dHostileSecondHealGain);
+        f54dHostileExpectedThreat1Second =
+            expectedAssistThreat(f54dHostileSecondHealGain);
+
+        f54dHostileHealHealthMatches =
+            firstCastFinished && secondCastFinished &&
+            f54dHostileFirstHealGain > 0 && f54dHostileDamage == 30u &&
+            f54dHostileSecondHealGain > 0 && hostileProjectionValid &&
+            hostileProjection.eventCount == 3u &&
+            hostileProjection.effectiveHealing ==
+                static_cast<uint64>(f54dHostileFirstHealGain) +
+                static_cast<uint64>(f54dHostileSecondHealGain) &&
+            hostileProjection.appliedDamage == 30u &&
+            hostileProjection.overheal == 0u &&
+            hostileProjection.finalHealth == afterSecondHeal;
+        f54dHostileHealThreatMatches =
+            f54dHostileHealRefs == 2 && f54dZeroFlatThreatEntry &&
+            std::fabs(f54dHostileActualThreat0First -
+                      f54dHostileExpectedThreat0First) < 0.05f &&
+            std::fabs(f54dHostileActualThreat1First -
+                      f54dHostileExpectedThreat1First) < 0.05f &&
+            std::fabs(f54dHostileActualThreat0Second -
+                      f54dHostileExpectedThreat0Second) < 0.05f &&
+            std::fabs(f54dHostileActualThreat1Second -
+                      f54dHostileExpectedThreat1Second) < 0.05f;
+        f54dHostileHealInterleavingCaptured =
+            f54dHostileHealHealthMatches && f54dHostileHealThreatMatches;
+    }
+
+    sLog.Out(LOG_BASIC,
+        f54dHostileHealInterleavingCaptured ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54d hostile damage interleaving: captured=%u firstCast=%u firstHeal=%u hostileDamage=%u secondCast=%u secondHeal=%u healRefs=%u flatThreatZero=%u healthMatches=%u threatMatches=%u actualThreat=%.2f/%.2f expectedThreat=%.2f/%.2f observedHealth=%u projectedHealth=%u projectedEffective=%llu projectedDamage=%llu projectedOverheal=%llu.",
+        f54dHostileHealInterleavingCaptured ? 1u : 0u,
+        f54dHostileFirstCastResult == SPELL_CAST_OK ? 1u : 0u,
+        f54dHostileFirstHealGain,
+        f54dHostileDamage,
+        f54dHostileSecondCastResult == SPELL_CAST_OK ? 1u : 0u,
+        f54dHostileSecondHealGain,
+        f54dHostileHealRefs,
+        f54dZeroFlatThreatEntry ? 1u : 0u,
+        f54dHostileHealHealthMatches ? 1u : 0u,
+        f54dHostileHealThreatMatches ? 1u : 0u,
+        f54dHostileActualThreat0First + f54dHostileActualThreat0Second,
+        f54dHostileActualThreat1First + f54dHostileActualThreat1Second,
+        f54dHostileExpectedThreat0First + f54dHostileExpectedThreat0Second,
+        f54dHostileExpectedThreat1First + f54dHostileExpectedThreat1Second,
+        f54dHostileObservedHealth,
+        f54dHostileProjectedHealth,
+        static_cast<unsigned long long>(f54dHostileProjectedEffective),
+        static_cast<unsigned long long>(f54dHostileProjectedDamage),
+        static_cast<unsigned long long>(f54dHostileProjectedOverheal));
+    if (f54dHostileHealInterleavingCaptured)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F54d matched two non-triggered Core Lesser Heal casts with a real hostile Creature DealDamage event between them; observed health and both hostile assist-threat deltas matched the projection.");
+    else
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSimulator] F54d hostile Heal/Damage interleaving fixture failed.");
+
     uint32 const hostileRefsOnTank = hostileRefsOnTankBeforeHeal;
     float constexpr kScriptedAssistThreat = 400.0f;
     if (healCompleted && hostileRefsOnTank == 2)

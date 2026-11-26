@@ -10,7 +10,11 @@ The metric-gate correction in `35224fc` now parses the child-heal fields as nume
 
 ## Next runtime slice — F54g: SPELL_AURA_ADD_TARGET_TRIGGER
 
-F54g is distinct from F54f. In this Core, successful non-channeled `Spell::finish` calls `HandleAddTargetTriggerAuras()`; each active `SPELL_AURA_ADD_TARGET_TRIGGER` effect is checked against the root spell, then the configured child spell is cast for each successful entry in `m_UniqueTargetInfo`. A successful reflected target may redirect the child to the caster. A single-target test would not prove fan-out, so the intended fixture must verify the actual multi-target root set, one child effect per successful target, skipped failed/deleted targets, reflect semantics where constructible, and every affected target's real hostile-reference fan-out.
+F54g is distinct from F54f. In this Core, successful non-channeled `Spell::finish` calls `HandleAddTargetTriggerAuras()`; each active `SPELL_AURA_ADD_TARGET_TRIGGER` effect is checked against the root spell, then the configured child spell is cast for each successful entry in `m_UniqueTargetInfo`. A successful reflected target may redirect the child to the caster.
+
+The current simulator fixture uses a real five-Player Group and actual Prayer of Healing (596) as the multi-target root. It installs a temporary target-trigger Aura on the healer, configures an isolated family-mask bit so only the root spell matches, and dispatches real Lesser Heal (2052) children. It first measures each member's root-only gain without the Aura, resets health, then requires a positive child delta on every root recipient. Each recipient gets hostile references from both test Creatures; expected root+child assist threat uses that recipient's live reference count, Core multipliers and `ThreatCalcHelper`. The fixture restores all temporary Aura/root/child SpellEntry fields and the five Players' health.
+
+Runner gate: five root targets, five child targets, nonempty per-recipient references, per-hostile ThreatManager parity and full restoration. Trusted push [#45733872741](https://github.com/tyrael9/core/actions/runs/45733872741) is validating the current branch head. Failed/deleted-target filtering and successful reflect-to-caster are source-audited but not yet separately fixture-proven. Do not claim F54g validated until the trusted run emits final `Runtime PASS`.
 
 Production healing remains disabled: F54f does not make the full direct-heal threat envelope Complete, and neither `PriestDirectHealAction` nor a Priest Healing Strategy is registered.
 

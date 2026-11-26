@@ -40,6 +40,17 @@ struct PeriodicHealForecastSnapshot
     std::uint32_t healingPerTickUpperBound = 0;
 };
 
+constexpr std::size_t MAX_SCHOOL_ABSORB_FORECASTS_PER_MEMBER = 16;
+
+struct SchoolAbsorbForecastSnapshot
+{
+    std::uint32_t spellId = 0;
+    std::uint32_t schoolMask = 0;
+    std::uint32_t remainingAmount = 0;
+    // UINT32_MAX represents a non-expiring Core Aura.
+    std::uint32_t remainingDurationMs = 0;
+};
+
 struct PartyMemberSnapshot {
     Guid guid = 0;
     std::uint8_t classId = 0, roleId = 0, level = 0, powerType = 0;
@@ -48,6 +59,10 @@ struct PartyMemberSnapshot {
     // Conservative F54c forecast values copied from live Core state; no Core pointers survive the build.
     std::uint32_t periodicHealRemainingAmount = 0;
     std::uint32_t allSchoolAbsorbRemainingAmount = 0;
+    // F54l: bounded, value-only school-specific absorb pools. Truncation
+    // invalidates the entire set for projection; no partial shield credit.
+    std::vector<SchoolAbsorbForecastSnapshot> schoolAbsorbForecasts;
+    bool schoolAbsorbForecastsTruncated = false;
     // Bounded F54d timing detail. A truncated list is never a complete timeline.
     std::vector<PeriodicHealForecastSnapshot> periodicHealForecasts;
     bool periodicHealForecastsTruncated = false;

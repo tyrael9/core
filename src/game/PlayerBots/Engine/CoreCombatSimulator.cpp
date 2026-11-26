@@ -5855,6 +5855,283 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
                                 "[PartyBotSimulator] F54k random HoT interval fixture failed.");
 
+                        // F54l: apply a real Power Word: Shield Aura with a
+                        // temporary Fire-only school mask. Verify the detached
+                        // snapshot, the forecast and Core's own absorb routine
+                        // agree that Frost bypasses it and Fire consumes it.
+                        bool f54lShieldApplied = false;
+                        bool f54lSnapshotCaptured = false;
+                        bool f54lAllSchoolExcluded = false;
+                        bool f54lFrostNoMatch = false;
+                        bool f54lFireMatched = false;
+                        bool f54lDepletion = false;
+                        bool f54lTimelineMatches = false;
+                        bool f54lHealthMatches = false;
+                        bool f54lCleanup = false;
+                        uint32 f54lDamage = 0;
+                        uint32 f54lInitialAbsorb = 0;
+                        uint32 f54lRemainingAbsorb = 0;
+                        uint32 f54lActualHealth = tank->GetHealth();
+                        uint32 f54lAbsorbEffectIndex = MAX_SPELL_EFFECTS;
+                        uint32 const f54lSavedTankHealth = tank->GetHealth();
+                        bool const f54lTankWasInCombat = tank->IsInCombat();
+                        uint32 const f54lTankCombatTimerBefore = tank->GetCombatTimer();
+                        SpellEntry* const f54lMutableShieldSpell =
+                            const_cast<SpellEntry*>(powerWordShield);
+                        int32 f54lSavedShieldMiscValue = 0;
+                        uint32 f54lSavedShieldAttributesEx4 = 0;
+                        if (f54lMutableShieldSpell)
+                        {
+                            f54lSavedShieldAttributesEx4 =
+                                f54lMutableShieldSpell->AttributesEx4;
+                            for (uint32 effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
+                            {
+                                if (f54lMutableShieldSpell->EffectApplyAuraName[effect] ==
+                                    SPELL_AURA_SCHOOL_ABSORB)
+                                {
+                                    f54lAbsorbEffectIndex = effect;
+                                    f54lSavedShieldMiscValue =
+                                        f54lMutableShieldSpell->EffectMiscValue[effect];
+                                    break;
+                                }
+                            }
+                        }
+                        if (f54lMutableShieldSpell &&
+                            f54lAbsorbEffectIndex < MAX_SPELL_EFFECTS &&
+                            tank->GetMaxHealth() > 7u && tank->GetHealth() > 7u)
+                        {
+                            f54lMutableShieldSpell->AttributesEx4 |=
+                                SPELL_ATTR_EX4_IGNORE_RESISTANCES;
+                            f54lMutableShieldSpell->EffectMiscValue[
+                                f54lAbsorbEffectIndex] = SPELL_SCHOOL_MASK_FIRE;
+                            SpellCastResult const f54lCastResult =
+                                priest->CastSpell(tank, powerWordShield, true);
+                            // The Aura copies its modifier at apply time; restore
+                            // the global SpellEntry row before inspecting it.
+                            f54lMutableShieldSpell->EffectMiscValue[
+                                f54lAbsorbEffectIndex] = f54lSavedShieldMiscValue;
+
+                            Aura* f54lShieldAura = nullptr;
+                            if (f54lCastResult == SPELL_CAST_OK)
+                            {
+                                for (Aura* aura :
+                                     tank->GetAurasByType(SPELL_AURA_SCHOOL_ABSORB))
+                                {
+                                    if (aura && aura->GetId() == 17 &&
+                                        aura->GetCaster() == priest &&
+                                        !aura->GetAuraScript() && aura->GetHolder() &&
+                                        aura->GetHolder()->GetAuraCharges() == 0 &&
+                                        aura->GetModifier() &&
+                                        static_cast<uint32>(
+                                            aura->GetModifier()->m_miscvalue) ==
+                                            SPELL_SCHOOL_MASK_FIRE)
+                                    {
+                                        f54lShieldAura = aura;
+                                        break;
+                                    }
+                                }
+                            }
+                            Modifier* f54lShieldModifier = f54lShieldAura
+                                ? const_cast<Modifier*>(f54lShieldAura->GetModifier())
+                                : nullptr;
+                            f54lShieldApplied = f54lShieldAura &&
+                                f54lShieldModifier &&
+                                f54lShieldModifier->m_amount >= 1.0f &&
+                                std::floor(static_cast<double>(
+                                    f54lShieldModifier->m_amount)) ==
+                                    static_cast<double>(
+                                        f54lShieldModifier->m_amount);
+                            if (f54lShieldApplied)
+                            {
+                                f54lInitialAbsorb = static_cast<uint32>(
+                                    f54lShieldModifier->m_amount);
+                                f53bCoordinator->InvalidateSnapshot();
+                                PartySnapshot const* const f54lSnapshot =
+                                    PartySnapshotBuilder::GetOrBuild(
+                                        tank, *f53bCoordinator,
+                                        WorldTimer::getMSTime(), 0);
+                                PartyMemberSnapshot const* const f54lTankSnapshot =
+                                    f54lSnapshot
+                                        ? f54lSnapshot->FindMember(
+                                            tankGuid.GetRawValue()) : nullptr;
+                                f54lAllSchoolExcluded = f54lTankSnapshot &&
+                                    f54lTankSnapshot->allSchoolAbsorbRemainingAmount == 0;
+                                if (f54lTankSnapshot &&
+                                    !f54lTankSnapshot->schoolAbsorbForecastsTruncated)
+                                {
+                                    for (SchoolAbsorbForecastSnapshot const& shield :
+                                         f54lTankSnapshot->schoolAbsorbForecasts)
+                                    {
+                                        if (shield.spellId == 17 &&
+                                            shield.schoolMask == SPELL_SCHOOL_MASK_FIRE &&
+                                            shield.remainingAmount == f54lInitialAbsorb &&
+                                            shield.remainingDurationMs > 0)
+                                        {
+                                            f54lSnapshotCaptured = true;
+                                            f54lDamage = std::min<uint32>(
+                                                7u, shield.remainingAmount);
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (f54lSnapshotCaptured && f54lDamage)
+                                {
+                                    std::vector<HealingTimelineEvent> f54lEvents;
+                                    bool const eventsAppended =
+                                        AppendDamageTimelineEvent(
+                                            priest->GetObjectGuid().GetRawValue(),
+                                            0, 100, f54lDamage, f54lEvents,
+                                            SPELL_SCHOOL_MASK_FROST) &&
+                                        AppendDamageTimelineEvent(
+                                            priest->GetObjectGuid().GetRawValue(),
+                                            0, 200, f54lDamage, f54lEvents,
+                                            SPELL_SCHOOL_MASK_FIRE);
+                                    HealingTimelineProjection f54lProjection;
+                                    uint32 const f54lHealthBeforeHits =
+                                        tank->GetHealth();
+                                    f54lTimelineMatches = eventsAppended &&
+                                        ProjectHealingTimeline(
+                                            f54lHealthBeforeHits, tank->GetMaxHealth(),
+                                            f54lEvents,
+                                            f54lTankSnapshot->schoolAbsorbForecasts,
+                                            f54lTankSnapshot->schoolAbsorbForecastsTruncated,
+                                            f54lProjection) &&
+                                        !f54lProjection.schoolAbsorbForecastIncomplete &&
+                                        f54lProjection.absorbedDamage == f54lDamage &&
+                                        f54lProjection.appliedDamage == f54lDamage &&
+                                        f54lProjection.finalHealth ==
+                                            f54lHealthBeforeHits - f54lDamage;
+
+                                    uint32 f54lFrostAbsorb = 0;
+                                    int32 f54lFrostResist = 0;
+                                    tank->CalculateDamageAbsorbAndResist(
+                                        tank, SPELL_SCHOOL_MASK_FROST, DIRECT_DAMAGE,
+                                        f54lDamage, &f54lFrostAbsorb, &f54lFrostResist,
+                                        powerWordShield);
+                                    f54lFrostNoMatch = f54lFrostAbsorb == 0 &&
+                                        f54lFrostResist == 0 &&
+                                        f54lShieldModifier->m_amount ==
+                                            static_cast<float>(f54lInitialAbsorb);
+                                    if (f54lFrostNoMatch)
+                                    {
+                                        CleanDamage f54lFrostClean(
+                                            f54lDamage, BASE_ATTACK, MELEE_HIT_NORMAL,
+                                            f54lFrostAbsorb, f54lFrostResist);
+                                        tank->DealDamage(
+                                            tank, f54lDamage, &f54lFrostClean,
+                                            SELF_DAMAGE, SPELL_SCHOOL_MASK_FROST,
+                                            powerWordShield, false);
+                                    }
+
+                                    uint32 f54lFireAbsorb = 0;
+                                    int32 f54lFireResist = 0;
+                                    tank->CalculateDamageAbsorbAndResist(
+                                        tank, SPELL_SCHOOL_MASK_FIRE, DIRECT_DAMAGE,
+                                        f54lDamage, &f54lFireAbsorb, &f54lFireResist,
+                                        powerWordShield);
+                                    f54lFireMatched = f54lFireAbsorb == f54lDamage &&
+                                        f54lFireResist == 0;
+                                    uint32 const f54lFireDamage =
+                                        f54lDamage - std::min(
+                                            f54lDamage, f54lFireAbsorb);
+                                    CleanDamage f54lFireClean(
+                                        f54lFireDamage, BASE_ATTACK, MELEE_HIT_NORMAL,
+                                        f54lFireAbsorb, f54lFireResist);
+                                    tank->DealDamage(
+                                        tank, f54lFireDamage, &f54lFireClean,
+                                        SELF_DAMAGE, SPELL_SCHOOL_MASK_FIRE,
+                                        powerWordShield, false);
+
+                                    Aura* f54lAuraAfterDamage = nullptr;
+                                    for (Aura* aura :
+                                         tank->GetAurasByType(SPELL_AURA_SCHOOL_ABSORB))
+                                    {
+                                        if (aura && aura->GetId() == 17 &&
+                                            aura->GetCaster() == priest)
+                                        {
+                                            f54lAuraAfterDamage = aura;
+                                            break;
+                                        }
+                                    }
+                                    if (f54lAuraAfterDamage &&
+                                        f54lAuraAfterDamage->GetModifier())
+                                    {
+                                        f54lRemainingAbsorb = static_cast<uint32>(
+                                            f54lAuraAfterDamage->GetModifier()->m_amount);
+                                        f54lDepletion =
+                                            f54lRemainingAbsorb ==
+                                                f54lInitialAbsorb - f54lDamage;
+                                    }
+                                    else
+                                        f54lDepletion =
+                                            f54lInitialAbsorb == f54lDamage;
+
+                                    f54lActualHealth = tank->GetHealth();
+                                    f54lHealthMatches = f54lTimelineMatches &&
+                                        f54lActualHealth == f54lProjection.finalHealth;
+                                }
+                            }
+                        }
+
+                        tank->RemoveAurasDueToSpell(17);
+                        tank->RemoveAurasDueToSpell(6788); // Weakened Soul from the real PWS SpellScript.
+                        if (f54lMutableShieldSpell)
+                        {
+                            if (f54lAbsorbEffectIndex < MAX_SPELL_EFFECTS)
+                                f54lMutableShieldSpell->EffectMiscValue[
+                                    f54lAbsorbEffectIndex] = f54lSavedShieldMiscValue;
+                            f54lMutableShieldSpell->AttributesEx4 =
+                                f54lSavedShieldAttributesEx4;
+                        }
+                        if (f54lTankWasInCombat)
+                            tank->SetCombatTimer(f54lTankCombatTimerBefore);
+                        else
+                            tank->ClearInCombat();
+                        tank->SetHealth(f54lSavedTankHealth);
+                        f53bCoordinator->InvalidateSnapshot();
+                        bool f54lShieldStillPresent = false;
+                        for (Aura* aura :
+                             tank->GetAurasByType(SPELL_AURA_SCHOOL_ABSORB))
+                            if (aura && aura->GetId() == 17 &&
+                                aura->GetCaster() == priest)
+                                f54lShieldStillPresent = true;
+                        f54lCleanup = !f54lShieldStillPresent &&
+                            !tank->HasAura(6788) &&
+                            tank->GetHealth() == f54lSavedTankHealth &&
+                            (!f54lMutableShieldSpell ||
+                             (f54lMutableShieldSpell->AttributesEx4 ==
+                                  f54lSavedShieldAttributesEx4 &&
+                              (f54lAbsorbEffectIndex >= MAX_SPELL_EFFECTS ||
+                               f54lMutableShieldSpell->EffectMiscValue[
+                                   f54lAbsorbEffectIndex] ==
+                                   f54lSavedShieldMiscValue)));
+                        bool const f54lPassed =
+                            f54lShieldApplied && f54lSnapshotCaptured &&
+                            f54lAllSchoolExcluded && f54lFrostNoMatch &&
+                            f54lFireMatched && f54lDepletion &&
+                            f54lTimelineMatches && f54lHealthMatches && f54lCleanup;
+                        sLog.Out(LOG_BASIC,
+                            f54lPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+                            "[PartyBotSimulator] F54l school-aware absorbs: shieldApplied=%u snapshotCaptured=%u allSchoolExcluded=%u frostNoMatch=%u fireMatched=%u depletion=%u damage=%u initialAbsorb=%u remainingAbsorb=%u timelineMatches=%u healthMatches=%u actualHealth=%u cleanup=%u.",
+                            f54lShieldApplied ? 1u : 0u,
+                            f54lSnapshotCaptured ? 1u : 0u,
+                            f54lAllSchoolExcluded ? 1u : 0u,
+                            f54lFrostNoMatch ? 1u : 0u,
+                            f54lFireMatched ? 1u : 0u,
+                            f54lDepletion ? 1u : 0u,
+                            f54lDamage, f54lInitialAbsorb, f54lRemainingAbsorb,
+                            f54lTimelineMatches ? 1u : 0u,
+                            f54lHealthMatches ? 1u : 0u,
+                            f54lActualHealth,
+                            f54lCleanup ? 1u : 0u);
+                        if (f54lPassed)
+                            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                "[PartyBotSimulator] PASS: F54l captured a real Fire-only School Absorb Aura, ignored it for Frost damage, consumed it for Fire damage and matched Core health/absorb results.");
+                        else
+                            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                                "[PartyBotSimulator] F54l school-aware absorb fixture failed.");
+
                         Player* f54dSecondHealer = nullptr;
                         for (Player* candidatePlayer : players)
                         {

@@ -4584,6 +4584,85 @@ void TestCoreRandomDitherBoundsMatchVanillaCore()
         minimum, maximum));
 }
 
+void TestSchoolAwareAbsorbProjection()
+{
+    SchoolAbsorbForecastSnapshot fireShield;
+    fireShield.spellId = 17;
+    fireShield.schoolMask = 1u << 2; // Core SPELL_SCHOOL_MASK_FIRE
+    fireShield.remainingAmount = 20;
+    fireShield.remainingDurationMs = 1000;
+    std::vector<SchoolAbsorbForecastSnapshot> shields(1, fireShield);
+
+    HealingTimelineProjection projection;
+    std::vector<HealingTimelineEvent> frostHit;
+    assert(AppendDamageTimelineEvent(11, 133, 100, 15, frostHit, 1u << 4));
+    assert(ProjectHealingTimeline(100, 100, frostHit, shields, false, projection));
+    assert(projection.finalHealth == 85);
+    assert(projection.appliedDamage == 15 && projection.absorbedDamage == 0);
+
+    std::vector<HealingTimelineEvent> fireHit;
+    assert(AppendDamageTimelineEvent(11, 133, 100, 15, fireHit, 1u << 2));
+    assert(ProjectHealingTimeline(100, 100, fireHit, shields, false, projection));
+    assert(projection.finalHealth == 100);
+    assert(projection.appliedDamage == 0 && projection.absorbedDamage == 15);
+
+    std::vector<HealingTimelineEvent> repeatedFire;
+    assert(AppendDamageTimelineEvent(11, 133, 100, 15, repeatedFire, 1u << 2));
+    assert(AppendDamageTimelineEvent(12, 133, 200, 15, repeatedFire, 1u << 2));
+    assert(ProjectHealingTimeline(100, 100, repeatedFire, shields, false, projection));
+    assert(projection.finalHealth == 90);
+    assert(projection.absorbedDamage == 20 && projection.appliedDamage == 10);
+
+    // School masks are bitsets: a Fire|Frost hit matches a Fire shield.
+    std::vector<HealingTimelineEvent> combinedSchool;
+    assert(AppendDamageTimelineEvent(
+        11, 133, 100, 12, combinedSchool, (1u << 2) | (1u << 4)));
+    assert(ProjectHealingTimeline(
+        100, 100, combinedSchool, shields, false, projection));
+    assert(projection.finalHealth == 100 && projection.absorbedDamage == 12);
+
+    // A shield is unavailable at its exact expiration timestamp.
+    std::vector<HealingTimelineEvent> expiredHit;
+    assert(AppendDamageTimelineEvent(11, 133, 1000, 12, expiredHit, 1u << 2));
+    assert(ProjectHealingTimeline(100, 100, expiredHit, shields, false, projection));
+    assert(projection.finalHealth == 88 && projection.absorbedDamage == 0);
+
+    // Unknown school cannot consume an active, school-specific shield safely.
+    std::vector<HealingTimelineEvent> unknownHit;
+    assert(AppendDamageTimelineEvent(11, 133, 100, 12, unknownHit));
+    assert(!ProjectHealingTimeline(100, 100, unknownHit, shields, false, projection));
+    assert(!projection.valid);
+
+    // At one timestamp Core hit order is unknown. Different match sets veto.
+    std::vector<HealingTimelineEvent> mixedSchoolHits;
+    assert(AppendDamageTimelineEvent(11, 133, 100, 5, mixedSchoolHits, 1u << 2));
+    assert(AppendDamageTimelineEvent(12, 133, 100, 5, mixedSchoolHits, 1u << 4));
+    assert(!ProjectHealingTimeline(
+        100, 100, mixedSchoolHits, shields, false, projection));
+    assert(!projection.valid);
+
+    // Same-time hits with identical school applicability may be aggregated.
+    std::vector<HealingTimelineEvent> sameSchoolHits;
+    assert(AppendDamageTimelineEvent(11, 133, 100, 15, sameSchoolHits, 1u << 2));
+    assert(AppendDamageTimelineEvent(12, 133, 100, 15, sameSchoolHits, 1u << 2));
+    assert(ProjectHealingTimeline(
+        100, 100, sameSchoolHits, shields, false, projection));
+    assert(projection.finalHealth == 90);
+    assert(projection.absorbedDamage == 20 && projection.appliedDamage == 10);
+
+    // A truncated snapshot never credits a partial shield set.
+    assert(ProjectHealingTimeline(
+        100, 100, fireHit, shields, true, projection));
+    assert(projection.schoolAbsorbForecastIncomplete);
+    assert(projection.absorbedDamage == 0 && projection.finalHealth == 85);
+
+    SchoolAbsorbForecastSnapshot invalidShield = fireShield;
+    invalidShield.schoolMask = 0x80;
+    std::vector<SchoolAbsorbForecastSnapshot> malformed(1, invalidShield);
+    assert(!ProjectHealingTimeline(
+        100, 100, fireHit, malformed, false, projection));
+}
+
 void TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal()
 {
     PeriodicHealForecastSnapshot renew;
@@ -7049,6 +7128,7 @@ int main() {
     TestPriestHealingTargetSelectionAccountsForOtherBotHealReservations();
     TestPriestHealingTargetSelectionAccountsForIncomingHealsHotsAndAbsorbs();
     TestCoreRandomDitherBoundsMatchVanillaCore();
+    TestSchoolAwareAbsorbProjection();
     TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal();
     TestPriestDirectHealReservationSubtractsIncomingForecasts();
     TestHealingTriageShadowStrategy();

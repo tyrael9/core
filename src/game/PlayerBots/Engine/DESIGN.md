@@ -65,18 +65,18 @@ No merge, image publication, deployment or realm-side change is authorised by CI
 
 Phase 5 death/recovery and generic movement foundations are closed with trusted Core runtime evidence. The first production NewEngine behavior remains the narrow Follow policy; all other combat policy coverage is still development work.
 
-Phase 6 is in the Priest Healer vertical slice. Current test-only evidence covers target/rank selection, Heal reservations, direct heals/HoTs/absorbs, bounded timeline, ordered damage/heal cases, helpful procs, target-trigger fan-out, a representative nested child chain and direct-heal pushback/interruption. F54k adds the Core random-dither floor/ceil interval for every HoT tick. See `ROADMAP.md` and `HEALING-FORECAST.md` for exact fixture evidence and open boundaries.
+Phase 6 is in the Priest Healer vertical slice. Current test-only evidence covers target/rank selection, Heal reservations, direct heals/HoTs/absorbs, bounded timeline, ordered damage/heal cases, helpful procs, target-trigger fan-out, a representative nested child chain and direct-heal pushback/interruption. F54k's Core random-dither floor/ceil interval passed trusted runtime. F54l is implementing bounded school-specific absorbs for known-school damage only. See `ROADMAP.md` and `HEALING-FORECAST.md` for exact fixture evidence and open boundaries.
 
 Still blocked from production:
 - `PriestDirectHealAction` whole-action threat remains Unknown; no Priest Healing Strategy is registered.
-- Absorb-school matching, deeper/arbitrary nested child closure and complete Core/proc/recipient ordering remain open.
+- F54l school-absorb matching, deeper/arbitrary nested child closure and complete Core/proc/recipient ordering remain open.
 - Druid, Shaman, Paladin, Warrior, Mage, Warlock, Hunter and Rogue production strategies remain unimplemented.
 - Party-wide target/threat/CC/interrupt/dispel policy and dungeon/raid encounter strategies remain future phases.
 
 ## 9. Near-term implementation order
 
-1. F54k: complete random HoT tick lower/upper bounds and trusted Core interval validation.
-2. F54l: match school-specific absorbs only to known incoming damage schools.
+1. F54k: trusted-runtime validated; preserve the lower bound for triage and both bounds for the diagnostic timeline.
+2. F54l: match School Absorb pools only to known incoming damage school masks; keep Mana Shield, charged Auras, unknown schools and ambiguous same-time matching fail-closed.
 3. F54m: extend bounded nested child/proc chains and threat parity.
 4. F54n: close whole-action threat and supported Core ordering; preserve Unknown for any uncovered path.
 5. Only then register the Priest direct-heal action and Priest Healing Strategy.

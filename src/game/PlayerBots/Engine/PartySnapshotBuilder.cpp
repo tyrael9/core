@@ -201,32 +201,77 @@ void CaptureHealingForecast(Player* member, Map* map,
             memberData.periodicHealForecastsTruncated = true;
     }
 
-    // Only non-scripted, all-seven-school absorbs are treated as generally
-    // applicable effective health. School-specific shields and Mana Shield
-    // have resource/school constraints and are not credited by this baseline.
+    // F54c keeps all-school, non-scripted/audited shields as conservative
+    // effective health for existing triage. F54l also snapshots bounded
+    // school-specific School Absorb pools for known-school damage events.
+    // Core consumes them only when (auraMask & damageMask) != 0, after
+    // resistance. Mana Shield is separate and deliberately not modelled.
     auto const& absorbs =
         member->GetAurasByType(SPELL_AURA_SCHOOL_ABSORB);
     for (Aura* aura : absorbs)
     {
-        if (!aura || aura->GetAuraScript())
+        if (!aura || aura->GetAuraScript() || !aura->GetHolder() ||
+            aura->GetHolder()->GetAuraCharges() != 0)
             continue;
         SpellEntry const* spellInfo = aura->GetSpellProto();
         Modifier const* modifier = aura->GetModifier();
+        int32 const duration = aura->GetAuraDuration();
         if (!spellInfo || !modifier ||
             (spellInfo->ScriptId &&
              !IsKnownPowerWordShieldSpellScript(spellInfo->Id)) ||
-            modifier->m_miscvalue != 0x7f ||
+            duration == 0 ||
             !std::isfinite(modifier->m_amount) || modifier->m_amount <= 0.0f)
             continue;
 
-        double const flooredAbsorb =
-            std::floor(static_cast<double>(modifier->m_amount));
-        std::uint64_t const remainingAbsorb = static_cast<std::uint64_t>(
-            std::min(flooredAbsorb, static_cast<double>(
-                std::numeric_limits<std::uint32_t>::max())));
-        AddSaturatedHealingAmount(
-            memberData.allSchoolAbsorbRemainingAmount, remainingAbsorb);
+        double const amount = static_cast<double>(modifier->m_amount);
+        double const flooredAbsorb = std::floor(amount);
+        // Core's absorb handler stores this pool in int32 and asserts integral
+        // amounts. Do not copy malformed or out-of-range Aura values.
+        if (flooredAbsorb != amount ||
+            flooredAbsorb > static_cast<double>(
+                std::numeric_limits<std::int32_t>::max()))
+            continue;
+
+        std::uint32_t const schoolMask =
+            static_cast<std::uint32_t>(modifier->m_miscvalue);
+        if (!schoolMask || schoolMask > 0x7fu)
+            continue;
+
+        std::uint32_t const remainingAbsorb =
+            static_cast<std::uint32_t>(flooredAbsorb);
+        if (schoolMask == 0x7fu)
+            AddSaturatedHealingAmount(
+                memberData.allSchoolAbsorbRemainingAmount, remainingAbsorb);
+
+        if (memberData.schoolAbsorbForecasts.size() <
+            MAX_SCHOOL_ABSORB_FORECASTS_PER_MEMBER)
+        {
+            SchoolAbsorbForecastSnapshot forecast;
+            forecast.spellId = spellInfo->Id;
+            forecast.schoolMask = schoolMask;
+            forecast.remainingAmount = remainingAbsorb;
+            forecast.remainingDurationMs = duration < 0
+                ? std::numeric_limits<std::uint32_t>::max()
+                : static_cast<std::uint32_t>(duration);
+            memberData.schoolAbsorbForecasts.push_back(forecast);
+        }
+        else
+            memberData.schoolAbsorbForecastsTruncated = true;
     }
+
+    std::sort(memberData.schoolAbsorbForecasts.begin(),
+        memberData.schoolAbsorbForecasts.end(),
+        [](SchoolAbsorbForecastSnapshot const& left,
+           SchoolAbsorbForecastSnapshot const& right)
+        {
+            if (left.schoolMask != right.schoolMask)
+                return left.schoolMask < right.schoolMask;
+            if (left.spellId != right.spellId)
+                return left.spellId < right.spellId;
+            if (left.remainingDurationMs != right.remainingDurationMs)
+                return left.remainingDurationMs < right.remainingDurationMs;
+            return left.remainingAmount < right.remainingAmount;
+        });
 
     std::sort(memberData.periodicHealForecasts.begin(),
         memberData.periodicHealForecasts.end(),

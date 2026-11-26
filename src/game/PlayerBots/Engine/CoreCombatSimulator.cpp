@@ -9458,6 +9458,12 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             ? f54gMutableReflectRootSpell->EffectDieSides[0] : 0;
     float const f54gSavedReflectRootSpeed =
         f54gMutableReflectRootSpell ? f54gMutableReflectRootSpell->speed : 0.0f;
+    uint32 const f54gSavedReflectChildAttributesEx2 =
+        f54gMutableChildSpell ? f54gMutableChildSpell->AttributesEx2 : 0;
+    uint32 const f54gSavedReflectChildAttributesEx3 =
+        f54gMutableChildSpell ? f54gMutableChildSpell->AttributesEx3 : 0;
+    int32 const f54gSavedReflectChildDieSides0 =
+        f54gMutableChildSpell ? f54gMutableChildSpell->EffectDieSides[0] : 0;
 
     uint32 const f54gReflectSavedHealerHealth =
         healer ? healer->GetHealth() : 0;
@@ -9512,6 +9518,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
         f54gMutableReflectRootSpell->EffectDieSides[0] = 0;
         f54gMutableReflectRootSpell->speed = 0.0f;
+        f54gMutableChildSpell->AttributesEx2 |= SPELL_ATTR_EX2_CANT_CRIT;
+        f54gMutableChildSpell->AttributesEx3 |=
+            SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
+            SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
+        f54gMutableChildSpell->EffectDieSides[0] = 0;
 
         f54gReflectAuraActive =
             f54gReflectAuraAttached &&
@@ -9661,6 +9672,12 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             f54gSavedReflectRootDieSides0;
         f54gMutableReflectRootSpell->speed =
             f54gSavedReflectRootSpeed;
+        f54gMutableChildSpell->AttributesEx2 =
+            f54gSavedReflectChildAttributesEx2;
+        f54gMutableChildSpell->AttributesEx3 =
+            f54gSavedReflectChildAttributesEx3;
+        f54gMutableChildSpell->EffectDieSides[0] =
+            f54gSavedReflectChildDieSides0;
 
         f54gReflectRowsRestored =
             f54gAuraSpell->Effect[0] == f54gSavedAuraEffect0 &&
@@ -9681,7 +9698,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 f54gSavedReflectRootAttributesEx3 &&
             f54gMutableReflectRootSpell->EffectDieSides[0] ==
                 f54gSavedReflectRootDieSides0 &&
-            f54gMutableReflectRootSpell->speed == f54gSavedReflectRootSpeed;
+            f54gMutableReflectRootSpell->speed == f54gSavedReflectRootSpeed &&
+            f54gMutableChildSpell->AttributesEx2 ==
+                f54gSavedReflectChildAttributesEx2 &&
+            f54gMutableChildSpell->AttributesEx3 ==
+                f54gSavedReflectChildAttributesEx3 &&
+            f54gMutableChildSpell->EffectDieSides[0] ==
+                f54gSavedReflectChildDieSides0;
     }
 
     bool const f54gReflectPassed = f54gReflectRowReady &&

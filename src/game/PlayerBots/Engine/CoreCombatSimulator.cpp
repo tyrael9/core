@@ -9388,6 +9388,336 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F54g skipped a Core-immune selected Group recipient in target-trigger fan-out; only the four successful Prayer of Healing targets received child heals, and both hostile ThreatManagers matched the successful recipients' effective-healing projections.");
 
+    // F54g reflect branch: Core reflects a harmful successful cast to its
+    // caster, and ADD_TARGET_TRIGGER must direct the child heal to that caster.
+    SpellEntry const* const f54gReflectRootSpell = sSpellMgr.GetSpellEntry(686); // Shadow Bolt
+    SpellEntry* const f54gMutableReflectRootSpell =
+        const_cast<SpellEntry*>(f54gReflectRootSpell);
+    SpellThreatEntry const* const f54gReflectRootThreat =
+        f54gReflectRootSpell
+            ? sSpellMgr.GetSpellThreatEntry(f54gReflectRootSpell->Id) : nullptr;
+    bool f54gReflectRowReady = false;
+    bool f54gReflectAuraAttached = false;
+    bool f54gReflectAuraActive = false;
+    bool f54gReflectControlCast = false;
+    bool f54gReflectControlHitCaster = false;
+    bool f54gReflectAuraCasterAttached = false;
+    bool f54gReflectTriggeredCast = false;
+    bool f54gReflectChildHealedCaster = false;
+    bool f54gReflectTargetUntouched = false;
+    bool f54gReflectThreatMatched = false;
+    bool f54gReflectAuraRemoved = false;
+    bool f54gReflectTriggerRemoved = false;
+    bool f54gReflectRowsRestored = false;
+    uint32 f54gReflectChildGain = 0;
+    uint32 f54gReflectDamage = 0;
+    uint32 f54gReflectReferenceCount = 0;
+    bool f54gReflectHasHostile0 = false;
+    bool f54gReflectHasHostile1 = false;
+
+    auto onlyDamageEffects = [](SpellEntry const* spell)
+    {
+        if (!spell)
+            return false;
+        uint32 damageEffects = 0;
+        for (uint8 effect = 0; effect < MAX_EFFECT_INDEX; ++effect)
+        {
+            if (!spell->Effect[effect])
+                continue;
+            if (spell->Effect[effect] != SPELL_EFFECT_SCHOOL_DAMAGE)
+                return false;
+            ++damageEffects;
+        }
+        return damageEffects == 1;
+    };
+
+    f54gReflectRowReady = f54gPassed && f54gImmuneTargetSkipped &&
+        healer && hostiles[0].creature && hostiles[1].creature &&
+        healer->IsInWorld() && healer->IsAlive() &&
+        hostiles[0].creature->IsAlive() && hostiles[1].creature->IsAlive() &&
+        f54gReflectRootSpell && f54gReflectRootSpell->ScriptId == 0 &&
+        f54gReflectRootSpell->DmgClass == SPELL_DAMAGE_CLASS_MAGIC &&
+        !f54gReflectRootSpell->IsChanneledSpell() &&
+        onlyDamageEffects(f54gReflectRootSpell) &&
+        f54gReflectRootSpell->IsReflectableSpell(
+            healer, hostiles[0].creature) &&
+        (!f54gReflectRootThreat || !f54gReflectRootThreat->threat) &&
+        f54gAuraSpell && f54gAuraSpell->ScriptId == 0 &&
+        !healer->GetSpellAuraHolder(f54gAuraSpell->Id) &&
+        !hostiles[0].creature->GetSpellAuraHolder(f54gAuraSpell->Id) &&
+        hostiles[0].creature->GetTotalAuraModifier(
+            SPELL_AURA_REFLECT_SPELLS) == 0;
+
+    uint32 const f54gSavedReflectRootFamilyFlags =
+        f54gMutableReflectRootSpell
+            ? f54gMutableReflectRootSpell->SpellFamilyFlags : 0;
+    uint32 const f54gSavedReflectRootAttributesEx2 =
+        f54gMutableReflectRootSpell
+            ? f54gMutableReflectRootSpell->AttributesEx2 : 0;
+    uint32 const f54gSavedReflectRootAttributesEx3 =
+        f54gMutableReflectRootSpell
+            ? f54gMutableReflectRootSpell->AttributesEx3 : 0;
+    int32 const f54gSavedReflectRootDieSides0 =
+        f54gMutableReflectRootSpell
+            ? f54gMutableReflectRootSpell->EffectDieSides[0] : 0;
+    float const f54gSavedReflectRootSpeed =
+        f54gMutableReflectRootSpell ? f54gMutableReflectRootSpell->speed : 0.0f;
+
+    uint32 const f54gReflectSavedHealerHealth =
+        healer ? healer->GetHealth() : 0;
+    uint32 const f54gReflectSavedTargetHealth =
+        hostiles[0].creature ? hostiles[0].creature->GetHealth() : 0;
+
+    if (f54gReflectRowReady)
+    {
+        // Build a real 100% Core reflection Aura from the same temporary
+        // SpellEntry, then restore its target-trigger definition before the
+        // caster-side Aura is attached.
+        f54gAuraSpell->Effect[0] = SPELL_EFFECT_APPLY_AURA;
+        f54gAuraSpell->EffectApplyAuraName[0] = SPELL_AURA_REFLECT_SPELLS;
+        f54gAuraSpell->EffectTriggerSpell[0] = 0;
+        f54gAuraSpell->EffectBasePoints[0] = 100;
+        f54gAuraSpell->EffectRealPointsPerLevel[0] = 0.0f;
+        f54gAuraSpell->EffectBaseDice[0] = 0;
+        f54gAuraSpell->EffectDieSides[0] = 0;
+        f54gAuraSpell->EffectItemType[0] = 0;
+        f54gAuraSpell->SpellFamilyName =
+            f54gReflectRootSpell->SpellFamilyName;
+        SpellAuraHolder* const reflectorHolder =
+            hostiles[0].creature->AddAura(
+                f54gAuraSpell->Id, EFFECT_INDEX_0, hostiles[0].creature);
+        Aura* const reflectorAura = reflectorHolder
+            ? reflectorHolder->GetAuraByEffectIndex(EFFECT_INDEX_0) : nullptr;
+        f54gReflectAuraAttached = reflectorAura &&
+            reflectorAura->GetModifier()->m_auraname ==
+                SPELL_AURA_REFLECT_SPELLS &&
+            hostiles[0].creature->GetTotalAuraModifier(
+                SPELL_AURA_REFLECT_SPELLS) >= 100;
+
+        // Restore the target-trigger SpellEntry while retaining the already
+        // constructed reflect Aura modifier on the hostile Creature.
+        f54gAuraSpell->Effect[0] = SPELL_EFFECT_APPLY_AURA;
+        f54gAuraSpell->EffectApplyAuraName[0] = SPELL_AURA_ADD_TARGET_TRIGGER;
+        f54gAuraSpell->EffectTriggerSpell[0] = f54gChildSpell->Id;
+        f54gAuraSpell->EffectBasePoints[0] = 100;
+        f54gAuraSpell->EffectRealPointsPerLevel[0] = 0.0f;
+        f54gAuraSpell->EffectBaseDice[0] = 0;
+        f54gAuraSpell->EffectDieSides[0] = 0;
+        f54gAuraSpell->EffectItemType[0] = f54gUniqueFamilyMask;
+        f54gAuraSpell->SpellFamilyName =
+            f54gReflectRootSpell->SpellFamilyName;
+
+        f54gMutableReflectRootSpell->SpellFamilyFlags =
+            f54gUniqueFamilyMask;
+        f54gMutableReflectRootSpell->AttributesEx2 |=
+            SPELL_ATTR_EX2_CANT_CRIT;
+        f54gMutableReflectRootSpell->AttributesEx3 |=
+            SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
+            SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
+        f54gMutableReflectRootSpell->EffectDieSides[0] = 0;
+        f54gMutableReflectRootSpell->speed = 0.0f;
+
+        f54gReflectAuraActive =
+            f54gReflectAuraAttached &&
+            hostiles[0].creature->GetTotalAuraModifier(
+                SPELL_AURA_REFLECT_SPELLS) >= 100 &&
+            f54gAuraSpell->EffectApplyAuraName[0] ==
+                SPELL_AURA_ADD_TARGET_TRIGGER;
+
+        uint32 const startHealth =
+            std::max<uint32>(1u, healer->GetMaxHealth() / 3u);
+        healer->SetHealth(startHealth);
+        float const controlThreatBefore0 =
+            hostiles[0].creature->GetThreatManager().getThreat(healer);
+        float const controlThreatBefore1 =
+            hostiles[1].creature->GetThreatManager().getThreat(healer);
+        uint32 const controlTargetHealthBefore =
+            hostiles[0].creature->GetHealth();
+        f54gReflectControlCast = f54gReflectAuraActive &&
+            healer->CastSpell(hostiles[0].creature,
+                f54gReflectRootSpell, true) == SPELL_CAST_OK;
+        for (uint32 tick = 0; tick < 8 &&
+             healer->GetHealth() == startHealth; ++tick)
+            map.Update(50);
+        uint32 const controlHealthAfter = healer->GetHealth();
+        uint32 const controlTargetHealthAfter =
+            hostiles[0].creature->GetHealth();
+        float const controlThreatAfter0 =
+            hostiles[0].creature->GetThreatManager().getThreat(healer);
+        float const controlThreatAfter1 =
+            hostiles[1].creature->GetThreatManager().getThreat(healer);
+        f54gReflectControlHitCaster = f54gReflectControlCast &&
+            controlHealthAfter < startHealth &&
+            controlTargetHealthAfter == controlTargetHealthBefore;
+        f54gReflectDamage = f54gReflectControlHitCaster
+            ? startHealth - controlHealthAfter : 0u;
+        float const baselineThreat0 =
+            controlThreatAfter0 - controlThreatBefore0;
+        float const baselineThreat1 =
+            controlThreatAfter1 - controlThreatBefore1;
+
+        // Repeat the identical reflected root with the caster's target-trigger
+        // Aura attached. The reflected successful entry must redirect child
+        // healing to the caster, not to the reflecting Creature.
+        healer->SetHealth(startHealth);
+        SpellAuraHolder* const casterTriggerHolder =
+            hostiles[0].creature->GetTotalAuraModifier(
+                SPELL_AURA_REFLECT_SPELLS) >= 100
+                ? healer->AddAura(f54gAuraSpell->Id, EFFECT_INDEX_0, healer)
+                : nullptr;
+        Aura* const casterTriggerAura = casterTriggerHolder
+            ? casterTriggerHolder->GetAuraByEffectIndex(EFFECT_INDEX_0)
+            : nullptr;
+        f54gReflectAuraCasterAttached = casterTriggerAura &&
+            casterTriggerAura->GetModifier()->m_auraname ==
+                SPELL_AURA_ADD_TARGET_TRIGGER &&
+            !casterTriggerHolder->GetAuraScript() &&
+            casterTriggerAura->GetBasePoints() == 100;
+
+        float const triggeredThreatBefore0 =
+            hostiles[0].creature->GetThreatManager().getThreat(healer);
+        float const triggeredThreatBefore1 =
+            hostiles[1].creature->GetThreatManager().getThreat(healer);
+        uint32 const triggeredTargetHealthBefore =
+            hostiles[0].creature->GetHealth();
+        f54gReflectTriggeredCast = f54gReflectAuraCasterAttached &&
+            healer->CastSpell(hostiles[0].creature,
+                f54gReflectRootSpell, true) == SPELL_CAST_OK;
+        for (uint32 tick = 0; tick < 8 &&
+             healer->GetHealth() <= startHealth - f54gReflectDamage; ++tick)
+            map.Update(50);
+        uint32 const triggeredHealthAfter = healer->GetHealth();
+        uint32 const triggeredTargetHealthAfter =
+            hostiles[0].creature->GetHealth();
+        uint32 const rootOnlyPostHealth =
+            startHealth > f54gReflectDamage
+                ? startHealth - f54gReflectDamage : 0u;
+        f54gReflectChildGain =
+            triggeredHealthAfter > rootOnlyPostHealth
+                ? triggeredHealthAfter - rootOnlyPostHealth : 0u;
+        f54gReflectChildHealedCaster = f54gReflectTriggeredCast &&
+            f54gReflectChildGain > 10u;
+        f54gReflectTargetUntouched =
+            controlTargetHealthAfter == controlTargetHealthBefore &&
+            triggeredTargetHealthAfter == triggeredTargetHealthBefore;
+
+        for (HostileReference* reference =
+                 healer->GetHostileRefManager().getFirst();
+             reference; reference = reference->next())
+        {
+            ++f54gReflectReferenceCount;
+            Unit* const owner = reference->getSource()->getOwner();
+            f54gReflectHasHostile0 =
+                f54gReflectHasHostile0 || owner == hostiles[0].creature;
+            f54gReflectHasHostile1 =
+                f54gReflectHasHostile1 || owner == hostiles[1].creature;
+        }
+        float const referenceDivisor = static_cast<float>(
+            f54gReflectReferenceCount ? f54gReflectReferenceCount : 1u);
+        float const childAssistInput =
+            static_cast<float>(f54gReflectChildGain) * 0.5f *
+            sSpellMgr.GetSpellThreatMultiplier(f54gChildSpell) /
+            referenceDivisor;
+        float const expectedChildThreat = ThreatCalcHelper::CalcThreat(
+            healer, childAssistInput, false,
+            f54gChildSpell->GetSpellSchoolMask(), f54gChildSpell);
+        float const triggeredThreatAfter0 =
+            hostiles[0].creature->GetThreatManager().getThreat(healer);
+        float const triggeredThreatAfter1 =
+            hostiles[1].creature->GetThreatManager().getThreat(healer);
+        f54gReflectThreatMatched =
+            f54gReflectChildHealedCaster &&
+            f54gReflectReferenceCount >= 2 &&
+            f54gReflectHasHostile0 && f54gReflectHasHostile1 &&
+            std::fabs((triggeredThreatAfter0 - triggeredThreatBefore0) -
+                baselineThreat0 - expectedChildThreat) < 0.50f &&
+            std::fabs((triggeredThreatAfter1 - triggeredThreatBefore1) -
+                baselineThreat1 - expectedChildThreat) < 0.50f;
+
+        healer->RemoveAurasDueToSpell(f54gAuraSpell->Id);
+        hostiles[0].creature->RemoveAurasDueToSpell(f54gAuraSpell->Id);
+        f54gReflectTriggerRemoved =
+            healer->GetSpellAuraHolder(f54gAuraSpell->Id) == nullptr;
+        f54gReflectAuraRemoved =
+            hostiles[0].creature->GetSpellAuraHolder(
+                f54gAuraSpell->Id) == nullptr;
+
+        healer->SetHealth(f54gReflectSavedHealerHealth);
+        hostiles[0].creature->SetHealth(f54gReflectSavedTargetHealth);
+
+        f54gAuraSpell->Effect[0] = f54gSavedAuraEffect0;
+        f54gAuraSpell->EffectApplyAuraName[0] = f54gSavedAuraType0;
+        f54gAuraSpell->EffectTriggerSpell[0] = f54gSavedAuraTrigger0;
+        f54gAuraSpell->EffectBasePoints[0] = f54gSavedAuraBasePoints0;
+        f54gAuraSpell->EffectRealPointsPerLevel[0] =
+            f54gSavedAuraRealPointsPerLevel0;
+        f54gAuraSpell->EffectBaseDice[0] = f54gSavedAuraBaseDice0;
+        f54gAuraSpell->EffectDieSides[0] = f54gSavedAuraDieSides0;
+        f54gAuraSpell->EffectItemType[0] = f54gSavedAuraAffectMask0;
+        f54gAuraSpell->SpellFamilyName = f54gSavedAuraFamily0;
+        f54gMutableReflectRootSpell->SpellFamilyFlags =
+            f54gSavedReflectRootFamilyFlags;
+        f54gMutableReflectRootSpell->AttributesEx2 =
+            f54gSavedReflectRootAttributesEx2;
+        f54gMutableReflectRootSpell->AttributesEx3 =
+            f54gSavedReflectRootAttributesEx3;
+        f54gMutableReflectRootSpell->EffectDieSides[0] =
+            f54gSavedReflectRootDieSides0;
+        f54gMutableReflectRootSpell->speed =
+            f54gSavedReflectRootSpeed;
+
+        f54gReflectRowsRestored =
+            f54gAuraSpell->Effect[0] == f54gSavedAuraEffect0 &&
+            f54gAuraSpell->EffectApplyAuraName[0] == f54gSavedAuraType0 &&
+            f54gAuraSpell->EffectTriggerSpell[0] == f54gSavedAuraTrigger0 &&
+            f54gAuraSpell->EffectBasePoints[0] == f54gSavedAuraBasePoints0 &&
+            f54gAuraSpell->EffectRealPointsPerLevel[0] ==
+                f54gSavedAuraRealPointsPerLevel0 &&
+            f54gAuraSpell->EffectBaseDice[0] == f54gSavedAuraBaseDice0 &&
+            f54gAuraSpell->EffectDieSides[0] == f54gSavedAuraDieSides0 &&
+            f54gAuraSpell->EffectItemType[0] == f54gSavedAuraAffectMask0 &&
+            f54gAuraSpell->SpellFamilyName == f54gSavedAuraFamily0 &&
+            f54gMutableReflectRootSpell->SpellFamilyFlags ==
+                f54gSavedReflectRootFamilyFlags &&
+            f54gMutableReflectRootSpell->AttributesEx2 ==
+                f54gSavedReflectRootAttributesEx2 &&
+            f54gMutableReflectRootSpell->AttributesEx3 ==
+                f54gSavedReflectRootAttributesEx3 &&
+            f54gMutableReflectRootSpell->EffectDieSides[0] ==
+                f54gSavedReflectRootDieSides0 &&
+            f54gMutableReflectRootSpell->speed == f54gSavedReflectRootSpeed;
+    }
+
+    bool const f54gReflectPassed = f54gReflectRowReady &&
+        f54gReflectAuraAttached && f54gReflectAuraActive &&
+        f54gReflectControlCast && f54gReflectControlHitCaster &&
+        f54gReflectAuraCasterAttached && f54gReflectTriggeredCast &&
+        f54gReflectChildHealedCaster && f54gReflectTargetUntouched &&
+        f54gReflectThreatMatched && f54gReflectAuraRemoved &&
+        f54gReflectTriggerRemoved && f54gReflectRowsRestored;
+    sLog.Out(LOG_BASIC,
+        f54gReflectPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54g reflect-to-caster fan-out: rowReady=%u reflectAuraAttached=%u reflectAuraActive=%u controlCast=%u controlHitCaster=%u casterAuraAttached=%u triggeredCast=%u reflectedChildGain=%u reflectedDamage=%u targetUntouched=%u refs=%u hasHostile0=%u hasHostile1=%u threatMatched=%u reflectAuraRemoved=%u casterAuraRemoved=%u spellRowsRestored=%u.",
+        f54gReflectRowReady ? 1u : 0u,
+        f54gReflectAuraAttached ? 1u : 0u,
+        f54gReflectAuraActive ? 1u : 0u,
+        f54gReflectControlCast ? 1u : 0u,
+        f54gReflectControlHitCaster ? 1u : 0u,
+        f54gReflectAuraCasterAttached ? 1u : 0u,
+        f54gReflectTriggeredCast ? 1u : 0u,
+        f54gReflectChildGain, f54gReflectDamage,
+        f54gReflectTargetUntouched ? 1u : 0u,
+        f54gReflectReferenceCount,
+        f54gReflectHasHostile0 ? 1u : 0u,
+        f54gReflectHasHostile1 ? 1u : 0u,
+        f54gReflectThreatMatched ? 1u : 0u,
+        f54gReflectAuraRemoved ? 1u : 0u,
+        f54gReflectTriggerRemoved ? 1u : 0u,
+        f54gReflectRowsRestored ? 1u : 0u);
+    if (f54gReflectPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F54g redirected SPELL_AURA_ADD_TARGET_TRIGGER child healing to the caster after Core successfully reflected the hostile root spell; the reflecting Creature remained untouched and both hostile ThreatManagers matched the caster's effective child heal.");
+
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states.");
 

@@ -563,6 +563,17 @@ for expected in "rowReady=1" "castAccepted=1" "rootTargets=4" "childTargets=4" "
     fi
 done
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F54g redirected SPELL_AURA_ADD_TARGET_TRIGGER child healing to the caster after Core successfully reflected the hostile root spell; the reflecting Creature remained untouched and both hostile ThreatManagers matched the caster's effective child heal." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F54g reflect-to-caster fan-out PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f54g_reflect_line="$(grep -F '[PartyBotSimulator] F54g reflect-to-caster fan-out:' "$LOG_FILE" | tail -n 1)"
+for expected in "rowReady=1" "reflectAuraAttached=1" "reflectAuraActive=1" "controlHitCaster=1" "casterAuraAttached=1" "triggeredCast=1" "targetUntouched=1" "threatMatched=1" "reflectAuraRemoved=1" "casterAuraRemoved=1" "spellRowsRestored=1"; do
+    if [[ "$f54g_reflect_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F54g reflect-to-caster assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
 
 f54e_recipient_line="$(grep -F '[PartyBotSimulator] F54e recipient-side helpful proc:' "$LOG_FILE" | tail -n 1)"
 for expected in "auraAttached=1" "procVeto=1" "impactsEmpty=1" "auraRemoved=1" "procFlagsRestored=1"; do

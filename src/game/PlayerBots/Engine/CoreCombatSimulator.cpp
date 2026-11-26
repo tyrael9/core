@@ -9740,7 +9740,411 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states.");
 
-    // F54g deleted-target boundary: a real delayed projectile has selected
+    
+    // F54h nested target-trigger boundary: one Aura SpellEntry carries two
+    // ADD_TARGET_TRIGGER effects with disjoint family masks. Root(A) casts
+    // Child(B); Child(B) casts Grandchild(no matching mask). This exercises
+    // Core's recursive Spell::finish path rather than simulating dispatch.
+    SpellEntry const* const f54hGrandchildSpell =
+        sSpellMgr.GetSpellEntry(2060); // Greater Heal (Rank 1)
+    SpellEntry* const f54hMutableGrandchildSpell =
+        const_cast<SpellEntry*>(f54hGrandchildSpell);
+    uint64 const f54hRootFamilyMask = (uint64(1) << 63);
+    uint64 const f54hChildFamilyMask = (uint64(1) << 62);
+    SpellThreatEntry const* const f54hGrandchildThreat =
+        f54hGrandchildSpell
+            ? sSpellMgr.GetSpellThreatEntry(f54hGrandchildSpell->Id) : nullptr;
+
+    bool const f54hRowReady = f54gReflectPassed &&
+        group && group->GetMembersCount() == MAX_GROUP_SIZE &&
+        players.size() == MAX_GROUP_SIZE && healer && healer->IsInWorld() &&
+        healer->IsAlive() && hostiles[0].creature && hostiles[1].creature &&
+        hostiles[0].creature->IsAlive() && hostiles[1].creature->IsAlive() &&
+        f54gAuraSpell && f54gAuraSpell->ScriptId == 0 &&
+        f54gAuraSpell->Effect[2] == 0 &&
+        f54gRootSpell && f54gRootSpell->ScriptId == 0 &&
+        f54gRootSpell->SpellFamilyName == SPELLFAMILY_PRIEST &&
+        Spells::IsPositiveSpell(f54gRootSpell->Id) &&
+        !f54gRootSpell->IsChanneledSpell() && onlyHealEffects(f54gRootSpell) &&
+        f54gChildSpell && f54gChildSpell->ScriptId == 0 &&
+        f54gChildSpell->SpellFamilyName == SPELLFAMILY_PRIEST &&
+        Spells::IsPositiveSpell(f54gChildSpell->Id) &&
+        onlyHealEffects(f54gChildSpell) &&
+        f54hGrandchildSpell && f54hGrandchildSpell->ScriptId == 0 &&
+        f54hGrandchildSpell->SpellFamilyName == SPELLFAMILY_PRIEST &&
+        Spells::IsPositiveSpell(f54hGrandchildSpell->Id) &&
+        onlyHealEffects(f54hGrandchildSpell) &&
+        (f54hGrandchildSpell->SpellFamilyFlags &
+            (f54hRootFamilyMask | f54hChildFamilyMask)) == 0 &&
+        (!f54gRootThreat || !f54gRootThreat->threat) &&
+        (!f54gChildThreat || !f54gChildThreat->threat) &&
+        (!f54hGrandchildThreat || !f54hGrandchildThreat->threat) &&
+        f54gTargetReferencesValid &&
+        !healer->GetSpellAuraHolder(f54gAuraSpell->Id);
+
+    uint32 const f54hSavedAuraEffect0 =
+        f54gAuraSpell ? f54gAuraSpell->Effect[0] : 0;
+    uint32 const f54hSavedAuraType0 =
+        f54gAuraSpell ? f54gAuraSpell->EffectApplyAuraName[0] : 0;
+    uint32 const f54hSavedAuraTrigger0 =
+        f54gAuraSpell ? f54gAuraSpell->EffectTriggerSpell[0] : 0;
+    int32 const f54hSavedAuraBasePoints0 =
+        f54gAuraSpell ? f54gAuraSpell->EffectBasePoints[0] : 0;
+    float const f54hSavedAuraRealPoints0 =
+        f54gAuraSpell ? f54gAuraSpell->EffectRealPointsPerLevel[0] : 0.0f;
+    uint32 const f54hSavedAuraBaseDice0 =
+        f54gAuraSpell ? f54gAuraSpell->EffectBaseDice[0] : 0;
+    int32 const f54hSavedAuraDieSides0 =
+        f54gAuraSpell ? f54gAuraSpell->EffectDieSides[0] : 0;
+    uint64 const f54hSavedAuraMask0 =
+        f54gAuraSpell ? f54gAuraSpell->EffectItemType[0] : 0;
+    uint32 const f54hSavedAuraEffect1 =
+        f54gAuraSpell ? f54gAuraSpell->Effect[1] : 0;
+    uint32 const f54hSavedAuraType1 =
+        f54gAuraSpell ? f54gAuraSpell->EffectApplyAuraName[1] : 0;
+    uint32 const f54hSavedAuraTrigger1 =
+        f54gAuraSpell ? f54gAuraSpell->EffectTriggerSpell[1] : 0;
+    int32 const f54hSavedAuraBasePoints1 =
+        f54gAuraSpell ? f54gAuraSpell->EffectBasePoints[1] : 0;
+    float const f54hSavedAuraRealPoints1 =
+        f54gAuraSpell ? f54gAuraSpell->EffectRealPointsPerLevel[1] : 0.0f;
+    uint32 const f54hSavedAuraBaseDice1 =
+        f54gAuraSpell ? f54gAuraSpell->EffectBaseDice[1] : 0;
+    int32 const f54hSavedAuraDieSides1 =
+        f54gAuraSpell ? f54gAuraSpell->EffectDieSides[1] : 0;
+    uint64 const f54hSavedAuraMask1 =
+        f54gAuraSpell ? f54gAuraSpell->EffectItemType[1] : 0;
+    uint32 const f54hSavedAuraFamily =
+        f54gAuraSpell ? f54gAuraSpell->SpellFamilyName : 0;
+
+    uint64 const f54hSavedRootFamilyFlags =
+        f54gMutableRootSpell ? f54gMutableRootSpell->SpellFamilyFlags : 0;
+    uint32 const f54hSavedRootAttributesEx2 =
+        f54gMutableRootSpell ? f54gMutableRootSpell->AttributesEx2 : 0;
+    uint32 const f54hSavedRootAttributesEx3 =
+        f54gMutableRootSpell ? f54gMutableRootSpell->AttributesEx3 : 0;
+    int32 const f54hSavedRootDieSides =
+        f54gMutableRootSpell ? f54gMutableRootSpell->EffectDieSides[0] : 0;
+    uint64 const f54hSavedChildFamilyFlags =
+        f54gMutableChildSpell ? f54gMutableChildSpell->SpellFamilyFlags : 0;
+    uint32 const f54hSavedChildAttributesEx2 =
+        f54gMutableChildSpell ? f54gMutableChildSpell->AttributesEx2 : 0;
+    uint32 const f54hSavedChildAttributesEx3 =
+        f54gMutableChildSpell ? f54gMutableChildSpell->AttributesEx3 : 0;
+    int32 const f54hSavedChildDieSides =
+        f54gMutableChildSpell ? f54gMutableChildSpell->EffectDieSides[0] : 0;
+    uint32 const f54hSavedGrandchildAttributesEx2 =
+        f54hMutableGrandchildSpell
+            ? f54hMutableGrandchildSpell->AttributesEx2 : 0;
+    uint32 const f54hSavedGrandchildAttributesEx3 =
+        f54hMutableGrandchildSpell
+            ? f54hMutableGrandchildSpell->AttributesEx3 : 0;
+    int32 const f54hSavedGrandchildDieSides =
+        f54hMutableGrandchildSpell
+            ? f54hMutableGrandchildSpell->EffectDieSides[0] : 0;
+
+    bool f54hRootCast = false;
+    bool f54hStage2AuraAttached = false;
+    bool f54hStage2Cast = false;
+    bool f54hStage2AuraRemoved = false;
+    bool f54hStage3AuraAttached = false;
+    bool f54hStage3Cast = false;
+    bool f54hStage3AuraRemoved = false;
+    bool f54hThreatMatched = false;
+    bool f54hAuraRowsRestored = false;
+    bool f54hRootRowRestored = false;
+    bool f54hChildRowRestored = false;
+    bool f54hGrandchildRowRestored = false;
+    uint32 f54hRootTargets = 0;
+    uint32 f54hChildTargets = 0;
+    uint32 f54hGrandchildTargets = 0;
+    uint32 f54hSavedHealth[5] = {};
+    uint32 f54hStartHealth[5] = {};
+    uint32 f54hRootGain[5] = {};
+    uint32 f54hStage2TotalGain[5] = {};
+    uint32 f54hStage3TotalGain[5] = {};
+    uint32 f54hChildGain[5] = {};
+    uint32 f54hGrandchildGain[5] = {};
+
+    if (f54hRowReady)
+    {
+        for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+        {
+            Player* member = players[index];
+            f54hSavedHealth[index] = member->GetHealth();
+            f54hStartHealth[index] =
+                std::max<uint32>(1u, member->GetMaxHealth() / 3u);
+            member->SetHealth(f54hStartHealth[index]);
+        }
+
+        f54gMutableRootSpell->SpellFamilyFlags = f54hRootFamilyMask;
+        f54gMutableRootSpell->AttributesEx2 |= SPELL_ATTR_EX2_CANT_CRIT;
+        f54gMutableRootSpell->AttributesEx3 |=
+            SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
+            SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
+        f54gMutableRootSpell->EffectDieSides[0] = 0;
+
+        f54gMutableChildSpell->SpellFamilyFlags = f54hChildFamilyMask;
+        f54gMutableChildSpell->AttributesEx2 |= SPELL_ATTR_EX2_CANT_CRIT;
+        f54gMutableChildSpell->AttributesEx3 |=
+            SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
+            SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
+        f54gMutableChildSpell->EffectDieSides[0] = 0;
+
+        f54hMutableGrandchildSpell->AttributesEx2 |= SPELL_ATTR_EX2_CANT_CRIT;
+        f54hMutableGrandchildSpell->AttributesEx3 |=
+            SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
+            SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
+        f54hMutableGrandchildSpell->EffectDieSides[0] = 0;
+
+        // Stage 1: establish the root-only effective heal on each recipient.
+        healer->SetFacingToObject(tank);
+        f54hRootCast =
+            healer->CastSpell(tank, f54gRootSpell, true) == SPELL_CAST_OK;
+        if (f54hRootCast)
+        {
+            for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+            {
+                Player* member = players[index];
+                f54hRootGain[index] =
+                    member->GetHealth() > f54hStartHealth[index]
+                        ? member->GetHealth() - f54hStartHealth[index] : 0u;
+                if (f54hRootGain[index] > 0)
+                    ++f54hRootTargets;
+                member->SetHealth(f54hStartHealth[index]);
+            }
+        }
+
+        // Stage 2: install only effect zero. Child(B) cannot match Aura(A).
+        f54gAuraSpell->Effect[0] = SPELL_EFFECT_APPLY_AURA;
+        f54gAuraSpell->EffectApplyAuraName[0] = SPELL_AURA_ADD_TARGET_TRIGGER;
+        f54gAuraSpell->EffectTriggerSpell[0] = f54gChildSpell->Id;
+        f54gAuraSpell->EffectBasePoints[0] = 100;
+        f54gAuraSpell->EffectRealPointsPerLevel[0] = 0.0f;
+        f54gAuraSpell->EffectBaseDice[0] = 0;
+        f54gAuraSpell->EffectDieSides[0] = 0;
+        f54gAuraSpell->EffectItemType[0] = f54hRootFamilyMask;
+        f54gAuraSpell->SpellFamilyName = SPELLFAMILY_PRIEST;
+        f54gAuraSpell->Effect[1] = 0;
+
+        SpellAuraHolder* const f54hStage2Holder =
+            healer->AddAura(f54gAuraSpell->Id, 0, healer);
+        Aura* const f54hStage2Aura = f54hStage2Holder
+            ? f54hStage2Holder->GetAuraByEffectIndex(EFFECT_INDEX_0) : nullptr;
+        f54hStage2AuraAttached = f54hStage2Aura &&
+            f54hStage2Aura->GetModifier()->m_auraname ==
+                SPELL_AURA_ADD_TARGET_TRIGGER &&
+            !f54hStage2Holder->GetAuraScript() &&
+            f54hStage2Aura->GetBasePoints() == 100 &&
+            !f54hStage2Holder->GetAuraByEffectIndex(EFFECT_INDEX_1);
+        healer->SetFacingToObject(tank);
+        f54hStage2Cast = f54hRootCast && f54hStage2AuraAttached &&
+            healer->CastSpell(tank, f54gRootSpell, true) == SPELL_CAST_OK;
+        if (f54hStage2Cast)
+        {
+            for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+            {
+                Player* member = players[index];
+                f54hStage2TotalGain[index] =
+                    member->GetHealth() > f54hStartHealth[index]
+                        ? member->GetHealth() - f54hStartHealth[index] : 0u;
+                f54hChildGain[index] =
+                    f54hStage2TotalGain[index] > f54hRootGain[index]
+                        ? f54hStage2TotalGain[index] - f54hRootGain[index] : 0u;
+                if (f54hChildGain[index] > 10u)
+                    ++f54hChildTargets;
+                member->SetHealth(f54hStartHealth[index]);
+            }
+        }
+        healer->RemoveAurasDueToSpell(f54gAuraSpell->Id);
+        f54hStage2AuraRemoved =
+            healer->GetSpellAuraHolder(f54gAuraSpell->Id) == nullptr;
+
+        // Stage 3: activate effect one. The holder now contains two Aura
+        // objects: root(A)->child(B)->grandchild(no matching mask).
+        f54gAuraSpell->Effect[1] = SPELL_EFFECT_APPLY_AURA;
+        f54gAuraSpell->EffectApplyAuraName[1] = SPELL_AURA_ADD_TARGET_TRIGGER;
+        f54gAuraSpell->EffectTriggerSpell[1] = f54hGrandchildSpell->Id;
+        f54gAuraSpell->EffectBasePoints[1] = 100;
+        f54gAuraSpell->EffectRealPointsPerLevel[1] = 0.0f;
+        f54gAuraSpell->EffectBaseDice[1] = 0;
+        f54gAuraSpell->EffectDieSides[1] = 0;
+        f54gAuraSpell->EffectItemType[1] = f54hChildFamilyMask;
+
+        SpellAuraHolder* const f54hStage3Holder =
+            f54hStage2AuraRemoved
+                ? healer->AddAura(f54gAuraSpell->Id, 0, healer) : nullptr;
+        Aura* const f54hStage3Aura0 = f54hStage3Holder
+            ? f54hStage3Holder->GetAuraByEffectIndex(EFFECT_INDEX_0) : nullptr;
+        Aura* const f54hStage3Aura1 = f54hStage3Holder
+            ? f54hStage3Holder->GetAuraByEffectIndex(EFFECT_INDEX_1) : nullptr;
+        f54hStage3AuraAttached = f54hStage3Aura0 && f54hStage3Aura1 &&
+            f54hStage3Aura0->GetModifier()->m_auraname ==
+                SPELL_AURA_ADD_TARGET_TRIGGER &&
+            f54hStage3Aura1->GetModifier()->m_auraname ==
+                SPELL_AURA_ADD_TARGET_TRIGGER &&
+            !f54hStage3Holder->GetAuraScript() &&
+            f54hStage3Aura0->GetBasePoints() == 100 &&
+            f54hStage3Aura1->GetBasePoints() == 100;
+        float const f54hThreatBefore0 =
+            hostiles[0].creature->GetThreatManager().getThreat(healer);
+        float const f54hThreatBefore1 =
+            hostiles[1].creature->GetThreatManager().getThreat(healer);
+        healer->SetFacingToObject(tank);
+        f54hStage3Cast = f54hStage2Cast && f54hStage3AuraAttached &&
+            healer->CastSpell(tank, f54gRootSpell, true) == SPELL_CAST_OK;
+
+        float expectedThreat0 = 0.0f;
+        float expectedThreat1 = 0.0f;
+        if (f54hStage3Cast)
+        {
+            for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+            {
+                Player* member = players[index];
+                f54hStage3TotalGain[index] =
+                    member->GetHealth() > f54hStartHealth[index]
+                        ? member->GetHealth() - f54hStartHealth[index] : 0u;
+                f54hGrandchildGain[index] =
+                    f54hStage3TotalGain[index] > f54hStage2TotalGain[index]
+                        ? f54hStage3TotalGain[index] - f54hStage2TotalGain[index]
+                        : 0u;
+                if (f54hGrandchildGain[index] > 10u)
+                    ++f54hGrandchildTargets;
+
+                float const divisor = static_cast<float>(
+                    f54gReferenceCount[index] ? f54gReferenceCount[index] : 1u);
+                auto expectedHealThreat =
+                    [&](uint32 effectiveGain, SpellEntry const* spell)
+                    {
+                        float const input = static_cast<float>(effectiveGain) *
+                            0.5f * sSpellMgr.GetSpellThreatMultiplier(spell) /
+                            divisor;
+                        return ThreatCalcHelper::CalcThreat(
+                            healer, input, false, spell->GetSpellSchoolMask(), spell);
+                    };
+                float const recipientThreat =
+                    expectedHealThreat(f54hRootGain[index], f54gRootSpell) +
+                    expectedHealThreat(f54hChildGain[index], f54gChildSpell) +
+                    expectedHealThreat(
+                        f54hGrandchildGain[index], f54hGrandchildSpell);
+                expectedThreat0 += recipientThreat;
+                expectedThreat1 += recipientThreat;
+            }
+            f54hThreatMatched =
+                std::fabs(
+                    hostiles[0].creature->GetThreatManager().getThreat(healer) -
+                    f54hThreatBefore0 - expectedThreat0) < 0.50f &&
+                std::fabs(
+                    hostiles[1].creature->GetThreatManager().getThreat(healer) -
+                    f54hThreatBefore1 - expectedThreat1) < 0.50f;
+        }
+
+        healer->RemoveAurasDueToSpell(f54gAuraSpell->Id);
+        f54hStage3AuraRemoved =
+            healer->GetSpellAuraHolder(f54gAuraSpell->Id) == nullptr;
+        for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+            players[index]->SetHealth(f54hSavedHealth[index]);
+
+        f54gAuraSpell->Effect[0] = f54hSavedAuraEffect0;
+        f54gAuraSpell->EffectApplyAuraName[0] = f54hSavedAuraType0;
+        f54gAuraSpell->EffectTriggerSpell[0] = f54hSavedAuraTrigger0;
+        f54gAuraSpell->EffectBasePoints[0] = f54hSavedAuraBasePoints0;
+        f54gAuraSpell->EffectRealPointsPerLevel[0] = f54hSavedAuraRealPoints0;
+        f54gAuraSpell->EffectBaseDice[0] = f54hSavedAuraBaseDice0;
+        f54gAuraSpell->EffectDieSides[0] = f54hSavedAuraDieSides0;
+        f54gAuraSpell->EffectItemType[0] = f54hSavedAuraMask0;
+        f54gAuraSpell->Effect[1] = f54hSavedAuraEffect1;
+        f54gAuraSpell->EffectApplyAuraName[1] = f54hSavedAuraType1;
+        f54gAuraSpell->EffectTriggerSpell[1] = f54hSavedAuraTrigger1;
+        f54gAuraSpell->EffectBasePoints[1] = f54hSavedAuraBasePoints1;
+        f54gAuraSpell->EffectRealPointsPerLevel[1] = f54hSavedAuraRealPoints1;
+        f54gAuraSpell->EffectBaseDice[1] = f54hSavedAuraBaseDice1;
+        f54gAuraSpell->EffectDieSides[1] = f54hSavedAuraDieSides1;
+        f54gAuraSpell->EffectItemType[1] = f54hSavedAuraMask1;
+        f54gAuraSpell->SpellFamilyName = f54hSavedAuraFamily;
+
+        f54gMutableRootSpell->SpellFamilyFlags = f54hSavedRootFamilyFlags;
+        f54gMutableRootSpell->AttributesEx2 = f54hSavedRootAttributesEx2;
+        f54gMutableRootSpell->AttributesEx3 = f54hSavedRootAttributesEx3;
+        f54gMutableRootSpell->EffectDieSides[0] = f54hSavedRootDieSides;
+        f54gMutableChildSpell->SpellFamilyFlags = f54hSavedChildFamilyFlags;
+        f54gMutableChildSpell->AttributesEx2 = f54hSavedChildAttributesEx2;
+        f54gMutableChildSpell->AttributesEx3 = f54hSavedChildAttributesEx3;
+        f54gMutableChildSpell->EffectDieSides[0] = f54hSavedChildDieSides;
+        f54hMutableGrandchildSpell->AttributesEx2 =
+            f54hSavedGrandchildAttributesEx2;
+        f54hMutableGrandchildSpell->AttributesEx3 =
+            f54hSavedGrandchildAttributesEx3;
+        f54hMutableGrandchildSpell->EffectDieSides[0] =
+            f54hSavedGrandchildDieSides;
+
+        f54hAuraRowsRestored =
+            f54gAuraSpell->Effect[0] == f54hSavedAuraEffect0 &&
+            f54gAuraSpell->EffectApplyAuraName[0] == f54hSavedAuraType0 &&
+            f54gAuraSpell->EffectTriggerSpell[0] == f54hSavedAuraTrigger0 &&
+            f54gAuraSpell->EffectBasePoints[0] == f54hSavedAuraBasePoints0 &&
+            f54gAuraSpell->EffectRealPointsPerLevel[0] == f54hSavedAuraRealPoints0 &&
+            f54gAuraSpell->EffectBaseDice[0] == f54hSavedAuraBaseDice0 &&
+            f54gAuraSpell->EffectDieSides[0] == f54hSavedAuraDieSides0 &&
+            f54gAuraSpell->EffectItemType[0] == f54hSavedAuraMask0 &&
+            f54gAuraSpell->Effect[1] == f54hSavedAuraEffect1 &&
+            f54gAuraSpell->EffectApplyAuraName[1] == f54hSavedAuraType1 &&
+            f54gAuraSpell->EffectTriggerSpell[1] == f54hSavedAuraTrigger1 &&
+            f54gAuraSpell->EffectBasePoints[1] == f54hSavedAuraBasePoints1 &&
+            f54gAuraSpell->EffectRealPointsPerLevel[1] == f54hSavedAuraRealPoints1 &&
+            f54gAuraSpell->EffectBaseDice[1] == f54hSavedAuraBaseDice1 &&
+            f54gAuraSpell->EffectDieSides[1] == f54hSavedAuraDieSides1 &&
+            f54gAuraSpell->EffectItemType[1] == f54hSavedAuraMask1 &&
+            f54gAuraSpell->SpellFamilyName == f54hSavedAuraFamily;
+        f54hRootRowRestored =
+            f54gMutableRootSpell->SpellFamilyFlags == f54hSavedRootFamilyFlags &&
+            f54gMutableRootSpell->AttributesEx2 == f54hSavedRootAttributesEx2 &&
+            f54gMutableRootSpell->AttributesEx3 == f54hSavedRootAttributesEx3 &&
+            f54gMutableRootSpell->EffectDieSides[0] == f54hSavedRootDieSides;
+        f54hChildRowRestored =
+            f54gMutableChildSpell->SpellFamilyFlags == f54hSavedChildFamilyFlags &&
+            f54gMutableChildSpell->AttributesEx2 == f54hSavedChildAttributesEx2 &&
+            f54gMutableChildSpell->AttributesEx3 == f54hSavedChildAttributesEx3 &&
+            f54gMutableChildSpell->EffectDieSides[0] == f54hSavedChildDieSides;
+        f54hGrandchildRowRestored =
+            f54hMutableGrandchildSpell->AttributesEx2 ==
+                f54hSavedGrandchildAttributesEx2 &&
+            f54hMutableGrandchildSpell->AttributesEx3 ==
+                f54hSavedGrandchildAttributesEx3 &&
+            f54hMutableGrandchildSpell->EffectDieSides[0] ==
+                f54hSavedGrandchildDieSides;
+    }
+
+    bool const f54hPassed = f54hRowReady && f54hRootCast &&
+        f54hRootTargets == MAX_GROUP_SIZE &&
+        f54hStage2AuraAttached && f54hStage2Cast &&
+        f54hChildTargets == MAX_GROUP_SIZE && f54hStage2AuraRemoved &&
+        f54hStage3AuraAttached && f54hStage3Cast &&
+        f54hGrandchildTargets == MAX_GROUP_SIZE && f54hThreatMatched &&
+        f54hStage3AuraRemoved && f54hAuraRowsRestored &&
+        f54hRootRowRestored && f54hChildRowRestored &&
+        f54hGrandchildRowRestored;
+    sLog.Out(LOG_BASIC, f54hPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54h nested target-trigger chain: rowReady=%u rootCast=%u rootTargets=%u stage2AuraAttached=%u stage2Cast=%u childTargets=%u stage2AuraRemoved=%u stage3AuraAttached=%u stage3Cast=%u grandchildTargets=%u threatMatched=%u stage3AuraRemoved=%u auraRowsRestored=%u rootRowRestored=%u childRowRestored=%u grandchildRowRestored=%u childGain=%u/%u/%u/%u/%u grandchildGain=%u/%u/%u/%u/%u.",
+        f54hRowReady ? 1u : 0u, f54hRootCast ? 1u : 0u, f54hRootTargets,
+        f54hStage2AuraAttached ? 1u : 0u, f54hStage2Cast ? 1u : 0u,
+        f54hChildTargets, f54hStage2AuraRemoved ? 1u : 0u,
+        f54hStage3AuraAttached ? 1u : 0u, f54hStage3Cast ? 1u : 0u,
+        f54hGrandchildTargets, f54hThreatMatched ? 1u : 0u,
+        f54hStage3AuraRemoved ? 1u : 0u,
+        f54hAuraRowsRestored ? 1u : 0u, f54hRootRowRestored ? 1u : 0u,
+        f54hChildRowRestored ? 1u : 0u,
+        f54hGrandchildRowRestored ? 1u : 0u,
+        f54hChildGain[0], f54hChildGain[1], f54hChildGain[2],
+        f54hChildGain[3], f54hChildGain[4],
+        f54hGrandchildGain[0], f54hGrandchildGain[1],
+        f54hGrandchildGain[2], f54hGrandchildGain[3],
+        f54hGrandchildGain[4]);
+    if (f54hPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F54h real Core SPELL_AURA_ADD_TARGET_TRIGGER recursively dispatched child and grandchild heals for all five targets; measured root/child/grandchild effective healing and matched both hostile ThreatManagers.");
+
+// F54g deleted-target boundary: a real delayed projectile has selected
     // its Creature GUID, then Map::Remove detaches and destroys that Creature
     // before impact. The target-trigger child is a self-heal so a successful
     // trigger is observable on the caster even though the original target is gone.

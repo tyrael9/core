@@ -265,12 +265,12 @@ Implemented and supported by pure tests and/or fixture-backed Core runtime, as s
 - GUID/scalar-only PartySnapshot, same-map five-Player Group/hostile/threat builder, shared map/instance PartyCoordinator, reservations, stable formation slots and value-only death/resurrection/cast/movement/item lifecycle events.
 - Exclusive NewEngine authority with no Legacy policy fallback. The only production NewEngine behavior currently registered is narrow out-of-combat Group-leader Follow plus StopFollowing recovery; Legacy remains the default runtime mode.
 - Core-backed simulator coverage for follow/formation, leader handoff, five-Player regroup, wipe/death/resurrection, generic action preflight, movement/item-use lifecycle, trace budgets and Priest direct-heal forecast/source audits.
-- Priest Phase 6 has a substantial test-only vertical slice: target/rank selection, cross-Bot Heal reservations, direct-heal/HoT/absorb snapshots, bounded timeline, Core heal/damage ordering, proc/target-trigger paths, a representative nested child chain, pushback and interruption invalidation. F54k random HoT bounds are trusted-runtime validated; F54l adds value-only school-absorb pools and known-school damage matching.
+- Priest Phase 6 has a substantial test-only vertical slice: target/rank selection, cross-Bot Heal reservations, direct-heal/HoT/absorb snapshots, bounded timeline, Core heal/damage ordering, proc/target-trigger paths, a representative nested child chain, pushback and interruption invalidation. F54k random HoT bounds and F54l school-aware absorb pools/known-school damage matching are trusted-runtime validated; F54m adds bounded child-chain depth/loop coverage.
 
 Still gated:
 
 - `PriestDirectHealAction` and the Priest Healing Strategy are not registered in production. Its whole-action threat estimate remains fail-closed/Unknown; the test-only execution fixture is not a production policy.
-- F54l school-absorb prediction, deeper child-chain closure (F54m), complete Core ordering and the whole-action helpful-threat/proc/recipient envelope (F54n) must each close independently. F54k random HoT bounds have trusted-runtime evidence but remain diagnostic/test-only.
+- F54m deeper child-chain closure, complete Core ordering and the whole-action helpful-threat/proc/recipient envelope (F54n) must each close independently. F54k/F54l have trusted-runtime evidence but remain diagnostic/test-only.
 - Druid, Shaman, Paladin, Warrior, Mage, Warlock, Hunter and Rogue class/role strategies are not implemented as production policies.
 - Broader party-wide target/threat/CC/interrupt/dispel coordination and Vanilla dungeon/raid encounter strategies remain future phases.
 - The trace/reporting pipeline is bounded and useful; richer AI/boss state, broader arbitration detail, ordinary-member per-hit health deltas, cross-map closure and deployment-diagnostics integration remain explicit gaps.
@@ -280,8 +280,8 @@ NewEngine is an exclusive development mode, not a complete/playable combat AI. M
 ## 18. Immediate next implementation sequence
 
 1. F54k is trusted-runtime validated: keep the guaranteed floor in triage and both reachable bounds in the diagnostic timeline.
-2. F54l: capture bounded school-specific School Absorb pools and apply them only to known-school predicted damage; exclude Mana Shield, charged Aura paths, scripted Aura paths, unknown schools and ambiguous order.
-3. F54m: extend nested child/proc closure beyond the representative three-cast chain, with explicit depth/event limits and per-hostile threat parity.
+2. F54l is trusted-runtime validated: bounded School Absorb pools match only known intersecting damage schools; Mana Shield, charged Aura paths, AuraScript paths, unknown schools and ambiguous same-time matching remain excluded.
+3. F54m: extend the representative three-cast nested chain to a bounded four-cast chain with a deliberate cycle; prove Core rejects the fifth cast at the configured chain limit, while every recipient's healing/threat parity and complete cleanup are preserved.
 4. F54n: close supported Core ordering plus helpful-threat, proc, script and recipient paths. Unknown remains a hard veto.
 5. Register `PriestDirectHealAction` and the Priest Healing Strategy only after the full action threat estimate is Complete or NoThreat for the exact supported spell shape.
 6. Extend the same action/trace/runtime contracts across remaining classes, then party coordination and encounter-specific Vanilla strategies.

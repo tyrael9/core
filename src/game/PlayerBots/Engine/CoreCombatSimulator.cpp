@@ -8947,6 +8947,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     uint32 f54gRootTargets = 0;
     uint32 f54gChildTargets = 0;
     uint32 f54gReferenceCount[5] = {};
+    bool f54gHasHostile0[5] = {};
+    bool f54gHasHostile1[5] = {};
     uint32 f54gRootGain[5] = {};
     uint32 f54gTotalGain[5] = {};
     uint32 f54gChildGain[5] = {};
@@ -8993,12 +8995,22 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             for (HostileReference* reference =
                      member->GetHostileRefManager().getFirst();
                  reference; reference = reference->next())
+            {
                 ++f54gReferenceCount[index];
+                Unit* const hostileOwner = reference->getSource()->getOwner();
+                f54gHasHostile0[index] =
+                    f54gHasHostile0[index] ||
+                    hostileOwner == hostiles[0].creature;
+                f54gHasHostile1[index] =
+                    f54gHasHostile1[index] ||
+                    hostileOwner == hostiles[1].creature;
+            }
         }
         f54gTargetReferencesValid = true;
         for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
             f54gTargetReferencesValid =
-                f54gTargetReferencesValid && f54gReferenceCount[index] >= 2;
+                f54gTargetReferencesValid && f54gReferenceCount[index] >= 2 &&
+                f54gHasHostile0[index] && f54gHasHostile1[index];
 
         // First cast establishes the real Core root-heal amount per selected
         // group member with no target-trigger Aura attached.

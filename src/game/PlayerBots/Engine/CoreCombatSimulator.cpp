@@ -5417,7 +5417,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             f54jCleanup;
                         sLog.Out(LOG_BASIC,
                             f54jPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-                            "[PartyBotSimulator] F54j snapshot-after-pushback/interruption: captured=%u spellEligible=%u castAccepted=%u preSnapshot=%u casterDamage=%u damageTaken=%u timerIncreased=%u castTimeMs=%u beforeTimerMs=%u afterTimerMs=%u pushbackDeltaMs=%u postPushbackSnapshot=%u beforeEpoch=%u afterPushbackEpoch=%u interrupted=%u postInterruptSnapshot=%u afterInterruptEpoch=%u noStaleHealCredit=%u targetUnchanged=%u cleanup=%u spellFlags=%u beforeAmount=%u afterAmount=%u.",
+                            "[PartyBotSimulator] F54j snapshot-after-pushback/interruption: captured=%u spellEligible=%u castAccepted=%u preSnapshot=%u casterDamage=%u damageTaken=%u timerIncreased=%u castTimeMs=%u beforeTimerMs=%u afterTimerMs=%u pushbackDeltaMs=%u postPushbackSnapshot=%u beforeEpoch=%llu afterPushbackEpoch=%llu interrupted=%u postInterruptSnapshot=%u afterInterruptEpoch=%llu noStaleHealCredit=%u targetUnchanged=%u cleanup=%u spellFlags=%u beforeAmount=%u afterAmount=%u.",
                             f54jPassed ? 1u : 0u,
                             f54jSpellEligible ? 1u : 0u,
                             f54jCastAccepted ? 1u : 0u,

@@ -259,19 +259,9 @@ void CaptureHealingForecast(Player* member, Map* map,
             memberData.schoolAbsorbForecastsTruncated = true;
     }
 
-    std::sort(memberData.schoolAbsorbForecasts.begin(),
-        memberData.schoolAbsorbForecasts.end(),
-        [](SchoolAbsorbForecastSnapshot const& left,
-           SchoolAbsorbForecastSnapshot const& right)
-        {
-            if (left.schoolMask != right.schoolMask)
-                return left.schoolMask < right.schoolMask;
-            if (left.spellId != right.spellId)
-                return left.spellId < right.spellId;
-            if (left.remainingDurationMs != right.remainingDurationMs)
-                return left.remainingDurationMs < right.remainingDurationMs;
-            return left.remainingAmount < right.remainingAmount;
-        });
+    // Preserve the Core AuraList traversal order. CalculateDamageAbsorbAndResist
+    // consumes shields in this order; sorting detached rows would change which
+    // pool remains for later hits when eligible shields have different timers.
 
     std::sort(memberData.periodicHealForecasts.begin(),
         memberData.periodicHealForecasts.end(),

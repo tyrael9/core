@@ -5682,6 +5682,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         }
                         tank->RemoveAurasDueToSpell(139);
                         tank->RemoveAurasDueToSpell(17);
+                        // The real PWS SpellScript applied Weakened Soul in F54c;
+                        // remove that fixture-owned debuff before the next PWS test.
+                        tank->RemoveAurasDueToSpell(6788);
 
                         // F54k: Core Aura::PeriodicTick calls rand_ditheru on target-
                         // adjusted periodic healing. Capture both reachable values from
@@ -5860,6 +5863,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         // snapshot, the forecast and Core's own absorb routine
                         // agree that Frost bypasses it and Fire consumes it.
                         bool f54lShieldApplied = false;
+                        bool f54lCastAccepted = false;
+                        bool f54lWeakenedSoulClearBeforeCast = false;
+                        uint32 f54lCastResultValue =
+                            static_cast<uint32>(SPELL_FAILED_SPELL_UNAVAILABLE);
                         bool f54lSnapshotCaptured = false;
                         bool f54lAllSchoolExcluded = false;
                         bool f54lFrostNoMatch = false;
@@ -5904,8 +5911,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                                 SPELL_ATTR_EX4_IGNORE_RESISTANCES;
                             f54lMutableShieldSpell->EffectMiscValue[
                                 f54lAbsorbEffectIndex] = SPELL_SCHOOL_MASK_FIRE;
+                            f54lWeakenedSoulClearBeforeCast = !tank->HasAura(6788);
                             SpellCastResult const f54lCastResult =
                                 priest->CastSpell(tank, powerWordShield, true);
+                            f54lCastResultValue = static_cast<uint32>(f54lCastResult);
+                            f54lCastAccepted = f54lCastResult == SPELL_CAST_OK;
                             // The Aura copies its modifier at apply time; restore
                             // the global SpellEntry row before inspecting it.
                             f54lMutableShieldSpell->EffectMiscValue[
@@ -6113,8 +6123,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             f54lTimelineMatches && f54lHealthMatches && f54lCleanup;
                         sLog.Out(LOG_BASIC,
                             f54lPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-                            "[PartyBotSimulator] F54l school-aware absorbs: shieldApplied=%u snapshotCaptured=%u allSchoolExcluded=%u frostNoMatch=%u fireMatched=%u depletion=%u damage=%u initialAbsorb=%u remainingAbsorb=%u timelineMatches=%u healthMatches=%u actualHealth=%u cleanup=%u.",
+                            "[PartyBotSimulator] F54l school-aware absorbs: shieldApplied=%u castAccepted=%u castResult=%u weakenedSoulClear=%u snapshotCaptured=%u allSchoolExcluded=%u frostNoMatch=%u fireMatched=%u depletion=%u damage=%u initialAbsorb=%u remainingAbsorb=%u timelineMatches=%u healthMatches=%u actualHealth=%u cleanup=%u.",
                             f54lShieldApplied ? 1u : 0u,
+                            f54lCastAccepted ? 1u : 0u,
+                            f54lCastResultValue,
+                            f54lWeakenedSoulClearBeforeCast ? 1u : 0u,
                             f54lSnapshotCaptured ? 1u : 0u,
                             f54lAllSchoolExcluded ? 1u : 0u,
                             f54lFrostNoMatch ? 1u : 0u,

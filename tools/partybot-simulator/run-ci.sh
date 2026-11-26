@@ -544,7 +544,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54k represented Core rand_ditheru peri
 fi
 
 f54l_line="$(grep -F '[PartyBotSimulator] F54l school-aware absorbs:' "$LOG_FILE" | tail -n 1)"
-for expected in "shieldApplied=1" "snapshotCaptured=1" "allSchoolExcluded=1" "frostNoMatch=1" "fireMatched=1" "depletion=1" "timelineMatches=1" "healthMatches=1" "cleanup=1"; do
+for expected in "shieldApplied=1" "castAccepted=1" "weakenedSoulClear=1" "snapshotCaptured=1" "allSchoolExcluded=1" "frostNoMatch=1" "fireMatched=1" "depletion=1" "timelineMatches=1" "healthMatches=1" "cleanup=1"; do
     if [[ "$f54l_line" != *"$expected"* ]]; then
         echo "[PartyBotSimulator] F54l school-absorb assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1

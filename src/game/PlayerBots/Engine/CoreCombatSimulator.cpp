@@ -11402,8 +11402,6 @@ if (f54mRowReady)
     f54gMutableChildSpell->AttributesEx2 = f54mSavedChildAttributesEx2;
     f54gMutableChildSpell->AttributesEx3 = f54mSavedChildAttributesEx3;
     f54gMutableChildSpell->EffectDieSides[0] = f54mSavedChildDieSides;
-    f54hMutableGrandchildSpell->SpellFamilyFlags =
-        f54mSavedGrandchildFamilyFlags;
     f54hMutableGrandchildSpell->AttributesEx2 =
         f54mSavedGrandchildAttributesEx2;
     f54hMutableGrandchildSpell->AttributesEx3 =

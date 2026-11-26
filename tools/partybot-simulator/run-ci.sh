@@ -575,6 +575,18 @@ for expected in "rowReady=1" "reflectAuraAttached=1" "reflectAuraActive=1" "cont
     fi
 done
 
+if ! grep -Fq "[PartyBotSimulator] PASS: F54g skipped a target removed after the delayed projectile captured its GUID; the live-target control triggered a caster self-heal, while the removed-target projectile produced no child self-heal or healing-assist threat." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F54g deleted-target skip PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f54g_deleted_line="$(grep -F '[PartyBotSimulator] F54g deleted-target guard:' "$LOG_FILE" | tail -n 1)"
+for expected in "rowReady=1" "auraAttached=1" "controlCast=1" "controlPending=1" "controlRootHit=1" "deletedCast=1" "projectilePending=1" "targetRemoved=1" "targetGuidUnresolved=1" "casterUnhealed=1" "remainingThreatUnchanged=1" "auraRemoved=1" "spellRowsRestored=1"; do
+    if [[ "$f54g_deleted_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F54g deleted-target assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
 f54e_recipient_line="$(grep -F '[PartyBotSimulator] F54e recipient-side helpful proc:' "$LOG_FILE" | tail -n 1)"
 for expected in "auraAttached=1" "procVeto=1" "impactsEmpty=1" "auraRemoved=1" "procFlagsRestored=1"; do
     if ! printf '%s\n' "$f54e_recipient_line" | grep -F "$expected" >/dev/null; then

@@ -9740,6 +9740,303 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states.");
 
+    // F54g deleted-target boundary: a real delayed projectile has selected
+    // its Creature GUID, then Map::Remove detaches and destroys that Creature
+    // before impact. The target-trigger child is a self-heal so a successful
+    // trigger is observable on the caster even though the original target is gone.
+    bool f54gDeletedRowReady = f54gReflectPassed &&
+        healer && healer->IsInWorld() && healer->IsAlive() &&
+        hostiles[0].creature && hostiles[1].creature &&
+        hostiles[0].creature->IsAlive() && hostiles[1].creature->IsAlive() &&
+        hostiles[0].creature->GetTotalAuraModifier(
+            SPELL_AURA_REFLECT_SPELLS) == 0 &&
+        hostiles[1].creature->GetTotalAuraModifier(
+            SPELL_AURA_REFLECT_SPELLS) == 0 &&
+        f54gAuraSpell && f54gAuraSpell->ScriptId == 0 &&
+        f54gReflectRootSpell && f54gReflectRootSpell->ScriptId == 0 &&
+        f54gReflectRootSpell->DmgClass == SPELL_DAMAGE_CLASS_MAGIC &&
+        !f54gReflectRootSpell->IsChanneledSpell() &&
+        onlyDamageEffects(f54gReflectRootSpell) &&
+        f54gChildSpell && f54gChildSpell->ScriptId == 0 &&
+        onlyHealEffects(f54gChildSpell) &&
+        !healer->GetSpellAuraHolder(f54gAuraSpell->Id);
+
+    uint64 const f54gDeletedSavedRootFamilyFlags =
+        f54gMutableReflectRootSpell
+            ? f54gMutableReflectRootSpell->SpellFamilyFlags : 0;
+    uint32 const f54gDeletedSavedRootAttributesEx2 =
+        f54gMutableReflectRootSpell
+            ? f54gMutableReflectRootSpell->AttributesEx2 : 0;
+    uint32 const f54gDeletedSavedRootAttributesEx3 =
+        f54gMutableReflectRootSpell
+            ? f54gMutableReflectRootSpell->AttributesEx3 : 0;
+    int32 const f54gDeletedSavedRootDieSides0 =
+        f54gMutableReflectRootSpell
+            ? f54gMutableReflectRootSpell->EffectDieSides[0] : 0;
+    float const f54gDeletedSavedRootSpeed =
+        f54gMutableReflectRootSpell ? f54gMutableReflectRootSpell->speed : 0.0f;
+    uint32 const f54gDeletedSavedChildAttributesEx2 =
+        f54gMutableChildSpell ? f54gMutableChildSpell->AttributesEx2 : 0;
+    uint32 const f54gDeletedSavedChildAttributesEx3 =
+        f54gMutableChildSpell ? f54gMutableChildSpell->AttributesEx3 : 0;
+    int32 const f54gDeletedSavedChildDieSides0 =
+        f54gMutableChildSpell ? f54gMutableChildSpell->EffectDieSides[0] : 0;
+    uint32 const f54gDeletedSavedChildTargetA0 =
+        f54gMutableChildSpell
+            ? f54gMutableChildSpell->EffectImplicitTargetA[0] : 0;
+    uint32 const f54gDeletedSavedChildTargetB0 =
+        f54gMutableChildSpell
+            ? f54gMutableChildSpell->EffectImplicitTargetB[0] : 0;
+
+    bool f54gDeletedAuraAttached = false;
+    bool f54gDeletedControlCastAccepted = false;
+    bool f54gDeletedControlProjectilePending = false;
+    bool f54gDeletedControlRootHit = false;
+    bool f54gDeletedControlChildHealedCaster = false;
+    bool f54gDeletedCastAccepted = false;
+    bool f54gDeletedProjectilePending = false;
+    bool f54gDeletedTargetRemoved = false;
+    bool f54gDeletedTargetGuidUnresolved = false;
+    bool f54gDeletedCasterUnhealed = false;
+    bool f54gDeletedThreatUnchanged = false;
+    bool f54gDeletedAuraRemoved = false;
+    bool f54gDeletedRowsRestored = false;
+    uint32 f54gDeletedControlChildGain = 0;
+    uint32 f54gDeletedRootDamage = 0;
+    uint32 f54gDeletedTargetDistanceDelayMs = 0;
+
+    if (f54gDeletedRowReady)
+    {
+        f54gAuraSpell->Effect[0] = SPELL_EFFECT_APPLY_AURA;
+        f54gAuraSpell->EffectApplyAuraName[0] = SPELL_AURA_ADD_TARGET_TRIGGER;
+        f54gAuraSpell->EffectTriggerSpell[0] = f54gChildSpell->Id;
+        f54gAuraSpell->EffectBasePoints[0] = 100;
+        f54gAuraSpell->EffectRealPointsPerLevel[0] = 0.0f;
+        f54gAuraSpell->EffectBaseDice[0] = 0;
+        f54gAuraSpell->EffectDieSides[0] = 0;
+        f54gAuraSpell->EffectItemType[0] = f54gUniqueFamilyMask;
+        f54gAuraSpell->SpellFamilyName =
+            f54gReflectRootSpell->SpellFamilyName;
+
+        f54gMutableReflectRootSpell->SpellFamilyFlags =
+            f54gUniqueFamilyMask;
+        f54gMutableReflectRootSpell->AttributesEx2 |=
+            SPELL_ATTR_EX2_CANT_CRIT;
+        f54gMutableReflectRootSpell->AttributesEx3 |=
+            SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
+            SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
+        f54gMutableReflectRootSpell->EffectDieSides[0] = 0;
+        // Positive projectile speed makes the Core retain TargetInfo by GUID
+        // and process its impact asynchronously through SpellEvent.
+        f54gMutableReflectRootSpell->speed = 20.0f;
+
+        f54gMutableChildSpell->AttributesEx2 |=
+            SPELL_ATTR_EX2_CANT_CRIT;
+        f54gMutableChildSpell->AttributesEx3 |=
+            SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
+            SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
+        f54gMutableChildSpell->EffectDieSides[0] = 0;
+        f54gMutableChildSpell->EffectImplicitTargetA[0] =
+            TARGET_UNIT_CASTER;
+        f54gMutableChildSpell->EffectImplicitTargetB[0] = TARGET_NONE;
+
+        SpellAuraHolder* const holder =
+            healer->AddAura(f54gAuraSpell->Id, EFFECT_INDEX_0, healer);
+        Aura* const aura = holder
+            ? holder->GetAuraByEffectIndex(EFFECT_INDEX_0) : nullptr;
+        f54gDeletedAuraAttached = aura &&
+            aura->GetModifier()->m_auraname ==
+                SPELL_AURA_ADD_TARGET_TRIGGER &&
+            !holder->GetAuraScript() && aura->GetBasePoints() == 100;
+
+        uint32 const startHealth =
+            std::max<uint32>(1u, healer->GetMaxHealth() / 3u);
+        uint32 const controlTargetHealthBefore =
+            hostiles[0].creature->GetHealth();
+        uint32 const savedHealerHealth = healer->GetHealth();
+        healer->SetHealth(startHealth);
+
+        // Control: with the original Creature still in the Map, the delayed
+        // Shadow Bolt hits and Core's trigger child self-heals its caster.
+        f54gDeletedControlCastAccepted = f54gDeletedAuraAttached &&
+            healer->CastSpell(hostiles[0].creature,
+                f54gReflectRootSpell, true) == SPELL_CAST_OK;
+        f54gDeletedControlProjectilePending =
+            f54gDeletedControlCastAccepted &&
+            hostiles[0].creature->GetHealth() == controlTargetHealthBefore;
+        if (f54gDeletedControlProjectilePending)
+        {
+            for (uint32 tick = 0; tick < 80 &&
+                 (hostiles[0].creature->GetHealth() == controlTargetHealthBefore ||
+                  healer->GetHealth() <= startHealth); ++tick)
+                map.Update(50);
+        }
+        f54gDeletedControlRootHit =
+            hostiles[0].creature->GetHealth() < controlTargetHealthBefore;
+        f54gDeletedRootDamage =
+            f54gDeletedControlRootHit
+                ? controlTargetHealthBefore - hostiles[0].creature->GetHealth()
+                : 0u;
+        f54gDeletedControlChildGain =
+            healer->GetHealth() > startHealth
+                ? healer->GetHealth() - startHealth : 0u;
+        f54gDeletedControlChildHealedCaster =
+            f54gDeletedControlChildGain > 10u;
+
+        // Reset only the live control target's health; its threat baseline is
+        // retained so the deleted-target run can prove no child heal occurred.
+        hostiles[0].creature->SetHealth(controlTargetHealthBefore);
+        healer->SetHealth(startHealth);
+
+        ObjectGuid const deletedTargetGuid =
+            hostiles[1].creature->GetObjectGuid();
+        uint32 const deletedTargetHealthBefore =
+            hostiles[1].creature->GetHealth();
+        float const remainingHostileThreatBefore =
+            hostiles[0].creature->GetThreatManager().getThreat(healer);
+
+        // Cast returns after FillTargetMap has captured the explicit target
+        // GUID, but the 20 yd/s projectile has not yet reached it.
+        f54gDeletedCastAccepted =
+            healer->CastSpell(hostiles[1].creature,
+                f54gReflectRootSpell, true) == SPELL_CAST_OK;
+        f54gDeletedProjectilePending = f54gDeletedCastAccepted &&
+            hostiles[1].creature->GetHealth() == deletedTargetHealthBefore;
+        if (f54gDeletedProjectilePending)
+            f54gDeletedTargetRemoved =
+                DestroySimulatorActor(map, hostiles[1]);
+        f54gDeletedTargetGuidUnresolved =
+            f54gDeletedTargetRemoved &&
+            map.GetCreature(deletedTargetGuid) == nullptr;
+
+        if (f54gDeletedTargetGuidUnresolved)
+        {
+            // The queued Spell still owns its value-only TargetInfo GUID.
+            // Core must resolve it again at impact and again during
+            // HandleAddTargetTriggerAuras, skipping both when the Map no
+            // longer contains the Creature.
+            for (uint32 tick = 0; tick < 80; ++tick)
+                map.Update(50);
+        }
+
+        f54gDeletedCasterUnhealed =
+            healer->GetHealth() == startHealth;
+        f54gDeletedThreatUnchanged =
+            std::fabs(hostiles[0].creature->GetThreatManager().getThreat(healer) -
+                remainingHostileThreatBefore) < 0.50f;
+
+        healer->RemoveAurasDueToSpell(f54gAuraSpell->Id);
+        f54gDeletedAuraRemoved =
+            healer->GetSpellAuraHolder(f54gAuraSpell->Id) == nullptr;
+
+        healer->SetHealth(savedHealerHealth);
+
+        f54gAuraSpell->Effect[0] = f54gSavedAuraEffect0;
+        f54gAuraSpell->EffectApplyAuraName[0] = f54gSavedAuraType0;
+        f54gAuraSpell->EffectTriggerSpell[0] = f54gSavedAuraTrigger0;
+        f54gAuraSpell->EffectBasePoints[0] = f54gSavedAuraBasePoints0;
+        f54gAuraSpell->EffectRealPointsPerLevel[0] =
+            f54gSavedAuraRealPointsPerLevel0;
+        f54gAuraSpell->EffectBaseDice[0] = f54gSavedAuraBaseDice0;
+        f54gAuraSpell->EffectDieSides[0] = f54gSavedAuraDieSides0;
+        f54gAuraSpell->EffectItemType[0] = f54gSavedAuraAffectMask0;
+        f54gAuraSpell->SpellFamilyName = f54gSavedAuraFamily0;
+
+        f54gMutableReflectRootSpell->SpellFamilyFlags =
+            f54gDeletedSavedRootFamilyFlags;
+        f54gMutableReflectRootSpell->AttributesEx2 =
+            f54gDeletedSavedRootAttributesEx2;
+        f54gMutableReflectRootSpell->AttributesEx3 =
+            f54gDeletedSavedRootAttributesEx3;
+        f54gMutableReflectRootSpell->EffectDieSides[0] =
+            f54gDeletedSavedRootDieSides0;
+        f54gMutableReflectRootSpell->speed =
+            f54gDeletedSavedRootSpeed;
+
+        f54gMutableChildSpell->AttributesEx2 =
+            f54gDeletedSavedChildAttributesEx2;
+        f54gMutableChildSpell->AttributesEx3 =
+            f54gDeletedSavedChildAttributesEx3;
+        f54gMutableChildSpell->EffectDieSides[0] =
+            f54gDeletedSavedChildDieSides0;
+        f54gMutableChildSpell->EffectImplicitTargetA[0] =
+            f54gDeletedSavedChildTargetA0;
+        f54gMutableChildSpell->EffectImplicitTargetB[0] =
+            f54gDeletedSavedChildTargetB0;
+
+        f54gDeletedRowsRestored =
+            f54gAuraSpell->Effect[0] == f54gSavedAuraEffect0 &&
+            f54gAuraSpell->EffectApplyAuraName[0] == f54gSavedAuraType0 &&
+            f54gAuraSpell->EffectTriggerSpell[0] == f54gSavedAuraTrigger0 &&
+            f54gAuraSpell->EffectBasePoints[0] == f54gSavedAuraBasePoints0 &&
+            f54gAuraSpell->EffectRealPointsPerLevel[0] ==
+                f54gSavedAuraRealPointsPerLevel0 &&
+            f54gAuraSpell->EffectBaseDice[0] == f54gSavedAuraBaseDice0 &&
+            f54gAuraSpell->EffectDieSides[0] == f54gSavedAuraDieSides0 &&
+            f54gAuraSpell->EffectItemType[0] == f54gSavedAuraAffectMask0 &&
+            f54gAuraSpell->SpellFamilyName == f54gSavedAuraFamily0 &&
+            f54gMutableReflectRootSpell->SpellFamilyFlags ==
+                f54gDeletedSavedRootFamilyFlags &&
+            f54gMutableReflectRootSpell->AttributesEx2 ==
+                f54gDeletedSavedRootAttributesEx2 &&
+            f54gMutableReflectRootSpell->AttributesEx3 ==
+                f54gDeletedSavedRootAttributesEx3 &&
+            f54gMutableReflectRootSpell->EffectDieSides[0] ==
+                f54gDeletedSavedRootDieSides0 &&
+            f54gMutableReflectRootSpell->speed ==
+                f54gDeletedSavedRootSpeed &&
+            f54gMutableChildSpell->AttributesEx2 ==
+                f54gDeletedSavedChildAttributesEx2 &&
+            f54gMutableChildSpell->AttributesEx3 ==
+                f54gDeletedSavedChildAttributesEx3 &&
+            f54gMutableChildSpell->EffectDieSides[0] ==
+                f54gDeletedSavedChildDieSides0 &&
+            f54gMutableChildSpell->EffectImplicitTargetA[0] ==
+                f54gDeletedSavedChildTargetA0 &&
+            f54gMutableChildSpell->EffectImplicitTargetB[0] ==
+                f54gDeletedSavedChildTargetB0;
+
+        f54gDeletedTargetDistanceDelayMs = 250u;
+    }
+
+    bool const f54gDeletedTargetSkipped =
+        f54gDeletedRowReady && f54gDeletedAuraAttached &&
+        f54gDeletedControlCastAccepted &&
+        f54gDeletedControlProjectilePending &&
+        f54gDeletedControlRootHit &&
+        f54gDeletedControlChildHealedCaster &&
+        f54gDeletedCastAccepted &&
+        f54gDeletedProjectilePending &&
+        f54gDeletedTargetRemoved &&
+        f54gDeletedTargetGuidUnresolved &&
+        f54gDeletedCasterUnhealed &&
+        f54gDeletedThreatUnchanged &&
+        f54gDeletedAuraRemoved &&
+        f54gDeletedRowsRestored;
+    sLog.Out(LOG_BASIC,
+        f54gDeletedTargetSkipped ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54g deleted-target guard: rowReady=%u auraAttached=%u controlCast=%u controlPending=%u controlRootHit=%u controlChildGain=%u deletedCast=%u projectilePending=%u targetRemoved=%u targetGuidUnresolved=%u casterUnhealed=%u remainingThreatUnchanged=%u auraRemoved=%u spellRowsRestored=%u childGain=%u rootDamage=%u delayMs=%u.",
+        f54gDeletedRowReady ? 1u : 0u,
+        f54gDeletedAuraAttached ? 1u : 0u,
+        f54gDeletedControlCastAccepted ? 1u : 0u,
+        f54gDeletedControlProjectilePending ? 1u : 0u,
+        f54gDeletedControlRootHit ? 1u : 0u,
+        f54gDeletedControlChildGain,
+        f54gDeletedCastAccepted ? 1u : 0u,
+        f54gDeletedProjectilePending ? 1u : 0u,
+        f54gDeletedTargetRemoved ? 1u : 0u,
+        f54gDeletedTargetGuidUnresolved ? 1u : 0u,
+        f54gDeletedCasterUnhealed ? 1u : 0u,
+        f54gDeletedThreatUnchanged ? 1u : 0u,
+        f54gDeletedAuraRemoved ? 1u : 0u,
+        f54gDeletedRowsRestored ? 1u : 0u,
+        f54gDeletedControlChildGain,
+        f54gDeletedRootDamage,
+        f54gDeletedTargetDistanceDelayMs);
+    if (f54gDeletedTargetSkipped)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F54g skipped a target removed after the delayed projectile captured its GUID; the live-target control triggered a caster self-heal, while the removed-target projectile produced no child self-heal or healing-assist threat.");
+
     // F54f must run before this boundary so its real proc/child Spell work
     // still has live source-Map Players. Restore the original Group/session
     // teardown immediately afterward; otherwise the five Players, Group and

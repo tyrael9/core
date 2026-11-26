@@ -8947,7 +8947,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     uint32 f54gTotalGain[5] = {};
     uint32 f54gChildGain[5] = {};
     uint32 f54gSavedHealth[5] = {};
-    bool f54gMembersChangedHealth = false;
 
     if (f54gRowReady)
     {
@@ -9115,8 +9114,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54gChildRowRestored =
             f54gMutableChildSpell->AttributesEx3 == f54gSavedChildAttributesEx3 &&
             f54gMutableChildSpell->EffectDieSides[0] == f54gSavedChildDieSides0;
-        f54gMembersChangedHealth = f54gRootTargets == MAX_GROUP_SIZE &&
-            f54gChildTargets == MAX_GROUP_SIZE;
     }
     bool const f54gPassed = f54gRowReady && f54gTargetReferencesValid &&
         f54gBaselineCast && f54gRootTargets == MAX_GROUP_SIZE &&

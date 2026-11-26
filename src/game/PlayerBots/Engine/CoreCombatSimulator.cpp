@@ -8853,6 +8853,8 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     // fan-out with a multi-target Prayer of Healing. Unlike F54f's delayed
     // generic proc queue, this path casts one child for each successful
     // m_UniqueTargetInfo entry at the root Spell's successful terminal.
+    // Keep this fixture before the shared five-Player cleanup boundary; all
+    // recipients and their hostile references must remain live during fan-out.
     SpellEntry* const f54gAuraSpell = const_cast<SpellEntry*>(inspirationSpell);
     SpellEntry const* const f54gRootSpell = sSpellMgr.GetSpellEntry(596); // Prayer of Healing
     SpellEntry const* const f54gChildSpell = sSpellMgr.GetSpellEntry(2052); // Lesser Heal

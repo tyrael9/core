@@ -556,7 +556,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54l captured a real Fire-only School A
 fi
 
 f54m_line="$(grep -F '[PartyBotSimulator] F54m bounded child-chain depth/loop guard:' "$LOG_FILE" | tail -n 1)"
-for expected in "rowReady=1" "castLimit=4" "configApplied=1" "auraAttached=1" "rootCast=1" "fourthTargets=5" "threatMatched=1" "auraRemoved=1" "auraRowsRestored=1" "spellRowsRestored=1" "configRestored=1" "healthRestored=1" "guardExpected=5"; do
+for expected in "rowReady=1" "castLimit=4" "configApplied=1" "baselineAuraAttached=1" "baselineCast=1" "baselineTargets=5" "baselineAuraRemoved=1" "auraAttached=1" "rootCast=1" "fourthTargets=5" "threatMatched=1" "auraRemoved=1" "auraRowsRestored=1" "spellRowsRestored=1" "configRestored=1" "healthRestored=1" "guardExpected=5"; do
     if [[ "$f54m_line" != *"$expected"* ]]; then
         echo "[PartyBotSimulator] F54m child-chain guard assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1

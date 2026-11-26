@@ -11077,16 +11077,14 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F54h real Core SPELL_AURA_ADD_TARGET_TRIGGER recursively dispatched child and grandchild heals for all five targets; measured root/child/grandchild effective healing and matched both hostile ThreatManagers.");
 
-// F54m: extend F54h's real Core child chain from three successful casts
-// to four, then deliberately form a cycle. Core's own cast counter is lowered
-// to four, so the fifth Flash Heal dispatch must be rejected before execution.
+// F54m: use a same-health three-cast baseline, then prove the fourth cast
+// adds effective healing while a deliberate fifth cyclic cast is blocked by
+// Core's own MaxSpellCastsInChain guard. Greater Heal keeps its original DBC
+// family flags; Flash Heal temporarily adopts that mask to create the cycle.
 SpellEntry const* const f54mFourthSpell =
     sSpellMgr.GetSpellEntry(2061); // Flash Heal (Rank 1)
 SpellEntry* const f54mMutableFourthSpell =
     const_cast<SpellEntry*>(f54mFourthSpell);
-// Reuse Greater Heal's existing family flags for the cycle. The parent
-// spell keeps its original DBC identity and modifiers; only Flash Heal is
-// temporarily assigned the same mask to make the fourth stage self-trigger.
 uint64 const f54mCycleFamilyMask =
     f54hGrandchildSpell ? f54hGrandchildSpell->SpellFamilyFlags : 0;
 uint32 const f54mCastLimit = 4;
@@ -11116,6 +11114,8 @@ bool const f54mRowReady = f54hPassed &&
     f54hGrandchildSpell->SpellFamilyName == SPELLFAMILY_PRIEST &&
     Spells::IsPositiveSpell(f54hGrandchildSpell->Id) &&
     onlyHealEffects(f54hGrandchildSpell) &&
+    (f54hGrandchildSpell->SpellFamilyFlags &
+        (f54hRootFamilyMask | f54hChildFamilyMask)) == 0 &&
     f54mFourthSpell && f54mFourthSpell->Id == 2061 &&
     f54mFourthSpell->ScriptId == 0 &&
     f54mFourthSpell->SpellFamilyName == SPELLFAMILY_PRIEST &&
@@ -11210,8 +11210,11 @@ uint32 const f54mSavedFourthAttributesEx3 =
 int32 const f54mSavedFourthDieSides =
     f54mMutableFourthSpell ? f54mMutableFourthSpell->EffectDieSides[0] : 0;
 
-bool f54mAuraAttached = false;
 bool f54mConfigApplied = false;
+bool f54mBaselineAuraAttached = false;
+bool f54mBaselineCast = false;
+bool f54mBaselineAuraRemoved = false;
+bool f54mAuraAttached = false;
 bool f54mRootCast = false;
 bool f54mThreatMatched = false;
 bool f54mAuraRemoved = false;
@@ -11219,10 +11222,14 @@ bool f54mAuraRowsRestored = false;
 bool f54mSpellRowsRestored = false;
 bool f54mConfigRestored = false;
 bool f54mHealthRestored = false;
+uint32 f54mBaselineTargets = 0;
 uint32 f54mFourthTargets = 0;
+uint32 f54mBaselineTotalGain[5] = {};
 uint32 f54mFourthGain[5] = {};
 uint32 f54mSavedHealth[5] = {};
 uint32 f54mStartHealth[5] = {};
+float f54mBaselineThreat0 = 0.0f;
+float f54mBaselineThreat1 = 0.0f;
 
 if (f54mRowReady)
 {
@@ -11230,7 +11237,10 @@ if (f54mRowReady)
     {
         Player* member = players[index];
         f54mSavedHealth[index] = member->GetHealth();
-        f54mStartHealth[index] = f54hStartHealth[index];
+        // Keep the same starting deficit for the three-cast baseline and
+        // four-cast run, leaving room for Flash Heal to contribute effective
+        // healing instead of measuring only overheal.
+        f54mStartHealth[index] = 1u;
         member->SetHealth(f54mStartHealth[index]);
     }
 
@@ -11261,6 +11271,14 @@ if (f54mRowReady)
         SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
     f54mMutableFourthSpell->EffectDieSides[0] = 0;
 
+    // Limit four successful casts. The first three-cast baseline fits under
+    // the same limit; the final cyclic fifth cast must be denied by Core.
+    sWorld.setConfig(CONFIG_UINT32_MAX_SPELL_CASTS_IN_CHAIN, f54mCastLimit);
+    f54mConfigApplied =
+        sWorld.getConfig(CONFIG_UINT32_MAX_SPELL_CASTS_IN_CHAIN) == f54mCastLimit;
+
+    // Baseline: Root -> Child -> Grandchild, with the third Aura slot disabled.
+    f54gAuraSpell->SpellFamilyName = SPELLFAMILY_PRIEST;
     f54gAuraSpell->Effect[0] = SPELL_EFFECT_APPLY_AURA;
     f54gAuraSpell->EffectApplyAuraName[0] = SPELL_AURA_ADD_TARGET_TRIGGER;
     f54gAuraSpell->EffectTriggerSpell[0] = f54gChildSpell->Id;
@@ -11277,6 +11295,67 @@ if (f54mRowReady)
     f54gAuraSpell->EffectBaseDice[1] = 0;
     f54gAuraSpell->EffectDieSides[1] = 0;
     f54gAuraSpell->EffectItemType[1] = f54hChildFamilyMask;
+    f54gAuraSpell->Effect[2] = 0;
+    f54gAuraSpell->EffectApplyAuraName[2] = 0;
+    f54gAuraSpell->EffectTriggerSpell[2] = 0;
+    f54gAuraSpell->EffectBasePoints[2] = 0;
+    f54gAuraSpell->EffectRealPointsPerLevel[2] = 0.0f;
+    f54gAuraSpell->EffectBaseDice[2] = 0;
+    f54gAuraSpell->EffectDieSides[2] = 0;
+    f54gAuraSpell->EffectItemType[2] = 0;
+
+    SpellAuraHolder* const f54mBaselineHolder =
+        healer->AddAura(f54gAuraSpell->Id, 0, healer);
+    Aura* const f54mBaselineAura0 = f54mBaselineHolder
+        ? f54mBaselineHolder->GetAuraByEffectIndex(EFFECT_INDEX_0) : nullptr;
+    Aura* const f54mBaselineAura1 = f54mBaselineHolder
+        ? f54mBaselineHolder->GetAuraByEffectIndex(EFFECT_INDEX_1) : nullptr;
+    f54mBaselineAuraAttached = f54mBaselineHolder &&
+        f54mBaselineAura0 && f54mBaselineAura1 &&
+        !f54mBaselineHolder->GetAuraScript() &&
+        f54mBaselineAura0->GetModifier() &&
+        f54mBaselineAura1->GetModifier() &&
+        f54mBaselineAura0->GetModifier()->m_auraname ==
+            SPELL_AURA_ADD_TARGET_TRIGGER &&
+        f54mBaselineAura1->GetModifier()->m_auraname ==
+            SPELL_AURA_ADD_TARGET_TRIGGER &&
+        f54mBaselineAura0->GetBasePoints() == 100 &&
+        f54mBaselineAura1->GetBasePoints() == 100;
+
+    float const f54mBaselineBefore0 =
+        hostiles[0].creature->GetThreatManager().getThreat(healer);
+    float const f54mBaselineBefore1 =
+        hostiles[1].creature->GetThreatManager().getThreat(healer);
+    healer->SetFacingToObject(tank);
+    f54mBaselineCast = f54mBaselineAuraAttached && f54mConfigApplied &&
+        healer->CastSpell(tank, f54gRootSpell, true) == SPELL_CAST_OK;
+    if (f54mBaselineCast)
+    {
+        for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+        {
+            Player* member = players[index];
+            f54mBaselineTotalGain[index] =
+                member->GetHealth() > f54mStartHealth[index]
+                    ? member->GetHealth() - f54mStartHealth[index] : 0u;
+            if (f54mBaselineTotalGain[index] > 10u)
+                ++f54mBaselineTargets;
+        }
+    }
+
+    f54mBaselineThreat0 =
+        hostiles[0].creature->GetThreatManager().getThreat(healer) -
+        f54mBaselineBefore0;
+    f54mBaselineThreat1 =
+        hostiles[1].creature->GetThreatManager().getThreat(healer) -
+        f54mBaselineBefore1;
+    healer->RemoveAurasDueToSpell(f54gAuraSpell->Id);
+    f54mBaselineAuraRemoved =
+        healer->GetSpellAuraHolder(f54gAuraSpell->Id) == nullptr;
+
+    // Re-run from the exact same low-health baseline with the cycle slot enabled.
+    for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+        players[index]->SetHealth(f54mStartHealth[index]);
+
     f54gAuraSpell->Effect[2] = SPELL_EFFECT_APPLY_AURA;
     f54gAuraSpell->EffectApplyAuraName[2] = SPELL_AURA_ADD_TARGET_TRIGGER;
     f54gAuraSpell->EffectTriggerSpell[2] = f54mFourthSpell->Id;
@@ -11285,7 +11364,6 @@ if (f54mRowReady)
     f54gAuraSpell->EffectBaseDice[2] = 0;
     f54gAuraSpell->EffectDieSides[2] = 0;
     f54gAuraSpell->EffectItemType[2] = f54mCycleFamilyMask;
-    f54gAuraSpell->SpellFamilyName = SPELLFAMILY_PRIEST;
 
     SpellAuraHolder* const f54mHolder =
         healer->AddAura(f54gAuraSpell->Id, 0, healer);
@@ -11297,6 +11375,8 @@ if (f54mRowReady)
         ? f54mHolder->GetAuraByEffectIndex(SpellEffectIndex(2)) : nullptr;
     f54mAuraAttached = f54mHolder && f54mAura0 && f54mAura1 && f54mAura2 &&
         !f54mHolder->GetAuraScript() &&
+        f54mAura0->GetModifier() && f54mAura1->GetModifier() &&
+        f54mAura2->GetModifier() &&
         f54mAura0->GetModifier()->m_auraname == SPELL_AURA_ADD_TARGET_TRIGGER &&
         f54mAura1->GetModifier()->m_auraname == SPELL_AURA_ADD_TARGET_TRIGGER &&
         f54mAura2->GetModifier()->m_auraname == SPELL_AURA_ADD_TARGET_TRIGGER &&
@@ -11304,67 +11384,56 @@ if (f54mRowReady)
         f54mAura1->GetBasePoints() == 100 &&
         f54mAura2->GetBasePoints() == 100;
 
-    sWorld.setConfig(CONFIG_UINT32_MAX_SPELL_CASTS_IN_CHAIN, f54mCastLimit);
-    f54mConfigApplied =
-        sWorld.getConfig(CONFIG_UINT32_MAX_SPELL_CASTS_IN_CHAIN) == f54mCastLimit;
-    float const f54mThreatBefore0 =
+remove stale delta block    float const f54mFinalThreatBefore0 =
         hostiles[0].creature->GetThreatManager().getThreat(healer);
-    float const f54mThreatBefore1 =
+    float const f54mFinalThreatBefore1 =
         hostiles[1].creature->GetThreatManager().getThreat(healer);
-    healer->SetFacingToObject(tank);
-    f54mRootCast = f54mAuraAttached && f54mConfigApplied &&
+    f54mRootCast = f54mBaselineAuraRemoved &&
+        f54mAuraAttached && f54mConfigApplied &&
         healer->CastSpell(tank, f54gRootSpell, true) == SPELL_CAST_OK;
 
     if (f54mRootCast)
     {
+        float expectedFlashThreat = 0.0f;
         for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
         {
             Player* member = players[index];
-            uint32 const totalGain =
+            uint32 const finalTotalGain =
                 member->GetHealth() > f54mStartHealth[index]
                     ? member->GetHealth() - f54mStartHealth[index] : 0u;
             f54mFourthGain[index] =
-                totalGain > f54hStage3TotalGain[index]
-                    ? totalGain - f54hStage3TotalGain[index] : 0u;
+                finalTotalGain > f54mBaselineTotalGain[index]
+                    ? finalTotalGain - f54mBaselineTotalGain[index] : 0u;
             if (f54mFourthGain[index] > 10u)
                 ++f54mFourthTargets;
-        }
 
-        float expectedThreat0 = 0.0f;
-        float expectedThreat1 = 0.0f;
-        for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
-        {
             float const divisor = static_cast<float>(
                 f54gReferenceCount[index] ? f54gReferenceCount[index] : 1u);
-            auto expectedHealThreat =
-                [&](uint32 effectiveGain, SpellEntry const* spell)
-                {
-                    float const input = static_cast<float>(effectiveGain) *
-                        0.5f * sSpellMgr.GetSpellThreatMultiplier(spell) /
-                        divisor;
-                    return ThreatCalcHelper::CalcThreat(
-                        healer, input, false, spell->GetSpellSchoolMask(), spell);
-                };
-            float const recipientThreat =
-                expectedHealThreat(f54hRootGain[index], f54gRootSpell) +
-                expectedHealThreat(f54hChildGain[index], f54gChildSpell) +
-                expectedHealThreat(
-                    f54hGrandchildGain[index], f54hGrandchildSpell) +
-                expectedHealThreat(f54mFourthGain[index], f54mFourthSpell);
-            expectedThreat0 += recipientThreat;
-            expectedThreat1 += recipientThreat;
+            float const flashRawThreat =
+                static_cast<float>(f54mFourthGain[index]) * 0.5f *
+                sSpellMgr.GetSpellThreatMultiplier(f54mFourthSpell) / divisor;
+            expectedFlashThreat += ThreatCalcHelper::CalcThreat(
+                healer, flashRawThreat, false,
+                f54mFourthSpell->GetSpellSchoolMask(), f54mFourthSpell);
         }
-        f54mThreatMatched = f54mFourthTargets == MAX_GROUP_SIZE &&
-            std::fabs(
-                hostiles[0].creature->GetThreatManager().getThreat(healer) -
-                f54mThreatBefore0 - expectedThreat0) < 0.50f &&
-            std::fabs(
-                hostiles[1].creature->GetThreatManager().getThreat(healer) -
-                f54mThreatBefore1 - expectedThreat1) < 0.50f;
+
+        float const finalThreatDelta0 =
+            hostiles[0].creature->GetThreatManager().getThreat(healer) -
+            f54mFinalThreatBefore0;
+        float const finalThreatDelta1 =
+            hostiles[1].creature->GetThreatManager().getThreat(healer) -
+            f54mFinalThreatBefore1;
+        f54mThreatMatched = f54mBaselineTargets == MAX_GROUP_SIZE &&
+            f54mFourthTargets == MAX_GROUP_SIZE &&
+            std::fabs(finalThreatDelta0 -
+                f54mBaselineThreat0 - expectedFlashThreat) < 0.50f &&
+            std::fabs(finalThreatDelta1 -
+                f54mBaselineThreat1 - expectedFlashThreat) < 0.50f;
     }
 
     healer->RemoveAurasDueToSpell(f54gAuraSpell->Id);
-    f54mAuraRemoved = healer->GetSpellAuraHolder(f54gAuraSpell->Id) == nullptr;
+    f54mAuraRemoved =
+        healer->GetSpellAuraHolder(f54gAuraSpell->Id) == nullptr;
     for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
         players[index]->SetHealth(f54mSavedHealth[index]);
 
@@ -11475,21 +11544,31 @@ else
             f54mSavedCastLimit;
 }
 
-bool const f54mPassed = f54mRowReady && f54mAuraAttached &&
-    f54mConfigApplied && f54mRootCast &&
+bool const f54mPassed = f54mRowReady && f54mConfigApplied &&
+    f54mBaselineAuraAttached && f54mBaselineCast &&
+    f54mBaselineTargets == MAX_GROUP_SIZE && f54mBaselineAuraRemoved &&
+    f54mAuraAttached && f54mRootCast &&
     f54mFourthTargets == MAX_GROUP_SIZE && f54mThreatMatched &&
     f54mAuraRemoved && f54mAuraRowsRestored &&
     f54mSpellRowsRestored && f54mConfigRestored && f54mHealthRestored;
 sLog.Out(LOG_BASIC, f54mPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-    "[PartyBotSimulator] F54m bounded child-chain depth/loop guard: rowReady=%u castLimit=%u configApplied=%u auraAttached=%u rootCast=%u fourthTargets=%u threatMatched=%u auraRemoved=%u auraRowsRestored=%u spellRowsRestored=%u configRestored=%u healthRestored=%u guardExpected=5 fourthGain=%u/%u/%u/%u/%u.",
+    "[PartyBotSimulator] F54m bounded child-chain depth/loop guard: rowReady=%u castLimit=%u configApplied=%u baselineAuraAttached=%u baselineCast=%u baselineTargets=%u baselineAuraRemoved=%u auraAttached=%u rootCast=%u fourthTargets=%u threatMatched=%u auraRemoved=%u auraRowsRestored=%u spellRowsRestored=%u configRestored=%u healthRestored=%u guardExpected=5 baselineGain=%u/%u/%u/%u/%u fourthGain=%u/%u/%u/%u/%u.",
     f54mRowReady ? 1u : 0u, f54mCastLimit,
-    f54mConfigApplied ? 1u : 0u, f54mAuraAttached ? 1u : 0u,
-    f54mRootCast ? 1u : 0u, f54mFourthTargets,
-    f54mThreatMatched ? 1u : 0u, f54mAuraRemoved ? 1u : 0u,
+    f54mConfigApplied ? 1u : 0u,
+    f54mBaselineAuraAttached ? 1u : 0u,
+    f54mBaselineCast ? 1u : 0u,
+    f54mBaselineTargets,
+    f54mBaselineAuraRemoved ? 1u : 0u,
+    f54mAuraAttached ? 1u : 0u, f54mRootCast ? 1u : 0u,
+    f54mFourthTargets, f54mThreatMatched ? 1u : 0u,
+    f54mAuraRemoved ? 1u : 0u,
     f54mAuraRowsRestored ? 1u : 0u,
     f54mSpellRowsRestored ? 1u : 0u,
     f54mConfigRestored ? 1u : 0u,
     f54mHealthRestored ? 1u : 0u,
+    f54mBaselineTotalGain[0], f54mBaselineTotalGain[1],
+    f54mBaselineTotalGain[2], f54mBaselineTotalGain[3],
+    f54mBaselineTotalGain[4],
     f54mFourthGain[0], f54mFourthGain[1], f54mFourthGain[2],
     f54mFourthGain[3], f54mFourthGain[4]);
 if (f54mPassed)

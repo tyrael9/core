@@ -9866,10 +9866,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             hostiles[0].creature->GetHealth() == controlTargetHealthBefore;
         if (f54gDeletedControlProjectilePending)
         {
+            // SpellEvent belongs to the caster. Map::Update schedules Player
+            // updates from wall-clock time and may skip deterministic 50 ms test
+            // steps, so advance the real Core Unit update/event clock explicitly.
             for (uint32 tick = 0; tick < 80 &&
                  (hostiles[0].creature->GetHealth() == controlTargetHealthBefore ||
                   healer->GetHealth() <= startHealth); ++tick)
-                map.Update(50);
+                healer->Unit::Update(50, 50);
         }
         f54gDeletedControlRootHit =
             hostiles[0].creature->GetHealth() < controlTargetHealthBefore;
@@ -9916,7 +9919,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             // HandleAddTargetTriggerAuras, skipping both when the Map no
             // longer contains the Creature.
             for (uint32 tick = 0; tick < 80; ++tick)
-                map.Update(50);
+                healer->Unit::Update(50, 50);
         }
 
         f54gDeletedCasterUnhealed =

@@ -11384,7 +11384,7 @@ if (f54mRowReady)
         f54mAura1->GetBasePoints() == 100 &&
         f54mAura2->GetBasePoints() == 100;
 
-remove stale delta block    float const f54mFinalThreatBefore0 =
+    float const f54mFinalThreatBefore0 =
         hostiles[0].creature->GetThreatManager().getThreat(healer);
     float const f54mFinalThreatBefore1 =
         hostiles[1].creature->GetThreatManager().getThreat(healer);

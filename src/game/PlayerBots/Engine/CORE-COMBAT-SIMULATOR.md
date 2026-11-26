@@ -1,8 +1,12 @@
 # Core-backed PartyBot combat simulator
 
-## Latest trusted runtime — F54f closed (2026-11-25 PT)
+## Latest trusted runtime — F54g normal successful-target fan-out validated (2026-11-25 PT)
 
-Trusted push [#45716916204](https://github.com/tyrael9/core/actions/runs/45716916204), running source commit `35224fc61cb29e1c2bb832224611b8519d8ec08a`, passed the full Linux ARM64 / Vanilla 5875 build and the complete Core-backed simulator through final `Runtime PASS`.
+Trusted push [#45740565661](https://github.com/tyrael9/core/actions/runs/45740565661), running code commit `892332fd2ccc0fb9b49da055db4814c890649eb3`, passed the full Linux ARM64 / Vanilla 5875 build and complete Core-backed simulator through final `Runtime PASS`. Its five-Player Prayer of Healing fixture dispatched one triggered Lesser Heal to each of five successful targets, recorded effective child gains `77/77/78/75/75`, matched both hostile ThreatManagers to the per-recipient Core assist-threat projection, restored all temporary data and health, cleaned up the Group/session, and exited GDB normally. Artifact [#15080724377](https://github.com/tyrael9/core/actions/runs/45740565661/artifacts/15080724377).
+
+### Previous trusted slice — F54f generic proc-child parity
+
+The earlier trusted push [#45716916204](https://github.com/tyrael9/core/actions/runs/45716916204), running source commit `35224fc61cb29e1c2bb832224611b8519d8ec08a`, passed the full Linux ARM64 / Vanilla 5875 build and complete Core-backed simulator through final `Runtime PASS`.
 
 F54f executed real delayed `PROC_TRIGGER_SPELL` child heals for both helpful-proc sides. The final marker measured caster control/root/child/total = 48/48/77/125 and recipient = 48/47/76/123. Root + child exactly equals total on both paths; each hostile's healer/tank `ThreatManager` delta matched the Core-derived expectation. The estimator stayed fail-closed with no partial impacts while the proc Aura was active. Temporary root/child/Aura SpellEntry fields and SpellProcEvent data were restored, final five-Player Group/session cleanup passed, and GDB reported normal process exit.
 
@@ -20,7 +24,7 @@ The initial trusted run [#45734427831](https://github.com/tyrael9/core/actions/r
 
 Failed/deleted-target filtering and successful reflect-to-caster behavior are source-audited but not independently fixture-proven. Do not expand this evidence to arbitrary nested child chains or the complete action-level threat envelope.
 
-Production healing remains disabled: F54f does not make the full direct-heal threat envelope Complete, and neither `PriestDirectHealAction` nor a Priest Healing Strategy is registered.
+Production healing remains disabled: F54g does not make the full direct-heal threat envelope Complete, and neither `PriestDirectHealAction` nor a Priest Healing Strategy is registered.
 
 ---
 

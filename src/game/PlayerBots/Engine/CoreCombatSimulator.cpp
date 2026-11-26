@@ -2482,6 +2482,12 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
     bool mindFlayCancelled = false;
     bool mindFlayAuraRemoved = false;
     bool mindFlayNoFurtherTicks = false;
+    bool mindFlayPrepared = false;
+    bool mindFlaySawGeneric = false;
+    bool mindFlaySawChannelSlot = false;
+    bool mindFlaySawChannelAura = false;
+    uint32 mindFlayPolls = 0;
+    uint32 mindFlayCastResultValue = SPELL_FAILED_UNKNOWN;
     SpellEntry const* mindFlayInfo = sSpellMgr.GetSpellEntry(15407);
     if (mindFlayInfo && mindFlayInfo->IsChanneledSpell())
     {
@@ -2503,25 +2509,36 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
 
         SpellCastResult const mindFlayCastResult =
             bot->CastSpell(patient.creature, 15407, false);
+        mindFlayCastResultValue = static_cast<uint32>(mindFlayCastResult);
         uint64 const mindFlayActionId = spellObserver.lastPreparedActionId;
-        bool const mindFlayPrepared =
+        mindFlayPrepared =
             mindFlayCastResult == SPELL_CAST_OK && mindFlayActionId != 0;
-        for (uint32 tick = 0; mindFlayPrepared && tick < 12; ++tick)
+        // Mind Flay's target Aura is installed on its first channel tick.
+        // Poll faster than the channel's whole duration so a 3-second channel
+        // cannot start and finish between coarse 250 ms fixture samples.
+        for (uint32 tick = 0; mindFlayPrepared && tick < 80; ++tick)
         {
+            ++mindFlayPolls;
             Spell* current = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+            Spell* preparing = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            mindFlaySawGeneric = mindFlaySawGeneric || preparing != nullptr;
+            mindFlaySawChannelSlot =
+                mindFlaySawChannelSlot || current != nullptr;
             bool const mindFlayAuraActive =
                 patient.creature->HasAura(15407);
+            mindFlaySawChannelAura =
+                mindFlaySawChannelAura || mindFlayAuraActive;
             if (current && current->getState() == SPELL_STATE_CASTING &&
                 current->IsChannelActive() && mindFlayAuraActive)
             {
-                // IsChannelActive can become true before the first channel
-                // tick has installed the target aura. Only claim that the
-                // live channel fixture is ready once both Core states exist.
+                // Channel state and the applied target Aura are both live.
                 mindFlayChannelStarted = true;
                 break;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            map.Update(250);
+            if (!current && !preparing)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            map.Update(100);
         }
 
         PartySnapshot mindFlaySnapshot;
@@ -2586,6 +2603,21 @@ bool RunEngineCoreCancelOwnCastActionSmokeTest(Map& map)
                 !patient.creature->HasAura(15407);
         }
     }
+
+    sLog.Out(LOG_BASIC, mindFlayChannelStarted ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] Mind Flay channel probe: rowPresent=%u isChannel=%u castResult=%u actionId=%llu prepared=%u polls=%u sawGeneric=%u sawChannelSlot=%u sawTargetAura=%u channelStarted=%u interruptFlags=%u channelFlags=%u auraNow=%u.",
+        mindFlayInfo ? 1u : 0u,
+        mindFlayInfo && mindFlayInfo->IsChanneledSpell() ? 1u : 0u,
+        mindFlayCastResultValue,
+        static_cast<unsigned long long>(spellObserver.lastPreparedActionId),
+        mindFlayPrepared ? 1u : 0u, mindFlayPolls,
+        mindFlaySawGeneric ? 1u : 0u,
+        mindFlaySawChannelSlot ? 1u : 0u,
+        mindFlaySawChannelAura ? 1u : 0u,
+        mindFlayChannelStarted ? 1u : 0u,
+        mindFlayInfo ? mindFlayInfo->InterruptFlags : 0u,
+        mindFlayInfo ? mindFlayInfo->ChannelInterruptFlags : 0u,
+        patient.creature->HasAura(15407) ? 1u : 0u);
 
     bool const beforeCleanup =
         firstCastCaptured && firstTerminalCaptured && replacementCaptured &&

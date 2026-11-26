@@ -9172,6 +9172,222 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F54g real Core SPELL_AURA_ADD_TARGET_TRIGGER dispatched one child heal for each successful target of a five-Player Prayer of Healing; every recipient's live HostileRefManager fan-out matched both hostile ThreatManager deltas, and temporary spell fields plus Group health were restored.");
 
+    // F54g boundary: a selected but immune recipient is unsuccessful and
+    // must not receive the ADD_TARGET_TRIGGER child.
+    bool f54gImmuneTargetSkipped = false;
+    bool f54gImmuneThreatMatched = false;
+    bool f54gImmuneAuraRemoved = false;
+    bool f54gImmuneImmunityCleared = false;
+    bool f54gImmuneRowsRestored = false;
+    bool f54gImmuneTargetUnhealed = false;
+    bool f54gImmuneRowReady = false;
+    bool f54gImmuneCastAccepted = false;
+    uint32 f54gImmuneRootTargets = 0;
+    uint32 f54gImmuneChildTargets = 0;
+    if (f54gPassed)
+    {
+        uint8 f54gImmuneIndex = MAX_GROUP_SIZE;
+        for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+            if (players[index] != healer && players[index] != tank)
+            {
+                f54gImmuneIndex = index;
+                break;
+            }
+        Player* const f54gImmunePlayer =
+            f54gImmuneIndex < MAX_GROUP_SIZE ? players[f54gImmuneIndex] : nullptr;
+        f54gImmuneRowReady = f54gImmunePlayer &&
+            f54gImmunePlayer->IsInWorld() && f54gImmunePlayer->IsAlive() &&
+            f54gImmunePlayer->GetGroup() == group.get();
+
+        if (f54gImmuneRowReady)
+        {
+            // Restore the same deterministic five-target root/child setup.
+            f54gAuraSpell->Effect[0] = SPELL_EFFECT_APPLY_AURA;
+            f54gAuraSpell->EffectApplyAuraName[0] = SPELL_AURA_ADD_TARGET_TRIGGER;
+            f54gAuraSpell->EffectTriggerSpell[0] = f54gChildSpell->Id;
+            f54gAuraSpell->EffectBasePoints[0] = 100;
+            f54gAuraSpell->EffectRealPointsPerLevel[0] = 0.0f;
+            f54gAuraSpell->EffectBaseDice[0] = 0;
+            f54gAuraSpell->EffectDieSides[0] = 0;
+            f54gAuraSpell->EffectItemType[0] = f54gUniqueFamilyMask;
+            f54gAuraSpell->SpellFamilyName = f54gRootSpell->SpellFamilyName;
+            f54gMutableRootSpell->SpellFamilyFlags = f54gUniqueFamilyMask;
+            f54gMutableRootSpell->AttributesEx2 |= SPELL_ATTR_EX2_CANT_CRIT;
+            f54gMutableRootSpell->EffectDieSides[0] = 0;
+            f54gMutableChildSpell->AttributesEx2 |= SPELL_ATTR_EX2_CANT_CRIT;
+            f54gMutableChildSpell->AttributesEx3 |=
+                SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
+                SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
+            f54gMutableChildSpell->EffectDieSides[0] = 0;
+
+            SpellSchoolMask const immuneSchool =
+                f54gRootSpell->GetSpellSchoolMask();
+            f54gImmunePlayer->ApplySpellImmune(
+                0, IMMUNITY_SCHOOL, immuneSchool, true);
+
+            uint32 savedHealth[MAX_GROUP_SIZE] = {};
+            for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+            {
+                savedHealth[index] = players[index]->GetHealth();
+                players[index]->SetHealth(std::max<uint32>(
+                    1u, players[index]->GetMaxHealth() / 3u));
+            }
+            uint32 const immuneStartHealth =
+                std::max<uint32>(1u, f54gImmunePlayer->GetMaxHealth() / 3u);
+
+            SpellAuraHolder* const holder =
+                healer->AddAura(f54gAuraSpell->Id, EFFECT_INDEX_0, healer);
+            Aura* const aura = holder
+                ? holder->GetAuraByEffectIndex(EFFECT_INDEX_0) : nullptr;
+            bool const auraAttached = aura &&
+                aura->GetModifier()->m_auraname == SPELL_AURA_ADD_TARGET_TRIGGER &&
+                !holder->GetAuraScript() && aura->GetBasePoints() == 100;
+
+            float const threatBefore0 =
+                hostiles[0].creature->GetThreatManager().getThreat(healer);
+            float const threatBefore1 =
+                hostiles[1].creature->GetThreatManager().getThreat(healer);
+            f54gImmuneCastAccepted = auraAttached &&
+                healer->CastSpell(tank, f54gRootSpell, true) == SPELL_CAST_OK;
+
+            float expectedThreat0 = 0.0f;
+            float expectedThreat1 = 0.0f;
+            if (f54gImmuneCastAccepted)
+            {
+                for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+                {
+                    Player* const member = players[index];
+                    uint32 const startHealth = std::max<uint32>(
+                        1u, member->GetMaxHealth() / 3u);
+                    uint32 const totalGain = member->GetHealth() > startHealth
+                        ? member->GetHealth() - startHealth : 0u;
+                    uint32 const rootGain =
+                        index == f54gImmuneIndex ? 0u : f54gRootGain[index];
+                    uint32 const childGain =
+                        totalGain > rootGain ? totalGain - rootGain : 0u;
+
+                    if (totalGain > 0)
+                        ++f54gImmuneRootTargets;
+                    if (childGain > 10u)
+                        ++f54gImmuneChildTargets;
+
+                    float const divisor = static_cast<float>(
+                        f54gReferenceCount[index]
+                            ? f54gReferenceCount[index] : 1u);
+                    float const rootInput =
+                        static_cast<float>(rootGain) * 0.5f *
+                        sSpellMgr.GetSpellThreatMultiplier(f54gRootSpell) /
+                        divisor;
+                    float const childInput =
+                        static_cast<float>(childGain) * 0.5f *
+                        sSpellMgr.GetSpellThreatMultiplier(f54gChildSpell) /
+                        divisor;
+                    expectedThreat0 += ThreatCalcHelper::CalcThreat(
+                        healer, rootInput, false,
+                        f54gRootSpell->GetSpellSchoolMask(), f54gRootSpell);
+                    expectedThreat0 += ThreatCalcHelper::CalcThreat(
+                        healer, childInput, false,
+                        f54gChildSpell->GetSpellSchoolMask(), f54gChildSpell);
+                    expectedThreat1 = expectedThreat0;
+                }
+            }
+
+            f54gImmuneTargetUnhealed =
+                f54gImmunePlayer->GetHealth() == immuneStartHealth;
+            float const actualThreat0 =
+                hostiles[0].creature->GetThreatManager().getThreat(healer) -
+                threatBefore0;
+            float const actualThreat1 =
+                hostiles[1].creature->GetThreatManager().getThreat(healer) -
+                threatBefore1;
+            f54gImmuneThreatMatched = f54gImmuneCastAccepted &&
+                std::fabs(actualThreat0 - expectedThreat0) < 0.50f &&
+                std::fabs(actualThreat1 - expectedThreat1) < 0.50f;
+
+            healer->RemoveAurasDueToSpell(f54gAuraSpell->Id);
+            f54gImmuneAuraRemoved =
+                healer->GetSpellAuraHolder(f54gAuraSpell->Id) == nullptr;
+            f54gImmunePlayer->ApplySpellImmune(
+                0, IMMUNITY_SCHOOL, immuneSchool, false);
+            f54gImmuneImmunityCleared =
+                !f54gImmunePlayer->IsImmuneToSpell(f54gRootSpell, false);
+
+            for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+                players[index]->SetHealth(savedHealth[index]);
+
+            f54gAuraSpell->Effect[0] = f54gSavedAuraEffect0;
+            f54gAuraSpell->EffectApplyAuraName[0] = f54gSavedAuraType0;
+            f54gAuraSpell->EffectTriggerSpell[0] = f54gSavedAuraTrigger0;
+            f54gAuraSpell->EffectBasePoints[0] = f54gSavedAuraBasePoints0;
+            f54gAuraSpell->EffectRealPointsPerLevel[0] =
+                f54gSavedAuraRealPointsPerLevel0;
+            f54gAuraSpell->EffectBaseDice[0] = f54gSavedAuraBaseDice0;
+            f54gAuraSpell->EffectDieSides[0] = f54gSavedAuraDieSides0;
+            f54gAuraSpell->EffectItemType[0] = f54gSavedAuraAffectMask0;
+            f54gAuraSpell->SpellFamilyName = f54gSavedAuraFamily0;
+            f54gMutableRootSpell->SpellFamilyFlags =
+                f54gSavedRootFamilyFlags;
+            f54gMutableRootSpell->AttributesEx2 =
+                f54gSavedRootAttributesEx2;
+            f54gMutableRootSpell->EffectDieSides[0] =
+                f54gSavedRootDieSides0;
+            f54gMutableChildSpell->AttributesEx2 =
+                f54gSavedChildAttributesEx2;
+            f54gMutableChildSpell->AttributesEx3 =
+                f54gSavedChildAttributesEx3;
+            f54gMutableChildSpell->EffectDieSides[0] =
+                f54gSavedChildDieSides0;
+
+            f54gImmuneRowsRestored =
+                f54gAuraSpell->Effect[0] == f54gSavedAuraEffect0 &&
+                f54gAuraSpell->EffectApplyAuraName[0] == f54gSavedAuraType0 &&
+                f54gAuraSpell->EffectTriggerSpell[0] == f54gSavedAuraTrigger0 &&
+                f54gAuraSpell->EffectBasePoints[0] == f54gSavedAuraBasePoints0 &&
+                f54gAuraSpell->EffectRealPointsPerLevel[0] ==
+                    f54gSavedAuraRealPointsPerLevel0 &&
+                f54gAuraSpell->EffectBaseDice[0] == f54gSavedAuraBaseDice0 &&
+                f54gAuraSpell->EffectDieSides[0] == f54gSavedAuraDieSides0 &&
+                f54gAuraSpell->EffectItemType[0] == f54gSavedAuraAffectMask0 &&
+                f54gAuraSpell->SpellFamilyName == f54gSavedAuraFamily0 &&
+                f54gMutableRootSpell->SpellFamilyFlags ==
+                    f54gSavedRootFamilyFlags &&
+                f54gMutableRootSpell->AttributesEx2 ==
+                    f54gSavedRootAttributesEx2 &&
+                f54gMutableRootSpell->EffectDieSides[0] ==
+                    f54gSavedRootDieSides0 &&
+                f54gMutableChildSpell->AttributesEx2 ==
+                    f54gSavedChildAttributesEx2 &&
+                f54gMutableChildSpell->AttributesEx3 ==
+                    f54gSavedChildAttributesEx3 &&
+                f54gMutableChildSpell->EffectDieSides[0] ==
+                    f54gSavedChildDieSides0;
+
+            f54gImmuneTargetSkipped =
+                f54gImmuneCastAccepted &&
+                f54gImmuneRootTargets == MAX_GROUP_SIZE - 1 &&
+                f54gImmuneChildTargets == MAX_GROUP_SIZE - 1 &&
+                f54gImmuneTargetUnhealed &&
+                f54gImmuneThreatMatched &&
+                f54gImmuneAuraRemoved &&
+                f54gImmuneImmunityCleared &&
+                f54gImmuneRowsRestored;
+        }
+    }
+    sLog.Out(LOG_BASIC,
+        f54gImmuneTargetSkipped ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54g unsuccessful-target guard: rowReady=%u castAccepted=%u rootTargets=%u childTargets=%u immuneTargetUnhealed=%u threatMatched=%u auraRemoved=%u immunityCleared=%u spellRowsRestored=%u.",
+        f54gImmuneRowReady ? 1u : 0u,
+        f54gImmuneCastAccepted ? 1u : 0u,
+        f54gImmuneRootTargets, f54gImmuneChildTargets,
+        f54gImmuneTargetUnhealed ? 1u : 0u,
+        f54gImmuneThreatMatched ? 1u : 0u,
+        f54gImmuneAuraRemoved ? 1u : 0u,
+        f54gImmuneImmunityCleared ? 1u : 0u,
+        f54gImmuneRowsRestored ? 1u : 0u);
+    if (f54gImmuneTargetSkipped)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F54g skipped a Core-immune selected Group recipient in target-trigger fan-out; only the four successful Prayer of Healing targets received child heals, and both hostile ThreatManagers matched the successful recipients' effective-healing projections.");
+
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[PartyBotSimulator] PASS: Core death cleanup removed Main Tank and healer references from both adds; SelectHostileTarget retargeted first to the surviving healer and then to the surviving DPS, and PartySnapshotBuilder copied both post-death states.");
 

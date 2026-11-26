@@ -551,6 +551,18 @@ for expected in "rowReady=1" "refsValid=1" "baselineCast=1" "rootTargets=5" "aur
         exit 1
     fi
 done
+if ! grep -Fq "[PartyBotSimulator] PASS: F54g skipped a Core-immune selected Group recipient in target-trigger fan-out; only the four successful Prayer of Healing targets received child heals, and both hostile ThreatManagers matched the successful recipients' effective-healing projections." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F54g unsuccessful-target skip PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f54g_immune_line="$(grep -F '[PartyBotSimulator] F54g unsuccessful-target guard:' "$LOG_FILE" | tail -n 1)"
+for expected in "rowReady=1" "castAccepted=1" "rootTargets=4" "childTargets=4" "immuneTargetUnhealed=1" "threatMatched=1" "auraRemoved=1" "immunityCleared=1" "spellRowsRestored=1"; do
+    if [[ "$f54g_immune_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F54g unsuccessful-target assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+
 
 f54e_recipient_line="$(grep -F '[PartyBotSimulator] F54e recipient-side helpful proc:' "$LOG_FILE" | tail -n 1)"
 for expected in "auraAttached=1" "procVeto=1" "impactsEmpty=1" "auraRemoved=1" "procFlagsRestored=1"; do

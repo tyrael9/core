@@ -15,7 +15,7 @@ Legacy PartyBot fixes are maintenance work only. They do not count as new-engine
 
 **Phase 6 / Priest Healer vertical slice remains in progress.** The latest trusted push, [#45716916204](https://github.com/tyrael9/core/actions/runs/45716916204), completed the full Vanilla 5875 Core-backed simulator through final `Runtime PASS`. F54f is closed: real `PROC_TRIGGER_SPELL` child heals fired from both caster-side and recipient-side helpful-heal paths; measured effective healing reconciled root + child = total (caster 48 + 77 = 125; recipient 47 + 76 = 123); per-hostile healer/tank `ThreatManager` deltas matched; temporary spell/proc fields were restored; the five-Player Group/session cleanup passed; GDB reported normal process exit. The runner's numeric metric assertion was corrected in `35224fc`, and this exact corrected runner was then exercised by the trusted PASS.
 
-F54g is now the next bounded slice: audit and exercise `SPELL_AURA_ADD_TARGET_TRIGGER`, whose Core implementation runs at successful Spell completion and may dispatch one child cast for each successful target in the root Spell's `m_UniqueTargetInfo`. This is distinct from the delayed generic proc queue covered by F54f. Nested child closure and complete child threat recipient fan-out remain unproven. Also open are same-timestamp Core Heal/Damage ordering, post-snapshot cast pushback/interruption, and exact random HoT tick bounds.
+F54g is the active bounded slice. A simulator-only five-Player Group fixture is now implemented in `CoreCombatSimulator.cpp`: a real Prayer of Healing supplies the multi-target root, an isolated `SPELL_AURA_ADD_TARGET_TRIGGER` Aura dispatches Lesser Heal children, and each recipient's own live HostileRefManager is used to predict the two hostile ThreatManager deltas. A dedicated `run-ci.sh` gate requires all five root targets and all five child heals, threat parity and restoration. Trusted runtime validation is pending; until its final `Runtime PASS`, F54g remains open. This is distinct from the delayed generic proc queue covered by F54f. Also open are same-timestamp Core Heal/Damage ordering, post-snapshot cast pushback/interruption, and exact random HoT tick bounds.
 
 The production boundary is unchanged: `PriestDirectHealAction` is not registered in production strategies; whole-action threat remains fail-closed/Unknown; no Priest Healing Strategy is registered. F54f closes one generic proc path only, not the full direct-heal action envelope. No merge, image publication, deployment or live-realm change has occurred.
 
@@ -326,12 +326,15 @@ Trusted push [#45353641584](https://github.com/tyrael9/core/actions/runs/4535364
 - Temporary Aura SpellEntry, child/root attributes and SpellProcEvent fields were restored. Five-Player Group/session cleanup passed and GDB reported normal process exit. The corrected metric gate and complete simulator reached final `Runtime PASS`.
 - This closes only the generic `PROC_TRIGGER_SPELL` path. It does not close target-trigger auras, arbitrary nested child chains, or the complete action-level threat envelope.
 
-### F54g — `SPELL_AURA_ADD_TARGET_TRIGGER` (active; trusted runtime pending)
+### F54g — `SPELL_AURA_ADD_TARGET_TRIGGER` (implemented; trusted runtime pending)
 
-- Source audit: `Spell::finish` calls `HandleAddTargetTriggerAuras()` for successful non-channeled spells. It scans the caster's active target-trigger aura effects, checks `Aura::IsAffectedOnSpell`, then dispatches the configured child spell once per successful `m_UniqueTargetInfo` target (and handles successful reflect by redirecting to the caster).
-- This fan-out is not the same lifecycle as F54f's delayed `PROC_TRIGGER_SPELL` queue. A bounded fixture must prove the actual successful target set, child execution per target, effective root/child healing, per-target hostile-reference fan-out and exact per-hostile threat deltas.
-- Until nested child closure, target filtering/reflect handling and threat fan-out are bounded, the whole direct-heal estimate and `PriestDirectHealAction` remain fail-closed/Unknown and unregistered.
- 
+- Simulator fixture added to `CoreCombatSimulator.cpp`: uses real five-Player Group membership, actual Prayer of Healing (596) successful target selection, and actual Lesser Heal (2052) triggered children.
+- The fixture temporarily configures Inspiration's Aura row as `SPELL_AURA_ADD_TARGET_TRIGGER`, with an isolated high family-mask bit so the Aura matches the Prayer root but cannot recursively match the child heal. The Aura's trigger chance is deterministic; root/child effect randomness is fixed for the test.
+- It records the no-Aura root heal independently for each of the five Players, then repeats the root cast with the Aura active and requires a positive child delta for every root target. Both hostile Creatures receive references to all five recipients; expected assist threat is computed using each recipient's own live HostileRefManager count, Core spell threat multiplier and `ThreatCalcHelper`.
+- The fixture restores Aura/root/child SpellEntry fields and all five Players' health. The runner requires exactly five root targets, five child targets, all recipient references, exact per-hostile threat parity and restoration markers.
+- Source/runner commits: `fd2cddb` (fixture), `6eb57fd` (runner gate), `eb4b9eb` (explicit recipient-reference gate). Trusted push [#45733872741](https://github.com/tyrael9/core/actions/runs/45733872741) is validating the current head. No F54g pass is claimed yet.
+- Failed/deleted-target filtering and successful reflect-to-caster behavior are audited from Core source but are not yet independently fixture-proven. Nested child closure remains open. The full direct-heal estimate remains Unknown; Priest production action/strategy stay unregistered.
+
 ## Phase 7 — party-wide coordination
 
 - [ ] Main Tank and assistant assignments.

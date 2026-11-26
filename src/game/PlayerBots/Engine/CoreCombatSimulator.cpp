@@ -8924,8 +8924,12 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54gAuraSpell ? f54gAuraSpell->SpellFamilyName : 0;
     uint64 const f54gSavedRootFamilyFlags =
         f54gMutableRootSpell ? f54gMutableRootSpell->SpellFamilyFlags : 0;
+    uint32 const f54gSavedRootAttributesEx2 =
+        f54gMutableRootSpell ? f54gMutableRootSpell->AttributesEx2 : 0;
     int32 const f54gSavedRootDieSides0 =
         f54gMutableRootSpell ? f54gMutableRootSpell->EffectDieSides[0] : 0;
+    uint32 const f54gSavedChildAttributesEx2 =
+        f54gMutableChildSpell ? f54gMutableChildSpell->AttributesEx2 : 0;
     uint32 const f54gSavedChildAttributesEx3 =
         f54gMutableChildSpell ? f54gMutableChildSpell->AttributesEx3 : 0;
     int32 const f54gSavedChildDieSides0 =
@@ -8964,7 +8968,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54gAuraSpell->EffectItemType[0] = f54gUniqueFamilyMask;
         f54gAuraSpell->SpellFamilyName = f54gRootSpell->SpellFamilyName;
         f54gMutableRootSpell->SpellFamilyFlags = f54gUniqueFamilyMask;
+        f54gMutableRootSpell->AttributesEx2 |= SPELL_ATTR_EX2_CANT_CRIT;
         f54gMutableRootSpell->EffectDieSides[0] = 0;
+        f54gMutableChildSpell->AttributesEx2 |= SPELL_ATTR_EX2_CANT_CRIT;
         f54gMutableChildSpell->AttributesEx3 |=
             SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
             SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
@@ -9094,7 +9100,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54gAuraSpell->EffectItemType[0] = f54gSavedAuraAffectMask0;
         f54gAuraSpell->SpellFamilyName = f54gSavedAuraFamily0;
         f54gMutableRootSpell->SpellFamilyFlags = f54gSavedRootFamilyFlags;
+        f54gMutableRootSpell->AttributesEx2 = f54gSavedRootAttributesEx2;
         f54gMutableRootSpell->EffectDieSides[0] = f54gSavedRootDieSides0;
+        f54gMutableChildSpell->AttributesEx2 = f54gSavedChildAttributesEx2;
         f54gMutableChildSpell->AttributesEx3 = f54gSavedChildAttributesEx3;
         f54gMutableChildSpell->EffectDieSides[0] = f54gSavedChildDieSides0;
 
@@ -9111,8 +9119,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
             f54gAuraSpell->SpellFamilyName == f54gSavedAuraFamily0;
         f54gRootRowRestored =
             f54gMutableRootSpell->SpellFamilyFlags == f54gSavedRootFamilyFlags &&
+            f54gMutableRootSpell->AttributesEx2 == f54gSavedRootAttributesEx2 &&
             f54gMutableRootSpell->EffectDieSides[0] == f54gSavedRootDieSides0;
         f54gChildRowRestored =
+            f54gMutableChildSpell->AttributesEx2 == f54gSavedChildAttributesEx2 &&
             f54gMutableChildSpell->AttributesEx3 == f54gSavedChildAttributesEx3 &&
             f54gMutableChildSpell->EffectDieSides[0] == f54gSavedChildDieSides0;
     }

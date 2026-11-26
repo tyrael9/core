@@ -1,10 +1,18 @@
 # Core-backed PartyBot combat simulator
 
-## Latest F54f runtime attempt — fixture assertions and shutdown passed; F21 marker gate failed (2026-11-25 PT)
+## Latest trusted runtime — F54f closed (2026-11-25 PT)
 
-Push [#45705304713](https://github.com/tyrael9/core/actions/runs/45705304713) ran the corrected five-Player teardown and F54f fixture on trusted ARM64 / Vanilla 5875. Both F54f child-heal paths passed (76 effective healing each), exact per-hostile healer/tank ThreatManager parity passed, final Group/session cleanup reported `passed=1`, the test Map was deleted, and world/map/database shutdown completed. GDB reported that the inferior exited normally; the previous shutdown SIGSEGV is resolved by restoring `cleanup()` after F54f in `335c9da`.
+Trusted push [#45716916204](https://github.com/tyrael9/core/actions/runs/45716916204), running source commit `35224fc61cb29e1c2bb832224611b8519d8ec08a`, passed the full Linux ARM64 / Vanilla 5875 build and the complete Core-backed simulator through final `Runtime PASS`.
 
-The run still failed its shell gate because the F21 fixture had computed and emitted the expected real party heartbeat (including shapeshift form, pending spell ID/state/target, position and hostile template identity), but the Core simulator did not emit the dedicated F21 PASS marker expected by `run-ci.sh`. Commit `387db17` now emits that marker only when the existing `f21BotStateTracePassed` assertion is true. This is a gate/diagnostic omission, not a Core shutdown or F54f assertion failure. The new trusted push must still prove the marker, all remaining simulator gates and final `Runtime PASS`; do not close the overall run before that result.
+F54f executed real delayed `PROC_TRIGGER_SPELL` child heals for both helpful-proc sides. The final marker measured caster control/root/child/total = 48/48/77/125 and recipient = 48/47/76/123. Root + child exactly equals total on both paths; each hostile's healer/tank `ThreatManager` delta matched the Core-derived expectation. The estimator stayed fail-closed with no partial impacts while the proc Aura was active. Temporary root/child/Aura SpellEntry fields and SpellProcEvent data were restored, final five-Player Group/session cleanup passed, and GDB reported normal process exit.
+
+The metric-gate correction in `35224fc` now parses the child-heal fields as numeric effective-health deltas (positive root, child >10, exact root + child = total) rather than incorrectly comparing them with boolean `1`. The trusted run proves the correction and all preceding gates. Artifact: [partybot-simulator-35224fc](https://github.com/tyrael9/core/actions/runs/45716916204/artifacts/15070412741). Matching PR build for docs head `946ea641`: [#45716989280](https://github.com/tyrael9/core/actions/runs/45716989280).
+
+## Next runtime slice — F54g: SPELL_AURA_ADD_TARGET_TRIGGER
+
+F54g is distinct from F54f. In this Core, successful non-channeled `Spell::finish` calls `HandleAddTargetTriggerAuras()`; each active `SPELL_AURA_ADD_TARGET_TRIGGER` effect is checked against the root spell, then the configured child spell is cast for each successful entry in `m_UniqueTargetInfo`. A successful reflected target may redirect the child to the caster. A single-target test would not prove fan-out, so the intended fixture must verify the actual multi-target root set, one child effect per successful target, skipped failed/deleted targets, reflect semantics where constructible, and every affected target's real hostile-reference fan-out.
+
+Production healing remains disabled: F54f does not make the full direct-heal threat envelope Complete, and neither `PriestDirectHealAction` nor a Priest Healing Strategy is registered.
 
 ---
 
@@ -637,15 +645,9 @@ Trusted push [#45561037244](https://github.com/tyrael9/core/actions/runs/4556103
 This validates only the tested ordered arrival sequence and assist-threat recipients. It does not prove all possible caster/recipient proc auras, SpellScript/AuraScript callbacks, `SPELL_AURA_ADD_TARGET_TRIGGER` child casts, nested children or complete action-level threat closure. Those remain F54e work; the production Priest healing action and strategy remain disabled.
 
 
-### F54f triggered-child proc fixture (functional assertions passed; overall shutdown validation pending)
+### Historical F54f development notes (superseded by the trusted PASS above)
 
-The simulator creates a temporary generic `SPELL_AURA_PROC_TRIGGER_SPELL` aura using the real Inspiration spell row and child spell 2052. It runs both caster-side `PROC_FLAG_DEAL_HELPFUL_SPELL` and recipient-side `PROC_FLAG_TAKE_HELPFUL_SPELL` variants. Each variant first installs the Aura with proc flags zero and records a real no-proc root-heal control, then enables only the tested helpful-side flag and repeats the root cast. The fixture requires the estimator to remain `Unknown` with no partial impacts, records control/root/total/child effective healing, and compares both hostile ThreatManagers' healer/tank deltas against the observed root component plus the child's Core healing-assist component.
-
-Two harness defects were found and fixed before this run: the fixture had crossed the shared Group cleanup/logout boundary, and then it measured before Core's configured delayed-proc phase. Source audit confirmed that `SpellCaster::ProcDamageAndSpell` first evaluates only caster AuraHolders flagged `SPELL_ATTR_EX3_INSTANT_TARGET_PROCS` and queues ordinary proc checks; the delayed pass re-resolves the victim GUID, evaluates ordinary caster and recipient AuraHolders, and dispatches child effects through `HandleTriggers`. F54f now flushes the actual pending-proc queue with `healer->UpdatePendingProcs(procDelay + 1)`, first for the zero-proc control while flags remain zero and then after the proc cast. In delayed mode it records synchronous root healing/threat before the flush and child healing/threat afterward. The fixture executes after all shared Group/death/point assertions but before Player logout/Map cleanup, with source-Map membership guards. The next trusted runtime result is pending; do not claim F54f complete until the dedicated PASS marker and final Runtime PASS are present.
-
-
-F54f same-second aura guard correction: the caster-side proc Aura is attached to the healer but applied by the tank. Core's delayed-proc stale-aura guard compares second-resolution apply/proc timestamps and suppresses a same-second aura when its caster GUID equals the proc owner. This test setup avoids that unrelated guard while preserving the healer as the caster-side proc owner. Production Core proc behavior is unchanged.
-
+The earlier entries below record the fixture's intermediate lifecycle, delayed-proc and shell-gate failures. They are historical debugging notes only. The final corrected runner was validated by trusted push #45716916204 and reached the simulator's final `Runtime PASS`; do not interpret the earlier “pending” wording in those notes as current status.
 
 ## Runner gate note — F22 damage_taken marker (2026-11-25)
 
@@ -657,13 +659,6 @@ The trusted runtime log showed the actual lethal Player event (`damage_taken`, n
 The latest log audit found three shell-gated PASS sentences absent from the fixture output even though the corresponding assertions already existed and contributed to the final F10 acceptance conjunction: death/CORPSE callback filtering, one resurrection observer transition, and PartyBotAI encounter-correlated death/resurrection records. Commit `6519359` adds each PASS sentence conditionally under its existing assertion. This is a fixture observability correction only; it does not bypass or weaken any assertion. Trusted runtime validation is pending.
 
 
-## F54f runner metric-type correction (2026-11-25)
+## F54f runner metric-type correction — resolved
 
-Trusted runtime #45714829493 passed the real Core F54f fixture and emitted its dedicated PASS marker. The measured values were:
-
-- Caster-side: control/root/child/total effective healing = 48/70/76/146.
-- Recipient-side: control/root/child/total effective healing = 48/48/77/125.
-- Both root+child totals reconcile exactly; both hostile ThreatManager healer/tank deltas match the corresponding Core-derived expected values.
-- Temporary Aura/SpellProcEvent state was restored; the five-Player Group/session cleanup passed; GDB reported normal process exit.
-
-The run still exited nonzero because the shell gate mistakenly treated `casterChild` and `recipientChild` as boolean fields equal to 1, while the fixture intentionally logs their measured effective-health amounts. Commit `35224fc` removes those invalid boolean expectations and instead checks positive control/root heals, child healing greater than the fixture's existing 10-point threshold, and exact `root + child = total` accounting for both sides. This preserves the real measurement and does not weaken `f54fPassed` or its threat-parity assertions. A new trusted runtime run is required before F54f is marked complete.
+Trusted run [#45716916204](https://github.com/tyrael9/core/actions/runs/45716916204) executed the corrected `run-ci.sh` on commit `35224fc`, validated numeric child-heal accounting for caster and recipient sides, passed all simulator gates, emitted final `Runtime PASS`, completed Group/session cleanup and exited normally under GDB. The current branch head also has a passing PR build [#45716989280](https://github.com/tyrael9/core/actions/runs/45716989280).

@@ -8938,6 +8938,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54gMutableChildSpell ? f54gMutableChildSpell->EffectDieSides[0] : 0;
 
     bool f54gBaselineCast = false;
+    bool f54gAuraEffectPresent = false;
+    bool f54gAuraScriptFree = false;
+    bool f54gAuraChanceReady = false;
     bool f54gAuraAttached = false;
     bool f54gTriggeredCast = false;
     bool f54gAuraRemoved = false;
@@ -8965,7 +8968,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54gAuraSpell->Effect[0] = SPELL_EFFECT_APPLY_AURA;
         f54gAuraSpell->EffectApplyAuraName[0] = SPELL_AURA_ADD_TARGET_TRIGGER;
         f54gAuraSpell->EffectTriggerSpell[0] = f54gChildSpell->Id;
-        f54gAuraSpell->EffectBasePoints[0] = 99; // 100% trigger chance
+        f54gAuraSpell->EffectBasePoints[0] = 100; // Core stores chance directly; no implicit +1
         f54gAuraSpell->EffectRealPointsPerLevel[0] = 0.0f;
         f54gAuraSpell->EffectBaseDice[0] = 0;
         f54gAuraSpell->EffectDieSides[0] = 0;
@@ -9040,8 +9043,12 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                 : nullptr;
         Aura* const f54gAura = f54gHolder
             ? f54gHolder->GetAuraByEffectIndex(EFFECT_INDEX_0) : nullptr;
-        f54gAuraAttached = f54gAura && !f54gHolder->GetAuraScript() &&
-            f54gAura->GetBasePoints() == 100;
+        f54gAuraEffectPresent = f54gAura &&
+            f54gAura->GetModifier()->m_auraname == SPELL_AURA_ADD_TARGET_TRIGGER;
+        f54gAuraScriptFree = f54gHolder && !f54gHolder->GetAuraScript();
+        f54gAuraChanceReady = f54gAura && f54gAura->GetBasePoints() == 100;
+        f54gAuraAttached = f54gAuraEffectPresent &&
+            f54gAuraScriptFree && f54gAuraChanceReady;
 
         float const f54gThreatBefore0 =
             hostiles[0].creature->GetThreatManager().getThreat(healer);
@@ -9147,10 +9154,12 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         f54gAuraRemoved && f54gAuraRowRestored &&
         f54gRootRowRestored && f54gChildRowRestored;
     sLog.Out(LOG_BASIC, f54gPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54g target-trigger fan-out: rowReady=%u refsValid=%u baselineCast=%u rootTargets=%u auraAttached=%u triggeredCast=%u childTargets=%u threatMatched=%u auraRemoved=%u auraRowRestored=%u rootRowRestored=%u childRowRestored=%u childGain=%u/%u/%u/%u/%u refs=%u/%u/%u/%u/%u.",
+        "[PartyBotSimulator] F54g target-trigger fan-out: rowReady=%u refsValid=%u baselineCast=%u rootTargets=%u auraPresent=%u auraScriptFree=%u auraChanceReady=%u auraAttached=%u triggeredCast=%u childTargets=%u threatMatched=%u auraRemoved=%u auraRowRestored=%u rootRowRestored=%u childRowRestored=%u childGain=%u/%u/%u/%u/%u refs=%u/%u/%u/%u/%u.",
         f54gRowReady ? 1u : 0u, f54gTargetReferencesValid ? 1u : 0u,
         f54gBaselineCast ? 1u : 0u, f54gRootTargets,
-        f54gAuraAttached ? 1u : 0u, f54gTriggeredCast ? 1u : 0u,
+        f54gAuraEffectPresent ? 1u : 0u, f54gAuraScriptFree ? 1u : 0u,
+        f54gAuraChanceReady ? 1u : 0u, f54gAuraAttached ? 1u : 0u,
+        f54gTriggeredCast ? 1u : 0u,
         f54gChildTargets, f54gThreatMatched ? 1u : 0u,
         f54gAuraRemoved ? 1u : 0u, f54gAuraRowRestored ? 1u : 0u,
         f54gRootRowRestored ? 1u : 0u, f54gChildRowRestored ? 1u : 0u,

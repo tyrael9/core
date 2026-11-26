@@ -9441,14 +9441,13 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
         onlyDamageEffects(f54gReflectRootSpell) &&
         f54gReflectRootSpell->IsReflectableSpell(
             healer, hostiles[0].creature) &&
-        (!f54gReflectRootThreat || !f54gReflectRootThreat->threat) &&
         f54gAuraSpell && f54gAuraSpell->ScriptId == 0 &&
         !healer->GetSpellAuraHolder(f54gAuraSpell->Id) &&
         !hostiles[0].creature->GetSpellAuraHolder(f54gAuraSpell->Id) &&
         hostiles[0].creature->GetTotalAuraModifier(
             SPELL_AURA_REFLECT_SPELLS) == 0;
 
-    uint32 const f54gSavedReflectRootFamilyFlags =
+    uint64 const f54gSavedReflectRootFamilyFlags =
         f54gMutableReflectRootSpell
             ? f54gMutableReflectRootSpell->SpellFamilyFlags : 0;
     uint32 const f54gSavedReflectRootAttributesEx2 =

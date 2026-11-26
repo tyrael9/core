@@ -5480,6 +5480,131 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                                 interleavedProjection.finalHealth == afterSecondHeal;
                         }
 
+
+                        // F54i: Core applies these synchronous operations in
+                        // call order, but snapshots only retain millisecond
+                        // arrival times. When Heal, Damage and Heal all occur
+                        // inside one WorldTimer millisecond, that timestamp
+                        // cannot encode the observed H-D-H order. Keep the
+                        // projection fail-closed instead of sorting by source
+                        // GUID, spell ID, or event kind.
+                        bool f54iCoreOrderObserved = false;
+                        bool f54iSameTimestamp = false;
+                        bool f54iProjectionRejected = false;
+                        uint32 f54iAttempts = 0;
+                        uint32 f54iFirstTimestamp = 0;
+                        uint32 f54iDamageTimestamp = 0;
+                        uint32 f54iSecondTimestamp = 0;
+                        uint32 f54iObservedHealth = 0;
+                        uint32 f54iSavedHealth = tank->GetHealth();
+                        uint32 f54iMaxHealth = tank->GetMaxHealth();
+                        if (tank->IsAlive() && priest->IsAlive() &&
+                            f54iMaxHealth > 100u && lesserHealRankOne)
+                        {
+                            uint32 const f54iStartHealth = f54iMaxHealth - 100u;
+                            for (uint32 attempt = 0; attempt < 32u &&
+                                 !f54iSameTimestamp; ++attempt)
+                            {
+                                ++f54iAttempts;
+                                tank->SetHealth(f54iStartHealth);
+
+                                uint32 const firstBegin = WorldTimer::getMSTime();
+                                int32 const firstHeal = priest->DealHeal(
+                                    tank, 40u, lesserHealRankOne);
+                                uint32 const firstEnd = WorldTimer::getMSTime();
+                                uint32 const afterFirst = tank->GetHealth();
+
+                                uint32 const damageBegin = WorldTimer::getMSTime();
+                                uint32 const actualDamage = tank->DealDamage(
+                                    tank, 30u, nullptr, SELF_DAMAGE,
+                                    SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+                                uint32 const damageEnd = WorldTimer::getMSTime();
+                                uint32 const afterDamage = tank->GetHealth();
+
+                                uint32 const secondBegin = WorldTimer::getMSTime();
+                                int32 const secondHeal = priest->DealHeal(
+                                    tank, 40u, lesserHealRankOne);
+                                uint32 const secondEnd = WorldTimer::getMSTime();
+                                uint32 const afterSecond = tank->GetHealth();
+
+                                bool const observedOrder =
+                                    firstHeal == 40 &&
+                                    afterFirst == f54iStartHealth + 40u &&
+                                    actualDamage == 30u &&
+                                    afterDamage + 30u == afterFirst &&
+                                    secondHeal == 40 &&
+                                    afterSecond == afterDamage + 40u;
+                                bool const oneMillisecondBucket =
+                                    firstBegin == firstEnd &&
+                                    firstEnd == damageBegin &&
+                                    damageBegin == damageEnd &&
+                                    damageEnd == secondBegin &&
+                                    secondBegin == secondEnd;
+                                if (oneMillisecondBucket)
+                                {
+                                    f54iCoreOrderObserved = observedOrder;
+                                    f54iSameTimestamp = true;
+                                    f54iFirstTimestamp = firstBegin;
+                                    f54iDamageTimestamp = damageBegin;
+                                    f54iSecondTimestamp = secondBegin;
+                                    f54iObservedHealth = afterSecond;
+
+                                    std::vector<HealingTimelineEvent> sameTimeEvents;
+                                    bool const firstAdded = observedOrder &&
+                                        AppendDirectHealForecastEvent(
+                                            priest->GetObjectGuid().GetRawValue(),
+                                            lesserHealRankOne->Id, firstBegin,
+                                            static_cast<uint32>(firstHeal),
+                                            sameTimeEvents);
+                                    bool const damageAdded = firstAdded &&
+                                        AppendDamageTimelineEvent(
+                                            tankGuid.GetRawValue(), 0u,
+                                            damageBegin, actualDamage,
+                                            sameTimeEvents);
+                                    bool const secondAdded = damageAdded &&
+                                        AppendDirectHealForecastEvent(
+                                            priest->GetObjectGuid().GetRawValue(),
+                                            lesserHealRankOne->Id, secondBegin,
+                                            static_cast<uint32>(secondHeal),
+                                            sameTimeEvents);
+                                    HealingTimelineProjection sameTimeProjection;
+                                    bool const projectionAccepted =
+                                        secondAdded &&
+                                        ProjectHealingTimeline(
+                                            f54iStartHealth, f54iMaxHealth,
+                                            sameTimeEvents, sameTimeProjection);
+                                    f54iProjectionRejected =
+                                        secondAdded && sameTimeEvents.size() == 3u &&
+                                        !projectionAccepted &&
+                                        !sameTimeProjection.valid &&
+                                        sameTimeProjection.eventCount == 0u &&
+                                        sameTimeProjection.finalHealth == 0u;
+                                }
+
+                                tank->SetHealth(f54iSavedHealth);
+                            }
+                        }
+                        bool const f54iPassed =
+                            f54iCoreOrderObserved && f54iSameTimestamp &&
+                            f54iProjectionRejected &&
+                            f54iFirstTimestamp == f54iDamageTimestamp &&
+                            f54iDamageTimestamp == f54iSecondTimestamp;
+                        sLog.Out(LOG_BASIC,
+                            f54iPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+                            "[PartyBotSimulator] F54i same-timestamp Core Heal/Damage ordering: captured=%u attempts=%u coreOrder=%u sameTimestamp=%u projectionRejected=%u firstHeal=40 damage=30 secondHeal=40 observedHealth=%u firstMs=%u damageMs=%u secondMs=%u.",
+                            f54iPassed ? 1u : 0u, f54iAttempts,
+                            f54iCoreOrderObserved ? 1u : 0u,
+                            f54iSameTimestamp ? 1u : 0u,
+                            f54iProjectionRejected ? 1u : 0u,
+                            f54iObservedHealth, f54iFirstTimestamp,
+                            f54iDamageTimestamp, f54iSecondTimestamp);
+                        if (f54iPassed)
+                            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                "[PartyBotSimulator] PASS: F54i observed real Core DealHeal -> SELF_DAMAGE DealDamage -> DealHeal mutations within one WorldTimer millisecond and rejected the indistinguishable mixed Heal/Damage timeline instead of inventing an order.");
+                        else
+                            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                                "[PartyBotSimulator] F54i same-timestamp Heal/Damage fail-closed fixture failed.");
+
                         CoreSpellTerminalEvent staleTerminal;
                         staleTerminal.actionId = f53fStaleActionId;
                         staleTerminal.encounterId = f53bCoordinator->GetEncounterId() + 1;

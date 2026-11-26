@@ -5136,6 +5136,315 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             !priest->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
                             f54dDirectActualGain > 0;
 
+                        // F54j: damage the external healer after its direct-heal
+                        // forecast has been snapshotted. Core Unit::DealDamage
+                        // must apply Spell::Delayed to the caster's PREPARING
+                        // spell; a refreshed snapshot must then copy the live
+                        // increased timer. Finally cancel the same spell and
+                        // prove a second refreshed snapshot carries no stale heal.
+                        bool f54jCastAccepted = false;
+                        bool f54jSpellEligible = false;
+                        bool f54jPreSnapshotCaptured = false;
+                        bool f54jCasterDamageApplied = false;
+                        bool f54jTimerIncreased = false;
+                        bool f54jPostPushbackSnapshotCaptured = false;
+                        bool f54jInterrupted = false;
+                        bool f54jPostInterruptSnapshotCaptured = false;
+                        bool f54jNoStaleHealCredit = false;
+                        bool f54jTargetUnchanged = false;
+                        bool f54jCleanup = false;
+                        uint32 f54jCastTimeMs = 0;
+                        uint32 f54jBeforeTimerMs = 0;
+                        uint32 f54jAfterTimerMs = 0;
+                        uint32 f54jPushbackDeltaMs = 0;
+                        uint32 f54jDamageTaken = 0;
+                        uint32 f54jTargetHealthBefore = 0;
+                        uint32 f54jTargetHealthAfter = 0;
+                        uint32 f54jBeforeEpoch = 0;
+                        uint32 f54jAfterPushbackEpoch = 0;
+                        uint32 f54jAfterInterruptEpoch = 0;
+                        uint32 f54jBeforeAmount = 0;
+                        uint32 f54jAfterAmount = 0;
+                        uint32 f54jSpellInterruptFlags = lesserHealRankOne
+                            ? lesserHealRankOne->InterruptFlags : 0u;
+                        uint32 const f54jSavedPriestHealth = priest->GetHealth();
+                        uint32 const f54jSavedPriestMana =
+                            priest->GetPower(POWER_MANA);
+                        uint32 const f54jSavedTankHealth = tank->GetHealth();
+                        if (priest->IsAlive() && tank->IsAlive() &&
+                            lesserHealRankOne &&
+                            lesserHealRankOne->HasSpellInterruptFlag(
+                                SPELL_INTERRUPT_FLAG_DAMAGE_PUSHBACK) &&
+                            !lesserHealRankOne->HasSpellInterruptFlag(
+                                SPELL_INTERRUPT_FLAG_DAMAGE_CANCELS))
+                        {
+                            f54jSpellEligible = true;
+                            // Wait out the previous direct cast/GCD without
+                            // advancing the new spell once it has started.
+                            for (uint32 tick = 0; tick < 30u &&
+                                 (priest->GetCurrentSpell(CURRENT_GENERIC_SPELL) ||
+                                  priest->HasGCD(lesserHealRankOne)); ++tick)
+                            {
+                                std::this_thread::sleep_for(
+                                    std::chrono::milliseconds(100));
+                                map.Update(100);
+                            }
+
+                            if (!priest->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
+                                !priest->HasGCD(lesserHealRankOne))
+                            {
+                                priest->SetPower(
+                                    POWER_MANA, priest->GetMaxPower(POWER_MANA));
+                                tank->SetHealth(std::max<uint32>(
+                                    1u, tank->GetMaxHealth() / 2u));
+                                f54jTargetHealthBefore = tank->GetHealth();
+
+                                SpellCastResult const f54jCastResult =
+                                    priest->CastSpell(tank, lesserHealRankOne, false);
+                                f54jCastAccepted = f54jCastResult == SPELL_CAST_OK;
+
+                                // A few real Player updates let the Core cast
+                                // timer advance below its initial cast-time cap.
+                                // The bounded poll fails closed if the spell
+                                // completes, changes state, or never ticks.
+                                for (uint32 tick = 0; f54jCastAccepted && tick < 20u;
+                                     ++tick)
+                                {
+                                    Spell* current =
+                                        priest->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                                    if (!current ||
+                                        current->getState() != SPELL_STATE_PREPARING)
+                                        break;
+                                    if (current->GetCastedTime() <
+                                        static_cast<uint32>(current->GetCastTime()))
+                                        break;
+                                    std::this_thread::sleep_for(
+                                        std::chrono::milliseconds(50));
+                                    map.Update(50);
+                                }
+
+                                Spell* const beforePushbackSpell =
+                                    priest->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                                if (beforePushbackSpell &&
+                                    beforePushbackSpell->m_spellInfo &&
+                                    beforePushbackSpell->m_spellInfo->Id ==
+                                        lesserHealRankOne->Id &&
+                                    beforePushbackSpell->getState() ==
+                                        SPELL_STATE_PREPARING &&
+                                    beforePushbackSpell->GetCastedTime() > 0 &&
+                                    beforePushbackSpell->GetCastedTime() <
+                                        static_cast<uint32>(
+                                            beforePushbackSpell->GetCastTime()))
+                                {
+                                    f54jCastTimeMs = static_cast<uint32>(
+                                        beforePushbackSpell->GetCastTime());
+                                    f54jBeforeTimerMs =
+                                        beforePushbackSpell->GetCastedTime();
+
+                                    f53bCoordinator->InvalidateSnapshot();
+                                    PartySnapshot const* const beforePushbackSnapshot =
+                                        PartySnapshotBuilder::GetOrBuild(
+                                            tank, *f53bCoordinator,
+                                            WorldTimer::getMSTime(), 0);
+                                    PartyMemberSnapshot const* const beforePushbackCaster =
+                                        beforePushbackSnapshot
+                                            ? beforePushbackSnapshot->FindMember(
+                                                f53fPriestGuid) : nullptr;
+                                    std::vector<HealingTimelineEvent> beforePushbackEvents;
+                                    bool const beforePushbackEventAdded =
+                                        beforePushbackCaster &&
+                                        AppendInFlightDirectHealForecastEvent(
+                                            *beforePushbackCaster,
+                                            tankGuid.GetRawValue(),
+                                            beforePushbackEvents);
+                                    f54jPreSnapshotCaptured =
+                                        beforePushbackCaster &&
+                                        beforePushbackSnapshot->epoch >
+                                            f54bExpectedOwnReservationAmount &&
+                                        beforePushbackCaster->currentSpellId ==
+                                            lesserHealRankOne->Id &&
+                                        beforePushbackCaster->currentSpellTargetGuid ==
+                                            tankGuid.GetRawValue() &&
+                                        beforePushbackCaster->currentSpellState ==
+                                            SPELL_STATE_PREPARING &&
+                                        beforePushbackCaster->currentSpellRemainingCastMs ==
+                                            f54jBeforeTimerMs &&
+                                        beforePushbackEventAdded &&
+                                        beforePushbackEvents.size() == 1u &&
+                                        beforePushbackEvents[0].arrivalMs ==
+                                            f54jBeforeTimerMs;
+                                    f54jBeforeEpoch = beforePushbackSnapshot
+                                        ? beforePushbackSnapshot->epoch : 0u;
+                                    f54jBeforeAmount = beforePushbackCaster
+                                        ? beforePushbackCaster->currentSpellHealingAmount : 0u;
+
+                                    uint32 const casterHealthBeforeDamage =
+                                        priest->GetHealth();
+                                    f54jDamageTaken = priest->DealDamage(
+                                        priest, 1u, nullptr, SELF_DAMAGE,
+                                        SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+                                    f54jCasterDamageApplied =
+                                        f54jDamageTaken == 1u &&
+                                        priest->GetHealth() + 1u ==
+                                            casterHealthBeforeDamage;
+
+                                    Spell* const afterPushbackSpell =
+                                        priest->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+                                    if (afterPushbackSpell &&
+                                        afterPushbackSpell == beforePushbackSpell &&
+                                        afterPushbackSpell->getState() ==
+                                            SPELL_STATE_PREPARING)
+                                    {
+                                        f54jAfterTimerMs =
+                                            afterPushbackSpell->GetCastedTime();
+                                        f54jTimerIncreased =
+                                            f54jAfterTimerMs > f54jBeforeTimerMs &&
+                                            f54jAfterTimerMs <= f54jCastTimeMs;
+                                        f54jPushbackDeltaMs =
+                                            f54jAfterTimerMs - f54jBeforeTimerMs;
+                                    }
+
+                                    f53bCoordinator->InvalidateSnapshot();
+                                    PartySnapshot const* const afterPushbackSnapshot =
+                                        PartySnapshotBuilder::GetOrBuild(
+                                            tank, *f53bCoordinator,
+                                            WorldTimer::getMSTime(), 0);
+                                    PartyMemberSnapshot const* const afterPushbackCaster =
+                                        afterPushbackSnapshot
+                                            ? afterPushbackSnapshot->FindMember(
+                                                f53fPriestGuid) : nullptr;
+                                    std::vector<HealingTimelineEvent> afterPushbackEvents;
+                                    bool const afterPushbackEventAdded =
+                                        afterPushbackCaster &&
+                                        AppendInFlightDirectHealForecastEvent(
+                                            *afterPushbackCaster,
+                                            tankGuid.GetRawValue(),
+                                            afterPushbackEvents);
+                                    f54jAfterAmount = afterPushbackCaster
+                                        ? afterPushbackCaster->currentSpellHealingAmount : 0u;
+                                    f54jAfterPushbackEpoch = afterPushbackSnapshot
+                                        ? afterPushbackSnapshot->epoch : 0u;
+                                    f54jPostPushbackSnapshotCaptured =
+                                        f54jCasterDamageApplied &&
+                                        f54jTimerIncreased &&
+                                        afterPushbackSnapshot &&
+                                        f54jAfterPushbackEpoch > f54jBeforeEpoch &&
+                                        afterPushbackCaster &&
+                                        afterPushbackCaster->currentSpellId ==
+                                            lesserHealRankOne->Id &&
+                                        afterPushbackCaster->currentSpellTargetGuid ==
+                                            tankGuid.GetRawValue() &&
+                                        afterPushbackCaster->currentSpellState ==
+                                            SPELL_STATE_PREPARING &&
+                                        afterPushbackCaster->currentSpellRemainingCastMs ==
+                                            f54jAfterTimerMs &&
+                                        afterPushbackEventAdded &&
+                                        afterPushbackEvents.size() == 1u &&
+                                        afterPushbackEvents[0].arrivalMs ==
+                                            f54jAfterTimerMs &&
+                                        afterPushbackEvents[0].amount ==
+                                            f54jAfterAmount &&
+                                        f54jAfterAmount == f54jBeforeAmount;
+
+                                    if (priest->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+                                    {
+                                        priest->InterruptSpell(
+                                            CURRENT_GENERIC_SPELL, true);
+                                        f54jInterrupted =
+                                            !priest->GetCurrentSpell(
+                                                CURRENT_GENERIC_SPELL);
+                                    }
+
+                                    f53bCoordinator->InvalidateSnapshot();
+                                    PartySnapshot const* const afterInterruptSnapshot =
+                                        PartySnapshotBuilder::GetOrBuild(
+                                            tank, *f53bCoordinator,
+                                            WorldTimer::getMSTime(), 0);
+                                    PartyMemberSnapshot const* const afterInterruptCaster =
+                                        afterInterruptSnapshot
+                                            ? afterInterruptSnapshot->FindMember(
+                                                f53fPriestGuid) : nullptr;
+                                    std::vector<HealingTimelineEvent> afterInterruptEvents;
+                                    bool const afterInterruptEventAdded =
+                                        afterInterruptCaster &&
+                                        AppendInFlightDirectHealForecastEvent(
+                                            *afterInterruptCaster,
+                                            tankGuid.GetRawValue(),
+                                            afterInterruptEvents);
+                                    f54jAfterInterruptEpoch = afterInterruptSnapshot
+                                        ? afterInterruptSnapshot->epoch : 0u;
+                                    f54jPostInterruptSnapshotCaptured =
+                                        f54jInterrupted &&
+                                        afterInterruptSnapshot &&
+                                        f54jAfterInterruptEpoch >
+                                            f54jAfterPushbackEpoch &&
+                                        afterInterruptCaster &&
+                                        (!afterInterruptCaster->currentSpellId ||
+                                         !afterInterruptCaster->currentSpellHealingAmount) &&
+                                        !afterInterruptCaster->currentSpellRemainingCastMs;
+                                    f54jNoStaleHealCredit =
+                                        f54jPostInterruptSnapshotCaptured &&
+                                        !afterInterruptEventAdded &&
+                                        afterInterruptEvents.empty();
+                                    f54jTargetHealthAfter = tank->GetHealth();
+                                    f54jTargetUnchanged =
+                                        f54jTargetHealthAfter ==
+                                            f54jTargetHealthBefore;
+                                }
+                            }
+
+                            // Always clear any fixture-owned cast and restore
+                            // the two Players' exact pre-fixture scalar state.
+                            if (priest->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+                                priest->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+                            priest->SetHealth(f54jSavedPriestHealth);
+                            priest->SetPower(POWER_MANA, f54jSavedPriestMana);
+                            tank->SetHealth(f54jSavedTankHealth);
+                            f53bCoordinator->InvalidateSnapshot();
+                            f54jCleanup =
+                                !priest->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
+                                priest->GetHealth() == f54jSavedPriestHealth &&
+                                priest->GetPower(POWER_MANA) == f54jSavedPriestMana &&
+                                tank->GetHealth() == f54jSavedTankHealth;
+                        }
+
+                        bool const f54jPassed =
+                            f54jSpellEligible && f54jCastAccepted &&
+                            f54jPreSnapshotCaptured && f54jCasterDamageApplied &&
+                            f54jTimerIncreased &&
+                            f54jPostPushbackSnapshotCaptured &&
+                            f54jInterrupted && f54jPostInterruptSnapshotCaptured &&
+                            f54jNoStaleHealCredit && f54jTargetUnchanged &&
+                            f54jCleanup;
+                        sLog.Out(LOG_BASIC,
+                            f54jPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+                            "[PartyBotSimulator] F54j snapshot-after-pushback/interruption: captured=%u spellEligible=%u castAccepted=%u preSnapshot=%u casterDamage=%u damageTaken=%u timerIncreased=%u castTimeMs=%u beforeTimerMs=%u afterTimerMs=%u pushbackDeltaMs=%u postPushbackSnapshot=%u beforeEpoch=%u afterPushbackEpoch=%u interrupted=%u postInterruptSnapshot=%u afterInterruptEpoch=%u noStaleHealCredit=%u targetUnchanged=%u cleanup=%u spellFlags=%u beforeAmount=%u afterAmount=%u.",
+                            f54jPassed ? 1u : 0u,
+                            f54jSpellEligible ? 1u : 0u,
+                            f54jCastAccepted ? 1u : 0u,
+                            f54jPreSnapshotCaptured ? 1u : 0u,
+                            f54jCasterDamageApplied ? 1u : 0u,
+                            f54jDamageTaken,
+                            f54jTimerIncreased ? 1u : 0u,
+                            f54jCastTimeMs, f54jBeforeTimerMs,
+                            f54jAfterTimerMs, f54jPushbackDeltaMs,
+                            f54jPostPushbackSnapshotCaptured ? 1u : 0u,
+                            f54jBeforeEpoch, f54jAfterPushbackEpoch,
+                            f54jInterrupted ? 1u : 0u,
+                            f54jPostInterruptSnapshotCaptured ? 1u : 0u,
+                            f54jAfterInterruptEpoch,
+                            f54jNoStaleHealCredit ? 1u : 0u,
+                            f54jTargetUnchanged ? 1u : 0u,
+                            f54jCleanup ? 1u : 0u,
+                            f54jSpellInterruptFlags, f54jBeforeAmount, f54jAfterAmount);
+                        if (f54jPassed)
+                            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                "[PartyBotSimulator] PASS: F54j observed Core DAMAGE_PUSHBACK extend an in-flight Priest Lesser Heal, refreshed the value-only snapshot to the live timer, then interrupted the spell and confirmed the fresh snapshot emitted no stale heal credit.");
+                        else
+                            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                                "[PartyBotSimulator] F54j snapshot-after-pushback/interruption fixture failed.");
+
+
                         // Exercise the exact Core DealHeal/ModifyHealth cap at a
                         // one-health deficit with a known attempted amount.
                         if (tank->GetMaxHealth() > 1 && lesserHealRankOne)

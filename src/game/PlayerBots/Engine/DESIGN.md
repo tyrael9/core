@@ -1,144 +1,83 @@
-# PartyBot Engine — design and implementation plan
+# PartyBotEngine — current design and implementation plan
 
-## 1. Purpose
+## 1. Product goal
 
-Build a dependable five-player PartyBot group for the Vanilla 1.12.1 (5875) server. The target is a small group controlled by one human player and a few PartyBots, with coordinated healing, tanking, damage, crowd control and instance mechanics. Correctness and debuggability matter more than maximizing the number of bots.
+Build a dependable five-player PartyBot group for the deployed Vanilla 1.12.1 / client build 5875 server. One human player and a small number of PartyBots should coordinate healing, tanking, damage, crowd control, recovery and instance mechanics. Correctness, predictable resource use and diagnosability take priority over maximizing bot count.
 
-This is an incremental redesign of the decision-making layer, not a rewrite of the vMaNGOS player/session/group runtime.
+This is an independent decision engine implemented against the pinned vMaNGOS C++14 Core. It is not a rewrite of the Player/session/group runtime, and it is not a per-role migration that lets old and new policies compete.
 
-## 2. Compatibility baseline
+## 2. Compatibility and operational baseline
 
-- Core revision: 0e3ff01e76d4758e8a7c3108b2717cc785ed56fa
-- Deploy wrapper revision: ebaa560951459419c35140e20d787ec5db2905b8
-- Client: 5875 (Vanilla 1.12.1)
+- Core baseline: `0e3ff01e76d4758e8a7c3108b2717cc785ed56fa`
+- Client/data: Vanilla 1.12.1 / build 5875
 - Language: C++14
-- Target: Linux ARM64 (Oracle A1)
+- Target: Linux ARM64, Oracle A1 (1 OCPU / 6 GB)
+- No external inference service or new database schema
+- No production image publication, deployment or live-realm modification without explicit approval
 
-No external inference service, scripting runtime, DB schema changes or production deployment is part of the initial engine milestones. Keep existing PartyBotAI lifecycle and class-specific behavior available as fallback. Never deploy or modify the production realm without explicit approval.
+The detailed Core API constraints are in `VMANGOS-API-AUDIT.md`; architecture and authority rules are in `ARCHITECTURE.md`; milestone status and evidence are in `ROADMAP.md`.
 
-## 3. Design principles
+## 3. Runtime authority
 
-- Observe before changing decisions; every important rejection must have an explainable reason.
-- One decision authority per action; avoid multiple class routines issuing conflicting GCD spells.
-- Coordinate at party scope, using same-map shared state and explicit reservations.
-- Separate decision from execution; strategies propose actions and vMaNGOS APIs execute them.
-- Preserve lifecycle behavior: login/logout, resurrection, follow, teleport, eating/drinking, battleground and instance handling.
-- Prefer deterministic rules, bounded traces and explicit tests over opaque heuristics.
-- Build an independent engine; incremental patches to legacy rotations are maintenance, not the main implementation.
+The runtime has three explicit modes:
 
-## 4. Reference research
+- **Legacy (default):** the existing PartyBot policy remains active.
+- **Shadow:** PartyBotEngine evaluates and records decisions; Legacy remains the executor. Shadow is diagnostic only.
+- **NewEngine:** PartyBotEngine is the sole decision authority. It must never fall through to Legacy healing, combat, class rotation, tank/assist, CC, dispel or target-selection policy.
 
-The Strategy/Trigger/Action/Value/Multiplier model is researched in cmangos/playerbots. Encounter design is researched in the active mod-playerbots/mod-playerbots project, especially its Molten Core strategies. Both are architectural/behavioral references only; neither codebase is source-compatible with the deployed vMaNGOS baseline.
+An unimplemented behavior is a deliberate no-op. The current production NewEngine registration is intentionally narrow: out-of-combat Group-leader Follow and StopFollowing recovery. Priest healing and all other class combat policies remain unregistered. NewEngine is not yet a playable combat AI.
 
-See RESEARCH-CMANGOS.md, RESEARCH-AZEROTHCORE.md, ARCHITECTURE.md and VMANGOS-API-AUDIT.md.
+## 4. Decision and execution pipeline
 
-## 5. Target architecture
+1. Build or reuse a value-only snapshot for the current Group/map/instance.
+2. Determine bot state, role context and active encounter.
+3. Evaluate due triggers using cached facts and explicit invalidation.
+4. Generate named action candidates with target identity and intent.
+5. Apply eligibility/usefulness checks, multipliers, vetoes and channel arbitration.
+6. Reserve shared party resources/targets where the action contract requires it.
+7. Resolve actor and target GUIDs on the owning map thread and repeat action-specific live Core preflight immediately before side effects.
+8. Execute through a CoreAction adapter and record the authoritative Core result.
+9. Invalidate affected values, release/retain reservations by exact action/encounter correlation and emit bounded trace events.
 
-The target components are:
-- PartyCoordinator: map/instance-scoped target, tank, heal, CC, interrupt, dispel and recovery reservations.
-- PartySnapshot: bounded read-only view of party and relevant hostile state.
-- PartyBotEngine: per-bot Strategy/Trigger/Action/Value/Multiplier evaluation.
-- vMaNGOS Action Executor: final revalidation and execution through existing Core APIs.
-- Legacy PartyBotAI: retained as fallback; no two decision authorities may issue the same action domain.
+Evaluation is read-only; execution is separate. Snapshot, queue, cache, reservation, event and trace storage must remain bounded.
 
-The exact interfaces, data ownership and rollout modes are specified in ARCHITECTURE.md.
+## 5. Ownership and threading
 
-## 6. Decision pipeline
+`PartyBotAI` remains the Core lifecycle/map-thread host. `PartyCoordinatorRegistry` shares one coordinator among same-Group/map/instance bots; each bot owns its engine, strategy composition and pending decision work. Snapshots retain only GUIDs and scalar values. No Core `Player`, `Unit`, `Spell` or `Aura` pointer may outlive the map-thread build/execute call.
 
-1. Build or reuse the current same-map party snapshot.
-2. Determine role, combat state and active encounter strategy.
-3. Evaluate active triggers using cached facts.
-4. Generate candidate actions.
-5. Check IsPossible: spell known, cooldown/GCD, resources, form/stance, target validity, range, line of sight and Core cast restrictions.
-6. Check IsUseful: meaningful heal deficit, threat to recover, interrupt window, CC requirement or encounter mechanic.
-7. Apply party reservations and encounter safety constraints.
-8. Calculate deterministic priority and select the best candidate.
-9. Revalidate immediately before execution and call vMaNGOS.
-10. Record result and rejected alternatives in bounded DecisionTrace.
+Same-map coordinator mutation stays on its owning Map update context. Cross-map transitions close/release the old shard on the source Map thread and reacquire a destination shard after insertion. Resolve GUIDs again immediately before execution. No database, network or inference work is allowed on map threads.
 
-A normal decision cycle executes at most one primary GCD action. Movement and target/facing operations use separate, explicitly arbitrated channels. A failed cast is never reported as successful merely because a target was found.
+Owner reconnect and bot lifetime persistence remain host responsibilities. Their lifecycle tests must stay intact as engine behavior expands.
 
-## 7. Owner lifecycle
+## 6. Strategy composition
 
-A temporary owner disconnect is not an intentional group disband. When the original owner's GUID remains in the current group, retain PartyBots during the reconnect grace period, reset the timer on reconnect, restore owner leadership if needed, preserve explicit leave/disband cleanup and allow removal after grace expiry.
+One decision queue composes state, generic safety, class, role, party and encounter strategies. Roles are policy context, not separate executors. A Priest Healer should eventually arbitrate generic, Priest, healer, party and encounter actions in the same queue.
 
-The initial default is 10 minutes, configurable with PlayerBot.OwnerOfflineGraceMs; 0 disables it. This behavior is committed but still requires in-game validation on a disposable realm.
+## 7. Validation and rollout
 
-## 8. Diagnostics
+Pure C++14 tests cover deterministic policy and state-machine contracts. The dedicated PartyBot workflow validates pure tests, the read-only report collector, Configure, full Linux ARM64 / Vanilla 5875 Server+Realm compilation and simulator-harness syntax. Trusted push runs additionally execute the fixture-backed Core simulator when its data secrets are available; PR runs intentionally skip the secret-backed runtime.
 
-DecisionTrace is opt-in through PlayerBot.DecisionTrace = 1. Output is bounded per bot/update and does not write to the database. It records spell eligibility/cast outcomes, heal target rejection, party combat detection, role assignment, Warrior assist/taunt no-action cases, Mage AoE rejection and owner disconnect grace transitions.
+A CI pass is not an in-game test. A simulator pass proves only its asserted Core fixtures, not overall gameplay quality. Legacy remains the default while NewEngine policies are incomplete. Every production policy requires Core accepted/rejected/terminal, stale-snapshot, resource, threat, cleanup and no-Legacy-fallback coverage.
 
-Tracing is diagnostic evidence, not a substitute for tests.
+No merge, image publication, deployment or realm-side change is authorised by CI alone.
 
-## 9. Rollout
+## 8. Current implementation position (2026-11-26)
 
-- Legacy: existing class routines execute; default during development.
-- Shadow: new engine evaluates and traces candidates; Legacy remains the only executor.
-- Strategy: new engine owns a migrated decision domain; Legacy cannot issue competing actions for that domain.
+Phase 5 death/recovery and generic movement foundations are closed with trusted Core runtime evidence. The first production NewEngine behavior remains the narrow Follow policy; all other combat policy coverage is still development work.
 
-Migration is per decision domain. No Strategy mode becomes default before in-game validation.
+Phase 6 is in the Priest Healer vertical slice. Current test-only evidence covers target/rank selection, Heal reservations, direct heals/HoTs/absorbs, bounded timeline, ordered damage/heal cases, helpful procs, target-trigger fan-out, a representative nested child chain and direct-heal pushback/interruption. F54k adds the Core random-dither floor/ceil interval for every HoT tick. See `ROADMAP.md` and `HEALING-FORECAST.md` for exact fixture evidence and open boundaries.
 
-## 10. Roadmap and next gate
+Still blocked from production:
+- `PriestDirectHealAction` whole-action threat remains Unknown; no Priest Healing Strategy is registered.
+- Absorb-school matching, deeper/arbitrary nested child closure and complete Core/proc/recipient ordering remain open.
+- Druid, Shaman, Paladin, Warrior, Mage, Warlock, Hunter and Rogue production strategies remain unimplemented.
+- Party-wide target/threat/CC/interrupt/dispel policy and dungeon/raid encounter strategies remain future phases.
 
-See ROADMAP.md. The next gate is to finish the exact PlayerAI update call chain, coordinator ownership/lifetime and build/test harness audit. The first independent engine implementation follows that audit and starts in Shadow mode.
+## 9. Near-term implementation order
 
-Planned order:
-1. C++14 engine foundation and same-map snapshot/coordinator;
-2. Shadow mode and deterministic tests;
-3. one role vertical slice (healing triage/reservation or Warrior threat assignment, selected after audit);
-4. remaining five-player role coordination;
-5. five-player encounter strategies;
-6. Molten Core, Onyxia, Zul'Gurub, Blackwing Lair and AQ20, encounter by encounter.
-
-## 11. CI and validation
-
-For head 9a3dae4de7e556858a2fdce13488d61a6c668f05, the dedicated Linux ARM64 full-Core build passed. The broad CI Build matrix had passed its Ubuntu GCC jobs and macOS/Windows Visual Studio jobs, while Ubuntu Clang and Windows MinGW jobs were still running in the latest observed attempts. Do not report the full matrix as passed until all jobs in the latest run complete successfully.
-
-A CI pass proves compilation only. It does not prove in-game behavior, instance persistence, database compatibility beyond compilation or deployment readiness. Manual tests are in TESTING.md. Production deployment requires explicit approval.
-
-## 12. Current implementation status
-
-Committed Phase 0 groundwork:
-- bounded opt-in DecisionTrace;
-- healer lifecycle entry when same-map party members are fighting;
-- owner disconnect reconnect grace period;
-- Warrior/Mage diagnostic instrumentation;
-- pre-heal helper returns success only when the cast is accepted;
-- ARM64 build workflow and manual regression checklist.
-
-Committed research and design:
-- CMaNGOS strategy engine analysis;
-- active AzerothCore raid strategy analysis;
-- PartyBotEngine architecture and roadmap;
-- first vMaNGOS API/update-context audit.
-
-Not yet implemented:
-- PartyCoordinator;
-- PartySnapshot;
-- independent Strategy/Trigger/Action/Value/Multiplier engine;
-- Shadow/Strategy execution modes;
-- migrated healer/tank decision domains;
-- encounter strategies.
-
-Do not describe current code as a completed new engine. Update this section and ROADMAP.md with every implementation milestone.
-
-
-## 13. Independent engine foundation status
-
-The pure C++14 foundation is now committed: value-only PartySnapshot types, PartyCoordinator reservation primitives, Strategy/Trigger/Action/Value/Multiplier interfaces, candidate evaluation and channel arbitration, plus standalone deterministic tests. Evaluate is read-only; ExecuteSelected is a separate explicit method.
-
-No PartyBotAI runtime integration exists yet. The current code does not build a live snapshot, create map-scoped coordinator shards or execute vMaNGOS actions. The packet-processing audit confirms Group reads are safe in map context; the builder will use GetMemberSlots() GUIDs and current-map resolution.
-
-
-## 14. Live snapshot/coordinator primitives
-
-The current foundation now includes:
-- value-only PartySnapshot data structures;
-- a live builder that copies Group::GetMemberSlots() GUIDs and resolves only through the current Map;
-- member health/resources/position/victim facts, hostile attackers and threat-list snapshots;
-- weakly indexed coordinator shards keyed by group/map/instance, with per-bot shared ownership intended;
-- bounded snapshot caching and monotonically advancing snapshot epochs;
-- reservation expiry, conflict handling and additive multi-healer reservations;
-- deterministic tests for registry identity and cache age.
-
-The builder/registry are compiled but are not yet wired into PartyBotAI. No runtime Shadow hook or vMaNGOS action adapter is active yet.
+1. F54k: complete random HoT tick lower/upper bounds and trusted Core interval validation.
+2. F54l: match school-specific absorbs only to known incoming damage schools.
+3. F54m: extend bounded nested child/proc chains and threat parity.
+4. F54n: close whole-action threat and supported Core ordering; preserve Unknown for any uncovered path.
+5. Only then register the Priest direct-heal action and Priest Healing Strategy.
+6. Expand to remaining classes/roles, party coordination and Vanilla encounter strategies.

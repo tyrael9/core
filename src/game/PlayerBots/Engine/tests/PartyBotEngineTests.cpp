@@ -4564,6 +4564,26 @@ void TestPriestHealingTargetSelectionAccountsForIncomingHealsHotsAndAbsorbs()
     assert(selection.missingHealth == 100);
 }
 
+void TestCoreRandomDitherBoundsMatchVanillaCore()
+{
+    std::uint32_t minimum = 99;
+    std::uint32_t maximum = 99;
+    assert(GetCoreRandomDitherBounds(9.25f, minimum, maximum));
+    assert(minimum == 9 && maximum == 10);
+    assert(GetCoreRandomDitherBounds(9.0f, minimum, maximum));
+    assert(minimum == 9 && maximum == 9);
+    assert(GetCoreRandomDitherBounds(0.25f, minimum, maximum));
+    assert(minimum == 0 && maximum == 1);
+    assert(!GetCoreRandomDitherBounds(0.0f, minimum, maximum));
+    assert(minimum == 0 && maximum == 0);
+    assert(!GetCoreRandomDitherBounds(-0.25f, minimum, maximum));
+    assert(!GetCoreRandomDitherBounds(
+        std::numeric_limits<float>::infinity(), minimum, maximum));
+    assert(!GetCoreRandomDitherBounds(
+        static_cast<float>(std::numeric_limits<std::int32_t>::max()),
+        minimum, maximum));
+}
+
 void TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal()
 {
     PeriodicHealForecastSnapshot renew;
@@ -4591,7 +4611,56 @@ void TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal()
     assert(events.back().arrivalMs == 100);
     assert(events.back().sourceGuid == directCaster.guid);
 
+    PeriodicHealForecastSnapshot fractionalRenew;
+    fractionalRenew.casterGuid = 12;
+    fractionalRenew.spellId = 139;
+    fractionalRenew.firstTickMs = 25;
+    fractionalRenew.periodMs = 100;
+    fractionalRenew.remainingTicks = 3;
+    fractionalRenew.healingPerTick = 9;
+    fractionalRenew.healingPerTickUpperBound = 10;
+    std::vector<HealingTimelineEvent> boundedHotEvents;
+    assert(AppendPeriodicHealForecastEvents(fractionalRenew, boundedHotEvents));
+    assert(boundedHotEvents.size() == 3);
+    assert(boundedHotEvents[0].amount == 9 &&
+           boundedHotEvents[0].maximumAmount == 10);
+    assert(boundedHotEvents[1].maximumAmount == 10);
+    assert(boundedHotEvents[2].maximumAmount == 10);
+
     HealingTimelineProjection projection;
+    assert(ProjectHealingTimeline(50, 100, boundedHotEvents, projection));
+    assert(projection.finalHealth == 77 && projection.maximumFinalHealth == 80);
+    assert(projection.effectiveHealing == 27 &&
+           projection.maximumEffectiveHealing == 30);
+    assert(projection.overheal == 0 && projection.maximumOverheal == 0);
+
+    PeriodicHealForecastSnapshot oneBoundedTick = fractionalRenew;
+    oneBoundedTick.remainingTicks = 1;
+    std::vector<HealingTimelineEvent> boundedOverheal;
+    assert(AppendPeriodicHealForecastEvents(oneBoundedTick, boundedOverheal));
+    assert(ProjectHealingTimeline(95, 100, boundedOverheal, projection));
+    assert(projection.finalHealth == 100 && projection.maximumFinalHealth == 100);
+    assert(projection.effectiveHealing == 5 &&
+           projection.maximumEffectiveHealing == 5);
+    assert(projection.overheal == 4 && projection.maximumOverheal == 5);
+
+    PeriodicHealForecastSnapshot firstBoundedTick = fractionalRenew;
+    firstBoundedTick.firstTickMs = 100;
+    firstBoundedTick.remainingTicks = 1;
+    PeriodicHealForecastSnapshot secondBoundedTick = fractionalRenew;
+    secondBoundedTick.firstTickMs = 200;
+    secondBoundedTick.remainingTicks = 1;
+    std::vector<HealingTimelineEvent> boundedInterleaving;
+    assert(AppendPeriodicHealForecastEvents(firstBoundedTick, boundedInterleaving));
+    assert(AppendDamageTimelineEvent(55, 133, 150, 30, boundedInterleaving));
+    assert(AppendPeriodicHealForecastEvents(secondBoundedTick, boundedInterleaving));
+    assert(ProjectHealingTimeline(70, 100, boundedInterleaving, projection));
+    assert(projection.finalHealth == 58 && projection.maximumFinalHealth == 60);
+    assert(projection.effectiveHealing == 18 &&
+           projection.maximumEffectiveHealing == 20);
+    assert(projection.appliedDamage == 30 &&
+           projection.maximumAppliedDamage == 30);
+
     assert(ProjectHealingTimeline(75, 100, events, projection));
     assert(projection.valid);
     assert(projection.eventCount == 4);
@@ -4652,6 +4721,17 @@ void TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal()
     PeriodicHealForecastSnapshot invalid = renew;
     invalid.periodMs = 0;
     assert(!AppendPeriodicHealForecastEvents(invalid, events));
+    invalid = fractionalRenew;
+    invalid.healingPerTickUpperBound = 8;
+    assert(!AppendPeriodicHealForecastEvents(invalid, events));
+    invalid = fractionalRenew;
+    invalid.healingPerTick = 0;
+    invalid.healingPerTickUpperBound = 1;
+    std::vector<HealingTimelineEvent> subOneEvents;
+    assert(AppendPeriodicHealForecastEvents(invalid, subOneEvents));
+    assert(subOneEvents.size() == 3);
+    assert(subOneEvents[0].amount == 0 &&
+           subOneEvents[0].maximumAmount == 1);
     assert(events.size() == eventCountBeforeInvalid);
     assert(!AppendDirectHealForecastEvent(0, 2052, 100, 20, events));
     directCaster.currentSpellEngineAction = true;
@@ -6968,6 +7048,7 @@ int main() {
     TestPriestHealingTargetSelectionIsDeterministicAndSnapshotBounded();
     TestPriestHealingTargetSelectionAccountsForOtherBotHealReservations();
     TestPriestHealingTargetSelectionAccountsForIncomingHealsHotsAndAbsorbs();
+    TestCoreRandomDitherBoundsMatchVanillaCore();
     TestHealingTimelineProjectionOrdersHoTsAndCapsOverheal();
     TestPriestDirectHealReservationSubtractsIncomingForecasts();
     TestHealingTriageShadowStrategy();

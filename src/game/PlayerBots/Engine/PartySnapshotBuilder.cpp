@@ -1,4 +1,5 @@
 #include "PartySnapshotBuilder.h"
+#include "HealingForecast.h"
 #include "CombatBotBaseAI.h"
 #include "Creature.h"
 #include "Group.h"
@@ -170,15 +171,16 @@ void CaptureHealingForecast(Player* member, Map* map,
         if (!std::isfinite(targetAdjusted) || targetAdjusted <= 0.0f)
             continue;
 
-        double const flooredPerTick =
-            std::floor(static_cast<double>(targetAdjusted));
-        std::uint64_t const perTick = static_cast<std::uint64_t>(
-            std::min(flooredPerTick, static_cast<double>(
-                std::numeric_limits<std::uint32_t>::max())));
+        std::uint32_t perTickMinimum = 0;
+        std::uint32_t perTickMaximum = 0;
+        if (!GetCoreRandomDitherBounds(
+                targetAdjusted, perTickMinimum, perTickMaximum))
+            continue;
         std::uint64_t const remainingTicks = maxTicks - completedTicks;
+        // Triage only credits guaranteed healing; timeline consumers also see the possible ceil.
         AddSaturatedHealingAmount(
             memberData.periodicHealRemainingAmount,
-            perTick * remainingTicks);
+            static_cast<std::uint64_t>(perTickMinimum) * remainingTicks);
         if (memberData.periodicHealForecasts.size() <
             MAX_PERIODIC_HEAL_FORECASTS_PER_MEMBER)
         {
@@ -191,7 +193,8 @@ void CaptureHealingForecast(Player* member, Map* map,
             forecast.periodMs = static_cast<std::uint32_t>(
                 modifier->periodictime);
             forecast.remainingTicks = remainingTicks;
-            forecast.healingPerTick = static_cast<std::uint32_t>(perTick);
+            forecast.healingPerTick = perTickMinimum;
+            forecast.healingPerTickUpperBound = perTickMaximum;
             memberData.periodicHealForecasts.push_back(forecast);
         }
         else

@@ -34,7 +34,10 @@ struct PeriodicHealForecastSnapshot
     std::uint32_t firstTickMs = 0;
     std::uint32_t periodMs = 0;
     std::uint32_t remainingTicks = 0;
+    // Core rand_ditheru may return floor(amount) or ceil(amount) on each tick.
+    // healingPerTick is the guaranteed lower bound; zero upper means exact legacy fixture data.
     std::uint32_t healingPerTick = 0;
+    std::uint32_t healingPerTickUpperBound = 0;
 };
 
 struct PartyMemberSnapshot {

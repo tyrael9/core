@@ -531,6 +531,17 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54j observed Core DAMAGE_PUSHBACK exte
     echo "[PartyBotSimulator] The F54j snapshot-after-pushback/interruption PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
+f54k_line="$(grep -F '[PartyBotSimulator] F54k random HoT tick bounds:' "$LOG_FILE" | tail -n 1)"
+for expected in "auraApplied=1" "fractional=1" "snapshotCaptured=1" "timelineCaptured=1" "projectedBounds=1" "tickObserved=1" "actualInBounds=1" "cleanup=1"; do
+    if [[ "$f54k_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F54k random HoT assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+if ! grep -Fq "[PartyBotSimulator] PASS: F54k represented Core rand_ditheru periodic healing as per-tick lower/upper bounds and observed a real fractional Renew tick inside that interval." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] The F54k random HoT interval PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
 if ! grep -Fq "[PartyBotSimulator] PASS: F54e a real Core helpful-heal recipient aura with TAKE_HELPFUL_SPELL proc flags makes the direct-heal threat estimate fail closed; aura removal restores the clean recipient state and the temporary proc flags are restored." "$LOG_FILE"; then
     echo "[PartyBotSimulator] The F54e recipient-side helpful-proc PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1

@@ -5683,6 +5683,178 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         tank->RemoveAurasDueToSpell(139);
                         tank->RemoveAurasDueToSpell(17);
 
+                        // F54k: Core Aura::PeriodicTick calls rand_ditheru on target-
+                        // adjusted periodic healing. Capture both reachable values from
+                        // a real Renew Aura, then check the actual Core tick against it.
+                        bool f54kAuraApplied = false;
+                        bool f54kFractionalInput = false;
+                        bool f54kSnapshotCaptured = false;
+                        bool f54kTimelineCaptured = false;
+                        bool f54kProjectedBounds = false;
+                        bool f54kTickObserved = false;
+                        bool f54kActualInBounds = false;
+                        bool f54kCleanup = false;
+                        uint32 f54kLowerBound = 0;
+                        uint32 f54kUpperBound = 0;
+                        uint32 f54kActualGain = 0;
+                        uint32 f54kTickPolls = 0;
+                        uint32 f54kTicksBefore = 0;
+                        float f54kTargetAdjusted = 0.0f;
+                        uint32 const f54kSavedTankHealth = tank->GetHealth();
+                        bool const f54kTankWasInCombat = tank->IsInCombat();
+                        uint32 const f54kTankCombatTimerBefore = tank->GetCombatTimer();
+                        SpellCastResult const f54kCastResult = renewSpell
+                            ? priest->CastSpell(tank, renewSpell, true)
+                            : SPELL_FAILED_SPELL_UNAVAILABLE;
+                        Aura* f54kRenewAura = nullptr;
+                        if (f54kCastResult == SPELL_CAST_OK)
+                        {
+                            for (Aura* aura : tank->GetAurasByType(SPELL_AURA_PERIODIC_HEAL))
+                            {
+                                if (aura && aura->GetId() == 139 &&
+                                    aura->GetCaster() == priest && !aura->GetAuraScript())
+                                {
+                                    f54kRenewAura = aura;
+                                    break;
+                                }
+                            }
+                        }
+                        Modifier* f54kModifier = f54kRenewAura
+                            ? const_cast<Modifier*>(f54kRenewAura->GetModifier()) : nullptr;
+                        float const f54kSavedAuraAmount = f54kModifier
+                            ? f54kModifier->m_amount : 0.0f;
+                        if (f54kModifier && tank->GetMaxHealth() > 30u)
+                        {
+                            f54kModifier->m_amount = 9.25f;
+                            f54kTargetAdjusted = tank->SpellHealingBonusTaken(
+                                priest, renewSpell, f54kRenewAura->GetEffIndex(),
+                                f54kModifier->m_amount, DOT, f54kRenewAura->GetStackAmount());
+                            f54kFractionalInput =
+                                std::isfinite(f54kTargetAdjusted) &&
+                                f54kTargetAdjusted > 0.0f &&
+                                std::floor(static_cast<double>(f54kTargetAdjusted)) !=
+                                    static_cast<double>(f54kTargetAdjusted) &&
+                                GetCoreRandomDitherBounds(
+                                    f54kTargetAdjusted, f54kLowerBound, f54kUpperBound) &&
+                                f54kUpperBound == f54kLowerBound + 1u;
+                            f54kAuraApplied = f54kFractionalInput;
+                        }
+                        if (f54kAuraApplied)
+                        {
+                            tank->SetHealth(tank->GetMaxHealth() - 30u);
+                            f53bCoordinator->InvalidateSnapshot();
+                            PartySnapshot const* const f54kSnapshot =
+                                PartySnapshotBuilder::GetOrBuild(
+                                    tank, *f53bCoordinator, WorldTimer::getMSTime(), 0);
+                            PartyMemberSnapshot const* const f54kTankSnapshot =
+                                f54kSnapshot
+                                    ? f54kSnapshot->FindMember(tankGuid.GetRawValue()) : nullptr;
+                            f54kTicksBefore = f54kRenewAura->GetAuraTicks();
+                            if (f54kTankSnapshot &&
+                                !f54kTankSnapshot->periodicHealForecastsTruncated)
+                            {
+                                for (PeriodicHealForecastSnapshot const& forecast :
+                                     f54kTankSnapshot->periodicHealForecasts)
+                                {
+                                    if (forecast.casterGuid ==
+                                            priest->GetObjectGuid().GetRawValue() &&
+                                        forecast.spellId == 139 &&
+                                        forecast.healingPerTick == f54kLowerBound &&
+                                        forecast.healingPerTickUpperBound == f54kUpperBound &&
+                                        forecast.remainingTicks > 0)
+                                    {
+                                        f54kSnapshotCaptured = true;
+                                        std::vector<HealingTimelineEvent> hotEvents;
+                                        f54kTimelineCaptured =
+                                            AppendPeriodicHealForecastEvents(forecast, hotEvents) &&
+                                            hotEvents.size() == forecast.remainingTicks &&
+                                            !hotEvents.empty() &&
+                                            hotEvents.front().amount == f54kLowerBound &&
+                                            hotEvents.front().maximumAmount == f54kUpperBound;
+                                        if (f54kTimelineCaptured)
+                                        {
+                                            std::vector<HealingTimelineEvent> firstTickOnly(
+                                                1, hotEvents.front());
+                                            HealingTimelineProjection boundedProjection;
+                                            f54kProjectedBounds =
+                                                ProjectHealingTimeline(
+                                                    tank->GetHealth(), tank->GetMaxHealth(),
+                                                    firstTickOnly, boundedProjection) &&
+                                                boundedProjection.finalHealth ==
+                                                    tank->GetHealth() + f54kLowerBound &&
+                                                boundedProjection.maximumFinalHealth ==
+                                                    tank->GetHealth() + f54kUpperBound;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            uint32 const healthBeforeTick = tank->GetHealth();
+                            Aura* f54kAuraAfterTick = nullptr;
+                            while (f54kTickPolls < 128u)
+                            {
+                                tank->SetInCombatState(UNIT_PVP_COMBAT_TIMER);
+                                map.Update(250);
+                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                                ++f54kTickPolls;
+                                f54kAuraAfterTick = nullptr;
+                                for (Aura* aura : tank->GetAurasByType(SPELL_AURA_PERIODIC_HEAL))
+                                {
+                                    if (aura && aura->GetId() == 139 && aura->GetCaster() == priest)
+                                    {
+                                        f54kAuraAfterTick = aura;
+                                        break;
+                                    }
+                                }
+                                if (!f54kAuraAfterTick ||
+                                    f54kAuraAfterTick->GetAuraTicks() > f54kTicksBefore)
+                                    break;
+                            }
+                            uint32 const healthAfterTick = tank->GetHealth();
+                            f54kActualGain = healthAfterTick > healthBeforeTick
+                                ? healthAfterTick - healthBeforeTick : 0u;
+                            f54kTickObserved = f54kAuraAfterTick &&
+                                f54kAuraAfterTick->GetAuraTicks() == f54kTicksBefore + 1u;
+                            f54kActualInBounds = f54kTickObserved &&
+                                f54kActualGain >= f54kLowerBound &&
+                                f54kActualGain <= f54kUpperBound;
+                        }
+                        if (f54kModifier)
+                            f54kModifier->m_amount = f54kSavedAuraAmount;
+                        tank->RemoveAurasDueToSpell(139);
+                        if (f54kTankWasInCombat)
+                            tank->SetCombatTimer(f54kTankCombatTimerBefore);
+                        else
+                            tank->ClearInCombat();
+                        tank->SetHealth(f54kSavedTankHealth);
+                        f53bCoordinator->InvalidateSnapshot();
+                        bool f54kAuraStillPresent = false;
+                        for (Aura* aura : tank->GetAurasByType(SPELL_AURA_PERIODIC_HEAL))
+                            if (aura && aura->GetId() == 139 && aura->GetCaster() == priest)
+                                f54kAuraStillPresent = true;
+                        f54kCleanup = !f54kAuraStillPresent &&
+                            tank->GetHealth() == f54kSavedTankHealth;
+                        bool const f54kPassed =
+                            f54kAuraApplied && f54kSnapshotCaptured &&
+                            f54kTimelineCaptured && f54kProjectedBounds &&
+                            f54kTickObserved && f54kActualInBounds && f54kCleanup;
+                        sLog.Out(LOG_BASIC, f54kPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+                            "[PartyBotSimulator] F54k random HoT tick bounds: auraApplied=%u fractional=%u targetAdjusted=%.3f lower=%u upper=%u snapshotCaptured=%u timelineCaptured=%u projectedBounds=%u tickObserved=%u actualGain=%u actualInBounds=%u tickPolls=%u cleanup=%u.",
+                            f54kAuraApplied ? 1u : 0u, f54kFractionalInput ? 1u : 0u,
+                            f54kTargetAdjusted, f54kLowerBound, f54kUpperBound,
+                            f54kSnapshotCaptured ? 1u : 0u,
+                            f54kTimelineCaptured ? 1u : 0u,
+                            f54kProjectedBounds ? 1u : 0u,
+                            f54kTickObserved ? 1u : 0u,
+                            f54kActualGain, f54kActualInBounds ? 1u : 0u,
+                            f54kTickPolls, f54kCleanup ? 1u : 0u);
+                        if (f54kPassed)
+                            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                "[PartyBotSimulator] PASS: F54k represented Core rand_ditheru periodic healing as per-tick lower/upper bounds and observed a real fractional Renew tick inside that interval.");
+                        else
+                            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                                "[PartyBotSimulator] F54k random HoT interval fixture failed.");
+
                         Player* f54dSecondHealer = nullptr;
                         for (Player* candidatePlayer : players)
                         {

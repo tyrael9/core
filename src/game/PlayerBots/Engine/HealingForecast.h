@@ -3,6 +3,7 @@
 
 #include "PartySnapshot.h"
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -11,6 +12,29 @@
 namespace PartyBotEngine
 {
 constexpr std::size_t MAX_HEALING_TIMELINE_EVENTS = 256;
+
+// Core rand_ditheru(x) returns floor(x) or ceil(x), selected by the fractional
+// part. A detached snapshot cannot know the random draw, so preserve both
+// reachable bounds. Core returns int32 before casting to uint32; reject values
+// outside that representable range rather than inventing a forecast.
+inline bool GetCoreRandomDitherBounds(
+    float amount, std::uint32_t& minimum, std::uint32_t& maximum)
+{
+    minimum = 0;
+    maximum = 0;
+    if (!std::isfinite(amount) || amount <= 0.0f)
+        return false;
+    double const value = static_cast<double>(amount);
+    double const lower = std::floor(value);
+    double const upper = std::ceil(value);
+    double const coreMaximum = static_cast<double>(
+        std::numeric_limits<std::int32_t>::max());
+    if (lower < 0.0 || upper > coreMaximum)
+        return false;
+    minimum = static_cast<std::uint32_t>(lower);
+    maximum = static_cast<std::uint32_t>(upper);
+    return maximum >= minimum && maximum > 0;
+}
 
 enum class HealingTimelineEventKind : std::uint8_t
 {
@@ -21,7 +45,10 @@ enum class HealingTimelineEventKind : std::uint8_t
 struct HealingTimelineEvent
 {
     std::uint32_t arrivalMs = 0;
+    // Minimum amount; for random-dither HoTs this is floor(Core's input).
     std::uint32_t amount = 0;
+    // Maximum amount; zero preserves exact-amount semantics for older fixtures.
+    std::uint32_t maximumAmount = 0;
     Guid sourceGuid = 0;
     std::uint32_t spellId = 0;
     HealingTimelineEventKind kind = HealingTimelineEventKind::Heal;
@@ -29,12 +56,17 @@ struct HealingTimelineEvent
 
 struct HealingTimelineProjection
 {
+    // Existing fields describe the conservative lower-bound projection.
     std::uint32_t finalHealth = 0;
+    std::uint32_t maximumFinalHealth = 0;
     std::size_t eventCount = 0;
     std::size_t simultaneousArrivalGroups = 0;
     std::uint64_t effectiveHealing = 0;
+    std::uint64_t maximumEffectiveHealing = 0;
     std::uint64_t overheal = 0;
+    std::uint64_t maximumOverheal = 0;
     std::uint64_t appliedDamage = 0;
+    std::uint64_t maximumAppliedDamage = 0;
     bool concurrentAttributionUnknown = false;
     bool valid = false;
 };
@@ -43,8 +75,12 @@ inline bool AppendPeriodicHealForecastEvents(
     PeriodicHealForecastSnapshot const& forecast,
     std::vector<HealingTimelineEvent>& events)
 {
+    std::uint32_t const maximumPerTick =
+        forecast.healingPerTickUpperBound
+            ? forecast.healingPerTickUpperBound : forecast.healingPerTick;
     if (!forecast.casterGuid || !forecast.spellId || !forecast.periodMs ||
-        !forecast.remainingTicks || !forecast.healingPerTick ||
+        !forecast.remainingTicks || !maximumPerTick ||
+        maximumPerTick < forecast.healingPerTick ||
         events.size() > MAX_HEALING_TIMELINE_EVENTS ||
         forecast.remainingTicks > MAX_HEALING_TIMELINE_EVENTS - events.size())
         return false;
@@ -61,6 +97,7 @@ inline bool AppendPeriodicHealForecastEvents(
         HealingTimelineEvent event;
         event.arrivalMs = forecast.firstTickMs + i * forecast.periodMs;
         event.amount = forecast.healingPerTick;
+        event.maximumAmount = maximumPerTick;
         event.sourceGuid = forecast.casterGuid;
         event.spellId = forecast.spellId;
         events.push_back(event);
@@ -79,6 +116,7 @@ inline bool AppendDirectHealForecastEvent(
     HealingTimelineEvent event;
     event.arrivalMs = arrivalMs;
     event.amount = amount;
+    event.maximumAmount = amount;
     event.sourceGuid = sourceGuid;
     event.spellId = spellId;
     events.push_back(event);
@@ -96,6 +134,7 @@ inline bool AppendDamageTimelineEvent(
     HealingTimelineEvent event;
     event.arrivalMs = arrivalMs;
     event.amount = amount;
+    event.maximumAmount = amount;
     event.sourceGuid = sourceGuid;
     event.spellId = spellId;
     event.kind = HealingTimelineEventKind::Damage;
@@ -121,9 +160,10 @@ inline bool AppendInFlightDirectHealForecastEvent(
 }
 
 // Project explicitly supplied heal/damage arrivals against a fixed health
-// ceiling. Mixed heal/damage events at one timestamp are rejected because the
-// snapshot does not prove Core's application order. Core batching and
-// simultaneous per-cast attribution are not guessed.
+// ceiling. Existing fields report the conservative lower-bound result;
+// companion fields report the reachable upper-bound result. Mixed heal/damage
+// events at one timestamp are rejected because the snapshot does not prove
+// Core's application order. Per-caster attribution is not guessed.
 inline bool ProjectHealingTimeline(
     std::uint32_t currentHealth, std::uint32_t maxHealth,
     std::vector<HealingTimelineEvent> const& input,
@@ -133,19 +173,28 @@ inline bool ProjectHealingTimeline(
     if (!maxHealth || currentHealth > maxHealth ||
         input.size() > MAX_HEALING_TIMELINE_EVENTS)
         return false;
-
     std::vector<HealingTimelineEvent> events = input;
     for (HealingTimelineEvent const& event : events)
     {
-        if (!event.sourceGuid || !event.amount)
+        if (!event.sourceGuid)
             return false;
-        if (event.kind == HealingTimelineEventKind::Heal && !event.spellId)
-            return false;
-        if (event.kind != HealingTimelineEventKind::Heal &&
-            event.kind != HealingTimelineEventKind::Damage)
+        std::uint32_t const maximumAmount =
+            event.maximumAmount ? event.maximumAmount : event.amount;
+        if (event.kind == HealingTimelineEventKind::Heal)
+        {
+            // A zero lower bound is valid for a sub-one-point random HoT.
+            if (!event.spellId || !maximumAmount ||
+                maximumAmount < event.amount)
+                return false;
+        }
+        else if (event.kind == HealingTimelineEventKind::Damage)
+        {
+            if (!event.amount || maximumAmount != event.amount)
+                return false;
+        }
+        else
             return false;
     }
-
     std::sort(events.begin(), events.end(),
         [](HealingTimelineEvent const& left,
            HealingTimelineEvent const& right)
@@ -159,15 +208,21 @@ inline bool ProjectHealingTimeline(
                 return left.sourceGuid < right.sourceGuid;
             if (left.spellId != right.spellId)
                 return left.spellId < right.spellId;
-            return left.amount < right.amount;
+            if (left.amount != right.amount)
+                return left.amount < right.amount;
+            return left.maximumAmount < right.maximumAmount;
         });
 
-    std::uint64_t health = currentHealth;
+    std::uint64_t lowerHealth = currentHealth;
+    std::uint64_t upperHealth = currentHealth;
     std::size_t index = 0;
     while (index < events.size())
     {
         std::size_t end = index + 1;
-        std::uint64_t simultaneousAmount = events[index].amount;
+        std::uint64_t simultaneousMinimum = events[index].amount;
+        std::uint64_t simultaneousMaximum =
+            events[index].maximumAmount
+                ? events[index].maximumAmount : events[index].amount;
         bool const firstIsDamage =
             events[index].kind == HealingTimelineEventKind::Damage;
         while (end < events.size() &&
@@ -179,22 +234,26 @@ inline bool ProjectHealingTimeline(
                 projection = HealingTimelineProjection();
                 return false;
             }
-            simultaneousAmount += events[end].amount;
+            simultaneousMinimum += events[end].amount;
+            simultaneousMaximum += events[end].maximumAmount
+                ? events[end].maximumAmount : events[end].amount;
             ++end;
         }
-
         if (firstIsDamage)
         {
-            std::uint64_t const applied =
-                std::min(health, simultaneousAmount);
-            health -= applied;
-            projection.appliedDamage += applied;
+            std::uint64_t const lowerApplied =
+                std::min(lowerHealth, simultaneousMinimum);
+            std::uint64_t const upperApplied =
+                std::min(upperHealth, simultaneousMaximum);
+            lowerHealth -= lowerApplied;
+            upperHealth -= upperApplied;
+            projection.appliedDamage += lowerApplied;
+            projection.maximumAppliedDamage += upperApplied;
         }
         else
         {
-            // Ordinary healing cannot resurrect a target killed by an earlier
-            // damage event. Resurrection is intentionally outside this model.
-            if (!health)
+            // Ordinary healing cannot resurrect a target killed by damage.
+            if (!lowerHealth || !upperHealth)
             {
                 projection = HealingTimelineProjection();
                 return false;
@@ -204,17 +263,23 @@ inline bool ProjectHealingTimeline(
                 ++projection.simultaneousArrivalGroups;
                 projection.concurrentAttributionUnknown = true;
             }
-            std::uint64_t const missing = maxHealth - health;
-            std::uint64_t const effective =
-                std::min(missing, simultaneousAmount);
-            projection.effectiveHealing += effective;
-            projection.overheal += simultaneousAmount - effective;
-            health += effective;
+            std::uint64_t const lowerMissing = maxHealth - lowerHealth;
+            std::uint64_t const upperMissing = maxHealth - upperHealth;
+            std::uint64_t const lowerEffective =
+                std::min(lowerMissing, simultaneousMinimum);
+            std::uint64_t const upperEffective =
+                std::min(upperMissing, simultaneousMaximum);
+            projection.effectiveHealing += lowerEffective;
+            projection.maximumEffectiveHealing += upperEffective;
+            projection.overheal += simultaneousMinimum - lowerEffective;
+            projection.maximumOverheal += simultaneousMaximum - upperEffective;
+            lowerHealth += lowerEffective;
+            upperHealth += upperEffective;
         }
         index = end;
     }
-
-    projection.finalHealth = static_cast<std::uint32_t>(health);
+    projection.finalHealth = static_cast<std::uint32_t>(lowerHealth);
+    projection.maximumFinalHealth = static_cast<std::uint32_t>(upperHealth);
     projection.eventCount = events.size();
     projection.valid = true;
     return true;

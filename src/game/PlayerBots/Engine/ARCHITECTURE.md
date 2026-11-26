@@ -257,33 +257,33 @@ A New Engine milestone is complete when:
 
 Experimental combat quality may be poor while features are being built. Runtime safety, thread safety, bounded work and lifecycle/data integrity remain hard requirements. A CI pass is not an in-game test or deployment authorization.
 
-## 17. Current implementation status (2026-11-22)
+## 17. Current implementation status (2026-11-26)
 
-Implemented and fixture/pure-test supported:
+Implemented and supported by pure tests and/or fixture-backed Core runtime, as stated in ROADMAP.md:
 
-- C++14 Strategy, Trigger, Action, Value and Multiplier interfaces; per-Engine typed ValueCache and TriggerScheduler with Core lifecycle invalidation hooks.
-- GUID/scalar-only PartySnapshot data, same-map Group/hostile/threat snapshot builder and map/instance-scoped PartyCoordinator/reservations.
-- Deterministic candidate evaluation, Possible/Useful checks, multiplier composition, channel arbitration and bounded immediate/pending dispatch.
-- NewEngine-only `ExecuteDecisionCycle` with a shared immediate/pending budget, fresh pending revalidation and no Legacy fallback.
-- Bounded ActionResult and Core Spell terminal listeners; F34 continuations; F35 typed AND/alternative dependencies; F36 ActionResult source isolation; F37 tombstones; F38 ready-backlog preservation under a full pending queue.
-- F39 typed Player point-movement terminal results; F40 item-use lifecycle audit and one real Core potion fixture; F41 final CoreAction wrapper plus fresh map-thread actor/target/map/instance resolution and pure context-copy propagation regression.
-- Core-backed simulator scenarios for attacks, Player spell execution, threat, range/LOS/resource failures, PointMovementGenerator/Follow, five-Player Group snapshots, death/recovery, map transfer and trace behavior.
-- Encounter IDs/sequences, bounded shared trace budgets, target/threat/cast/alive/health observations, shutdown flush and local read-only report collector.
+- C++14 Strategy/Trigger/Action/Value/Multiplier engine, typed per-bot ValueCache and TriggerScheduler, deterministic evaluation/arbitration, bounded immediate/pending dispatch, explicit continuations/dependencies and authoritative Core action results.
+- GUID/scalar-only PartySnapshot, same-map five-Player Group/hostile/threat builder, shared map/instance PartyCoordinator, reservations, stable formation slots and value-only death/resurrection/cast/movement/item lifecycle events.
+- Exclusive NewEngine authority with no Legacy policy fallback. The only production NewEngine behavior currently registered is narrow out-of-combat Group-leader Follow plus StopFollowing recovery; Legacy remains the default runtime mode.
+- Core-backed simulator coverage for follow/formation, leader handoff, five-Player regroup, wipe/death/resurrection, generic action preflight, movement/item-use lifecycle, trace budgets and Priest direct-heal forecast/source audits.
+- Priest Phase 6 has a substantial test-only vertical slice: target/rank selection, cross-Bot Heal reservations, direct-heal/HoT/absorb snapshots, bounded timeline, Core heal/damage ordering, proc/target-trigger paths, a representative nested child chain, pushback and interruption invalidation. F54k adds bounded random HoT tick amounts.
 
-Not yet implemented / still gated:
+Still gated:
 
-- A production vMaNGOS action executor with audited generic, class and role adapters. Seventeen generic CoreAction adapters are now implemented and trusted-runtime validated, but remain deliberately unregistered in production NewEngine.
-- Uniform immediate pre-execution validation of target identity/state, map/instance, range, LOS, spell, resource and cooldown for each action.
-- F39's typed Player point-movement terminal is implemented only for the opt-in `MovePointForEngine` path; legacy `MovePoint`/`MovementInform` semantics are unchanged. F40 audited item-use fan-out and consumption timing and verified one real potion use; F42 implements the typed multi-spell aggregate and its required delayed ON_USE cancellation-before/after-charge-mutation Core fixture, trusted-runtime validated by [#44852141749](https://github.com/tyrael9/core/actions/runs/44852141749). Count-based expendable-item/reagent fixtures remain additional coverage. F41 provides the CoreAction identity/lifetime gate and F43 requires action-specific final preflight; seventeen generic adapters are trusted-runtime validated but remain unregistered. The latest MoveDistanceAction fixture verifies Core Distancing over live Follow/Chase and exact generator restoration.
-- Full generic bot state machine, class/role strategies, shared party policy and encounter mechanics.
-- Remaining trace coverage: richer AI state/boss selection, broader arbitration alternatives, ordinary party-member per-hit health deltas, cross-map closure and deployment diagnostics integration.
+- `PriestDirectHealAction` and the Priest Healing Strategy are not registered in production. Its whole-action threat estimate remains fail-closed/Unknown; the test-only execution fixture is not a production policy.
+- Random HoT amount bounds (F54k), absorb-school prediction (F54l), deeper child-chain closure (F54m), complete Core ordering and the whole-action helpful-threat/proc/recipient envelope (F54n) must each close independently.
+- Druid, Shaman, Paladin, Warrior, Mage, Warlock, Hunter and Rogue class/role strategies are not implemented as production policies.
+- Broader party-wide target/threat/CC/interrupt/dispel coordination and Vanilla dungeon/raid encounter strategies remain future phases.
+- The trace/reporting pipeline is bounded and useful; richer AI/boss state, broader arbitration detail, ordinary-member per-hit health deltas, cross-map closure and deployment-diagnostics integration remain explicit gaps.
 
-Current NewEngine is an exclusive, empty-policy development path. It is not a playable AI; Legacy remains default. Fixture-backed simulator success validates only the scenarios it actually exercises.
+NewEngine is an exclusive development mode, not a complete/playable combat AI. Missing behavior is a deliberate no-op, never Legacy fallback. CI and trusted simulator fixtures validate only the paths they execute; in-game quality and deployment remain separate gates.
 
 ## 18. Immediate next implementation sequence
 
-1. **F42 — closed:** typed item-use aggregation and real delayed ON_USE cancellation before/after Core charge mutation are fixture-backed and trusted-runtime validated. Count-based expendable-item and item-as-reagent coverage remain optional follow-up fixtures.
-2. **F43 — closed:** all seventeen generic CoreAction adapters have action-specific live preflight and trusted Core accepted/rejected/terminal/cleanup fixtures. The matching PR ARM64 build and trusted push runtime are recorded in the current Roadmap.
-3. **F44 — in progress, simulator-only:** DPS Main-Tank assist is the first policy-composition slice. DpsAssistTrigger uses value-only party/hostile snapshots and existing select/attack actions; its Core scenario is already trusted-runtime validated. The pure C++14 regression suite now covers target priority, healer peel, role ranking, selection-to-attack progression, retargeting from a different current victim, threat fallback filtering, CC exclusion and inactive/dead/offline state.
-4. Extend F44 through a production PartySnapshotBuilder five-member Group snapshot and party-state invalidation/handoff tests. Do not register the policy or any of the seventeen generic actions in production NewEngine until the end-to-end contract is complete.
-5. Continue the remaining shared Core lifecycle audits before adding class/role spell actions. Legacy remains the default; NewEngine remains exclusive/no-fallback and is not yet a playable AI.
+1. F54k: model Core `rand_ditheru` HoT ticks with per-tick floor/ceil bounds; retain only the floor for conservative triage; close with pure tests, ARM64 build and a trusted real Core fractional Renew tick.
+2. F54l: capture school-specific absorbs and apply them only to predicted damage with a proven matching school and safe Core ordering.
+3. F54m: extend nested child/proc closure beyond the representative three-cast chain, with explicit depth/event limits and per-hostile threat parity.
+4. F54n: close supported Core ordering plus helpful-threat, proc, script and recipient paths. Unknown remains a hard veto.
+5. Register `PriestDirectHealAction` and the Priest Healing Strategy only after the full action threat estimate is Complete or NoThreat for the exact supported spell shape.
+6. Extend the same action/trace/runtime contracts across remaining classes, then party coordination and encounter-specific Vanilla strategies.
+
+No merge, image publication, production deployment or live-realm change is implied by these milestones.

@@ -9393,9 +9393,6 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
     SpellEntry const* const f54gReflectRootSpell = sSpellMgr.GetSpellEntry(686); // Shadow Bolt
     SpellEntry* const f54gMutableReflectRootSpell =
         const_cast<SpellEntry*>(f54gReflectRootSpell);
-    SpellThreatEntry const* const f54gReflectRootThreat =
-        f54gReflectRootSpell
-            ? sSpellMgr.GetSpellThreatEntry(f54gReflectRootSpell->Id) : nullptr;
     bool f54gReflectRowReady = false;
     bool f54gReflectAuraAttached = false;
     bool f54gReflectAuraActive = false;

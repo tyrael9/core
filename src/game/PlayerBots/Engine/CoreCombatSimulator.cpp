@@ -8989,9 +8989,10 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                  reference; reference = reference->next())
                 ++f54gReferenceCount[index];
         }
-        f54gTargetReferencesValid = std::all_of(
-            std::begin(f54gReferenceCount), std::end(f54gReferenceCount),
-            [](uint32 count) { return count >= 2; });
+        f54gTargetReferencesValid = true;
+        for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
+            f54gTargetReferencesValid =
+                f54gTargetReferencesValid && f54gReferenceCount[index] >= 2;
 
         // First cast establishes the real Core root-heal amount per selected
         // group member with no target-trigger Aura attached.

@@ -5160,9 +5160,9 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                         uint32 f54jDamageTaken = 0;
                         uint32 f54jTargetHealthBefore = 0;
                         uint32 f54jTargetHealthAfter = 0;
-                        uint32 f54jBeforeEpoch = 0;
-                        uint32 f54jAfterPushbackEpoch = 0;
-                        uint32 f54jAfterInterruptEpoch = 0;
+                        uint64 f54jBeforeEpoch = 0;
+                        uint64 f54jAfterPushbackEpoch = 0;
+                        uint64 f54jAfterInterruptEpoch = 0;
                         uint32 f54jBeforeAmount = 0;
                         uint32 f54jAfterAmount = 0;
                         uint32 f54jSpellInterruptFlags = lesserHealRankOne
@@ -5259,8 +5259,7 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                                             beforePushbackEvents);
                                     f54jPreSnapshotCaptured =
                                         beforePushbackCaster &&
-                                        beforePushbackSnapshot->epoch >
-                                            f54bExpectedOwnReservationAmount &&
+                                        beforePushbackSnapshot->epoch > 0u &&
                                         beforePushbackCaster->currentSpellId ==
                                             lesserHealRankOne->Id &&
                                         beforePushbackCaster->currentSpellTargetGuid ==
@@ -5429,10 +5428,11 @@ bool RunEngineCoreRealGroupThreatSnapshotSmokeTest(Map& map)
                             f54jCastTimeMs, f54jBeforeTimerMs,
                             f54jAfterTimerMs, f54jPushbackDeltaMs,
                             f54jPostPushbackSnapshotCaptured ? 1u : 0u,
-                            f54jBeforeEpoch, f54jAfterPushbackEpoch,
+                            static_cast<unsigned long long>(f54jBeforeEpoch),
+                            static_cast<unsigned long long>(f54jAfterPushbackEpoch),
                             f54jInterrupted ? 1u : 0u,
                             f54jPostInterruptSnapshotCaptured ? 1u : 0u,
-                            f54jAfterInterruptEpoch,
+                            static_cast<unsigned long long>(f54jAfterInterruptEpoch),
                             f54jNoStaleHealCredit ? 1u : 0u,
                             f54jTargetUnchanged ? 1u : 0u,
                             f54jCleanup ? 1u : 0u,

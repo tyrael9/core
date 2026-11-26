@@ -11084,7 +11084,11 @@ SpellEntry const* const f54mFourthSpell =
     sSpellMgr.GetSpellEntry(2061); // Flash Heal (Rank 1)
 SpellEntry* const f54mMutableFourthSpell =
     const_cast<SpellEntry*>(f54mFourthSpell);
-uint64 const f54mCycleFamilyMask = (uint64(1) << 61);
+// Reuse Greater Heal's existing family flags for the cycle. The parent
+// spell keeps its original DBC identity and modifiers; only Flash Heal is
+// temporarily assigned the same mask to make the fourth stage self-trigger.
+uint64 const f54mCycleFamilyMask =
+    f54hGrandchildSpell ? f54hGrandchildSpell->SpellFamilyFlags : 0;
 uint32 const f54mCastLimit = 4;
 uint32 const f54mSavedCastLimit =
     sWorld.getConfig(CONFIG_UINT32_MAX_SPELL_CASTS_IN_CHAIN);
@@ -11108,6 +11112,7 @@ bool const f54mRowReady = f54hPassed &&
     Spells::IsPositiveSpell(f54gChildSpell->Id) &&
     onlyHealEffects(f54gChildSpell) &&
     f54hGrandchildSpell && f54hGrandchildSpell->ScriptId == 0 &&
+    f54mCycleFamilyMask != 0 &&
     f54hGrandchildSpell->SpellFamilyName == SPELLFAMILY_PRIEST &&
     Spells::IsPositiveSpell(f54hGrandchildSpell->Id) &&
     onlyHealEffects(f54hGrandchildSpell) &&
@@ -11187,9 +11192,6 @@ uint32 const f54mSavedChildAttributesEx3 =
     f54gMutableChildSpell ? f54gMutableChildSpell->AttributesEx3 : 0;
 int32 const f54mSavedChildDieSides =
     f54gMutableChildSpell ? f54gMutableChildSpell->EffectDieSides[0] : 0;
-uint64 const f54mSavedGrandchildFamilyFlags =
-    f54hMutableGrandchildSpell
-        ? f54hMutableGrandchildSpell->SpellFamilyFlags : 0;
 uint32 const f54mSavedGrandchildAttributesEx2 =
     f54hMutableGrandchildSpell
         ? f54hMutableGrandchildSpell->AttributesEx2 : 0;
@@ -11246,7 +11248,6 @@ if (f54mRowReady)
         SPELL_ATTR_EX3_SUPPRESS_TARGET_PROCS;
     f54gMutableChildSpell->EffectDieSides[0] = 0;
 
-    f54hMutableGrandchildSpell->SpellFamilyFlags = f54mCycleFamilyMask;
     f54hMutableGrandchildSpell->AttributesEx2 |= SPELL_ATTR_EX2_CANT_CRIT;
     f54hMutableGrandchildSpell->AttributesEx3 |=
         SPELL_ATTR_EX3_SUPPRESS_CASTER_PROCS |
@@ -11451,8 +11452,6 @@ if (f54mRowReady)
         f54gMutableChildSpell->AttributesEx2 == f54mSavedChildAttributesEx2 &&
         f54gMutableChildSpell->AttributesEx3 == f54mSavedChildAttributesEx3 &&
         f54gMutableChildSpell->EffectDieSides[0] == f54mSavedChildDieSides &&
-        f54hMutableGrandchildSpell->SpellFamilyFlags ==
-            f54mSavedGrandchildFamilyFlags &&
         f54hMutableGrandchildSpell->AttributesEx2 ==
             f54mSavedGrandchildAttributesEx2 &&
         f54hMutableGrandchildSpell->AttributesEx3 ==

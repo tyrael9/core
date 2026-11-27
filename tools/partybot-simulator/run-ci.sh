@@ -562,6 +562,18 @@ for expected in "rowReady=1" "castLimit=4" "configApplied=1" "baselineAuraAttach
         exit 1
     fi
 done
+f54m_fourth_gains="$(sed -n 's/.* fourthGain=\([0-9][0-9/]*\)\.*/\1/p' <<< "$f54m_line")"
+IFS='/' read -r -a f54m_gain_values <<< "$f54m_fourth_gains"
+if [[ ${#f54m_gain_values[@]} -ne 5 ]]; then
+    echo "[PartyBotSimulator] F54m expected five explicit fourth-stage healing deltas, found '$f54m_fourth_gains'." | tee -a "$LOG_FILE"
+    exit 1
+fi
+for gain in "${f54m_gain_values[@]}"; do
+    if ! [[ "$gain" =~ ^[0-9]+$ ]] || (( gain <= 10 )); then
+        echo "[PartyBotSimulator] F54m expected each fourth-stage Player heal delta to exceed 10, found '$gain'." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
 f54m_guard_count="$(grep -Fc 'Spell 2061 triggered by aura spell 14892 too deep in cast chain for cast.' "$LOG_FILE" || true)"
 if [[ "$f54m_guard_count" != "5" ]]; then
     echo "[PartyBotSimulator] Expected exactly five Core cast-chain guard rejections for the cyclic Flash Heal child, found $f54m_guard_count." | tee -a "$LOG_FILE"

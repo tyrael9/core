@@ -4273,6 +4273,13 @@ void Spell::update(uint32 difftime)
 
     if (m_targets.getUnitTargetGuid() && !m_targets.getUnitTarget())
     {
+        if (m_partyBotDeferredEffectsRequested)
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSpellAdmission] update canceled deferred cast after explicit target left world: spell=%u targetGuid=%llu state=%u targetUnit=0.",
+                m_spellInfo ? m_spellInfo->Id : 0u,
+                static_cast<unsigned long long>(
+                    m_targets.getUnitTargetGuid().GetRawValue()),
+                static_cast<uint32>(m_spellState));
         cancel();
         return;
     }

@@ -13351,6 +13351,304 @@ if (f54mPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F54s removed the queued non-leader recipient through Group::RemoveMember(GROUP_LEAVE); Core re-resolved the old target GUID to an empty recipient set and rejected before authorization with no healing, mana, threat, cooldown or GCD side effects.");
 
+
+    // F54t: retain Group membership while detaching the queued recipient
+    // from the current Map/World before the deferred Spell impacts.
+    uint64 const f54tActionId = 0xF54F0009ULL;
+    uint64 const f54tEncounterId = 0xF54F000AULL;
+    Player* const f54tMember = f54sDepartingMember;
+    ObjectGuid const f54tGuid = f54tMember
+        ? f54tMember->GetObjectGuid() : ObjectGuid();
+    uint32 const f54tGroupCount = group ? group->GetMembersCount() : 0;
+    uint8 const f54tSubgroup = group && !f54tGuid.IsEmpty()
+        ? group->GetMemberGroup(f54tGuid)
+        : static_cast<uint8>(MAX_RAID_SUBGROUPS + 1);
+    bool const f54tRaid = group && group->isRaidGroup();
+    bool const f54tAssistant = f54tRaid && group && !f54tGuid.IsEmpty() &&
+        group->IsAssistant(f54tGuid);
+    ObjectGuid const f54tLeader = group ? group->GetLeaderGuid() : ObjectGuid();
+    bool const f54tInstanceValid = f54tMember && f54tMember->m_instanceValid;
+    uint32 const f54tMapId = f54tMember ? f54tMember->GetMapId() : 0;
+    uint32 const f54tInstanceId = f54tMember ? f54tMember->GetInstanceId() : 0;
+    float const f54tX = f54tMember ? f54tMember->GetPositionX() : 0.0f;
+    float const f54tY = f54tMember ? f54tMember->GetPositionY() : 0.0f;
+    float const f54tZ = f54tMember ? f54tMember->GetPositionZ() : 0.0f;
+    float const f54tO = f54tMember ? f54tMember->GetOrientation() : 0.0f;
+
+    bool f54tCastAccepted = false, f54tQueued = false;
+    bool f54tSelectorChanged = false, f54tTargetChanged = false;
+    bool f54tMapRemoved = false, f54tGroupPreserved = false;
+    bool f54tGuidRetained = false, f54tCoreCanceled = false;
+    bool f54tAuthorizeSkipped = false, f54tTerminalOnce = false;
+    bool f54tInterrupted = false, f54tCurrentCleared = false;
+    bool f54tEventReaped = false, f54tNoEffects = false;
+    bool f54tReadyBefore = false, f54tNoGcdBefore = false;
+    bool f54tReadyAfter = false, f54tNoGcdAfter = false;
+    bool f54tSelectorRestored = false, f54tMapRestored = false;
+    bool f54tWorldRestored = false, f54tLocationRestored = false;
+    bool f54tGroupRestored = false, f54tSubgroupRestored = false;
+    bool f54tInstanceRestored = false, f54tLeaderRestored = false;
+    bool f54tAssistantRestored = false, f54tAdapterRestored = false;
+    uint32 f54tHealerHealthBefore = 0, f54tHealerHealthAfter = 0;
+    uint32 f54tMemberHealthBefore = 0, f54tMemberHealthAfter = 0;
+    uint32 f54tManaBefore = 0, f54tManaAfter = 0, f54tEventUpdates = 0;
+    float f54tThreatDelta = 0.0f;
+    bool f54tPassed = false;
+
+    bool const f54tGate =
+        f54sPassed && healer && f54tMember && group &&
+        healer->IsAlive() && f54tMember->IsAlive() &&
+        f54tMember != healer && f54tMember != tank &&
+        group->GetMembersCount() == MAX_GROUP_SIZE &&
+        group->IsMember(f54tGuid) && f54tMember->GetGroup() == group.get() &&
+        f54tMember->IsInWorld() && f54tMember->GetMap() == &map &&
+        map.GetUnit(f54tGuid) == f54tMember &&
+        f54tSubgroup < MAX_RAID_SUBGROUPS &&
+        f54nDesperatePrayer && healer->HasSpell(f54nDesperatePrayer->Id);
+    if (f54tGate)
+    {
+        PlayerAI* const f54tPreviousAI = healer->AI();
+        uint32 const f54tSavedHealerHealth = healer->GetHealth();
+        uint32 const f54tSavedHealerMana = healer->GetPower(POWER_MANA);
+        uint32 const f54tSavedMemberHealth = f54tMember->GetHealth();
+
+        healer->RemoveSpellCooldown(f54nDesperatePrayer, false);
+        if (f54nDesperatePrayer->Category)
+            healer->RemoveSpellCategoryCooldown(
+                f54nDesperatePrayer->Category, false);
+        healer->ResetGCD(f54nDesperatePrayer);
+        f54tReadyBefore = healer->IsSpellReady(f54nDesperatePrayer);
+        f54tNoGcdBefore = !healer->HasGCD(f54nDesperatePrayer);
+        healer->SetHealth(std::max<uint32>(1u, healer->GetMaxHealth() / 2u));
+        f54tMember->SetHealth(std::max<uint32>(1u, f54tMember->GetMaxHealth() / 2u));
+        healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+        f54tHealerHealthBefore = healer->GetHealth();
+        f54tMemberHealthBefore = f54tMember->GetHealth();
+        f54tManaBefore = healer->GetPower(POWER_MANA);
+
+        float f54tHealerThreat[3] = {};
+        float f54tMemberThreat[3] = {};
+        for (uint32 i = 0; i < 3; ++i)
+        {
+            f54tHealerThreat[i] = f54nHostiles[i].creature
+                ? f54nHostiles[i].creature->GetThreatManager().getThreat(healer)
+                : 0.0f;
+            f54tMemberThreat[i] = f54nHostiles[i].creature
+                ? f54nHostiles[i].creature->GetThreatManager().getThreat(f54tMember)
+                : 0.0f;
+        }
+
+        SimulatorDeferredSpellAdmissionAI detachedAdapter(
+            healer, true, f54tActionId, f54tEncounterId);
+        healer->SetAI(&detachedAdapter);
+        SpellCastResult const castResult =
+            healer->CastSpell(healer, f54nDesperatePrayer, false);
+        f54tCastAccepted = castResult == SPELL_CAST_OK;
+        Spell* const queuedSpell = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        SpellEntry* const mutableSpell = queuedSpell
+            ? const_cast<SpellEntry*>(queuedSpell->m_spellInfo) : nullptr;
+        uint32 const savedTargetA = mutableSpell
+            ? mutableSpell->EffectImplicitTargetA[0] : 0;
+
+        auto countF54tEvents = [&]() -> uint32
+        {
+            uint32 count = 0;
+            for (auto const& event : healer->m_Events.GetEvents())
+            {
+                SpellEvent* spellEvent = dynamic_cast<SpellEvent*>(event.second);
+                Spell* pendingSpell = spellEvent ? spellEvent->GetSpell() : nullptr;
+                if (pendingSpell &&
+                    pendingSpell->GetPartyBotTraceActionId() == f54tActionId)
+                    ++count;
+            }
+            return count;
+        };
+
+        f54tQueued =
+            f54tCastAccepted && queuedSpell &&
+            queuedSpell->getState() == SPELL_STATE_PREPARING &&
+            countF54tEvents() == 1 &&
+            queuedSpell->m_targets.getUnitTarget() == healer &&
+            mutableSpell && savedTargetA == TARGET_UNIT_CASTER &&
+            detachedAdapter.intentCalls == 1 &&
+            detachedAdapter.authorizeCalls == 0 &&
+            detachedAdapter.terminalCalls == 0;
+
+        if (f54tQueued)
+        {
+            mutableSpell->EffectImplicitTargetA[0] = TARGET_UNIT_PARTY;
+            queuedSpell->m_targets.setUnitTarget(f54tMember);
+            f54tSelectorChanged =
+                mutableSpell->EffectImplicitTargetA[0] == TARGET_UNIT_PARTY;
+            f54tTargetChanged =
+                queuedSpell->m_targets.getUnitTargetGuid() == f54tGuid &&
+                queuedSpell->m_targets.getUnitTarget() == f54tMember;
+
+            // remove=false performs the real Map/World removal without deleting
+            // the Player object, so the fixture can safely re-add it afterward.
+            map.Remove(f54tMember, false);
+            f54tMapRemoved = !f54tMember->IsInWorld() &&
+                f54tMember->GetMap() == nullptr && map.GetUnit(f54tGuid) == nullptr;
+            f54tGroupPreserved =
+                group->IsMember(f54tGuid) && f54tMember->GetGroup() == group.get() &&
+                group->GetMembersCount() == f54tGroupCount &&
+                group->GetLeaderGuid() == f54tLeader;
+            f54tGuidRetained =
+                queuedSpell->m_targets.getUnitTargetGuid() == f54tGuid &&
+                queuedSpell->m_targets.getUnitTarget() == f54tMember;
+
+            if (f54tMapRemoved && f54tGroupPreserved)
+            {
+                for (uint32 tick = 0;
+                     detachedAdapter.terminalCalls == 0 && tick < 20; ++tick)
+                {
+                    healer->Unit::Update(50, 50);
+                    ++f54tEventUpdates;
+                }
+            }
+        }
+
+        f54tCurrentCleared =
+            healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+        f54tCoreCanceled =
+            detachedAdapter.terminalCalls == 1 &&
+            detachedAdapter.terminalActionId == f54tActionId &&
+            detachedAdapter.terminalEncounterId == f54tEncounterId &&
+            detachedAdapter.terminalEngineAction &&
+            !detachedAdapter.terminalSuccess &&
+            detachedAdapter.terminalInterrupted;
+        f54tAuthorizeSkipped = detachedAdapter.authorizeCalls == 0;
+        f54tTerminalOnce =
+            detachedAdapter.terminalCalls == 1 &&
+            detachedAdapter.terminalActionId == f54tActionId;
+        f54tInterrupted = f54tCoreCanceled && detachedAdapter.terminalInterrupted;
+
+        // Never re-add the target before the SpellEvent has been canceled/reaped.
+        if (queuedSpell &&
+            healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == queuedSpell)
+            healer->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+        for (uint32 tick = 0; countF54tEvents() != 0 && tick < 20; ++tick)
+        {
+            healer->Unit::Update(50, 50);
+            ++f54tEventUpdates;
+        }
+        f54tEventReaped = countF54tEvents() == 0;
+
+        f54tHealerHealthAfter = healer->GetHealth();
+        f54tMemberHealthAfter = f54tMember->GetHealth();
+        f54tManaAfter = healer->GetPower(POWER_MANA);
+        for (uint32 i = 0; i < 3; ++i)
+        {
+            if (f54nHostiles[i].creature)
+            {
+                float const healerAfter =
+                    f54nHostiles[i].creature->GetThreatManager().getThreat(healer);
+                float const memberAfter =
+                    f54nHostiles[i].creature->GetThreatManager().getThreat(f54tMember);
+                f54tThreatDelta += std::fabs(healerAfter - f54tHealerThreat[i]) +
+                    std::fabs(memberAfter - f54tMemberThreat[i]);
+            }
+        }
+        f54tNoEffects =
+            f54tHealerHealthAfter == f54tHealerHealthBefore &&
+            f54tMemberHealthAfter == f54tMemberHealthBefore &&
+            f54tManaAfter == f54tManaBefore && f54tThreatDelta < 0.01f;
+        f54tReadyAfter = healer->IsSpellReady(f54nDesperatePrayer);
+        f54tNoGcdAfter = !healer->HasGCD(f54nDesperatePrayer);
+
+        if (mutableSpell)
+        {
+            mutableSpell->EffectImplicitTargetA[0] = savedTargetA;
+            f54tSelectorRestored =
+                mutableSpell->EffectImplicitTargetA[0] == savedTargetA;
+        }
+
+        if (!f54tMember->IsInWorld() && f54tMember->GetMap() == nullptr)
+            f54tMapRestored = map.Add(f54tMember);
+        else
+            f54tMapRestored = f54tMember->IsInWorld() &&
+                f54tMember->GetMap() == &map;
+        f54tWorldRestored = f54tMapRestored &&
+            f54tMember->IsInWorld() && map.GetUnit(f54tGuid) == f54tMember;
+        f54tLocationRestored = f54tWorldRestored &&
+            f54tMember->GetMapId() == f54tMapId &&
+            f54tMember->GetInstanceId() == f54tInstanceId &&
+            std::fabs(f54tMember->GetPositionX() - f54tX) < 0.01f &&
+            std::fabs(f54tMember->GetPositionY() - f54tY) < 0.01f &&
+            std::fabs(f54tMember->GetPositionZ() - f54tZ) < 0.01f &&
+            std::fabs(f54tMember->GetOrientation() - f54tO) < 0.01f;
+        f54tGroupRestored =
+            group->IsMember(f54tGuid) && f54tMember->GetGroup() == group.get() &&
+            group->GetMembersCount() == f54tGroupCount;
+        f54tSubgroupRestored = f54tGroupRestored &&
+            group->GetMemberGroup(f54tGuid) == f54tSubgroup;
+        f54tInstanceRestored = f54tGroupRestored &&
+            f54tMember->m_instanceValid == f54tInstanceValid;
+        f54tLeaderRestored = group->GetLeaderGuid() == f54tLeader;
+        f54tAssistantRestored = !f54tRaid ||
+            group->IsAssistant(f54tGuid) == f54tAssistant;
+
+        healer->SetAI(f54tPreviousAI);
+        f54tAdapterRestored = healer->AI() == f54tPreviousAI;
+        healer->SetHealth(f54tSavedHealerHealth);
+        healer->SetPower(POWER_MANA, f54tSavedHealerMana);
+        f54tMember->SetHealth(f54tSavedMemberHealth);
+
+        f54tPassed =
+            f54tCastAccepted && f54tQueued && f54tSelectorChanged &&
+            f54tTargetChanged && f54tMapRemoved && f54tGroupPreserved &&
+            f54tGuidRetained && f54tCoreCanceled && f54tAuthorizeSkipped &&
+            f54tTerminalOnce && f54tInterrupted && f54tCurrentCleared &&
+            f54tEventReaped && f54tNoEffects && f54tReadyBefore &&
+            f54tNoGcdBefore && f54tReadyAfter && f54tNoGcdAfter &&
+            f54tSelectorRestored && f54tMapRestored && f54tWorldRestored &&
+            f54tLocationRestored && f54tGroupRestored &&
+            f54tSubgroupRestored && f54tInstanceRestored &&
+            f54tLeaderRestored && f54tAssistantRestored &&
+            f54tAdapterRestored && !f54tGuid.IsEmpty();
+    }
+
+    sLog.Out(LOG_BASIC, f54tGate ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54t gate diagnostics: f54sPassed=%u healerAlive=%u recipientAlive=%u fiveMembers=%u member=%u worldState=%u subgroupValid=%u spellKnown=%u expectedTargetGuid=%llu.",
+        f54sPassed ? 1u : 0u,
+        healer && healer->IsAlive() ? 1u : 0u,
+        f54tMember && f54tMember->IsAlive() ? 1u : 0u,
+        group && group->GetMembersCount() == MAX_GROUP_SIZE ? 1u : 0u,
+        group && group->IsMember(f54tGuid) &&
+            f54tMember && f54tMember->GetGroup() == group.get() ? 1u : 0u,
+        f54tMember && f54tMember->IsInWorld() &&
+            f54tMember->GetMap() == &map &&
+            map.GetUnit(f54tGuid) == f54tMember ? 1u : 0u,
+        f54tSubgroup < MAX_RAID_SUBGROUPS ? 1u : 0u,
+        healer && f54nDesperatePrayer &&
+            healer->HasSpell(f54nDesperatePrayer->Id) ? 1u : 0u,
+        static_cast<unsigned long long>(f54tGuid.GetRawValue()));
+
+    sLog.Out(LOG_BASIC, f54tPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54t detached Group recipient: gatePassed=%u castAccepted=%u queuedBeforeRemoval=%u selectorChanged=%u inputTargetChanged=%u mapRemoved=%u groupPreserved=%u queuedGuidRetained=%u coreCanceled=%u authorizeSkipped=%u terminalOnce=%u terminalInterrupted=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u healerHealth=%u/%u recipientHealth=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u selectorRestored=%u mapRestored=%u worldRestored=%u locationRestored=%u groupRestored=%u subgroupRestored=%u instanceValidRestored=%u leaderRestored=%u assistantRestored=%u adapterRestored=%u expectedTargetGuid=%llu.",
+        f54tGate ? 1u : 0u, f54tCastAccepted ? 1u : 0u,
+        f54tQueued ? 1u : 0u, f54tSelectorChanged ? 1u : 0u,
+        f54tTargetChanged ? 1u : 0u, f54tMapRemoved ? 1u : 0u,
+        f54tGroupPreserved ? 1u : 0u, f54tGuidRetained ? 1u : 0u,
+        f54tCoreCanceled ? 1u : 0u, f54tAuthorizeSkipped ? 1u : 0u,
+        f54tTerminalOnce ? 1u : 0u, f54tInterrupted ? 1u : 0u,
+        f54tCurrentCleared ? 1u : 0u, f54tEventReaped ? 1u : 0u,
+        f54tEventUpdates, f54tHealerHealthBefore, f54tHealerHealthAfter,
+        f54tMemberHealthBefore, f54tMemberHealthAfter,
+        f54tManaBefore, f54tManaAfter, f54tThreatDelta,
+        f54tNoEffects ? 1u : 0u, f54tReadyBefore ? 1u : 0u,
+        f54tNoGcdBefore ? 1u : 0u, f54tReadyAfter ? 1u : 0u,
+        f54tNoGcdAfter ? 1u : 0u, f54tSelectorRestored ? 1u : 0u,
+        f54tMapRestored ? 1u : 0u, f54tWorldRestored ? 1u : 0u,
+        f54tLocationRestored ? 1u : 0u, f54tGroupRestored ? 1u : 0u,
+        f54tSubgroupRestored ? 1u : 0u, f54tInstanceRestored ? 1u : 0u,
+        f54tLeaderRestored ? 1u : 0u, f54tAssistantRestored ? 1u : 0u,
+        f54tAdapterRestored ? 1u : 0u,
+        static_cast<unsigned long long>(f54tGuid.GetRawValue()));
+    if (f54tPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F54t detached a queued recipient from the live Map while retaining Group membership; Core re-resolved the explicit GUID to no live target, canceled before authorization, and applied no heal, mana, threat, cooldown or GCD effects.");
+
     if (healer && f54nHealerAI && healer->AI() == f54nHealerAI.get())
         healer->SetAI(f54nPreviousHealerAI);
     f54nHealerAI.reset();

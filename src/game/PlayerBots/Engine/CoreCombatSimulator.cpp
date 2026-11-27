@@ -12337,6 +12337,10 @@ if (f54mPassed)
     bool f54oAcceptTerminalSeen = false;
     bool f54oAcceptHealApplied = false;
     bool f54oAdapterRestored = false;
+    bool f54oRejectSpellReadyBefore = false;
+    bool f54oRejectNoGcdBefore = false;
+    bool f54oAcceptSpellReadyBefore = false;
+    bool f54oAcceptNoGcdBefore = false;
     uint32 f54oRejectHealthBefore = 0;
     uint32 f54oRejectHealthAfter = 0;
     uint32 f54oRejectManaBefore = 0;
@@ -12353,8 +12357,20 @@ if (f54mPassed)
         PlayerAI* const f54oPreviousAI = healer->AI();
         auto runF54oCast = [&](uint32& healthBefore, uint32& healthAfter,
                                uint32& manaBefore, uint32& manaAfter,
+                               bool& spellReadyBefore, bool& noGcdBefore,
                                SimulatorDeferredSpellAdmissionAI& adapter) -> bool
         {
+            // F54n just exercised this same real Desperate Prayer spell and
+            // Core correctly committed its long spell cooldown. Isolate each
+            // F54o trial from that prior cast without changing CheckCast or
+            // mutating the shared SpellEntry under test.
+            healer->RemoveSpellCooldown(f54nDesperatePrayer, false);
+            if (f54nDesperatePrayer->Category)
+                healer->RemoveSpellCategoryCooldown(
+                    f54nDesperatePrayer->Category, false);
+            healer->ResetGCD(f54nDesperatePrayer);
+            spellReadyBefore = healer->IsSpellReady(f54nDesperatePrayer);
+            noGcdBefore = !healer->HasGCD(f54nDesperatePrayer);
             healer->SetHealth(std::max<uint32>(1u, healer->GetMaxHealth() / 2u));
             healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
             healthBefore = healer->GetHealth();
@@ -12382,7 +12398,9 @@ if (f54mPassed)
         SimulatorDeferredSpellAdmissionAI rejectAdapter(healer, false);
         bool const rejectPrepareAccepted = runF54oCast(
             f54oRejectHealthBefore, f54oRejectHealthAfter,
-            f54oRejectManaBefore, f54oRejectManaAfter, rejectAdapter);
+            f54oRejectManaBefore, f54oRejectManaAfter,
+            f54oRejectSpellReadyBefore, f54oRejectNoGcdBefore,
+            rejectAdapter);
         f54oRejectIntentSeen = rejectAdapter.intentCalls == 1;
         f54oRejectAuthorizeSeen = rejectAdapter.authorizeCalls == 1;
         f54oRejectTerminalSeen = rejectAdapter.terminalCalls == 1 &&
@@ -12405,7 +12423,9 @@ if (f54mPassed)
         SimulatorDeferredSpellAdmissionAI acceptAdapter(healer, true);
         bool const acceptPrepareAccepted = runF54oCast(
             f54oAcceptHealthBefore, f54oAcceptHealthAfter,
-            f54oAcceptManaBefore, f54oAcceptManaAfter, acceptAdapter);
+            f54oAcceptManaBefore, f54oAcceptManaAfter,
+            f54oAcceptSpellReadyBefore, f54oAcceptNoGcdBefore,
+            acceptAdapter);
         f54oAcceptIntentSeen = acceptAdapter.intentCalls == 1;
         f54oAcceptAuthorizeSeen = acceptAdapter.authorizeCalls == 1;
         f54oAcceptTerminalSeen = acceptAdapter.terminalCalls == 1 &&
@@ -12424,20 +12444,26 @@ if (f54mPassed)
         f54oRejectTerminalSeen && f54oRejectSideEffectsAbsent &&
         f54oAcceptIntentSeen && f54oAcceptAuthorizeSeen &&
         f54oAcceptTerminalSeen && f54oAcceptHealApplied &&
+        f54oRejectSpellReadyBefore && f54oRejectNoGcdBefore &&
+        f54oAcceptSpellReadyBefore && f54oAcceptNoGcdBefore &&
         f54oAdapterRestored;
     sLog.Out(LOG_BASIC, f54oPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54o Core admission accept/reject: rejectIntent=%u rejectAuthorize=%u rejectTerminal=%u rejectNoEffects=%u rejectThreatDelta=%.3f rejectHealth=%u/%u rejectMana=%u/%u acceptIntent=%u acceptAuthorize=%u acceptTerminal=%u acceptHeal=%u acceptHealth=%u/%u acceptMana=%u/%u adapterRestored=%u.",
+        "[PartyBotSimulator] F54o Core admission accept/reject: rejectIntent=%u rejectAuthorize=%u rejectTerminal=%u rejectNoEffects=%u rejectThreatDelta=%.3f rejectSpellReady=%u rejectNoGcd=%u rejectHealth=%u/%u rejectMana=%u/%u acceptIntent=%u acceptAuthorize=%u acceptTerminal=%u acceptHeal=%u acceptSpellReady=%u acceptNoGcd=%u acceptHealth=%u/%u acceptMana=%u/%u adapterRestored=%u.",
         f54oRejectIntentSeen ? 1u : 0u,
         f54oRejectAuthorizeSeen ? 1u : 0u,
         f54oRejectTerminalSeen ? 1u : 0u,
         f54oRejectSideEffectsAbsent ? 1u : 0u,
         f54oRejectThreatDelta,
+        f54oRejectSpellReadyBefore ? 1u : 0u,
+        f54oRejectNoGcdBefore ? 1u : 0u,
         f54oRejectHealthBefore, f54oRejectHealthAfter,
         f54oRejectManaBefore, f54oRejectManaAfter,
         f54oAcceptIntentSeen ? 1u : 0u,
         f54oAcceptAuthorizeSeen ? 1u : 0u,
         f54oAcceptTerminalSeen ? 1u : 0u,
         f54oAcceptHealApplied ? 1u : 0u,
+        f54oAcceptSpellReadyBefore ? 1u : 0u,
+        f54oAcceptNoGcdBefore ? 1u : 0u,
         f54oAcceptHealthBefore, f54oAcceptHealthAfter,
         f54oAcceptManaBefore, f54oAcceptManaAfter,
         f54oAdapterRestored ? 1u : 0u);

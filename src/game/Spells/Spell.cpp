@@ -3446,6 +3446,12 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
             Unit* pTarget = m_targets.getUnitTarget();
             if (result != SPELL_CAST_OK || (IsAutoRepeat() && m_caster == pTarget))
             {
+                if (m_partyBotDeferredEffectsRequested)
+                    sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                        "[PartyBotSpellAdmission] prepare CheckCast(true) rejected: spell=%u result=%u target=%llu state=%u.",
+                        m_spellInfo ? m_spellInfo->Id : 0u, static_cast<uint32>(result),
+                        static_cast<unsigned long long>(pTarget ? pTarget->GetGUID() : 0),
+                        static_cast<uint32>(m_spellState));
                 if (!IsAutoRepeat() || !IsAcceptableAutorepeatError(result))
                 {
                     DEBUG_FILTER_LOG(LOG_FILTER_SPELL_CAST, "Spell %u failed for reason 0x%x (target %u)", m_spellInfo->Id, result, pTarget ? pTarget->GetGUIDLow() : 0);
@@ -3820,6 +3826,12 @@ void Spell::cast(bool skipCheck)
     // cancel at lost main target unit
     if (!m_targets.getUnitTarget() && m_targets.getUnitTargetGuid() && m_targets.getUnitTargetGuid() != m_caster->GetObjectGuid())
     {
+        if (m_partyBotDeferredEffectsRequested)
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSpellAdmission] cast lost explicit target before target map: spell=%u targetGuid=%llu state=%u.",
+                m_spellInfo ? m_spellInfo->Id : 0u,
+                static_cast<unsigned long long>(m_targets.getUnitTargetGuid().GetRawValue()),
+                static_cast<uint32>(m_spellState));
         SendInterrupted(2);
         cancel();
         m_caster->DecreaseCastCounter();
@@ -3846,6 +3858,11 @@ void Spell::cast(bool skipCheck)
         castResult = CheckPower();
         if (castResult != SPELL_CAST_OK)
         {
+            if (m_partyBotDeferredEffectsRequested)
+                sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                    "[PartyBotSpellAdmission] cast CheckPower rejected: spell=%u result=%u skipCheck=%u state=%u.",
+                    m_spellInfo ? m_spellInfo->Id : 0u, static_cast<uint32>(castResult),
+                    skipCheck ? 1u : 0u, static_cast<uint32>(m_spellState));
             SendInterrupted(2);
             SendCastResult(castResult);
             //restore spell mods
@@ -3861,6 +3878,12 @@ void Spell::cast(bool skipCheck)
         castResult = CheckCast(false);
         if (castResult != SPELL_CAST_OK)
         {
+            if (m_partyBotDeferredEffectsRequested)
+                sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                    "[PartyBotSpellAdmission] cast CheckCast(false) rejected: spell=%u result=%u target=%llu skipCheck=%u state=%u.",
+                    m_spellInfo ? m_spellInfo->Id : 0u, static_cast<uint32>(castResult),
+                    static_cast<unsigned long long>(m_targets.getUnitTarget() ? m_targets.getUnitTarget()->GetGUID() : 0),
+                    skipCheck ? 1u : 0u, static_cast<uint32>(m_spellState));
             SendInterrupted(2);
             SendCastResult(castResult);
             finish(false);

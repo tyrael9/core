@@ -4060,14 +4060,17 @@ void TestSupportedSingleTargetDirectHealSpellShape() {
     auto supportedMode = [](std::uint32_t mode)
     {
         return IsSupportedDirectHealTargetMode(
-            mode, kUnitFriend, kUnitParty, kUnitRaid, kUnit);
+            mode, kUnitFriend, kUnitParty, kUnitRaid, kUnit, kUnitCaster);
     };
 
     assert(supportedMode(kUnitFriend));
     assert(supportedMode(kUnitParty));
     assert(supportedMode(kUnitRaid));
     assert(supportedMode(kUnit));
-    assert(!supportedMode(kUnitCaster));
+    assert(supportedMode(kUnitCaster));
+    assert(IsSupportedDirectHealTargetRelation(true, true));
+    assert(!IsSupportedDirectHealTargetRelation(true, false));
+    assert(IsSupportedDirectHealTargetRelation(false, false));
     assert(!supportedMode(kUnitFriendNearCaster));
     assert(!supportedMode(kPartyAoeAtSource));
     assert(!supportedMode(kUnitFriendChainHeal));

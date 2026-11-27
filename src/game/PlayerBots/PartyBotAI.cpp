@@ -832,8 +832,7 @@ bool PartyBotAI::CanCastDirectHeal(
     if (!IsSupportedSingleTargetDirectHealSpellShape(spell))
         return false;
 
-    if (!hasDirectHealEffect ||
-        !spell->IsTargetInRange(me, target) ||
+    if (!spell->IsTargetInRange(me, target) ||
         !CanTryToCastSpell(target, spell))
         return false;
 

@@ -57,6 +57,13 @@ public:
 
     // The initial Priest direct-heal vertical slice is deliberately optional.
     // Hosts that do not implement it remain fail-closed.
+    virtual ThreatImpactEstimate EstimateDirectHealThreatImpact(
+        DecisionContext const&, Guid, std::uint32_t) const
+    {
+        ThreatImpactEstimate estimate;
+        estimate.reason = "core_direct_heal_threat_estimator_unavailable";
+        return estimate;
+    }
     virtual bool CanCastDirectHeal(
         DecisionContext const&, Guid, std::uint32_t) const { return false; }
     virtual bool StartDirectHeal(

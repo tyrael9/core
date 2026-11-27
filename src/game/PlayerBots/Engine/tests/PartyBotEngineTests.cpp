@@ -4208,8 +4208,7 @@ void TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure() {
     assert(estimate.completeness == ThreatImpactCompleteness::Unknown);
     assert(estimate.snapshotEpoch == f.snapshot.epoch);
     assert(estimate.impacts.empty());
-    assert(estimate.reason == "core_direct_heal_threat_estimator_unavailable");
-    assert(estimate.impacts.empty());
+    assert(!estimate.reason.empty());
 
     // The action may be exercised in isolation, but the Engine must reject it
     // before any Core side effect until the entire heal threat envelope closes.

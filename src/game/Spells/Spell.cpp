@@ -3399,10 +3399,13 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
                 if (admission == PlayerSpellCastAdmissionPolicy::DeferEffectsUntilImpact)
                 {
                     m_partyBotDeferredEffectsRequested = true;
-                    if (!IsSafePartyBotDeferredSelfHealShape(false) || m_delayed)
+                    // m_delayed is a coarse spell-batching eligibility flag. It can be
+                    // true even when this self-targeted effect has no actual impact delay.
+                    // The resolved TargetInfo::timeDelay == 0 check below is authoritative.
+                    if (!IsSafePartyBotDeferredSelfHealShape(false))
                     {
                         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                            "[PartyBotSpellAdmission] prepare rejected unsupported shape: spell=%u safeShape=%u delayed=%u triggered=%u script=%u castTime=%u speed=%.3f.",
+                            "[PartyBotSpellAdmission] prepare rejected static shape: spell=%u safeShape=%u batchDelayEligible=%u triggered=%u script=%u castTime=%u speed=%.3f.",
                             m_spellInfo ? m_spellInfo->Id : 0u,
                             IsSafePartyBotDeferredSelfHealShape(false) ? 1u : 0u,
                             m_delayed ? 1u : 0u, m_IsTriggeredSpell ? 1u : 0u,
@@ -3697,7 +3700,7 @@ bool Spell::IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) con
         m_partyBotItemUseId || m_IsTriggeredSpell || m_triggeredByAuraSpell ||
         m_CastItem || m_spellScript || !m_spellInfo ||
         m_spellInfo->ScriptId != 0 || m_spellInfo->speed != 0.0f ||
-        m_delayed || m_channeled || m_autoRepeat ||
+        m_channeled || m_autoRepeat ||
         m_spellInfo->powerType != POWER_MANA ||
         !m_spellInfo->IsHealSpell() ||
         !m_spellInfo->IsPositiveSpell(m_casterUnit, m_casterUnit) ||

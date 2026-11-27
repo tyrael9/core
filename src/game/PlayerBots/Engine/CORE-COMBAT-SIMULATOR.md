@@ -1,5 +1,9 @@
 # Core-backed PartyBot combat simulator
 
+## F54s — queued recipient leaves the Group (implementation submitted; trusted runtime pending)
+
+Current code [`9648f47`](https://github.com/tyrael9/core/commit/9648f476cc1b2b6ff456b8b7b11e5e7413838627) selects the departing recipient by live Group membership and actual leader GUID, not by a fixed `players[]` index. The initial diagnostic run [#46057372504](https://github.com/tyrael9/core/actions/runs/46057372504) showed the fixed index was the leader (`nonLeader=0`), so that run never tested the Group-leave path. Corrected PR-safe build [#46065350461](https://github.com/tyrael9/core/actions/runs/46065350461) passed. Trusted simulator [#46065342721](https://github.com/tyrael9/core/actions/runs/46065342721) remains in progress; this section does not supersede F54r as the latest trusted-runtime result.
+
 ## Latest trusted runtime — F54r late recipient re-resolution (2026-11-27 PT)
 
 Trusted push [#45989668353](https://github.com/tyrael9/core/actions/runs/45989668353), source commit [`86f0159`](https://github.com/tyrael9/core/commit/86f015905e57dc307e0fbc0e8d8201d8d2bc5b43), passed pure PartyBotEngine tests, report collection, Configure, full Linux ARM64 / Vanilla 5875 Server+Realm build, simulator harness syntax, fixture-secret validation, the complete Core-backed simulator, artifact upload and teardown. The F54r marker and Core target-resolution log were present, the simulator emitted final `Runtime PASS`, and GDB reported normal inferior exit. Artifact [#15193014251](https://github.com/tyrael9/core/actions/runs/45989668353/artifacts/15193014251). Matching PR-safe build [#45989678389](https://github.com/tyrael9/core/actions/runs/45989678389) passed pure tests, report collection, Configure, full ARM64 compile and harness syntax; private fixture runtime is intentionally skipped in PR context.

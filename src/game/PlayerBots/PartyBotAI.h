@@ -101,6 +101,9 @@ public:
     bool StartGroupResurrection(
         PartyBotEngine::DecisionContext const& context,
         PartyBotEngine::Guid targetGuid, std::uint32_t spellId) final;
+    PartyBotEngine::ThreatImpactEstimate EstimateDirectHealThreatImpact(
+        PartyBotEngine::DecisionContext const& context,
+        PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const final;
     bool CanCastDirectHeal(
         PartyBotEngine::DecisionContext const& context,
         PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const final;

@@ -11924,7 +11924,27 @@ if (f54mPassed)
     SpellEntry const* const f54nPrayerOfHealing =
         sSpellMgr.GetSpellEntry(596);
 
-    f54nPriestAIReady = priestHealerAI != nullptr;
+    // F53a deliberately detached and destroyed its temporary Priest adapter
+    // after the spellbook snapshot assertion. F54n owns a fresh, narrowly
+    // scoped adapter and restores the Player's previous AI pointer afterward.
+    PlayerAI* const f54nPreviousHealerAI =
+        healer ? healer->AI() : nullptr;
+    std::unique_ptr<PartyBotAI> f54nHealerAI;
+    if (healer && healer->IsAlive() && players[0])
+    {
+        f54nHealerAI.reset(new PartyBotAI(
+            players[0], nullptr, ROLE_HEALER,
+            RACE_HUMAN, CLASS_PRIEST, healer->GetLevel(),
+            map.GetId(), map.GetInstanceId(),
+            healer->GetPositionX(), healer->GetPositionY(),
+            healer->GetPositionZ(), healer->GetOrientation()));
+        f54nHealerAI->SetPlayer(healer);
+        healer->SetAI(f54nHealerAI.get());
+        f54nHealerAI->ResetSpellData();
+        f54nHealerAI->PopulateSpellData();
+    }
+
+    f54nPriestAIReady = f54nHealerAI != nullptr;
     f54nHealerReady = healer && healer->IsAlive() &&
         healer->GetClass() == CLASS_PRIEST;
     f54nInspirationEntryReady = f54nInspiration != nullptr;
@@ -11941,19 +11961,19 @@ if (f54mPassed)
             healer->HasSpell(f54nDesperatePrayer->Id);
 
         bool const f54nWasInHealList =
-            priestHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
-            priestHealerAI->m_spellListDirectHeal.end();
+            f54nHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
+            f54nHealerAI->m_spellListDirectHeal.end();
         if (!f54nWasInHealList)
-            priestHealerAI->m_spellListDirectHeal.insert(f54nDesperatePrayer);
+            f54nHealerAI->m_spellListDirectHeal.insert(f54nDesperatePrayer);
         f54nListContainsSpellBeforeRestore =
-            priestHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
-                priestHealerAI->m_spellListDirectHeal.end();
+            f54nHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
+                f54nHealerAI->m_spellListDirectHeal.end();
 
         bool const f54nHasSpell =
             healer->HasSpell(f54nDesperatePrayer->Id);
         bool const f54nInSpellList =
-            priestHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
-                priestHealerAI->m_spellListDirectHeal.end();
+            f54nHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
+                f54nHealerAI->m_spellListDirectHeal.end();
         bool const f54nSupportedShape =
             IsSupportedSingleTargetDirectHealSpellShape(f54nDesperatePrayer);
         bool const f54nTargetModeMatches =
@@ -12008,7 +12028,7 @@ if (f54mPassed)
                 DecisionContext f54nContext(
                     *f54nSnapshot, *f54nBotSnapshot, f54nCoordinator,
                     f54nNowMs, nullptr, nullptr, nullptr, nullptr,
-                    priestHealerAI.get());
+                    f54nHealerAI.get());
                 ActionCandidate f54nCandidate;
                 f54nCandidate.targetGuid =
                     healer->GetObjectGuid().GetRawValue();
@@ -12019,7 +12039,7 @@ if (f54mPassed)
                 ThreatImpactEstimate const initialEstimate =
                     f54nAction.EstimateThreatImpact(
                         f54nContext, f54nCandidate);
-                f54nLivePreflight = priestHealerAI->CanCastDirectHeal(
+                f54nLivePreflight = f54nHealerAI->CanCastDirectHeal(
                     f54nContext, f54nCandidate.targetGuid,
                     f54nCandidate.spellId);
                 f54nEstimateComplete =
@@ -12131,7 +12151,7 @@ if (f54mPassed)
                         hostiles[0].creature->GetThreatManager().getThreat(healer);
                     float const beforeThreat1 =
                         hostiles[1].creature->GetThreatManager().getThreat(healer);
-                    f54nCastStarted = priestHealerAI->StartDirectHeal(
+                    f54nCastStarted = f54nHealerAI->StartDirectHeal(
                         f54nContext, f54nCandidate.targetGuid,
                         f54nCandidate.spellId);
                     f54nActualThreat0 =
@@ -12155,13 +12175,13 @@ if (f54mPassed)
             healer->SetPower(POWER_MANA, savedMana);
             tank->SetHealth(savedTankHealth);
             if (!f54nWasInHealList)
-                priestHealerAI->m_spellListDirectHeal.erase(
+                f54nHealerAI->m_spellListDirectHeal.erase(
                     f54nDesperatePrayer);
             f54nSpellListRestored =
                 f54nWasInHealList ||
-                priestHealerAI->m_spellListDirectHeal.find(
+                f54nHealerAI->m_spellListDirectHeal.find(
                     f54nDesperatePrayer) ==
-                    priestHealerAI->m_spellListDirectHeal.end();
+                    f54nHealerAI->m_spellListDirectHeal.end();
             f54nStateRestored =
                 healer->GetHealth() == savedHealth &&
                 healer->GetPower(POWER_MANA) == savedMana &&
@@ -12169,6 +12189,10 @@ if (f54mPassed)
                 !healer->GetSpellAuraHolder(f54nInspiration->Id);
         }
     }
+
+    if (healer && f54nHealerAI && healer->AI() == f54nHealerAI.get())
+        healer->SetAI(f54nPreviousHealerAI);
+    f54nHealerAI.reset();
 
     bool const f54nPassed =
         f54nRowReady && f54nLivePreflight && f54nEstimateComplete &&

@@ -65,11 +65,11 @@ No merge, image publication, deployment or realm-side change is authorised by CI
 
 Phase 5 death/recovery and generic movement foundations are closed with trusted Core runtime evidence. The first production NewEngine behavior remains the narrow Follow policy; all other combat policy coverage is still development work.
 
-Phase 6 is in the Priest Healer vertical slice. Current test-only evidence covers target/rank selection, Heal reservations, direct heals/HoTs/absorbs, bounded timeline, ordered damage/heal cases, helpful procs, target-trigger fan-out, a representative nested child chain and direct-heal pushback/interruption. F54k's Core random-dither floor/ceil interval, F54l's bounded school-specific absorb matching and F54m's four-cast/cyclic-fifth child-chain fixture all passed trusted runtime. F54m also proves five-recipient healing, per-hostile incremental threat parity, temporary-state restoration and clean simulator shutdown. See `ROADMAP.md` and `HEALING-FORECAST.md` for exact evidence and remaining boundaries.
+Phase 6 is in the Priest Healer vertical slice. Current test-only evidence covers target/rank selection, Heal reservations, direct heals/HoTs/absorbs, bounded timeline, ordered damage/heal cases, helpful procs, target-trigger fan-out, a representative nested child chain and direct-heal pushback/interruption. F54k's Core random-dither floor/ceil interval, F54l's bounded school-specific absorb matching and F54m's four-cast/cyclic-fifth child-chain fixture all passed trusted runtime. F54m also proves five-recipient healing, per-hostile incremental threat parity, temporary-state restoration and clean simulator shutdown. F54n's trusted deferred instant-heal race proves that a new HostileReference may appear after pre-cast estimation and receive real Core healing-assist threat; the whole action now remains `Unknown`/empty rather than promoting the earlier component rows. See `ROADMAP.md`, `THREAT-BUDGETS.md` and `HEALING-FORECAST.md` for the exact evidence and next safety boundary.
 
 Still blocked from production:
 - `PriestDirectHealAction` whole-action threat remains Unknown; no Priest Healing Strategy is registered.
-- F54n exact supported direct-heal spell shape, Core ordering, whole-action threat and complete proc/script/recipient closure remain open. Unsupported shapes and any unclosed path must continue to return Unknown.
+- F54n has proved the deferred-recipient race and the required fail-closed behavior. The next implementation step is a Core pre-impact authorization hook that refreshes actual recipients and atomically checks/reserves threat before irreversible effects; prove safe reject/refund timing first. Until then the action estimate remains Unknown and no Priest Healing Strategy is registered.
 - Druid, Shaman, Paladin, Warrior, Mage, Warlock, Hunter and Rogue production strategies remain unimplemented.
 - Party-wide target/threat/CC/interrupt/dispel policy and dungeon/raid encounter strategies remain future phases.
 
@@ -77,6 +77,6 @@ Still blocked from production:
 
 1. Preserve F54k's trusted HoT lower/upper interval and F54l's known-school absorb boundary.
 2. F54m's bounded four-cast child-chain, cyclic fifth-cast rejection and per-hostile threat parity are trusted-runtime validated.
-3. F54n: admit only the exact supported single-target direct-heal shape, then close Core ordering and whole-action helpful-threat/proc/recipient paths; preserve Unknown for any uncovered path.
+3. F54n: implement and validate Core map-thread pre-impact authorization, exact recipient re-resolution, proc/script/trigger vetoes and atomic threat reservations; preserve Unknown if the hook cannot reject safely before irreversible effects.
 4. Only then register the Priest direct-heal action and Priest Healing Strategy.
 5. Expand to remaining classes/roles, party coordination and Vanilla encounter strategies.

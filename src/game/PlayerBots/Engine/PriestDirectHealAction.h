@@ -20,11 +20,20 @@ public:
     std::string const& GetName() const override { return m_name; }
 
     ThreatImpactEstimate EstimateThreatImpact(
-        DecisionContext const& context, ActionCandidate const&) const override
+        DecisionContext const& context, ActionCandidate const& candidate) const override
     {
         ThreatImpactEstimate estimate;
         estimate.snapshotEpoch = context.snapshot.epoch;
-        estimate.reason = "priest_direct_heal_threat_envelope_not_closed";
+        estimate.reason = "priest_direct_heal_core_runtime_unavailable";
+        if (!context.coreActionRuntime)
+            return estimate;
+
+        estimate = context.coreActionRuntime->EstimateDirectHealThreatImpact(
+            context, candidate.targetGuid, candidate.spellId);
+        if (!estimate.snapshotEpoch)
+            estimate.snapshotEpoch = context.snapshot.epoch;
+        if (estimate.reason.empty())
+            estimate.reason = "priest_direct_heal_runtime_estimate_unresolved";
         return estimate;
     }
 

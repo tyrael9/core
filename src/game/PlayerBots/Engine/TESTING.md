@@ -1,10 +1,14 @@
 # PartyBot Core build, runtime and trace testing
 
-## F54o — deferred pre-impact spell admission (in progress; not validated)
+## F54o — deferred pre-impact spell admission (compile-validated; runtime fixture pending)
 
-The initial Core scaffold adds an opt-in `PlayerAI` admission-intent callback and a pre-impact authorization callback. It defers selected cast-start effects until `Spell::cast` has constructed the real target list, but only for a narrowly constrained, non-triggered, non-scripted, single-effect mana self-heal targeting the caster. It now rejects non-instant casts; cancellation/rejection must not reset a GCD or send a cooldown-clear because the deferred path has not committed either. Default PlayerAI behavior is `Unmanaged`; PartyBotAI does not opt in and no Priest action/strategy is registered.
+Current HEAD `0904dca2a2aded82efa8ed2ba853843dc1dba64c` passed PR ARM64 build [#45954553172](https://github.com/tyrael9/core/actions/runs/45954553172) and trusted push [#45954546454](https://github.com/tyrael9/core/actions/runs/45954546454). Both passed standalone PartyBotEngine tests, report collector tests, Configure, full Linux ARM64 / Vanilla 5875 server+realm build and simulator harness syntax. The trusted push also ran the existing Core-backed simulator to final `Runtime PASS`; artifact [#15178802238](https://github.com/tyrael9/core/actions/runs/45954546454/artifacts/15178802238).
 
-The first PR build for parent commit `ce98a54f59404bdd5f3385e4241165a5481ce6fc` passed standalone tests, report collection and Configure, then failed in `Spell.cpp` because the code used the undefined `SPELL_ATTR_EX_NO_HELPFUL_THREAT` instead of the pinned Core's `SPELL_ATTR_EX4_NO_HELPFUL_THREAT`. The source correction is included in the current branch update; the next PR build must prove the complete ARM64 compile. A trusted push must additionally prove the fixture-backed behavior. Neither the hook nor Priest direct healing is considered complete until rejection causes no Mana/GCD/cooldown/aura/proc/threat/effect mutation, accept/reject cases cleanly terminate, and current recipient state is atomically checked/reserved on the owning Map thread. The whole-action estimate remains fail-closed/`Unknown`.
+Important boundary: the current simulator log revalidates F54n and prior fixtures, but contains no F54o admission accept/reject fixture. PR runtime is skipped because PR jobs do not receive the extracted-data secrets. Therefore this is compile validation only for F54o; do not claim its pre-impact callback behavior has passed runtime.
+
+The Core scaffold opts in through `PlayerAI::OnSpellCastAdmissionIntent` and authorizes after the real target list is resolved, before deferred irreversible effects. The supported shape is deliberately narrow: non-triggered, non-scripted, non-delayed, instant, single-effect mana self-heal with only the caster in the resolved target list. Default PlayerAI remains `Unmanaged`; PartyBotAI has no override and no production action/strategy is registered. The follow-up rejects non-instant casts and avoids resetting/clearing GCD or cooldown on rejection because those effects have not been committed.
+
+Next trusted fixture must cover opt-in acceptance and rejection, actual target/recipient freshness, zero Mana/GCD/cooldown/aura/proc/threat/effect mutation on rejection, terminal cleanup and map-thread ownership. The whole-action estimate remains fail-closed/`Unknown`; no Priest direct-heal action or strategy is authorized.
 
 ## F54d damage-aware healing forecast runtime evidence
 

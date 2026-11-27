@@ -372,6 +372,109 @@ inline ThreatImpactEstimate EstimateDirectHealingThreatComponents(
 }
 
 
+// F54n supported spell subset: one explicit friendly target, one direct-heal
+// effect, no Core area/chain/near selectors, no scripts, no reflect and no
+// weapon-proc side channel. The action-level wrapper below further restricts
+// this to synchronous instant casts so live hostile references and threat
+// modifiers cannot change between estimation and impact.
+inline bool IsSupportedSingleTargetDirectHealSpellShape(
+    SpellEntry const* spellInfo)
+{
+    if (!spellInfo || !spellInfo->IsPositiveSpell() ||
+        spellInfo->IsAreaOfEffectSpell() ||
+        spellInfo->ScriptId != 0 ||
+        spellInfo->CanTriggerWeaponProcs() ||
+        spellInfo->IsReflectableSpell() ||
+        spellInfo->IsChanneledSpell())
+        return false;
+
+    std::uint32_t activeEffectCount = 0;
+    bool allActiveEffectsAreDirectHeals = true;
+    std::uint32_t targetA = TARGET_NONE;
+    std::uint32_t targetB = TARGET_NONE;
+    for (std::uint32_t effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
+    {
+        if (!spellInfo->Effect[effect])
+            continue;
+        ++activeEffectCount;
+        if (spellInfo->Effect[effect] != SPELL_EFFECT_HEAL)
+        {
+            allActiveEffectsAreDirectHeals = false;
+            continue;
+        }
+        targetA = spellInfo->EffectImplicitTargetA[effect];
+        targetB = spellInfo->EffectImplicitTargetB[effect];
+    }
+
+    bool const targetAIsSupportedFriendlyUnit = IsSupportedDirectHealTargetMode(
+        targetA, TARGET_UNIT_FRIEND, TARGET_UNIT_PARTY,
+        TARGET_UNIT_RAID, TARGET_UNIT);
+    bool const targetBIsSupportedFriendlyUnit = IsSupportedDirectHealTargetMode(
+        targetB, TARGET_UNIT_FRIEND, TARGET_UNIT_PARTY,
+        TARGET_UNIT_RAID, TARGET_UNIT);
+    return IsSupportedSingleTargetDirectHealEffectShape(
+        activeEffectCount, allActiveEffectsAreDirectHeals,
+        targetA == TARGET_NONE, targetB == TARGET_NONE,
+        targetAIsSupportedFriendlyUnit, targetBIsSupportedFriendlyUnit);
+}
+
+// Promote only the proven synchronous path. A cast-time or projectile heal
+// can gain new hostile references or see changed threat modifiers before its
+// impact, so its detached pre-cast estimate remains Unknown. The effective
+// healing input is bounded by the recipient's full max health, not just the
+// currently missing health, because that deficit may grow before impact.
+inline ThreatImpactEstimate EstimateSupportedInstantDirectHealThreat(
+    Player* realCaster, Unit* healedTarget, SpellEntry const* spellInfo,
+    PartySnapshot const& snapshot)
+{
+    ThreatImpactEstimate estimate;
+    estimate.snapshotEpoch = snapshot.epoch;
+    estimate.reason = "direct_heal_action_shape_or_core_context_unresolved";
+
+    if (!snapshot.epoch || !realCaster || !healedTarget || !spellInfo ||
+        !IsSupportedSingleTargetDirectHealSpellShape(spellInfo))
+        return estimate;
+
+    if (spellInfo->speed != 0.0f || spellInfo->GetCastTime(realCaster) != 0)
+    {
+        estimate.reason = "direct_heal_cast_time_or_projectile_allows_future_threat_changes";
+        return estimate;
+    }
+
+    std::uint32_t const targetMaxHealth = healedTarget->GetMaxHealth();
+    if (!targetMaxHealth)
+    {
+        estimate.reason = "direct_heal_target_max_health_unavailable";
+        return estimate;
+    }
+
+    estimate = EstimateDirectHealingThreatComponents(
+        realCaster, healedTarget, static_cast<float>(targetMaxHealth),
+        spellInfo, snapshot);
+
+    if (estimate.completeness == ThreatImpactCompleteness::NoThreat)
+    {
+        estimate.reason = "supported_instant_direct_heal_has_no_hostile_recipients";
+        return estimate;
+    }
+
+    // The component routine deliberately does not promote itself. Reaching
+    // this exact success reason means it checked both actors' proc/script
+    // state, the caster's matching add-target-trigger effects, and every live
+    // hostile reference; its rows include both effective-heal assist and
+    // positive flat SpellThreatEntry fan-out. Any other Unknown stays Unknown.
+    if (estimate.completeness != ThreatImpactCompleteness::Unknown ||
+        estimate.reason != "direct_heal_threat_components_only" ||
+        estimate.impacts.empty())
+        return estimate;
+
+    estimate.completeness = ThreatImpactCompleteness::Complete;
+    estimate.reservationDurationMs = 15000u;
+    estimate.reason = "supported_instant_direct_heal_whole_action_threat_closed";
+    return estimate;
+}
+
+
 // One successful Unit target recorded by Spell::m_UniqueTargetInfo. The
 // caller must supply the exact per-target effectMask and assert that the
 // complete successful target set for this cast has been enumerated.

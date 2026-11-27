@@ -12954,12 +12954,12 @@ if (f54mPassed)
         ? f54sDepartingMember->GetObjectGuid() : ObjectGuid();
     uint32 const f54sSavedGroupCount =
         group ? group->GetMembersCount() : 0;
-    uint8 const f54sSavedSubgroup = group && f54sExpectedTargetGuid
+    uint8 const f54sSavedSubgroup = group && !f54sExpectedTargetGuid.IsEmpty()
         ? group->GetMemberGroup(f54sExpectedTargetGuid)
         : static_cast<uint8>(MAX_RAID_SUBGROUPS + 1);
     bool const f54sSavedRaidGroup = group && group->isRaidGroup();
     bool const f54sSavedAssistant = f54sSavedRaidGroup && group &&
-        f54sExpectedTargetGuid && group->IsAssistant(f54sExpectedTargetGuid);
+        !f54sExpectedTargetGuid.IsEmpty() && group->IsAssistant(f54sExpectedTargetGuid);
     ObjectGuid const f54sSavedLeaderGuid =
         group ? group->GetLeaderGuid() : ObjectGuid();
     bool const f54sSavedInstanceValid =
@@ -13246,7 +13246,7 @@ if (f54mPassed)
             f54sSubgroupRestored && f54sInstanceValidRestored &&
             f54sLocationRestored && f54sLeaderRestored &&
             f54sAssistantRestored && f54sAdapterRestored &&
-            static_cast<bool>(f54sExpectedTargetGuid);
+            !f54sExpectedTargetGuid.IsEmpty();
     }
 
     sLog.Out(LOG_BASIC, f54sPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,

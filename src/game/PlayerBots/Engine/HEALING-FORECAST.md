@@ -106,7 +106,6 @@ Acceptance:
 - Pure tests verify integer, fractional and sub-one Core dither bounds; lower/upper timeline projection; overheal intervals; damage interleaving; malformed intervals.
 - A real Core Renew Aura fixture uses a controlled fractional stored amount, builds a fresh value-only snapshot and requires the actual Core tick to fall inside the captured interval.
 - Trusted push [#45889183898](https://github.com/tyrael9/core/actions/runs/45889183898) passed the mandatory F54k marker, full Linux ARM64 / Vanilla 5875 build and final `Runtime PASS`; artifact [#15150693633](https://github.com/tyrael9/core/actions/runs/45889183898/artifacts/15150693633). Matching PR-safe build [#45889191934](https://github.com/tyrael9/core/actions/runs/45889191934) passed.
-- The projection remains diagnostic/test-only. No Priest action or strategy is enabled by this milestone.
 
 ### F54l — school-aware School Absorb projection (trusted-runtime validated)
 

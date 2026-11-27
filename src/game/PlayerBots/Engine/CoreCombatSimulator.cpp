@@ -1206,6 +1206,59 @@ bool CreateSimulatorPlayer(Map& map, uint32 factionId, WorldSession& session, Pl
     return player->IsInWorld() && player->HasSpell(SIMULATOR_HEAL_SPELL_ID);
 }
 
+class SimulatorDeferredSpellAdmissionAI final : public PlayerAI
+{
+public:
+    explicit SimulatorDeferredSpellAdmissionAI(Player* player, bool authorize)
+        : PlayerAI(player), m_authorize(authorize) {}
+
+    uint64 OnSpellCastPreparing(Spell const* /*spell*/, uint32 /*spellId*/,
+                                uint64 coreTargetGuid, uint64& encounterId,
+                                uint64& traceTargetGuid, bool& engineAction) override
+    {
+        encounterId = 0xF54F0002ULL;
+        traceTargetGuid = coreTargetGuid;
+        engineAction = true;
+        return 0xF54F0001ULL;
+    }
+
+    PlayerSpellCastAdmissionPolicy OnSpellCastAdmissionIntent(
+        Spell const* /*spell*/) override
+    {
+        ++intentCalls;
+        return PlayerSpellCastAdmissionPolicy::DeferEffectsUntilImpact;
+    }
+
+    bool OnSpellCastPreImpactAuthorize(Spell const* /*spell*/) override
+    {
+        ++authorizeCalls;
+        return m_authorize;
+    }
+
+    void OnSpellCastFinished(Spell const* /*spell*/, uint64 actionId,
+                             uint64 /*encounterId*/, uint32 /*spellId*/,
+                             uint64 /*traceTargetGuid*/, bool success,
+                             bool interrupted, bool engineAction) override
+    {
+        ++terminalCalls;
+        terminalActionId = actionId;
+        terminalSuccess = success;
+        terminalInterrupted = interrupted;
+        terminalEngineAction = engineAction;
+    }
+
+    uint32 intentCalls = 0;
+    uint32 authorizeCalls = 0;
+    uint32 terminalCalls = 0;
+    uint64 terminalActionId = 0;
+    bool terminalSuccess = false;
+    bool terminalInterrupted = false;
+    bool terminalEngineAction = false;
+
+private:
+    bool m_authorize;
+};
+
 class CaptureCoreSpellTerminalListener final : public CoreSpellTerminalListener
 {
 public:
@@ -12270,6 +12323,126 @@ if (f54mPassed)
                 !healer->GetSpellAuraHolder(f54nInspiration->Id);
         }
     }
+
+    // F54o: exercise the opt-in Core admission seam through a real Player
+    // CastSpell -> Spell::prepare -> queued SpellEvent -> Spell::cast path.
+    // This adapter exists only in the simulator; production PartyBotAI remains
+    // on PlayerAI's default Unmanaged/deny behavior.
+    bool f54oRejectIntentSeen = false;
+    bool f54oRejectAuthorizeSeen = false;
+    bool f54oRejectTerminalSeen = false;
+    bool f54oRejectSideEffectsAbsent = false;
+    bool f54oAcceptIntentSeen = false;
+    bool f54oAcceptAuthorizeSeen = false;
+    bool f54oAcceptTerminalSeen = false;
+    bool f54oAcceptHealApplied = false;
+    bool f54oAdapterRestored = false;
+    uint32 f54oRejectHealthBefore = 0;
+    uint32 f54oRejectHealthAfter = 0;
+    uint32 f54oRejectManaBefore = 0;
+    uint32 f54oRejectManaAfter = 0;
+    uint32 f54oAcceptHealthBefore = 0;
+    uint32 f54oAcceptHealthAfter = 0;
+    uint32 f54oAcceptManaBefore = 0;
+    uint32 f54oAcceptManaAfter = 0;
+    float f54oRejectThreatDelta = 0.0f;
+    if (f54nPassed && healer && f54nDesperatePrayer &&
+        healer->HasSpell(f54nDesperatePrayer->Id))
+    {
+        PlayerAI* const f54oPreviousAI = healer->AI();
+        auto runF54oCast = [&](uint32& healthBefore, uint32& healthAfter,
+                               uint32& manaBefore, uint32& manaAfter,
+                               SimulatorDeferredSpellAdmissionAI& adapter) -> bool
+        {
+            healer->SetHealth(std::max<uint32>(1u, healer->GetMaxHealth() / 2u));
+            healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+            healthBefore = healer->GetHealth();
+            manaBefore = healer->GetPower(POWER_MANA);
+            healer->SetAI(&adapter);
+            SpellCastResult const result =
+                healer->CastSpell(healer, f54nDesperatePrayer, false);
+            bool const acceptedByPrepare = result == SPELL_CAST_OK;
+            for (uint32 tick = 0;
+                 acceptedByPrepare && adapter.terminalCalls == 0 && tick < 20;
+                 ++tick)
+                healer->Unit::Update(50, 50);
+            healthAfter = healer->GetHealth();
+            manaAfter = healer->GetPower(POWER_MANA);
+            healer->SetAI(f54oPreviousAI);
+            return acceptedByPrepare;
+        };
+
+        float rejectThreatBefore[3] = {};
+        for (uint32 i = 0; i < 3; ++i)
+            rejectThreatBefore[i] = f54nHostiles[i].creature
+                ? f54nHostiles[i].creature->GetThreatManager().getThreat(healer)
+                : 0.0f;
+
+        SimulatorDeferredSpellAdmissionAI rejectAdapter(healer, false);
+        bool const rejectPrepareAccepted = runF54oCast(
+            f54oRejectHealthBefore, f54oRejectHealthAfter,
+            f54oRejectManaBefore, f54oRejectManaAfter, rejectAdapter);
+        f54oRejectIntentSeen = rejectAdapter.intentCalls == 1;
+        f54oRejectAuthorizeSeen = rejectAdapter.authorizeCalls == 1;
+        f54oRejectTerminalSeen = rejectAdapter.terminalCalls == 1 &&
+            rejectAdapter.terminalActionId == 0xF54F0001ULL &&
+            rejectAdapter.terminalEngineAction &&
+            !rejectAdapter.terminalSuccess && rejectAdapter.terminalInterrupted;
+        f54oRejectSideEffectsAbsent = rejectPrepareAccepted &&
+            f54oRejectHealthAfter == f54oRejectHealthBefore &&
+            f54oRejectManaAfter == f54oRejectManaBefore;
+        for (uint32 i = 0; i < 3; ++i)
+        {
+            float const after = f54nHostiles[i].creature
+                ? f54nHostiles[i].creature->GetThreatManager().getThreat(healer)
+                : 0.0f;
+            f54oRejectThreatDelta += std::fabs(after - rejectThreatBefore[i]);
+        }
+        f54oRejectSideEffectsAbsent =
+            f54oRejectSideEffectsAbsent && f54oRejectThreatDelta < 0.01f;
+
+        SimulatorDeferredSpellAdmissionAI acceptAdapter(healer, true);
+        bool const acceptPrepareAccepted = runF54oCast(
+            f54oAcceptHealthBefore, f54oAcceptHealthAfter,
+            f54oAcceptManaBefore, f54oAcceptManaAfter, acceptAdapter);
+        f54oAcceptIntentSeen = acceptAdapter.intentCalls == 1;
+        f54oAcceptAuthorizeSeen = acceptAdapter.authorizeCalls == 1;
+        f54oAcceptTerminalSeen = acceptAdapter.terminalCalls == 1 &&
+            acceptAdapter.terminalActionId == 0xF54F0001ULL &&
+            acceptAdapter.terminalEngineAction &&
+            acceptAdapter.terminalSuccess && !acceptAdapter.terminalInterrupted;
+        f54oAcceptHealApplied = acceptPrepareAccepted &&
+            f54oAcceptHealthAfter > f54oAcceptHealthBefore &&
+            f54oAcceptManaAfter <= f54oAcceptManaBefore;
+        healer->SetAI(f54oPreviousAI);
+        f54oAdapterRestored = healer->AI() == f54oPreviousAI;
+    }
+
+    bool const f54oPassed =
+        f54oRejectIntentSeen && f54oRejectAuthorizeSeen &&
+        f54oRejectTerminalSeen && f54oRejectSideEffectsAbsent &&
+        f54oAcceptIntentSeen && f54oAcceptAuthorizeSeen &&
+        f54oAcceptTerminalSeen && f54oAcceptHealApplied &&
+        f54oAdapterRestored;
+    sLog.Out(LOG_BASIC, f54oPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54o Core admission accept/reject: rejectIntent=%u rejectAuthorize=%u rejectTerminal=%u rejectNoEffects=%u rejectThreatDelta=%.3f rejectHealth=%u/%u rejectMana=%u/%u acceptIntent=%u acceptAuthorize=%u acceptTerminal=%u acceptHeal=%u acceptHealth=%u/%u acceptMana=%u/%u adapterRestored=%u.",
+        f54oRejectIntentSeen ? 1u : 0u,
+        f54oRejectAuthorizeSeen ? 1u : 0u,
+        f54oRejectTerminalSeen ? 1u : 0u,
+        f54oRejectSideEffectsAbsent ? 1u : 0u,
+        f54oRejectThreatDelta,
+        f54oRejectHealthBefore, f54oRejectHealthAfter,
+        f54oRejectManaBefore, f54oRejectManaAfter,
+        f54oAcceptIntentSeen ? 1u : 0u,
+        f54oAcceptAuthorizeSeen ? 1u : 0u,
+        f54oAcceptTerminalSeen ? 1u : 0u,
+        f54oAcceptHealApplied ? 1u : 0u,
+        f54oAcceptHealthBefore, f54oAcceptHealthAfter,
+        f54oAcceptManaBefore, f54oAcceptManaAfter,
+        f54oAdapterRestored ? 1u : 0u);
+    if (f54oPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F54o exercised real Core deferred spell admission; rejection produced no health, mana or hostile-threat side effects, while explicit authorization committed the self-heal and terminal callbacks.");
 
     if (healer && f54nHealerAI && healer->AI() == f54nHealerAI.get())
         healer->SetAI(f54nPreviousHealerAI);

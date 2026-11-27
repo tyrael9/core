@@ -11930,22 +11930,31 @@ if (f54mPassed)
         if (!f54nWasInHealList)
             priestHealerAI->m_spellListDirectHeal.insert(f54nDesperatePrayer);
 
-        f54nRowReady =
-            healer->HasSpell(f54nDesperatePrayer->Id) &&
+        bool const f54nHasSpell =
+            healer->HasSpell(f54nDesperatePrayer->Id);
+        bool const f54nInSpellList =
             priestHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
-                priestHealerAI->m_spellListDirectHeal.end() &&
-            IsSupportedSingleTargetDirectHealSpellShape(f54nDesperatePrayer) &&
-            f54nDesperatePrayer->Effect[0] == SPELL_EFFECT_HEAL &&
+                priestHealerAI->m_spellListDirectHeal.end();
+        bool const f54nSupportedShape =
+            IsSupportedSingleTargetDirectHealSpellShape(f54nDesperatePrayer);
+        bool const f54nTargetModeMatches =
             f54nDesperatePrayer->EffectImplicitTargetA[0] == TARGET_UNIT_CASTER &&
-            f54nDesperatePrayer->EffectImplicitTargetB[0] == TARGET_NONE &&
-            f54nDesperatePrayer->Effect[1] == 0 &&
+            f54nDesperatePrayer->EffectImplicitTargetB[0] == TARGET_NONE;
+        bool const f54nInstant =
             f54nDesperatePrayer->speed == 0.0f &&
-            f54nDesperatePrayer->GetCastTime(healer) == 0 &&
+            f54nDesperatePrayer->GetCastTime(healer) == 0;
+        bool const f54nNoScriptsOrThreatVeto =
             f54nDesperatePrayer->ScriptId == 0 &&
-            !f54nDesperatePrayer->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT) &&
+            !f54nDesperatePrayer->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT);
+        bool const f54nNoProcOrReflect =
             !f54nDesperatePrayer->CanTriggerWeaponProcs() &&
             !f54nDesperatePrayer->IsReflectableSpell() &&
             !f54nDesperatePrayer->IsChanneledSpell();
+        f54nRowReady =
+            f54nHasSpell && f54nInSpellList && f54nSupportedShape &&
+            f54nDesperatePrayer->Effect[0] == SPELL_EFFECT_HEAL &&
+            f54nTargetModeMatches && f54nDesperatePrayer->Effect[1] == 0 &&
+            f54nInstant && f54nNoScriptsOrThreatVeto && f54nNoProcOrReflect;
         if (f54nRowReady)
         {
             map.Update(2000);
@@ -12150,8 +12159,27 @@ if (f54mPassed)
         f54nHealApplied && f54nThreatBoundsMatched &&
         f54nStateRestored && f54nSpellListRestored;
     sLog.Out(LOG_BASIC, f54nPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54n single-target direct-heal threat closure: rowReady=%u livePreflight=%u estimateComplete=%u snapshotMatches=%u impacts=%u targetRefs=%u uniqueHostiles=%u procVeto=%u procAuraRemoved=%u procFlagsRestored=%u castTimeUnknown=%u aoeRejected=%u castStarted=%u healApplied=%u threatBoundsMatched=%u stateRestored=%u spellListRestored=%u expectedThreat=%.3f/%.3f actualThreat=%.3f/%.3f.",
+        "[PartyBotSimulator] F54n single-target direct-heal threat closure: rowReady=%u hasSpell=%u inSpellList=%u supportedShape=%u effect0=%u targetA=%u targetB=%u effect1=%u speed=%.3f castTime=%u scriptId=%u noHelpfulThreat=%u weaponProcs=%u reflectable=%u channeled=%u livePreflight=%u estimateComplete=%u snapshotMatches=%u impacts=%u targetRefs=%u uniqueHostiles=%u procVeto=%u procAuraRemoved=%u procFlagsRestored=%u castTimeUnknown=%u aoeRejected=%u castStarted=%u healApplied=%u threatBoundsMatched=%u stateRestored=%u spellListRestored=%u expectedThreat=%.3f/%.3f actualThreat=%.3f/%.3f.",
         f54nRowReady ? 1u : 0u,
+        f54nDesperatePrayer && healer->HasSpell(f54nDesperatePrayer->Id) ? 1u : 0u,
+        f54nDesperatePrayer && priestHealerAI &&
+            priestHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
+                priestHealerAI->m_spellListDirectHeal.end() ? 1u : 0u,
+        f54nDesperatePrayer &&
+            IsSupportedSingleTargetDirectHealSpellShape(f54nDesperatePrayer) ? 1u : 0u,
+        f54nDesperatePrayer ? f54nDesperatePrayer->Effect[0] : 0u,
+        f54nDesperatePrayer ? f54nDesperatePrayer->EffectImplicitTargetA[0] : 0u,
+        f54nDesperatePrayer ? f54nDesperatePrayer->EffectImplicitTargetB[0] : 0u,
+        f54nDesperatePrayer ? f54nDesperatePrayer->Effect[1] : 0u,
+        f54nDesperatePrayer ? f54nDesperatePrayer->speed : 0.0f,
+        f54nDesperatePrayer ? f54nDesperatePrayer->GetCastTime(healer) : 0u,
+        f54nDesperatePrayer ? f54nDesperatePrayer->ScriptId : 0u,
+        f54nDesperatePrayer &&
+            f54nDesperatePrayer->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT) ? 1u : 0u,
+        f54nDesperatePrayer &&
+            f54nDesperatePrayer->CanTriggerWeaponProcs() ? 1u : 0u,
+        f54nDesperatePrayer && f54nDesperatePrayer->IsReflectableSpell() ? 1u : 0u,
+        f54nDesperatePrayer && f54nDesperatePrayer->IsChanneledSpell() ? 1u : 0u,
         f54nLivePreflight ? 1u : 0u,
         f54nEstimateComplete ? 1u : 0u,
         f54nSnapshotMatches ? 1u : 0u,

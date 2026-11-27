@@ -3401,6 +3401,14 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
                     m_partyBotDeferredEffectsRequested = true;
                     if (!IsSafePartyBotDeferredSelfHealShape(false) || m_delayed)
                     {
+                        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                            "[PartyBotSpellAdmission] prepare rejected unsupported shape: spell=%u safeShape=%u delayed=%u triggered=%u script=%u castTime=%u speed=%.3f.",
+                            m_spellInfo ? m_spellInfo->Id : 0u,
+                            IsSafePartyBotDeferredSelfHealShape(false) ? 1u : 0u,
+                            m_delayed ? 1u : 0u, m_IsTriggeredSpell ? 1u : 0u,
+                            m_spellInfo ? m_spellInfo->ScriptId : 0u,
+                            m_spellInfo ? m_spellInfo->GetCastTime(m_caster, this) : 0u,
+                            m_spellInfo ? m_spellInfo->speed : 0.0f);
                         SendCastResult(SPELL_FAILED_ERROR);
                         finish(false);
                         return SPELL_FAILED_ERROR;
@@ -3421,6 +3429,14 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
         {
             if (!m_originalCasterGUID.IsGameObject())
             {
+                if (m_partyBotDeferredEffectsRequested)
+                    sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                        "[PartyBotSpellAdmission] prepare rejected spell-in-progress: spell=%u triggered=%u currentNonMelee=%u state=%u target=%llu.",
+                        m_spellInfo ? m_spellInfo->Id : 0u,
+                        m_IsTriggeredSpell ? 1u : 0u,
+                        m_caster->IsNonMeleeSpellCasted(false, true, true) ? 1u : 0u,
+                        static_cast<uint32>(m_spellState),
+                        static_cast<unsigned long long>(m_targets.getUnitTarget() ? m_targets.getUnitTarget()->GetGUID() : 0));
                 SendCastResult(SPELL_FAILED_SPELL_IN_PROGRESS);
                 finish(false);
                 return SPELL_FAILED_SPELL_IN_PROGRESS;
@@ -3428,6 +3444,10 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
         }
         if (sObjectMgr.IsSpellDisabled(m_spellInfo->Id))
         {
+            if (m_partyBotDeferredEffectsRequested)
+                sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                    "[PartyBotSpellAdmission] prepare rejected disabled spell: spell=%u state=%u.",
+                    m_spellInfo ? m_spellInfo->Id : 0u, static_cast<uint32>(m_spellState));
             SendCastResult(SPELL_FAILED_SPELL_UNAVAILABLE);
             finish(false);
             return SPELL_FAILED_SPELL_UNAVAILABLE;
@@ -3492,6 +3512,10 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
         // Deferring GCD until impact would change normal cast-time semantics.
         if (m_partyBotDeferredEffectsRequested && m_timer > 0)
         {
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSpellAdmission] prepare rejected non-instant timer: spell=%u timer=%u castTime=%u.",
+                m_spellInfo ? m_spellInfo->Id : 0u, m_timer,
+                m_spellInfo ? m_spellInfo->GetCastTime(m_caster, this) : 0u);
             SendCastResult(SPELL_FAILED_ERROR);
             finish(false);
             return SPELL_FAILED_ERROR;

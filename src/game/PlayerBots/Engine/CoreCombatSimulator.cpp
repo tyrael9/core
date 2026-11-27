@@ -12339,8 +12339,14 @@ if (f54mPassed)
     bool f54oAdapterRestored = false;
     bool f54oRejectSpellReadyBefore = false;
     bool f54oRejectNoGcdBefore = false;
+    bool f54oRejectSpellReadyAfter = false;
+    bool f54oRejectNoGcdAfter = false;
     bool f54oAcceptSpellReadyBefore = false;
     bool f54oAcceptNoGcdBefore = false;
+    bool f54oAcceptCooldownApplicable = false;
+    bool f54oAcceptCooldownCommitted = false;
+    bool f54oAcceptGcdApplicable = false;
+    bool f54oAcceptGcdCommitted = false;
     uint32 f54oRejectHealthBefore = 0;
     uint32 f54oRejectHealthAfter = 0;
     uint32 f54oRejectManaBefore = 0;
@@ -12403,6 +12409,12 @@ if (f54mPassed)
             rejectAdapter);
         f54oRejectIntentSeen = rejectAdapter.intentCalls == 1;
         f54oRejectAuthorizeSeen = rejectAdapter.authorizeCalls == 1;
+        // A denied pre-impact admission must leave normal spell readiness
+        // untouched; do this check before the next trial resets any state.
+        f54oRejectSpellReadyAfter =
+            healer->IsSpellReady(f54nDesperatePrayer);
+        f54oRejectNoGcdAfter =
+            !healer->HasGCD(f54nDesperatePrayer);
         f54oRejectTerminalSeen = rejectAdapter.terminalCalls == 1 &&
             rejectAdapter.terminalActionId == 0xF54F0001ULL &&
             rejectAdapter.terminalEngineAction &&
@@ -12435,6 +12447,21 @@ if (f54mPassed)
         f54oAcceptHealApplied = acceptPrepareAccepted &&
             f54oAcceptHealthAfter > f54oAcceptHealthBefore &&
             f54oAcceptManaAfter <= f54oAcceptManaBefore;
+        // Conversely, after authorization Core must commit every cooldown
+        // that the SpellEntry actually defines. Some spells have no GCD or
+        // recovery cooldown, so applicability is derived from the live row.
+        f54oAcceptCooldownApplicable =
+            f54nDesperatePrayer->RecoveryTime > 0 ||
+            f54nDesperatePrayer->CategoryRecoveryTime > 0;
+        f54oAcceptCooldownCommitted =
+            !f54oAcceptCooldownApplicable ||
+            !healer->IsSpellReady(f54nDesperatePrayer);
+        f54oAcceptGcdApplicable =
+            f54nDesperatePrayer->StartRecoveryTime > 0 ||
+            f54nDesperatePrayer->StartRecoveryCategory != 0;
+        f54oAcceptGcdCommitted =
+            !f54oAcceptGcdApplicable ||
+            healer->HasGCD(f54nDesperatePrayer);
         healer->SetAI(f54oPreviousAI);
         f54oAdapterRestored = healer->AI() == f54oPreviousAI;
     }
@@ -12445,10 +12472,12 @@ if (f54mPassed)
         f54oAcceptIntentSeen && f54oAcceptAuthorizeSeen &&
         f54oAcceptTerminalSeen && f54oAcceptHealApplied &&
         f54oRejectSpellReadyBefore && f54oRejectNoGcdBefore &&
+        f54oRejectSpellReadyAfter && f54oRejectNoGcdAfter &&
         f54oAcceptSpellReadyBefore && f54oAcceptNoGcdBefore &&
+        f54oAcceptCooldownCommitted && f54oAcceptGcdCommitted &&
         f54oAdapterRestored;
     sLog.Out(LOG_BASIC, f54oPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54o Core admission accept/reject: rejectIntent=%u rejectAuthorize=%u rejectTerminal=%u rejectNoEffects=%u rejectThreatDelta=%.3f rejectSpellReady=%u rejectNoGcd=%u rejectHealth=%u/%u rejectMana=%u/%u acceptIntent=%u acceptAuthorize=%u acceptTerminal=%u acceptHeal=%u acceptSpellReady=%u acceptNoGcd=%u acceptHealth=%u/%u acceptMana=%u/%u adapterRestored=%u.",
+        "[PartyBotSimulator] F54o Core admission accept/reject: rejectIntent=%u rejectAuthorize=%u rejectTerminal=%u rejectNoEffects=%u rejectThreatDelta=%.3f rejectSpellReadyBefore=%u rejectNoGcdBefore=%u rejectSpellReadyAfter=%u rejectNoGcdAfter=%u rejectHealth=%u/%u rejectMana=%u/%u acceptIntent=%u acceptAuthorize=%u acceptTerminal=%u acceptHeal=%u acceptSpellReadyBefore=%u acceptNoGcdBefore=%u acceptCooldownApplicable=%u acceptCooldownCommitted=%u acceptGcdApplicable=%u acceptGcdCommitted=%u acceptHealth=%u/%u acceptMana=%u/%u adapterRestored=%u.",
         f54oRejectIntentSeen ? 1u : 0u,
         f54oRejectAuthorizeSeen ? 1u : 0u,
         f54oRejectTerminalSeen ? 1u : 0u,
@@ -12456,6 +12485,8 @@ if (f54mPassed)
         f54oRejectThreatDelta,
         f54oRejectSpellReadyBefore ? 1u : 0u,
         f54oRejectNoGcdBefore ? 1u : 0u,
+        f54oRejectSpellReadyAfter ? 1u : 0u,
+        f54oRejectNoGcdAfter ? 1u : 0u,
         f54oRejectHealthBefore, f54oRejectHealthAfter,
         f54oRejectManaBefore, f54oRejectManaAfter,
         f54oAcceptIntentSeen ? 1u : 0u,
@@ -12464,12 +12495,16 @@ if (f54mPassed)
         f54oAcceptHealApplied ? 1u : 0u,
         f54oAcceptSpellReadyBefore ? 1u : 0u,
         f54oAcceptNoGcdBefore ? 1u : 0u,
+        f54oAcceptCooldownApplicable ? 1u : 0u,
+        f54oAcceptCooldownCommitted ? 1u : 0u,
+        f54oAcceptGcdApplicable ? 1u : 0u,
+        f54oAcceptGcdCommitted ? 1u : 0u,
         f54oAcceptHealthBefore, f54oAcceptHealthAfter,
         f54oAcceptManaBefore, f54oAcceptManaAfter,
         f54oAdapterRestored ? 1u : 0u);
     if (f54oPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: F54o exercised real Core deferred spell admission; rejection produced no health, mana or hostile-threat side effects, while explicit authorization committed the self-heal and terminal callbacks.");
+            "[PartyBotSimulator] PASS: F54o exercised real Core deferred spell admission; rejection preserved health, mana, hostile threat, cooldown and GCD state, while explicit authorization committed the self-heal, applicable cooldown/GCD and terminal callbacks.");
 
     if (healer && f54nHealerAI && healer->AI() == f54nHealerAI.get())
         healer->SetAI(f54nPreviousHealerAI);

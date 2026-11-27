@@ -574,6 +574,31 @@ for gain in "${f54m_gain_values[@]}"; do
         exit 1
     fi
 done
+
+# Independently recheck the logged baseline and incremental Core threat values,
+# rather than trusting only the fixture's C++ threatMatched boolean.
+f54m_baseline_threats="$(grep -oE 'baselineThreat=[0-9]+([.][0-9]+)?/[0-9]+([.][0-9]+)?' <<< "$f54m_line" | cut -d= -f2)"
+f54m_expected_fourth="$(grep -oE 'expectedFourthThreat=[0-9]+([.][0-9]+)?' <<< "$f54m_line" | cut -d= -f2)"
+f54m_observed_fourth="$(grep -oE 'observedFourthThreat=[0-9]+([.][0-9]+)?/[0-9]+([.][0-9]+)?' <<< "$f54m_line" | cut -d= -f2)"
+IFS='/' read -r f54m_baseline0 f54m_baseline1 <<< "$f54m_baseline_threats"
+IFS='/' read -r f54m_observed0 f54m_observed1 <<< "$f54m_observed_fourth"
+if [[ -z "$f54m_baseline0" || -z "$f54m_baseline1" ||
+      -z "$f54m_expected_fourth" || -z "$f54m_observed0" || -z "$f54m_observed1" ]]; then
+    echo "[PartyBotSimulator] F54m numeric threat diagnostics are missing or malformed." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! awk -v b0="$f54m_baseline0" -v b1="$f54m_baseline1" \
+        -v expected="$f54m_expected_fourth" \
+        -v o0="$f54m_observed0" -v o1="$f54m_observed1" \
+        'BEGIN {
+            if (b0 < 0 || b1 < 0 || expected <= 0 || o0 < 0 || o1 < 0) exit 1;
+            if ((o0 - expected > 0.5) || (expected - o0 > 0.5) ||
+                (o1 - expected > 0.5) || (expected - o1 > 0.5)) exit 1;
+        }'; then
+    echo "[PartyBotSimulator] F54m baseline/expected/observed threat values failed numeric parity." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 f54m_guard_count="$(grep -Fc 'Spell 2061 triggered by aura spell 14892 too deep in cast chain for cast.' "$LOG_FILE" || true)"
 if [[ "$f54m_guard_count" != "5" ]]; then
     echo "[PartyBotSimulator] Expected exactly five Core cast-chain guard rejections for the cyclic Flash Heal child, found $f54m_guard_count." | tee -a "$LOG_FILE"

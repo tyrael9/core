@@ -11914,6 +11914,7 @@ if (f54mPassed)
     std::uint32_t f54nImpactCount = 0;
     std::uint32_t f54nTargetReferenceCount = 0;
     std::uint32_t f54nUniqueHostileCount = 0;
+    std::uint32_t f54nEventUpdates = 0;
     float f54nExpectedThreat0 = 0.0f;
     float f54nExpectedThreat1 = 0.0f;
     float f54nActualThreat0 = 0.0f;
@@ -12172,14 +12173,27 @@ if (f54mPassed)
                     f54nCastStarted = f54nHealerAI->StartDirectHeal(
                         f54nContext, f54nCandidate.targetGuid,
                         f54nCandidate.spellId);
+                    f54nHealApplied =
+                        healer->GetHealth() > f54nHealthBeforeCast;
+                    // Core Spell::prepare queues even an instant non-triggered
+                    // cast through the caster's SpellEvent processor. Advance
+                    // the real Player Unit clock (bounded to 1 second) before
+                    // reading the applied heal and its ThreatManager deltas.
+                    for (uint32 tick = 0;
+                         f54nCastStarted && !f54nHealApplied && tick < 20;
+                         ++tick)
+                    {
+                        healer->Unit::Update(50, 50);
+                        ++f54nEventUpdates;
+                        f54nHealApplied =
+                            healer->GetHealth() > f54nHealthBeforeCast;
+                    }
                     f54nActualThreat0 =
                         f54nHostiles[0].creature->GetThreatManager().getThreat(healer) -
                         beforeThreat0;
                     f54nActualThreat1 =
                         f54nHostiles[1].creature->GetThreatManager().getThreat(healer) -
                         beforeThreat1;
-                    f54nHealApplied =
-                        healer->GetHealth() > f54nHealthBeforeCast;
                     f54nThreatBoundsMatched =
                         f54nActualThreat0 >= -0.5f &&
                         f54nActualThreat1 >= -0.5f &&
@@ -12227,7 +12241,7 @@ if (f54mPassed)
         f54nStateRestored && f54nSpellListRestored &&
         f54nHostilesCreated && f54nHostilesCleaned && f54nAiRestored;
     sLog.Out(LOG_BASIC, f54nPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54n single-target direct-heal threat closure: rowReady=%u outerGate=%u priestAI=%u hostilesCreated=%u hostilesCleaned=%u aiRestored=%u healerReady=%u inspirationEntry=%u inspirationAbsent=%u learnedBeforeList=%u listBeforeRestore=%u hasSpellAfterCleanup=%u listAfterCleanup=%u supportedShape=%u effect0=%u targetA=%u targetB=%u effect1=%u speed=%.3f castTime=%u scriptId=%u noHelpfulThreat=%u weaponProcs=%u reflectable=%u channeled=%u livePreflight=%u estimateComplete=%u snapshotMatches=%u impacts=%u targetRefs=%u uniqueHostiles=%u procVeto=%u procAuraRemoved=%u procFlagsRestored=%u castTimeUnknown=%u aoeRejected=%u castStarted=%u healApplied=%u threatBoundsMatched=%u stateRestored=%u spellListRestored=%u expectedThreat=%.3f/%.3f actualThreat=%.3f/%.3f.",
+        "[PartyBotSimulator] F54n single-target direct-heal threat closure: rowReady=%u outerGate=%u priestAI=%u hostilesCreated=%u hostilesCleaned=%u aiRestored=%u healerReady=%u inspirationEntry=%u inspirationAbsent=%u learnedBeforeList=%u listBeforeRestore=%u hasSpellAfterCleanup=%u listAfterCleanup=%u supportedShape=%u effect0=%u targetA=%u targetB=%u effect1=%u speed=%.3f castTime=%u scriptId=%u noHelpfulThreat=%u weaponProcs=%u reflectable=%u channeled=%u livePreflight=%u estimateComplete=%u snapshotMatches=%u impacts=%u targetRefs=%u uniqueHostiles=%u procVeto=%u procAuraRemoved=%u procFlagsRestored=%u castTimeUnknown=%u aoeRejected=%u castStarted=%u eventUpdates=%u healApplied=%u threatBoundsMatched=%u stateRestored=%u spellListRestored=%u expectedThreat=%.3f/%.3f actualThreat=%.3f/%.3f.",
         f54nRowReady ? 1u : 0u,
         f54nOuterGateEntered ? 1u : 0u,
         f54nPriestAIReady ? 1u : 0u,
@@ -12268,6 +12282,7 @@ if (f54mPassed)
         f54nCastTimeUnknown ? 1u : 0u,
         f54nAoeRejected ? 1u : 0u,
         f54nCastStarted ? 1u : 0u,
+        f54nEventUpdates,
         f54nHealApplied ? 1u : 0u,
         f54nThreatBoundsMatched ? 1u : 0u,
         f54nStateRestored ? 1u : 0u,

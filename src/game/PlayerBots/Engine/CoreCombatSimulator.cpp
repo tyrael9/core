@@ -12387,7 +12387,7 @@ if (f54mPassed)
         f54oRejectTerminalSeen = rejectAdapter.terminalCalls == 1 &&
             rejectAdapter.terminalActionId == 0xF54F0001ULL &&
             rejectAdapter.terminalEngineAction &&
-            !rejectAdapter.terminalSuccess && rejectAdapter.terminalInterrupted;
+            !rejectAdapter.terminalSuccess && !rejectAdapter.terminalInterrupted;
         f54oRejectSideEffectsAbsent = rejectPrepareAccepted &&
             f54oRejectHealthAfter == f54oRejectHealthBefore &&
             f54oRejectManaAfter == f54oRejectManaBefore;

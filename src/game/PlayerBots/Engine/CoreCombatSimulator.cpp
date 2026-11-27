@@ -11902,6 +11902,7 @@ if (f54mPassed)
     bool f54nProcFlagsRestored = false;
     bool f54nHostilesCreated = false;
     bool f54nHostilesCleaned = false;
+    bool f54nAiRestored = false;
     SimulatorActor f54nHostiles[2];
     bool f54nOuterGateEntered = false;
     bool f54nPriestAIReady = false;
@@ -12210,6 +12211,7 @@ if (f54mPassed)
     if (healer && f54nHealerAI && healer->AI() == f54nHealerAI.get())
         healer->SetAI(f54nPreviousHealerAI);
     f54nHealerAI.reset();
+    f54nAiRestored = !healer || healer->AI() == f54nPreviousHealerAI;
     bool const f54nHostile1Cleaned =
         DestroySimulatorActor(map, f54nHostiles[1]);
     bool const f54nHostile0Cleaned =
@@ -12223,23 +12225,22 @@ if (f54mPassed)
         f54nCastTimeUnknown && f54nAoeRejected && f54nCastStarted &&
         f54nHealApplied && f54nThreatBoundsMatched &&
         f54nStateRestored && f54nSpellListRestored &&
-        f54nHostilesCreated && f54nHostilesCleaned;
+        f54nHostilesCreated && f54nHostilesCleaned && f54nAiRestored;
     sLog.Out(LOG_BASIC, f54nPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54n single-target direct-heal threat closure: rowReady=%u outerGate=%u priestAI=%u hostilesCreated=%u hostilesCleaned=%u healerReady=%u inspirationEntry=%u inspirationAbsent=%u learnedBeforeList=%u listBeforeRestore=%u hasSpellAfterCleanup=%u listAfterCleanup=%u supportedShape=%u effect0=%u targetA=%u targetB=%u effect1=%u speed=%.3f castTime=%u scriptId=%u noHelpfulThreat=%u weaponProcs=%u reflectable=%u channeled=%u livePreflight=%u estimateComplete=%u snapshotMatches=%u impacts=%u targetRefs=%u uniqueHostiles=%u procVeto=%u procAuraRemoved=%u procFlagsRestored=%u castTimeUnknown=%u aoeRejected=%u castStarted=%u healApplied=%u threatBoundsMatched=%u stateRestored=%u spellListRestored=%u expectedThreat=%.3f/%.3f actualThreat=%.3f/%.3f.",
+        "[PartyBotSimulator] F54n single-target direct-heal threat closure: rowReady=%u outerGate=%u priestAI=%u hostilesCreated=%u hostilesCleaned=%u aiRestored=%u healerReady=%u inspirationEntry=%u inspirationAbsent=%u learnedBeforeList=%u listBeforeRestore=%u hasSpellAfterCleanup=%u listAfterCleanup=%u supportedShape=%u effect0=%u targetA=%u targetB=%u effect1=%u speed=%.3f castTime=%u scriptId=%u noHelpfulThreat=%u weaponProcs=%u reflectable=%u channeled=%u livePreflight=%u estimateComplete=%u snapshotMatches=%u impacts=%u targetRefs=%u uniqueHostiles=%u procVeto=%u procAuraRemoved=%u procFlagsRestored=%u castTimeUnknown=%u aoeRejected=%u castStarted=%u healApplied=%u threatBoundsMatched=%u stateRestored=%u spellListRestored=%u expectedThreat=%.3f/%.3f actualThreat=%.3f/%.3f.",
         f54nRowReady ? 1u : 0u,
         f54nOuterGateEntered ? 1u : 0u,
         f54nPriestAIReady ? 1u : 0u,
         f54nHostilesCreated ? 1u : 0u,
         f54nHostilesCleaned ? 1u : 0u,
+        f54nAiRestored ? 1u : 0u,
         f54nHealerReady ? 1u : 0u,
         f54nInspirationEntryReady ? 1u : 0u,
         f54nInspirationAbsentAtEntry ? 1u : 0u,
         f54nSpellLearnedBeforeListInsert ? 1u : 0u,
         f54nListContainsSpellBeforeRestore ? 1u : 0u,
         f54nDesperatePrayer && healer->HasSpell(f54nDesperatePrayer->Id) ? 1u : 0u,
-        f54nDesperatePrayer && priestHealerAI &&
-            priestHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
-                priestHealerAI->m_spellListDirectHeal.end() ? 1u : 0u,
+        f54nSpellListRestored ? 1u : 0u,
         f54nDesperatePrayer &&
             IsSupportedSingleTargetDirectHealSpellShape(f54nDesperatePrayer) ? 1u : 0u,
         f54nDesperatePrayer ? f54nDesperatePrayer->Effect[0] : 0u,

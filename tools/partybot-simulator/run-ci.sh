@@ -695,7 +695,7 @@ for expected in "castAccepted=1" "queuedBeforeRemoval=1" "selectorChanged=1" "in
         exit 1
     fi
 done
-f54s_expected_guid="$(printf '%s\\n' "$f54s_line" | sed -nE 's/.*expectedTargetGuid=([0-9]+).*/\\1/p')"
+f54s_expected_guid="$(printf '%s\n' "$f54s_line" | sed -nE 's/.*expectedTargetGuid=([0-9]+).*/\1/p')"
 if [[ -z "$f54s_expected_guid" ]]; then
     echo "[PartyBotSimulator] F54s expected departed recipient GUID was not reported." | tee -a "$LOG_FILE"
     exit 1

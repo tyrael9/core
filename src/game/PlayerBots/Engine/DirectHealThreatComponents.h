@@ -11,21 +11,28 @@ namespace PartyBotEngine
 // Proc callbacks may run for either side of a direct heal. The Core caller
 // supplies the side-specific helpful-spell proc flag; scripted Aura callbacks
 // and audited hard-coded proc cases remain unsafe even without DB proc flags.
-// The first production healing slice deliberately accepts only one explicit
-// friendly/unit target selector. Chain-heal, near-caster, party/AoE, script and
-// location target modes are outside this contract even when the first effect
-// happens to be SPELL_EFFECT_HEAL.
+// The first production healing slice deliberately accepts exactly one unit
+// selector: explicit friendly/party/raid/unit, or self-only CASTER. Chain-heal,
+// near-caster, party/AoE, script and location target modes remain outside scope.
 inline bool IsSupportedDirectHealTargetMode(
     std::uint32_t targetMode,
     std::uint32_t targetUnitFriend,
     std::uint32_t targetUnitParty,
     std::uint32_t targetUnitRaid,
-    std::uint32_t targetUnit)
+    std::uint32_t targetUnit,
+    std::uint32_t targetUnitCaster)
 {
     return targetMode == targetUnitFriend ||
         targetMode == targetUnitParty ||
         targetMode == targetUnitRaid ||
-        targetMode == targetUnit;
+        targetMode == targetUnit ||
+        targetMode == targetUnitCaster;
+}
+
+inline bool IsSupportedDirectHealTargetRelation(
+    bool hasCasterTargetSelector, bool targetIsCaster)
+{
+    return !hasCasterTargetSelector || targetIsCaster;
 }
 
 inline bool IsSupportedSingleTargetDirectHealEffectShape(

@@ -601,7 +601,7 @@ if ! awk -v b0="$f54m_baseline0" -v b1="$f54m_baseline1" \
 fi
 
 f54n_line="$(grep -F '[PartyBotSimulator] F54n single-target direct-heal threat closure:' "$LOG_FILE" | tail -n 1 | sed -E 's/\x1B\[[0-9;]*[[:alpha:]]//g')"
-for expected in "rowReady=1" "livePreflight=1" "estimateComplete=1" "snapshotMatches=1" "impacts=2" "targetRefs=2" "uniqueHostiles=2" "procVeto=1" "procAuraRemoved=1" "procFlagsRestored=1" "castTimeUnknown=1" "aoeRejected=1" "castStarted=1" "healApplied=1" "threatBoundsMatched=1" "stateRestored=1" "spellListRestored=1"; do
+for expected in "rowReady=1" "hostilesCreated=1" "hostilesCleaned=1" "aiRestored=1" "livePreflight=1" "estimateComplete=1" "snapshotMatches=1" "impacts=2" "targetRefs=2" "uniqueHostiles=2" "procVeto=1" "procAuraRemoved=1" "procFlagsRestored=1" "castTimeUnknown=1" "aoeRejected=1" "castStarted=1" "healApplied=1" "threatBoundsMatched=1" "stateRestored=1" "spellListRestored=1"; do
     if [[ "$f54n_line" != *"$expected"* ]]; then
         echo "[PartyBotSimulator] F54n direct-heal whole-action assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1

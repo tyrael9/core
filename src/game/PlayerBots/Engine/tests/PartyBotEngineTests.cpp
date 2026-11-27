@@ -4048,7 +4048,6 @@ void TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots() {
 }
 
 void TestSupportedSingleTargetDirectHealSpellShape() {
-    constexpr std::uint32_t kNone = 0;
     constexpr std::uint32_t kUnitCaster = 1;
     constexpr std::uint32_t kUnitFriendNearCaster = 3;
     constexpr std::uint32_t kUnitFriend = 21;
@@ -4209,7 +4208,8 @@ void TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure() {
     assert(estimate.completeness == ThreatImpactCompleteness::Unknown);
     assert(estimate.snapshotEpoch == f.snapshot.epoch);
     assert(estimate.impacts.empty());
-    assert(estimate.reason == "priest_direct_heal_threat_envelope_not_closed");
+    assert(estimate.reason == "core_direct_heal_threat_estimator_unavailable");
+    assert(estimate.impacts.empty());
 
     // The action may be exercised in isolation, but the Engine must reject it
     // before any Core side effect until the entire heal threat envelope closes.

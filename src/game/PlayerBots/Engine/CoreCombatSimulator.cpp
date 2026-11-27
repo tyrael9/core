@@ -12346,7 +12346,8 @@ if (f54mPassed)
     uint32 f54oAcceptManaBefore = 0;
     uint32 f54oAcceptManaAfter = 0;
     float f54oRejectThreatDelta = 0.0f;
-    if (f54nPassed && healer && f54nDesperatePrayer &&
+    if (f54nRowReady && f54nHostilesCreated && f54nHostilesCleaned &&
+        f54nStateRestored && healer && f54nDesperatePrayer &&
         healer->HasSpell(f54nDesperatePrayer->Id))
     {
         PlayerAI* const f54oPreviousAI = healer->AI();

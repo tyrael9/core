@@ -689,7 +689,7 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54r rejected a queued self-heal after 
 fi
 
 f54s_line="$(grep -F '[PartyBotSimulator] F54s removed Group recipient:' "$LOG_FILE" | tail -n 1 | sed -E 's/\\x1B\\[[0-9;]*[[:alpha:]]//g')"
-for expected in "castAccepted=1" "queuedBeforeRemoval=1" "selectorChanged=1" "inputTargetChanged=1" "memberRemoved=1" "coreRejected=1" "authorizeSkipped=1" "terminalOnce=1" "currentSpellCleared=1" "eventReaped=1" "noEffects=1" "threatDelta=0.000" "spellReadyBefore=1" "noGcdBefore=1" "spellReadyAfter=1" "noGcdAfter=1" "selectorRestored=1" "memberRestored=1" "subgroupRestored=1" "instanceValidRestored=1" "locationRestored=1" "leaderRestored=1" "assistantRestored=1" "adapterRestored=1"; do
+for expected in "castAccepted=1" "queuedBeforeRemoval=1" "selectorChanged=1" "inputTargetChanged=1" "memberRemoved=1" "recipientStillLive=1" "coreRejected=1" "authorizeSkipped=1" "terminalOnce=1" "currentSpellCleared=1" "eventReaped=1" "noEffects=1" "threatDelta=0.000" "spellReadyBefore=1" "noGcdBefore=1" "spellReadyAfter=1" "noGcdAfter=1" "selectorRestored=1" "memberRestored=1" "subgroupRestored=1" "instanceValidRestored=1" "locationRestored=1" "leaderRestored=1" "assistantRestored=1" "adapterRestored=1"; do
     if [[ "$f54s_line" != *"$expected"* ]]; then
         echo "[PartyBotSimulator] F54s removed-Group-recipient assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1

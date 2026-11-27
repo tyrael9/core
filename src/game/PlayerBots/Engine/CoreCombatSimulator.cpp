@@ -12976,6 +12976,7 @@ if (f54mPassed)
     bool f54sSelectorChanged = false;
     bool f54sInputTargetChanged = false;
     bool f54sMemberRemoved = false;
+    bool f54sRecipientStillLive = false;
     bool f54sCoreRejected = false;
     bool f54sAuthorizationSkipped = false;
     bool f54sTerminalExactlyOnce = false;
@@ -13102,11 +13103,15 @@ if (f54mPassed)
 
             f54sMembersAfterLeave = group->RemoveMember(
                 f54sExpectedTargetGuid, GROUP_LEAVE);
+            f54sRecipientStillLive =
+                map.GetUnit(f54sExpectedTargetGuid) == f54sDepartingMember &&
+                f54sDepartingMember->IsInWorld();
             f54sMemberRemoved =
                 f54sMembersAfterLeave + 1 == f54sSavedGroupCount &&
                 group->GetMembersCount() == f54sSavedGroupCount - 1 &&
                 !group->IsMember(f54sExpectedTargetGuid) &&
                 f54sDepartingMember->GetGroup() == nullptr &&
+                f54sRecipientStillLive &&
                 group->GetLeaderGuid() == f54sSavedLeaderGuid;
 
             if (f54sMemberRemoved)
@@ -13197,9 +13202,10 @@ if (f54mPassed)
                 f54sSavedSubgroup < MAX_RAID_SUBGROUPS)
                 group->ChangeMembersGroup(
                     f54sExpectedTargetGuid, f54sSavedSubgroup);
-            if (f54sSavedAssistant &&
-                !group->IsAssistant(f54sExpectedTargetGuid))
-                group->SetAssistant(f54sExpectedTargetGuid, true);
+            if (f54sSavedRaidGroup &&
+                group->IsAssistant(f54sExpectedTargetGuid) != f54sSavedAssistant)
+                group->SetAssistant(
+                    f54sExpectedTargetGuid, f54sSavedAssistant);
             if (group->GetLeaderGuid() != f54sSavedLeaderGuid &&
                 group->IsMember(f54sSavedLeaderGuid))
                 group->ChangeLeader(f54sSavedLeaderGuid);
@@ -13225,8 +13231,8 @@ if (f54mPassed)
             f54sDepartingMember->GetInstanceId() == f54sSavedInstanceId;
         f54sLeaderRestored = group->GetLeaderGuid() == f54sSavedLeaderGuid;
         f54sAssistantRestored =
-            !f54sSavedAssistant ||
-            group->IsAssistant(f54sExpectedTargetGuid);
+            !f54sSavedRaidGroup ||
+            group->IsAssistant(f54sExpectedTargetGuid) == f54sSavedAssistant;
 
         healer->SetAI(f54sPreviousAI);
         f54sAdapterRestored = healer->AI() == f54sPreviousAI;
@@ -13237,7 +13243,7 @@ if (f54mPassed)
         f54sPassed =
             f54sCastAccepted && f54sQueuedBeforeRemoval &&
             f54sSelectorChanged && f54sInputTargetChanged &&
-            f54sMemberRemoved && f54sCoreRejected &&
+            f54sMemberRemoved && f54sRecipientStillLive && f54sCoreRejected &&
             f54sAuthorizationSkipped && f54sTerminalExactlyOnce &&
             f54sCurrentSpellCleared && f54sEventReaped && f54sNoEffects &&
             f54sSpellReadyBefore && f54sNoGcdBefore &&
@@ -13250,12 +13256,13 @@ if (f54mPassed)
     }
 
     sLog.Out(LOG_BASIC, f54sPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54s removed Group recipient: castAccepted=%u queuedBeforeRemoval=%u selectorChanged=%u inputTargetChanged=%u memberRemoved=%u membersAfterLeave=%u coreRejected=%u authorizeSkipped=%u terminalOnce=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u healerHealth=%u/%u recipientHealth=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u selectorRestored=%u memberRestored=%u subgroupRestored=%u instanceValidRestored=%u locationRestored=%u leaderRestored=%u assistantRestored=%u adapterRestored=%u expectedTargetGuid=%llu.",
+        "[PartyBotSimulator] F54s removed Group recipient: castAccepted=%u queuedBeforeRemoval=%u selectorChanged=%u inputTargetChanged=%u memberRemoved=%u recipientStillLive=%u membersAfterLeave=%u coreRejected=%u authorizeSkipped=%u terminalOnce=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u healerHealth=%u/%u recipientHealth=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u selectorRestored=%u memberRestored=%u subgroupRestored=%u instanceValidRestored=%u locationRestored=%u leaderRestored=%u assistantRestored=%u adapterRestored=%u expectedTargetGuid=%llu.",
         f54sCastAccepted ? 1u : 0u,
         f54sQueuedBeforeRemoval ? 1u : 0u,
         f54sSelectorChanged ? 1u : 0u,
         f54sInputTargetChanged ? 1u : 0u,
         f54sMemberRemoved ? 1u : 0u,
+        f54sRecipientStillLive ? 1u : 0u,
         f54sMembersAfterLeave,
         f54sCoreRejected ? 1u : 0u,
         f54sAuthorizationSkipped ? 1u : 0u,

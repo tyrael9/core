@@ -31,6 +31,7 @@
 #include "Utilities/Random.h"
 #include "Engine/PartySnapshotBuilder.h"
 #include "Engine/DirectHealThreatComponents.h"
+#include "Engine/CoreThreatImpactEstimator.h"
 #include "Engine/ShadowStrategies.h"
 #include "Engine/ProductionStrategies.h"
 #include "Engine/ExecutionAuthority.h"
@@ -751,6 +752,33 @@ bool PartyBotAI::StartGroupResurrection(
 
     context.coordinator.InvalidateSnapshot();
     return true;
+}
+
+PartyBotEngine::ThreatImpactEstimate PartyBotAI::EstimateDirectHealThreatImpact(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const
+{
+    using namespace PartyBotEngine;
+    ThreatImpactEstimate estimate;
+    estimate.snapshotEpoch = context.snapshot.epoch;
+    estimate.reason = "priest_direct_heal_core_context_unresolved";
+
+    if (!CanCastDirectHeal(context, targetGuid, spellId))
+    {
+        estimate.reason = "priest_direct_heal_live_preflight_rejected";
+        return estimate;
+    }
+
+    Unit* const target = me->GetMap()->GetUnit(ObjectGuid(targetGuid));
+    SpellEntry const* const spell = sSpellMgr.GetSpellEntry(spellId);
+    if (!target || !target->IsPlayer() || !spell)
+    {
+        estimate.reason = "priest_direct_heal_target_or_spell_unresolved";
+        return estimate;
+    }
+
+    return EstimateSupportedInstantDirectHealThreat(
+        me, target, spell, context.snapshot);
 }
 
 bool PartyBotAI::CanCastDirectHeal(

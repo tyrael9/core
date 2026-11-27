@@ -11,6 +11,40 @@ namespace PartyBotEngine
 // Proc callbacks may run for either side of a direct heal. The Core caller
 // supplies the side-specific helpful-spell proc flag; scripted Aura callbacks
 // and audited hard-coded proc cases remain unsafe even without DB proc flags.
+// The first production healing slice deliberately accepts only one explicit
+// friendly/unit target selector. Chain-heal, near-caster, party/AoE, script and
+// location target modes are outside this contract even when the first effect
+// happens to be SPELL_EFFECT_HEAL.
+inline bool IsSupportedDirectHealTargetMode(
+    std::uint32_t targetMode,
+    std::uint32_t targetUnitFriend,
+    std::uint32_t targetUnitParty,
+    std::uint32_t targetUnitRaid,
+    std::uint32_t targetUnit)
+{
+    return targetMode == targetUnitFriend ||
+        targetMode == targetUnitParty ||
+        targetMode == targetUnitRaid ||
+        targetMode == targetUnit;
+}
+
+inline bool IsSupportedSingleTargetDirectHealEffectShape(
+    std::uint32_t activeEffectCount,
+    bool allActiveEffectsAreDirectHeals,
+    bool targetAIsNone,
+    bool targetBIsNone,
+    bool targetAIsSupportedFriendlyUnit,
+    bool targetBIsSupportedFriendlyUnit)
+{
+    if (activeEffectCount != 1 || !allActiveEffectsAreDirectHeals)
+        return false;
+
+    // Exactly one side selects the one explicit unit target. Reject two
+    // selectors, zero selectors, and target modes that expand implicitly.
+    return (targetAIsNone && targetBIsSupportedFriendlyUnit && !targetBIsNone) ||
+        (targetBIsNone && targetAIsSupportedFriendlyUnit && !targetAIsNone);
+}
+
 inline bool HasPotentialHelpfulSpellProc(
     bool hasAuraScript, bool hasHardcodedProc,
     std::uint32_t configuredProcFlags, std::uint32_t sideHelpfulProcFlag)

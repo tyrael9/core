@@ -296,6 +296,9 @@ class Spell
         uint64 m_partyBotTraceTargetGuid = 0;
         bool m_partyBotTraceInterrupted = false;
         bool m_partyBotTraceEngineAction = false;
+        bool m_partyBotDeferredEffectsRequested = false;
+        bool m_partyBotDeferredEffectsCommitted = false;
+        uint32 m_partyBotDeferredInterruptFlags = 0;
         uint64 m_partyBotItemUseId = 0;
         uint64 m_partyBotItemUseChildId = 0;
 
@@ -537,6 +540,9 @@ class Spell
         void AddItemTarget(Item* target, SpellEffectIndex effIndex);
         void DoAllEffectOnTarget(TargetInfo *target);
         void HandleDelayedSpellLaunch(TargetInfo *target);
+        bool IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) const;
+        bool CommitPartyBotDeferredEffects();
+        void RejectPartyBotDeferredEffects();
         void InitializeDamageMultipliers();
         void ResetEffectDamageAndHeal();
         void DoSpellHitOnUnit(Unit* unit, uint32 effectMask);

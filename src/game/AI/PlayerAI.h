@@ -37,6 +37,12 @@ enum class PlayerPointMovementResult : uint8
     Failed
 };
 
+enum class PlayerSpellCastAdmissionPolicy : uint8
+{
+    Unmanaged,
+    DeferEffectsUntilImpact
+};
+
 class PlayerAI
 {
     public:
@@ -69,6 +75,21 @@ class PlayerAI
                                          uint64 /*encounterId*/, uint32 /*spellId*/,
                                          uint64 /*traceTargetGuid*/, bool /*success*/,
                                          bool /*interrupted*/, bool /*engineAction*/) {}
+        // Opt-in only for an Engine root spell whose adapter has explicitly
+        // requested Core to defer irreversible effects until its resolved target
+        // set is available. Ordinary Player casts remain unmanaged.
+        virtual PlayerSpellCastAdmissionPolicy OnSpellCastAdmissionIntent(
+            Spell const* /*spell*/)
+        {
+            return PlayerSpellCastAdmissionPolicy::Unmanaged;
+        }
+        // Called on the owning Map thread after Core has resolved the real
+        // per-effect target set but before GCD/cooldown, power, procs, threat or
+        // spell effects are committed. False rejects the cast without those effects.
+        virtual bool OnSpellCastPreImpactAuthorize(Spell const* /*spell*/)
+        {
+            return false;
+        }
         // Item-use roots aggregate the complete ON_USE fan-out; each child Spell is
         // registered before prepare() so synchronous finishes cannot race registration.
         virtual uint64 OnItemUsePreparing(uint64 /*itemGuid*/, uint32 /*itemEntry*/,

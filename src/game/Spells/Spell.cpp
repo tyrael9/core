@@ -3387,6 +3387,29 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
         m_triggeredByAuraBasePoints = triggeredByAura->GetBasePoints();
     }
 
+    if (m_partyBotTraceEngineAction && m_partyBotTraceActionId &&
+        !m_partyBotItemUseId && m_casterUnit && m_casterUnit->IsPlayer())
+    {
+        if (Player* player = m_casterUnit->ToPlayer())
+        {
+            if (PlayerAI* ai = player->AI())
+            {
+                PlayerSpellCastAdmissionPolicy const admission =
+                    ai->OnSpellCastAdmissionIntent(this);
+                if (admission == PlayerSpellCastAdmissionPolicy::DeferEffectsUntilImpact)
+                {
+                    m_partyBotDeferredEffectsRequested = true;
+                    if (!IsSafePartyBotDeferredSelfHealShape(false) || m_delayed)
+                    {
+                        SendCastResult(SPELL_FAILED_ERROR);
+                        finish(false);
+                        return SPELL_FAILED_ERROR;
+                    }
+                }
+            }
+        }
+    }
+
     try
     {
         // create and add update event for this spell
@@ -3471,10 +3494,17 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
             if (m_targets.getGOTarget())
                 interruptFlags |= AURA_INTERRUPT_LOOTING_CANCELS;
 
-            m_casterUnit->RemoveAurasWithInterruptFlags(interruptFlags, m_spellInfo->Id, false, !ShouldRemoveStealthAuras(), m_spellInfo->HasAttribute(SPELL_ATTR_EX2_ALLOW_WHILE_INVISIBLE));
+            if (m_partyBotDeferredEffectsRequested)
+                m_partyBotDeferredInterruptFlags = interruptFlags;
+            else
+                m_casterUnit->RemoveAurasWithInterruptFlags(
+                    interruptFlags, m_spellInfo->Id, false,
+                    !ShouldRemoveStealthAuras(),
+                    m_spellInfo->HasAttribute(SPELL_ATTR_EX2_ALLOW_WHILE_INVISIBLE));
         }
 
-        OnSpellLaunch();
+        if (!m_partyBotDeferredEffectsRequested)
+            OnSpellLaunch();
 
         bool channeled = m_channeled;
 
@@ -3507,8 +3537,10 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
         {
             // will show cast bar
             SendSpellStart();
-            // add gcd server side (client side is handled by client itself)
-            if (!m_caster->IsPlayer() || !static_cast<Player*>(m_caster)->HasCheatOption(PLAYER_CHEAT_NO_COOLDOWN))
+            // add gcd server side (client side is handled by client itself).
+            // Deferred Engine effects wait for the pre-impact authorization hook.
+            if (!m_partyBotDeferredEffectsRequested &&
+                (!m_caster->IsPlayer() || !static_cast<Player*>(m_caster)->HasCheatOption(PLAYER_CHEAT_NO_COOLDOWN)))
                 m_caster->AddGCD(m_spellInfo);
         }
         // execute triggered without cast time explicitly in call point
@@ -3618,6 +3650,123 @@ void Spell::cancel()
         m_casterUnit->RemoveGameObject(m_spellInfo->Id, true);
 }
 
+bool Spell::IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) const
+{
+    if (!m_casterUnit || !m_casterUnit->IsPlayer() ||
+        !m_partyBotTraceEngineAction || !m_partyBotTraceActionId ||
+        m_partyBotItemUseId || m_IsTriggeredSpell || m_triggeredByAuraSpell ||
+        m_CastItem || m_spellScript || !m_spellInfo ||
+        m_spellInfo->ScriptId != 0 || m_spellInfo->speed != 0.0f ||
+        m_delayed || m_channeled || m_autoRepeat ||
+        m_spellInfo->powerType != POWER_MANA ||
+        !m_spellInfo->IsHealSpell() ||
+        !m_spellInfo->IsPositiveSpell(m_casterUnit, m_casterUnit) ||
+        m_spellInfo->IsAreaOfEffectSpell() ||
+        m_spellInfo->IsReflectableSpell() ||
+        m_spellInfo->CanTriggerWeaponProcs() ||
+        m_spellInfo->HasDirectThreatIncreaseEffect() ||
+        m_spellInfo->HasAttribute(SPELL_ATTR_EX_NO_HELPFUL_THREAT) ||
+        m_spellInfo->EquippedItemClass != -1 ||
+        m_spellInfo->Effect[0] != SPELL_EFFECT_HEAL ||
+        m_spellInfo->EffectImplicitTargetA[0] != TARGET_UNIT_CASTER ||
+        m_spellInfo->EffectImplicitTargetB[0] != 0 ||
+        m_spellInfo->Effect[1] != 0 || m_spellInfo->Effect[2] != 0 ||
+        m_spellInfo->EffectImplicitTargetA[1] != 0 ||
+        m_spellInfo->EffectImplicitTargetA[2] != 0 ||
+        m_spellInfo->EffectImplicitTargetB[1] != 0 ||
+        m_spellInfo->EffectImplicitTargetB[2] != 0 ||
+        m_targets.getGOTargetGuid() || m_targets.getItemTargetGuid() ||
+        m_targets.getCorpseTargetGuid())
+        return false;
+
+    for (uint8 index = 0; index < MAX_SPELL_REAGENTS; ++index)
+        if (m_spellInfo->Reagent[index] || m_spellInfo->ReagentCount[index])
+            return false;
+
+    if (!requireResolvedTargets)
+        return true;
+
+    if (m_targets.getUnitTarget() != m_casterUnit ||
+        m_UniqueTargetInfo.size() != 1 ||
+        !m_UniqueGOTargetInfo.empty() ||
+        !m_UniqueItemInfo.empty())
+        return false;
+
+    TargetInfo const& target = m_UniqueTargetInfo.front();
+    return target.targetGUID == m_casterUnit->GetObjectGuid() &&
+        target.timeDelay == 0 && target.effectMask == 0x01 &&
+        target.missCondition == SPELL_MISS_NONE &&
+        target.reflectResult == SPELL_MISS_NONE &&
+        !target.deleted && !target.processed;
+}
+
+bool Spell::CommitPartyBotDeferredEffects()
+{
+    if (!m_partyBotDeferredEffectsRequested ||
+        !IsSafePartyBotDeferredSelfHealShape(true))
+        return false;
+
+    Player* player = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
+    PlayerAI* ai = player ? player->AI() : nullptr;
+    if (!ai || !ai->OnSpellCastPreImpactAuthorize(this))
+        return false;
+
+    // Everything below is the previously deferred, irreversible Core commit.
+    // This strict self-heal shape has no script, item, reagent, projectile,
+    // extra recipient or cast-end child path; authorization and application
+    // therefore remain on the same owning Map thread.
+    if (m_partyBotDeferredInterruptFlags && m_casterUnit)
+        m_casterUnit->RemoveAurasWithInterruptFlags(
+            m_partyBotDeferredInterruptFlags, m_spellInfo->Id, false,
+            !ShouldRemoveStealthAuras(),
+            m_spellInfo->HasAttribute(SPELL_ATTR_EX2_ALLOW_WHILE_INVISIBLE));
+
+    OnSpellLaunch();
+
+    if (!m_caster->IsPlayer() ||
+        !static_cast<Player*>(m_caster)->HasCheatOption(PLAYER_CHEAT_NO_COOLDOWN))
+        m_caster->AddGCD(m_spellInfo);
+
+    SendSpellCooldown();
+
+    if (!m_IsTriggeredSpell && m_casterUnit)
+    {
+        uint32 interruptFlags = AURA_INTERRUPT_ACTION_CANCELS_LATE;
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_6_1
+        if (!Spells::IsPositiveTarget(
+                m_spellInfo->EffectImplicitTargetA[0],
+                m_spellInfo->EffectImplicitTargetB[0]))
+#else
+        if (Spells::IsExplicitlySelectedUnitTarget(
+                m_spellInfo->EffectImplicitTargetA[0]) &&
+            m_casterUnit != m_targets.getUnitTarget())
+#endif
+            interruptFlags |= AURA_INTERRUPT_ATTACKING_CANCELS;
+
+        m_casterUnit->RemoveAurasWithInterruptFlags(
+            interruptFlags, m_spellInfo->Id, false,
+            !ShouldRemoveStealthAuras(),
+            m_spellInfo->HasAttribute(SPELL_ATTR_EX2_ALLOW_WHILE_INVISIBLE));
+    }
+
+    TakePower();
+    TakeReagents();
+    TakeAmmo();
+    m_partyBotDeferredEffectsCommitted = true;
+    return true;
+}
+
+void Spell::RejectPartyBotDeferredEffects()
+{
+    if (m_caster)
+        m_caster->ResetGCD(m_spellInfo);
+    if (Player* player = m_caster ? m_caster->ToPlayer() : nullptr)
+        player->SendClearCooldown(m_spellInfo->Id, player);
+    SendInterrupted(2);
+    SendCastResult(SPELL_FAILED_ERROR);
+    finish(false);
+}
+
 void Spell::cast(bool skipCheck)
 {
     SetExecutedCurrently(true);
@@ -3712,11 +3861,23 @@ void Spell::cast(bool skipCheck)
         return;
     }
 
+    // Deferred Engine roots authorize only after Core has built the actual
+    // target list, but before the spell commits GCD/cooldown, power, procs,
+    // threat or target effects.
+    if (m_partyBotDeferredEffectsRequested && !CommitPartyBotDeferredEffects())
+    {
+        RejectPartyBotDeferredEffects();
+        m_caster->DecreaseCastCounter();
+        SetExecutedCurrently(false);
+        return;
+    }
+
     // CAST SPELL
-    SendSpellCooldown();
+    if (!m_partyBotDeferredEffectsRequested)
+        SendSpellCooldown();
 
     // Remove any remaining invis auras on cast completion, should only be gnomish cloaking device
-    if (!m_IsTriggeredSpell && m_casterUnit)
+    if (!m_partyBotDeferredEffectsRequested && !m_IsTriggeredSpell && m_casterUnit)
     {
         uint32 interruptFlags = AURA_INTERRUPT_ACTION_CANCELS_LATE;
 
@@ -3734,9 +3895,12 @@ void Spell::cast(bool skipCheck)
         m_casterUnit->RemoveAurasWithInterruptFlags(interruptFlags, m_spellInfo->Id, false, !ShouldRemoveStealthAuras(), m_spellInfo->HasAttribute(SPELL_ATTR_EX2_ALLOW_WHILE_INVISIBLE));
     }
 
-    TakePower();
-    TakeReagents();                                         // we must remove reagents before HandleEffects to allow place crafted item in same slot
-    TakeAmmo();
+    if (!m_partyBotDeferredEffectsRequested)
+    {
+        TakePower();
+        TakeReagents();                                     // we must remove reagents before HandleEffects to allow place crafted item in same slot
+        TakeAmmo();
+    }
 
     SendCastResult(castResult);
     InitializeDamageMultipliers();

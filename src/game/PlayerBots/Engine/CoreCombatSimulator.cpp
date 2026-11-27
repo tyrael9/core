@@ -11900,6 +11900,13 @@ if (f54mPassed)
     bool f54nStateRestored = false;
     bool f54nSpellListRestored = false;
     bool f54nProcFlagsRestored = false;
+    bool f54nOuterGateEntered = false;
+    bool f54nPriestAIReady = false;
+    bool f54nHealerReady = false;
+    bool f54nInspirationEntryReady = false;
+    bool f54nInspirationAbsentAtEntry = false;
+    bool f54nSpellLearnedBeforeListInsert = false;
+    bool f54nListContainsSpellBeforeRestore = false;
     std::uint32_t f54nImpactCount = 0;
     std::uint32_t f54nTargetReferenceCount = 0;
     std::uint32_t f54nUniqueHostileCount = 0;
@@ -11917,18 +11924,30 @@ if (f54mPassed)
     SpellEntry const* const f54nPrayerOfHealing =
         sSpellMgr.GetSpellEntry(596);
 
-    if (priestHealerAI && healer && healer->IsAlive() &&
-        healer->GetClass() == CLASS_PRIEST && f54nDesperatePrayer &&
-        f54nInspiration && !healer->GetSpellAuraHolder(f54nInspiration->Id))
+    f54nPriestAIReady = priestHealerAI != nullptr;
+    f54nHealerReady = healer && healer->IsAlive() &&
+        healer->GetClass() == CLASS_PRIEST;
+    f54nInspirationEntryReady = f54nInspiration != nullptr;
+    f54nInspirationAbsentAtEntry = healer && f54nInspiration &&
+        !healer->GetSpellAuraHolder(f54nInspiration->Id);
+    f54nOuterGateEntered =
+        f54nPriestAIReady && f54nHealerReady && f54nDesperatePrayer &&
+        f54nInspirationEntryReady && f54nInspirationAbsentAtEntry;
+    if (f54nOuterGateEntered)
     {
         if (!healer->HasSpell(f54nDesperatePrayer->Id))
             healer->LearnSpell(f54nDesperatePrayer->Id, false);
+        f54nSpellLearnedBeforeListInsert =
+            healer->HasSpell(f54nDesperatePrayer->Id);
 
         bool const f54nWasInHealList =
             priestHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
             priestHealerAI->m_spellListDirectHeal.end();
         if (!f54nWasInHealList)
             priestHealerAI->m_spellListDirectHeal.insert(f54nDesperatePrayer);
+        f54nListContainsSpellBeforeRestore =
+            priestHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
+                priestHealerAI->m_spellListDirectHeal.end();
 
         bool const f54nHasSpell =
             healer->HasSpell(f54nDesperatePrayer->Id);
@@ -12159,8 +12178,15 @@ if (f54mPassed)
         f54nHealApplied && f54nThreatBoundsMatched &&
         f54nStateRestored && f54nSpellListRestored;
     sLog.Out(LOG_BASIC, f54nPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54n single-target direct-heal threat closure: rowReady=%u hasSpell=%u inSpellList=%u supportedShape=%u effect0=%u targetA=%u targetB=%u effect1=%u speed=%.3f castTime=%u scriptId=%u noHelpfulThreat=%u weaponProcs=%u reflectable=%u channeled=%u livePreflight=%u estimateComplete=%u snapshotMatches=%u impacts=%u targetRefs=%u uniqueHostiles=%u procVeto=%u procAuraRemoved=%u procFlagsRestored=%u castTimeUnknown=%u aoeRejected=%u castStarted=%u healApplied=%u threatBoundsMatched=%u stateRestored=%u spellListRestored=%u expectedThreat=%.3f/%.3f actualThreat=%.3f/%.3f.",
+        "[PartyBotSimulator] F54n single-target direct-heal threat closure: rowReady=%u outerGate=%u priestAI=%u healerReady=%u inspirationEntry=%u inspirationAbsent=%u learnedBeforeList=%u listBeforeRestore=%u hasSpellAfterCleanup=%u listAfterCleanup=%u supportedShape=%u effect0=%u targetA=%u targetB=%u effect1=%u speed=%.3f castTime=%u scriptId=%u noHelpfulThreat=%u weaponProcs=%u reflectable=%u channeled=%u livePreflight=%u estimateComplete=%u snapshotMatches=%u impacts=%u targetRefs=%u uniqueHostiles=%u procVeto=%u procAuraRemoved=%u procFlagsRestored=%u castTimeUnknown=%u aoeRejected=%u castStarted=%u healApplied=%u threatBoundsMatched=%u stateRestored=%u spellListRestored=%u expectedThreat=%.3f/%.3f actualThreat=%.3f/%.3f.",
         f54nRowReady ? 1u : 0u,
+        f54nOuterGateEntered ? 1u : 0u,
+        f54nPriestAIReady ? 1u : 0u,
+        f54nHealerReady ? 1u : 0u,
+        f54nInspirationEntryReady ? 1u : 0u,
+        f54nInspirationAbsentAtEntry ? 1u : 0u,
+        f54nSpellLearnedBeforeListInsert ? 1u : 0u,
+        f54nListContainsSpellBeforeRestore ? 1u : 0u,
         f54nDesperatePrayer && healer->HasSpell(f54nDesperatePrayer->Id) ? 1u : 0u,
         f54nDesperatePrayer && priestHealerAI &&
             priestHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=

@@ -832,6 +832,20 @@ bool PartyBotAI::CanCastDirectHeal(
     if (!IsSupportedSingleTargetDirectHealSpellShape(spell))
         return false;
 
+    bool hasCasterTargetSelector = false;
+    for (std::uint32_t effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
+    {
+        if (spell->Effect[effect] != SPELL_EFFECT_HEAL)
+            continue;
+        hasCasterTargetSelector =
+            spell->EffectImplicitTargetA[effect] == TARGET_UNIT_CASTER ||
+            spell->EffectImplicitTargetB[effect] == TARGET_UNIT_CASTER;
+        break;
+    }
+    if (!IsSupportedDirectHealTargetRelation(
+            hasCasterTargetSelector, target == me))
+        return false;
+
     if (!spell->IsTargetInRange(me, target) ||
         !CanTryToCastSpell(target, spell))
         return false;

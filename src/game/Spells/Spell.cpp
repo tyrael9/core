@@ -3482,6 +3482,15 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
         // set timer base at cast time
         ReSetTimer();
 
+        // The admission contract currently supports instant self-heals only.
+        // Deferring GCD until impact would change normal cast-time semantics.
+        if (m_partyBotDeferredEffectsRequested && m_timer > 0)
+        {
+            SendCastResult(SPELL_FAILED_ERROR);
+            finish(false);
+            return SPELL_FAILED_ERROR;
+        }
+
         if (!m_IsTriggeredSpell && m_casterUnit)
         {
             uint32 interruptFlags = AURA_INTERRUPT_ACTION_CANCELS;
@@ -3582,7 +3591,8 @@ void Spell::cancel()
     switch (m_spellState)
     {
         case SPELL_STATE_PREPARING:
-            m_caster->ResetGCD(m_spellInfo);
+            if (!m_partyBotDeferredEffectsRequested)
+                m_caster->ResetGCD(m_spellInfo);
             if (m_caster->IsPlayer())
                 m_caster->ToPlayer()->RestoreSpellMods(this);
         //(no break)
@@ -3702,7 +3712,7 @@ bool Spell::IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) con
 
 bool Spell::CommitPartyBotDeferredEffects()
 {
-    if (!m_partyBotDeferredEffectsRequested ||
+    if (!m_partyBotDeferredEffectsRequested || m_partyBotDeferredEffectsCommitted ||
         !IsSafePartyBotDeferredSelfHealShape(true))
         return false;
 
@@ -3758,10 +3768,8 @@ bool Spell::CommitPartyBotDeferredEffects()
 
 void Spell::RejectPartyBotDeferredEffects()
 {
-    if (m_caster)
-        m_caster->ResetGCD(m_spellInfo);
-    if (Player* player = m_caster ? m_caster->ToPlayer() : nullptr)
-        player->SendClearCooldown(m_spellInfo->Id, player);
+    // Deferred casts have not committed GCD or cooldown. Clearing either here
+    // could erase state belonging to another action; reject without touching it.
     SendInterrupted(2);
     SendCastResult(SPELL_FAILED_ERROR);
     finish(false);

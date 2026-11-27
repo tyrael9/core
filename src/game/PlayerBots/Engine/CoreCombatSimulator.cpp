@@ -24420,6 +24420,40 @@ bool RunCoreMapLifecycleSmokeTest(uint32 mapId)
                               movePointControlSafetyPassed && movementInterruptPassed &&
                               realGroupThreatSnapshotPassed;
 
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBotSimulator] Test-map stage matrix: registered=%u retained=%u creatureCombat=%u negativeFlatSpell=%u periodicDamage=%u periodicHealing=%u periodicPower=%u periodicManaLeech=%u periodicLifeLeech=%u engineExecutor=%u creatureHeal=%u playerHeal=%u cancelOwnCast=%u selectHostile=%u chase=%u moveDistance=%u stopStaleChase=%u stopChase=%u dpsAssist=%u dpsGroupSnapshot=%u followPartyMember=%u fiveBotFormation=%u itemUse=%u countItemMutation=%u utilitySpellAudit=%u itemUtilityAudit=%u itemUtilityUse=%u itemUtilityAction=%u movement=%u follow=%u playerFollowCastSafety=%u followRetarget=%u playerHealRevalidation=%u playerHealLos=%u movePointSafety=%u movementInterrupt=%u groupThreatSnapshot=%u.",
+             registered ? 1u : 0u, mapRetained ? 1u : 0u,
+             creatureCombatPassed ? 1u : 0u,
+             negativeFlatSpellThreatPassed ? 1u : 0u,
+             periodicDamagePassed ? 1u : 0u,
+             periodicHealingPassed ? 1u : 0u,
+             periodicPowerPassed ? 1u : 0u,
+             periodicManaLeechPassed ? 1u : 0u,
+             periodicLifeLeechPassed ? 1u : 0u,
+             engineExecutorPassed ? 1u : 0u,
+             creatureHealPassed ? 1u : 0u, playerHealPassed ? 1u : 0u,
+             cancelOwnCastPassed ? 1u : 0u,
+             selectHostileTargetPassed ? 1u : 0u,
+             chaseTargetPassed ? 1u : 0u, moveDistancePassed ? 1u : 0u,
+             stopStaleChasePassed ? 1u : 0u, stopChasePassed ? 1u : 0u,
+             dpsAssistPassed ? 1u : 0u,
+             dpsAssistGroupSnapshotPassed ? 1u : 0u,
+             followPartyMemberPassed ? 1u : 0u,
+             fiveBotFormationPassed ? 1u : 0u, itemUsePassed ? 1u : 0u,
+             countBasedItemMutationPassed ? 1u : 0u,
+             utilitySpellAuditPassed ? 1u : 0u,
+             itemUtilityAuditPassed ? 1u : 0u,
+             itemUtilityUsePassed ? 1u : 0u,
+             itemUtilityActionPassed ? 1u : 0u,
+             movementPassed ? 1u : 0u, followPassed ? 1u : 0u,
+             playerFollowCastSafetyPassed ? 1u : 0u,
+             followRetargetPassed ? 1u : 0u,
+             playerHealRevalidationPassed ? 1u : 0u,
+             playerHealLosPassed ? 1u : 0u,
+             movePointControlSafetyPassed ? 1u : 0u,
+             movementInterruptPassed ? 1u : 0u,
+             realGroupThreatSnapshotPassed ? 1u : 0u);
+
     sMapMgr.DeleteTestMap(map);
 
     bool const removed = sMapMgr.FindMap(mapId, instanceId) == nullptr;

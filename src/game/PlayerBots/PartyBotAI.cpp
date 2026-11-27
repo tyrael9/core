@@ -30,6 +30,7 @@
 #include "Chat.h"
 #include "Utilities/Random.h"
 #include "Engine/PartySnapshotBuilder.h"
+#include "Engine/DirectHealThreatComponents.h"
 #include "Engine/ShadowStrategies.h"
 #include "Engine/ProductionStrategies.h"
 #include "Engine/ExecutionAuthority.h"
@@ -794,22 +795,45 @@ bool PartyBotAI::CanCastDirectHeal(
         target->GetMapId() != context.snapshot.mapId ||
         target->GetInstanceId() != context.snapshot.instanceId ||
         !spell || spell->IsAreaOfEffectSpell() ||
+        !spell->IsPositiveSpell() || spell->ScriptId != 0 ||
+        spell->CanTriggerWeaponProcs() || spell->IsReflectableSpell() ||
         m_spellListDirectHeal.find(spell) == m_spellListDirectHeal.end() ||
         !me->IsWithinLOSInMap(target))
         return false;
 
-    // This first vertical slice only accepts spells whose active effects are
-    // single-target direct heals. HoTs, area heals, mixed-effect spells and
-    // triggered secondary effects are deliberately excluded.
-    bool hasDirectHealEffect = false;
+    // The first vertical slice only accepts one direct-heal effect whose
+    // sole implicit target selector resolves the explicitly supplied friendly
+    // Unit. This intentionally excludes chain, party/AoE and near-caster modes.
+    std::uint32_t activeEffectCount = 0;
+    bool allActiveEffectsAreDirectHeals = true;
+    std::uint32_t targetA = TARGET_NONE;
+    std::uint32_t targetB = TARGET_NONE;
     for (std::uint32_t effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
     {
         if (!spell->Effect[effect])
             continue;
+        ++activeEffectCount;
         if (spell->Effect[effect] != SPELL_EFFECT_HEAL)
-            return false;
-        hasDirectHealEffect = true;
+        {
+            allActiveEffectsAreDirectHeals = false;
+            continue;
+        }
+        targetA = spell->EffectImplicitTargetA[effect];
+        targetB = spell->EffectImplicitTargetB[effect];
     }
+
+    bool const targetAIsSupportedFriendlyUnit = IsSupportedDirectHealTargetMode(
+        targetA, TARGET_UNIT_FRIEND, TARGET_UNIT_PARTY,
+        TARGET_UNIT_RAID, TARGET_UNIT);
+    bool const targetBIsSupportedFriendlyUnit = IsSupportedDirectHealTargetMode(
+        targetB, TARGET_UNIT_FRIEND, TARGET_UNIT_PARTY,
+        TARGET_UNIT_RAID, TARGET_UNIT);
+    if (!IsSupportedSingleTargetDirectHealEffectShape(
+            activeEffectCount, allActiveEffectsAreDirectHeals,
+            targetA == TARGET_NONE, targetB == TARGET_NONE,
+            targetAIsSupportedFriendlyUnit, targetBIsSupportedFriendlyUnit))
+        return false;
+
     if (!hasDirectHealEffect ||
         !spell->IsTargetInRange(me, target) ||
         !CanTryToCastSpell(target, spell))

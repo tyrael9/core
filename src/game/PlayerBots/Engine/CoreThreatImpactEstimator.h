@@ -411,10 +411,10 @@ inline bool IsSupportedSingleTargetDirectHealSpellShape(
 
     bool const targetAIsSupportedFriendlyUnit = IsSupportedDirectHealTargetMode(
         targetA, TARGET_UNIT_FRIEND, TARGET_UNIT_PARTY,
-        TARGET_UNIT_RAID, TARGET_UNIT);
+        TARGET_UNIT_RAID, TARGET_UNIT, TARGET_UNIT_CASTER);
     bool const targetBIsSupportedFriendlyUnit = IsSupportedDirectHealTargetMode(
         targetB, TARGET_UNIT_FRIEND, TARGET_UNIT_PARTY,
-        TARGET_UNIT_RAID, TARGET_UNIT);
+        TARGET_UNIT_RAID, TARGET_UNIT, TARGET_UNIT_CASTER);
     return IsSupportedSingleTargetDirectHealEffectShape(
         activeEffectCount, allActiveEffectsAreDirectHeals,
         targetA == TARGET_NONE, targetB == TARGET_NONE,
@@ -437,6 +437,23 @@ inline ThreatImpactEstimate EstimateSupportedInstantDirectHealThreat(
     if (!snapshot.epoch || !realCaster || !healedTarget || !spellInfo ||
         !IsSupportedSingleTargetDirectHealSpellShape(spellInfo))
         return estimate;
+
+    bool hasCasterTargetSelector = false;
+    for (std::uint8_t effectIndex = 0; effectIndex < MAX_EFFECT_INDEX; ++effectIndex)
+    {
+        if (spellInfo->Effect[effectIndex] != SPELL_EFFECT_HEAL)
+            continue;
+        hasCasterTargetSelector =
+            spellInfo->EffectImplicitTargetA[effectIndex] == TARGET_UNIT_CASTER ||
+            spellInfo->EffectImplicitTargetB[effectIndex] == TARGET_UNIT_CASTER;
+        break;
+    }
+    if (!IsSupportedDirectHealTargetRelation(
+            hasCasterTargetSelector, realCaster == healedTarget))
+    {
+        estimate.reason = "direct_heal_self_target_relation_mismatch";
+        return estimate;
+    }
 
     if (spellInfo->speed != 0.0f || spellInfo->GetCastTime(realCaster) != 0)
     {

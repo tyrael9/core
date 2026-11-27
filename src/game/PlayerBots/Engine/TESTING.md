@@ -1,5 +1,11 @@
 # PartyBot Core build, runtime and trace testing
 
+## F54o — deferred pre-impact spell admission (in progress; not validated)
+
+The initial Core scaffold adds an opt-in `PlayerAI` admission-intent callback and a pre-impact authorization callback. It defers selected cast-start effects until `Spell::cast` has constructed the real target list, but only for a narrowly constrained, non-triggered, non-scripted, single-effect mana self-heal targeting the caster. Default PlayerAI behavior is `Unmanaged`; PartyBotAI does not opt in and no Priest action/strategy is registered.
+
+The first PR build for parent commit `ce98a54f59404bdd5f3385e4241165a5481ce6fc` passed standalone tests, report collection and Configure, then failed in `Spell.cpp` because the code used the undefined `SPELL_ATTR_EX_NO_HELPFUL_THREAT` instead of the pinned Core's `SPELL_ATTR_EX4_NO_HELPFUL_THREAT`. The source correction is included in the current branch update; the next PR build must prove the complete ARM64 compile. A trusted push must additionally prove the fixture-backed behavior. Neither the hook nor Priest direct healing is considered complete until rejection causes no Mana/GCD/cooldown/aura/proc/threat/effect mutation, accept/reject cases cleanly terminate, and current recipient state is atomically checked/reserved on the owning Map thread. The whole-action estimate remains fail-closed/`Unknown`.
+
 ## F54d damage-aware healing forecast runtime evidence
 
 Trusted Core push [#45558184533](https://github.com/tyrael9/core/actions/runs/45558184533) passed the real health-order fixture: two `SpellCaster::DealHeal` calls with an intervening Core `Unit::DealDamage` SELF_DAMAGE event. The observed deltas were +40 / -30 / +40; the explicit timeline projected effective healing 80, damage 30, overheal 0 and final health 1667, matching observed final health 1667. Artifact [#14996164672](https://github.com/tyrael9/core/actions/runs/45558184533/artifacts/14996164672).

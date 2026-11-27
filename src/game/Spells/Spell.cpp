@@ -3665,7 +3665,7 @@ bool Spell::IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) con
         m_spellInfo->IsReflectableSpell() ||
         m_spellInfo->CanTriggerWeaponProcs() ||
         m_spellInfo->HasDirectThreatIncreaseEffect() ||
-        m_spellInfo->HasAttribute(SPELL_ATTR_EX_NO_HELPFUL_THREAT) ||
+        m_spellInfo->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT) ||
         m_spellInfo->EquippedItemClass != -1 ||
         m_spellInfo->Effect[0] != SPELL_EFFECT_HEAL ||
         m_spellInfo->EffectImplicitTargetA[0] != TARGET_UNIT_CASTER ||

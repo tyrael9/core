@@ -12948,8 +12948,24 @@ if (f54mPassed)
     // the old explicit Unit pointer/GUID is not authority to heal a departed member.
     uint64 const f54sActionId = 0xF54F0007ULL;
     uint64 const f54sEncounterId = 0xF54F0008ULL;
-    Player* const f54sDepartingMember =
-        players.size() > 2 ? players[2] : nullptr;
+    // Select by live Group identity, not roster index: the simulator's
+    // controller/Bot can occupy any slot and may itself be Group leader.
+    Player* f54sDepartingMember = nullptr;
+    if (group)
+    {
+        ObjectGuid const f54sCurrentLeaderGuid = group->GetLeaderGuid();
+        for (Player* member : players)
+        {
+            if (member && member != healer && member != tank &&
+                member->GetObjectGuid() != f54sCurrentLeaderGuid &&
+                group->IsMember(member->GetObjectGuid()) &&
+                member->GetGroup() == group.get())
+            {
+                f54sDepartingMember = member;
+                break;
+            }
+        }
+    }
     ObjectGuid const f54sExpectedTargetGuid = f54sDepartingMember
         ? f54sDepartingMember->GetObjectGuid() : ObjectGuid();
     uint32 const f54sSavedGroupCount =

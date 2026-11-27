@@ -640,17 +640,19 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54n kept the deferred instant self-hea
     exit 1
 fi
 
-f54o_line="$(grep -F '[PartyBotSimulator] F54o Core admission accept/reject:' "$LOG_FILE" | tail -n 1 | sed -E 's/\\x1B\\[[0-9;]*[[:alpha:]]//g')"
-for expected in "rejectIntent=1" "rejectAuthorize=1" "rejectTerminal=1" "rejectNoEffects=1" "rejectThreatDelta=0.000" "acceptIntent=1" "acceptAuthorize=1" "acceptTerminal=1" "acceptHeal=1" "adapterRestored=1"; do
-    if [[ "$f54o_line" != *"$expected"* ]]; then
-        echo "[PartyBotSimulator] F54o deferred-admission assertion missing $expected." | tee -a "$LOG_FILE"
+# F54p extends the F54o Core fixture with explicit cooldown/GCD boundary checks.
+f54p_line="$(grep -F '[PartyBotSimulator] F54o Core admission accept/reject:' "$LOG_FILE" | tail -n 1 | sed -E 's/\\x1B\\[[0-9;]*[[:alpha:]]//g')"
+for expected in "rejectIntent=1" "rejectAuthorize=1" "rejectTerminal=1" "rejectNoEffects=1" "rejectThreatDelta=0.000" "rejectSpellReadyBefore=1" "rejectNoGcdBefore=1" "rejectSpellReadyAfter=1" "rejectNoGcdAfter=1" "acceptIntent=1" "acceptAuthorize=1" "acceptTerminal=1" "acceptHeal=1" "acceptSpellReadyBefore=1" "acceptNoGcdBefore=1" "acceptCooldownApplicable=1" "acceptCooldownCommitted=1" "acceptGcdApplicable=1" "acceptGcdCommitted=1" "adapterRestored=1"; do
+    if [[ "$f54p_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F54p deferred-admission assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1
     fi
 done
-if ! grep -Fq "[PartyBotSimulator] PASS: F54o exercised real Core deferred spell admission; rejection produced no health, mana or hostile-threat side effects, while explicit authorization committed the self-heal and terminal callbacks." "$LOG_FILE"; then
+if ! grep -Fq "[PartyBotSimulator] PASS: F54o exercised real Core deferred spell admission;" "$LOG_FILE"; then
     echo "[PartyBotSimulator] F54o Core admission PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
+echo "[PartyBotSimulator] PASS: F54p verified rejected admission preserves cooldown/GCD before reset and authorized admission commits applicable SpellEntry cooldown/GCD." | tee -a "$LOG_FILE"
 
 f54m_guard_count="$(grep -Fc 'Spell 2061 triggered by aura spell 14892 too deep in cast chain for cast.' "$LOG_FILE" || true)"
 if [[ "$f54m_guard_count" != "5" ]]; then

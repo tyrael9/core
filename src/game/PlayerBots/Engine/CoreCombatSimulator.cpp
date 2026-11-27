@@ -1209,17 +1209,21 @@ bool CreateSimulatorPlayer(Map& map, uint32 factionId, WorldSession& session, Pl
 class SimulatorDeferredSpellAdmissionAI final : public PlayerAI
 {
 public:
-    explicit SimulatorDeferredSpellAdmissionAI(Player* player, bool authorize)
-        : PlayerAI(player), m_authorize(authorize) {}
+    explicit SimulatorDeferredSpellAdmissionAI(
+        Player* player, bool authorize,
+        uint64 actionId = 0xF54F0001ULL,
+        uint64 encounterId = 0xF54F0002ULL)
+        : PlayerAI(player), m_authorize(authorize),
+          m_actionId(actionId), m_encounterId(encounterId) {}
 
     uint64 OnSpellCastPreparing(Spell const* /*spell*/, uint32 /*spellId*/,
                                 uint64 coreTargetGuid, uint64& encounterId,
                                 uint64& traceTargetGuid, bool& engineAction) override
     {
-        encounterId = 0xF54F0002ULL;
+        encounterId = m_encounterId;
         traceTargetGuid = coreTargetGuid;
         engineAction = true;
-        return 0xF54F0001ULL;
+        return m_actionId;
     }
 
     PlayerSpellCastAdmissionPolicy OnSpellCastAdmissionIntent(
@@ -1257,6 +1261,8 @@ public:
 
 private:
     bool m_authorize;
+    uint64 m_actionId;
+    uint64 m_encounterId;
 };
 
 class CaptureCoreSpellTerminalListener final : public CoreSpellTerminalListener
@@ -12506,6 +12512,193 @@ if (f54mPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F54o exercised real Core deferred spell admission; rejection preserved health, mana, hostile threat, cooldown and GCD state, while explicit authorization committed the self-heal, applicable cooldown/GCD and terminal callbacks.");
 
+    // F54q: interrupt the real deferred self-heal after prepare queued its
+    // SpellEvent but before the event can reach pre-impact authorization.
+    uint64 const f54qActionId = 0xF54F0003ULL;
+    uint64 const f54qEncounterId = 0xF54F0004ULL;
+    bool f54qCastAccepted = false;
+    bool f54qQueuedBeforeCancel = false;
+    bool f54qInterruptApiIssued = false;
+    bool f54qCurrentSpellCleared = false;
+    bool f54qSpellFinished = false;
+    bool f54qEventRetained = false;
+    bool f54qTerminalInterrupted = false;
+    bool f54qAuthorizationSkipped = false;
+    bool f54qTerminalExactlyOnce = false;
+    bool f54qEventReaped = false;
+    bool f54qNoEffects = false;
+    bool f54qSpellReadyBefore = false;
+    bool f54qNoGcdBefore = false;
+    bool f54qSpellReadyAfter = false;
+    bool f54qNoGcdAfter = false;
+    bool f54qAdapterRestored = false;
+    uint32 f54qHealthBefore = 0;
+    uint32 f54qHealthAfter = 0;
+    uint32 f54qManaBefore = 0;
+    uint32 f54qManaAfter = 0;
+    uint32 f54qEventUpdates = 0;
+    float f54qThreatDelta = 0.0f;
+    bool f54qPassed = false;
+    if (f54oPassed && healer && f54nDesperatePrayer &&
+        healer->HasSpell(f54nDesperatePrayer->Id))
+    {
+        PlayerAI* const f54qPreviousAI = healer->AI();
+        uint32 const f54qSavedHealth = healer->GetHealth();
+        uint32 const f54qSavedMana = healer->GetPower(POWER_MANA);
+
+        // Isolate this trial from F54o's successful cast. Deferred admission
+        // must not commit either cooldown or GCD until the SpellEvent impact.
+        healer->RemoveSpellCooldown(f54nDesperatePrayer, false);
+        if (f54nDesperatePrayer->Category)
+            healer->RemoveSpellCategoryCooldown(
+                f54nDesperatePrayer->Category, false);
+        healer->ResetGCD(f54nDesperatePrayer);
+        f54qSpellReadyBefore = healer->IsSpellReady(f54nDesperatePrayer);
+        f54qNoGcdBefore = !healer->HasGCD(f54nDesperatePrayer);
+        healer->SetHealth(std::max<uint32>(
+            1u, healer->GetMaxHealth() / 2u));
+        healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+        f54qHealthBefore = healer->GetHealth();
+        f54qManaBefore = healer->GetPower(POWER_MANA);
+
+        float f54qThreatBefore[3] = {};
+        for (uint32 i = 0; i < 3; ++i)
+            f54qThreatBefore[i] = f54nHostiles[i].creature
+                ? f54nHostiles[i].creature->GetThreatManager().getThreat(healer)
+                : 0.0f;
+
+        SimulatorDeferredSpellAdmissionAI cancelAdapter(
+            healer, true, f54qActionId, f54qEncounterId);
+        healer->SetAI(&cancelAdapter);
+        SpellCastResult const castResult =
+            healer->CastSpell(healer, f54nDesperatePrayer, false);
+        f54qCastAccepted = castResult == SPELL_CAST_OK;
+        Spell* const queuedSpell =
+            healer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+
+        auto countF54qQueuedEvents = [&]() -> uint32
+        {
+            uint32 count = 0;
+            for (auto const& event : healer->m_Events.GetEvents())
+            {
+                SpellEvent* spellEvent =
+                    dynamic_cast<SpellEvent*>(event.second);
+                Spell* pendingSpell = spellEvent
+                    ? spellEvent->GetSpell() : nullptr;
+                if (pendingSpell &&
+                    pendingSpell->GetPartyBotTraceActionId() == f54qActionId)
+                    ++count;
+            }
+            return count;
+        };
+
+        f54qQueuedBeforeCancel =
+            f54qCastAccepted && queuedSpell &&
+            queuedSpell->getState() == SPELL_STATE_PREPARING &&
+            countF54qQueuedEvents() == 1 &&
+            cancelAdapter.intentCalls == 1 &&
+            cancelAdapter.authorizeCalls == 0 &&
+            cancelAdapter.terminalCalls == 0;
+
+        // Use Core's normal current-spell interrupt path. It cancels the Spell
+        // synchronously, clears the current slot, and leaves the owning
+        // SpellEvent responsible for the eventual Spell deletion.
+        if (queuedSpell &&
+            healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == queuedSpell)
+        {
+            healer->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+            f54qInterruptApiIssued = true;
+        }
+
+        f54qCurrentSpellCleared =
+            healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+        f54qSpellFinished = queuedSpell &&
+            queuedSpell->getState() == SPELL_STATE_FINISHED;
+        f54qEventRetained = countF54qQueuedEvents() == 1;
+        f54qTerminalInterrupted =
+            cancelAdapter.terminalCalls == 1 &&
+            cancelAdapter.terminalActionId == f54qActionId &&
+            cancelAdapter.terminalEngineAction &&
+            !cancelAdapter.terminalSuccess &&
+            cancelAdapter.terminalInterrupted;
+        f54qAuthorizationSkipped = cancelAdapter.authorizeCalls == 0;
+
+        // A finished Spell must remain owned by its queued SpellEvent until
+        // EventProcessor processes it. Never delete the Spell from this test.
+        for (uint32 tick = 0;
+             countF54qQueuedEvents() != 0 && tick < 20;
+             ++tick)
+        {
+            healer->Unit::Update(50, 50);
+            ++f54qEventUpdates;
+        }
+        f54qEventReaped = countF54qQueuedEvents() == 0;
+        f54qTerminalExactlyOnce =
+            cancelAdapter.terminalCalls == 1 &&
+            cancelAdapter.terminalActionId == f54qActionId &&
+            cancelAdapter.terminalEngineAction &&
+            !cancelAdapter.terminalSuccess &&
+            cancelAdapter.terminalInterrupted &&
+            cancelAdapter.authorizeCalls == 0;
+
+        f54qHealthAfter = healer->GetHealth();
+        f54qManaAfter = healer->GetPower(POWER_MANA);
+        for (uint32 i = 0; i < 3; ++i)
+        {
+            float const after = f54nHostiles[i].creature
+                ? f54nHostiles[i].creature->GetThreatManager().getThreat(healer)
+                : 0.0f;
+            f54qThreatDelta += std::fabs(after - f54qThreatBefore[i]);
+        }
+        f54qNoEffects =
+            f54qHealthAfter == f54qHealthBefore &&
+            f54qManaAfter == f54qManaBefore &&
+            f54qThreatDelta < 0.01f;
+        f54qSpellReadyAfter = healer->IsSpellReady(f54nDesperatePrayer);
+        f54qNoGcdAfter = !healer->HasGCD(f54nDesperatePrayer);
+
+        healer->SetAI(f54qPreviousAI);
+        f54qAdapterRestored = healer->AI() == f54qPreviousAI;
+        healer->SetHealth(f54qSavedHealth);
+        healer->SetPower(POWER_MANA, f54qSavedMana);
+
+        f54qPassed =
+            f54qCastAccepted && f54qQueuedBeforeCancel &&
+            f54qInterruptApiIssued && f54qCurrentSpellCleared &&
+            f54qSpellFinished && f54qEventRetained &&
+            f54qTerminalInterrupted && f54qAuthorizationSkipped &&
+            f54qTerminalExactlyOnce && f54qEventReaped &&
+            f54qNoEffects && f54qSpellReadyBefore && f54qNoGcdBefore &&
+            f54qSpellReadyAfter && f54qNoGcdAfter &&
+            f54qAdapterRestored;
+    }
+
+    sLog.Out(LOG_BASIC, f54qPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54q queued deferred-cast interruption: castAccepted=%u queuedBeforeCancel=%u interruptApi=%u currentSpellCleared=%u spellFinished=%u eventRetained=%u terminalInterrupted=%u authorizeSkipped=%u terminalOnce=%u eventReaped=%u eventUpdates=%u health=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u adapterRestored=%u.",
+        f54qCastAccepted ? 1u : 0u,
+        f54qQueuedBeforeCancel ? 1u : 0u,
+        f54qInterruptApiIssued ? 1u : 0u,
+        f54qCurrentSpellCleared ? 1u : 0u,
+        f54qSpellFinished ? 1u : 0u,
+        f54qEventRetained ? 1u : 0u,
+        f54qTerminalInterrupted ? 1u : 0u,
+        f54qAuthorizationSkipped ? 1u : 0u,
+        f54qTerminalExactlyOnce ? 1u : 0u,
+        f54qEventReaped ? 1u : 0u,
+        f54qEventUpdates,
+        f54qHealthBefore, f54qHealthAfter,
+        f54qManaBefore, f54qManaAfter,
+        f54qThreatDelta,
+        f54qNoEffects ? 1u : 0u,
+        f54qSpellReadyBefore ? 1u : 0u,
+        f54qNoGcdBefore ? 1u : 0u,
+        f54qSpellReadyAfter ? 1u : 0u,
+        f54qNoGcdAfter ? 1u : 0u,
+        f54qAdapterRestored ? 1u : 0u);
+    if (f54qPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F54q canceled a queued deferred Core Spell before pre-impact authorization; Core emitted exactly one interrupted terminal, applied no healing, mana, threat, cooldown or GCD, and reaped the retained SpellEvent.");
+
     if (healer && f54nHealerAI && healer->AI() == f54nHealerAI.get())
         healer->SetAI(f54nPreviousHealerAI);
     f54nHealerAI.reset();
@@ -12598,10 +12791,10 @@ if (f54mPassed)
              finalGroupCleanupPassed ? 1u : 0u);
     if (!finalGroupCleanupPassed)
         return false;
-    if (!f54oPassed)
+    if (!f54oPassed || !f54qPassed)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Required F54o Core admission fixture failed; refusing aggregate runtime success.");
+                 "[PartyBotSimulator] Required F54o/F54q Core spell admission lifecycle fixtures failed; refusing aggregate runtime success.");
         return false;
     }
     return true;

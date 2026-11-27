@@ -640,6 +640,18 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54n kept the deferred instant self-hea
     exit 1
 fi
 
+f54o_line="$(grep -F '[PartyBotSimulator] F54o Core admission accept/reject:' "$LOG_FILE" | tail -n 1 | sed -E 's/\\x1B\\[[0-9;]*[[:alpha:]]//g')"
+for expected in "rejectIntent=1" "rejectAuthorize=1" "rejectTerminal=1" "rejectNoEffects=1" "rejectThreatDelta=0.000" "acceptIntent=1" "acceptAuthorize=1" "acceptTerminal=1" "acceptHeal=1" "adapterRestored=1"; do
+    if [[ "$f54o_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F54o deferred-admission assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+if ! grep -Fq "[PartyBotSimulator] PASS: F54o exercised real Core deferred spell admission; rejection produced no health, mana or hostile-threat side effects, while explicit authorization committed the self-heal and terminal callbacks." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] F54o Core admission PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 f54m_guard_count="$(grep -Fc 'Spell 2061 triggered by aura spell 14892 too deep in cast chain for cast.' "$LOG_FILE" || true)"
 if [[ "$f54m_guard_count" != "5" ]]; then
     echo "[PartyBotSimulator] Expected exactly five Core cast-chain guard rejections for the cyclic Flash Heal child, found $f54m_guard_count." | tee -a "$LOG_FILE"

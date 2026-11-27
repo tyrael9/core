@@ -127,4 +127,3 @@ The forecast remains diagnostic/test-only. No Priest action or strategy is enabl
 F54h proves one three-cast chain (root → child → grandchild), but not the configured Core recursion guard or a deliberate cycle. F54m extends the fixture to four successful casts and attempts a fifth cyclic child cast at a temporary MaxSpellCastsInChain=4 limit. The fifth cast must be rejected by Core; five Group recipients' fourth-stage heal gains and the combined root/child/grandchild/fourth-stage assist threat must match both hostile ThreatManagers. The fixture restores the previous Core limit, all temporary Aura/SpellEntry fields, Player health and the Aura holder.
 
 This remains diagnostic/test-only. No Priest action or strategy is enabled by this milestone.
-- The projection remains diagnostic/test-only. No Priest action or strategy is enabled by this milestone.

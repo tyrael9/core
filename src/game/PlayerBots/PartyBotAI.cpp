@@ -829,39 +829,7 @@ bool PartyBotAI::CanCastDirectHeal(
         !me->IsWithinLOSInMap(target))
         return false;
 
-    // The first vertical slice only accepts one direct-heal effect whose
-    // sole implicit target selector resolves the explicitly supplied friendly
-    // Unit. This intentionally excludes chain, party/AoE and near-caster modes.
-    std::uint32_t activeEffectCount = 0;
-    bool hasDirectHealEffect = false;
-    bool allActiveEffectsAreDirectHeals = true;
-    std::uint32_t targetA = TARGET_NONE;
-    std::uint32_t targetB = TARGET_NONE;
-    for (std::uint32_t effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
-    {
-        if (!spell->Effect[effect])
-            continue;
-        ++activeEffectCount;
-        if (spell->Effect[effect] != SPELL_EFFECT_HEAL)
-        {
-            allActiveEffectsAreDirectHeals = false;
-            continue;
-        }
-        hasDirectHealEffect = true;
-        targetA = spell->EffectImplicitTargetA[effect];
-        targetB = spell->EffectImplicitTargetB[effect];
-    }
-
-    bool const targetAIsSupportedFriendlyUnit = IsSupportedDirectHealTargetMode(
-        targetA, TARGET_UNIT_FRIEND, TARGET_UNIT_PARTY,
-        TARGET_UNIT_RAID, TARGET_UNIT);
-    bool const targetBIsSupportedFriendlyUnit = IsSupportedDirectHealTargetMode(
-        targetB, TARGET_UNIT_FRIEND, TARGET_UNIT_PARTY,
-        TARGET_UNIT_RAID, TARGET_UNIT);
-    if (!IsSupportedSingleTargetDirectHealEffectShape(
-            activeEffectCount, allActiveEffectsAreDirectHeals,
-            targetA == TARGET_NONE, targetB == TARGET_NONE,
-            targetAIsSupportedFriendlyUnit, targetBIsSupportedFriendlyUnit))
+    if (!IsSupportedSingleTargetDirectHealSpellShape(spell))
         return false;
 
     if (!hasDirectHealEffect ||

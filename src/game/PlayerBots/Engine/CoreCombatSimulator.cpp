@@ -13005,16 +13005,35 @@ if (f54mPassed)
     uint32 f54sMembersAfterLeave = 0;
     float f54sThreatDelta = 0.0f;
     bool f54sPassed = false;
-    if (f54rPassed && healer && f54sDepartingMember &&
-        f54sDepartingMember != healer && f54sDepartingMember != tank &&
-        healer->IsAlive() && f54sDepartingMember->IsAlive() &&
-        group && group->GetMembersCount() == MAX_GROUP_SIZE &&
-        group->IsMember(f54sExpectedTargetGuid) &&
-        f54sDepartingMember->GetGroup() == group.get() &&
-        group->GetLeaderGuid() != f54sExpectedTargetGuid &&
-        f54sSavedSubgroup < MAX_RAID_SUBGROUPS &&
-        f54nDesperatePrayer &&
-        healer->HasSpell(f54nDesperatePrayer->Id))
+    bool const f54sGateF54rPassed = f54rPassed;
+    bool const f54sGateHealerAlive = healer && healer->IsAlive();
+    bool const f54sGateRecipientAlive =
+        f54sDepartingMember && f54sDepartingMember->IsAlive();
+    bool const f54sGateDistinctRoles = f54sDepartingMember &&
+        f54sDepartingMember != healer && f54sDepartingMember != tank;
+    bool const f54sGateFiveMembers =
+        group && group->GetMembersCount() == MAX_GROUP_SIZE;
+    bool const f54sGateMember = group &&
+        group->IsMember(f54sExpectedTargetGuid);
+    bool const f54sGateGroupBackref =
+        f54sDepartingMember && group &&
+        f54sDepartingMember->GetGroup() == group.get();
+    bool const f54sGateNonLeader = group &&
+        group->GetLeaderGuid() != f54sExpectedTargetGuid;
+    bool const f54sGateSubgroup =
+        f54sSavedSubgroup < MAX_RAID_SUBGROUPS;
+    bool const f54sGateSpellPresent = f54nDesperatePrayer != nullptr;
+    bool const f54sGateSpellKnown = healer && f54nDesperatePrayer &&
+        healer->HasSpell(f54nDesperatePrayer->Id);
+    bool const f54sGatePassed =
+        f54sGateF54rPassed && healer && f54sDepartingMember &&
+        f54sGateDistinctRoles && f54sGateHealerAlive &&
+        f54sGateRecipientAlive && f54sGateFiveMembers &&
+        f54sGateMember && f54sGateGroupBackref &&
+        f54sGateNonLeader && f54sGateSubgroup &&
+        f54sGateSpellPresent && f54sGateSpellKnown;
+    uint32 f54sCastResultCode = 0;
+    if (f54sGatePassed)
     {
         PlayerAI* const f54sPreviousAI = healer->AI();
         uint32 const f54sSavedHealerHealth = healer->GetHealth();
@@ -13054,6 +13073,7 @@ if (f54mPassed)
         healer->SetAI(&departedRecipientAdapter);
         SpellCastResult const castResult =
             healer->CastSpell(healer, f54nDesperatePrayer, false);
+        f54sCastResultCode = static_cast<uint32>(castResult);
         f54sCastAccepted = castResult == SPELL_CAST_OK;
         Spell* const queuedSpell =
             healer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
@@ -13255,8 +13275,31 @@ if (f54mPassed)
             !f54sExpectedTargetGuid.IsEmpty();
     }
 
+    sLog.Out(LOG_BASIC, f54sGatePassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54s gate diagnostics: f54rPassed=%u healerAlive=%u recipientAlive=%u distinctRoles=%u fiveMembers=%u member=%u groupBackref=%u nonLeader=%u subgroupValid=%u subgroup=%u raid=%u spellPresent=%u spellKnown=%u healerHealth=%u/%u recipientHealth=%u/%u expectedTargetGuid=%llu.",
+        f54sGateF54rPassed ? 1u : 0u,
+        f54sGateHealerAlive ? 1u : 0u,
+        f54sGateRecipientAlive ? 1u : 0u,
+        f54sGateDistinctRoles ? 1u : 0u,
+        f54sGateFiveMembers ? 1u : 0u,
+        f54sGateMember ? 1u : 0u,
+        f54sGateGroupBackref ? 1u : 0u,
+        f54sGateNonLeader ? 1u : 0u,
+        f54sGateSubgroup ? 1u : 0u,
+        f54sSavedSubgroup,
+        f54sSavedRaidGroup ? 1u : 0u,
+        f54sGateSpellPresent ? 1u : 0u,
+        f54sGateSpellKnown ? 1u : 0u,
+        healer ? healer->GetHealth() : 0u,
+        healer ? healer->GetMaxHealth() : 0u,
+        f54sDepartingMember ? f54sDepartingMember->GetHealth() : 0u,
+        f54sDepartingMember ? f54sDepartingMember->GetMaxHealth() : 0u,
+        static_cast<unsigned long long>(f54sExpectedTargetGuid.GetRawValue()));
+
     sLog.Out(LOG_BASIC, f54sPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54s removed Group recipient: castAccepted=%u queuedBeforeRemoval=%u selectorChanged=%u inputTargetChanged=%u memberRemoved=%u recipientStillLive=%u membersAfterLeave=%u coreRejected=%u authorizeSkipped=%u terminalOnce=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u healerHealth=%u/%u recipientHealth=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u selectorRestored=%u memberRestored=%u subgroupRestored=%u instanceValidRestored=%u locationRestored=%u leaderRestored=%u assistantRestored=%u adapterRestored=%u expectedTargetGuid=%llu.",
+        "[PartyBotSimulator] F54s removed Group recipient: gatePassed=%u castResult=%u castAccepted=%u queuedBeforeRemoval=%u selectorChanged=%u inputTargetChanged=%u memberRemoved=%u recipientStillLive=%u membersAfterLeave=%u coreRejected=%u authorizeSkipped=%u terminalOnce=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u healerHealth=%u/%u recipientHealth=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u selectorRestored=%u memberRestored=%u subgroupRestored=%u instanceValidRestored=%u locationRestored=%u leaderRestored=%u assistantRestored=%u adapterRestored=%u expectedTargetGuid=%llu.",
+        f54sGatePassed ? 1u : 0u,
+        f54sCastResultCode,
         f54sCastAccepted ? 1u : 0u,
         f54sQueuedBeforeRemoval ? 1u : 0u,
         f54sSelectorChanged ? 1u : 0u,

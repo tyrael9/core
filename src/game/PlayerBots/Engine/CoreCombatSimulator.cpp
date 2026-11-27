@@ -12537,6 +12537,12 @@ if (f54mPassed)
              finalGroupCleanupPassed ? 1u : 0u);
     if (!finalGroupCleanupPassed)
         return false;
+    if (!f54oPassed)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "[PartyBotSimulator] Required F54o Core admission fixture failed; refusing aggregate runtime success.");
+        return false;
+    }
     return true;
 }
 

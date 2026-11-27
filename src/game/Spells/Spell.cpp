@@ -3712,9 +3712,30 @@ bool Spell::IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) con
 
 bool Spell::CommitPartyBotDeferredEffects()
 {
-    if (!m_partyBotDeferredEffectsRequested || m_partyBotDeferredEffectsCommitted ||
-        !IsSafePartyBotDeferredSelfHealShape(true))
+    if (!m_partyBotDeferredEffectsRequested || m_partyBotDeferredEffectsCommitted)
         return false;
+
+    if (!IsSafePartyBotDeferredSelfHealShape(true))
+    {
+        TargetInfo const* target = m_UniqueTargetInfo.empty()
+            ? nullptr : &m_UniqueTargetInfo.front();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSpellAdmission] resolved self-heal shape rejected: spell=%u caster=%llu targetUnit=%llu targetCount=%u goCount=%u itemCount=%u targetGuid=%llu delay=%u effectMask=%u miss=%u reflect=%u deleted=%u processed=%u.",
+            m_spellInfo ? m_spellInfo->Id : 0u,
+            static_cast<unsigned long long>(m_casterUnit ? m_casterUnit->GetGUID() : 0),
+            static_cast<unsigned long long>(m_targets.getUnitTarget() ? m_targets.getUnitTarget()->GetGUID() : 0),
+            static_cast<uint32>(m_UniqueTargetInfo.size()),
+            static_cast<uint32>(m_UniqueGOTargetInfo.size()),
+            static_cast<uint32>(m_UniqueItemInfo.size()),
+            static_cast<unsigned long long>(target ? target->targetGUID.GetRawValue() : 0),
+            target ? target->timeDelay : 0u,
+            target ? target->effectMask : 0u,
+            target ? target->missCondition : 0u,
+            target ? target->reflectResult : 0u,
+            target && target->deleted ? 1u : 0u,
+            target && target->processed ? 1u : 0u);
+        return false;
+    }
 
     Player* player = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
     PlayerAI* ai = player ? player->AI() : nullptr;
@@ -3862,6 +3883,11 @@ void Spell::cast(bool skipCheck)
 
     if (m_spellState == SPELL_STATE_FINISHED)                // stop cast if spell marked as finish somewhere in FillTargetMap
     {
+        if (m_partyBotDeferredEffectsRequested)
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSpellAdmission] spell finished during FillTargetMap before authorization: spell=%u targets=%u.",
+                m_spellInfo ? m_spellInfo->Id : 0u,
+                static_cast<uint32>(m_UniqueTargetInfo.size()));
         m_caster->DecreaseCastCounter();
         SetExecutedCurrently(false);
         if (m_caster->IsPlayer())

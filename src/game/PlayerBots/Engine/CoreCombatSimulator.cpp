@@ -11230,6 +11230,9 @@ uint32 f54mSavedHealth[5] = {};
 uint32 f54mStartHealth[5] = {};
 float f54mBaselineThreat0 = 0.0f;
 float f54mBaselineThreat1 = 0.0f;
+float f54mExpectedFourthThreat = 0.0f;
+float f54mObservedFourthThreat0 = 0.0f;
+float f54mObservedFourthThreat1 = 0.0f;
 
 if (f54mRowReady)
 {
@@ -11394,7 +11397,6 @@ if (f54mRowReady)
 
     if (f54mRootCast)
     {
-        float expectedFlashThreat = 0.0f;
         for (uint8 index = 0; index < MAX_GROUP_SIZE; ++index)
         {
             Player* member = players[index];
@@ -11412,7 +11414,7 @@ if (f54mRowReady)
             float const flashRawThreat =
                 static_cast<float>(f54mFourthGain[index]) * 0.5f *
                 sSpellMgr.GetSpellThreatMultiplier(f54mFourthSpell) / divisor;
-            expectedFlashThreat += ThreatCalcHelper::CalcThreat(
+            f54mExpectedFourthThreat += ThreatCalcHelper::CalcThreat(
                 healer, flashRawThreat, false,
                 f54mFourthSpell->GetSpellSchoolMask(), f54mFourthSpell);
         }
@@ -11423,12 +11425,14 @@ if (f54mRowReady)
         float const finalThreatDelta1 =
             hostiles[1].creature->GetThreatManager().getThreat(healer) -
             f54mFinalThreatBefore1;
+        f54mObservedFourthThreat0 = finalThreatDelta0 - f54mBaselineThreat0;
+        f54mObservedFourthThreat1 = finalThreatDelta1 - f54mBaselineThreat1;
         f54mThreatMatched = f54mBaselineTargets == MAX_GROUP_SIZE &&
             f54mFourthTargets == MAX_GROUP_SIZE &&
-            std::fabs(finalThreatDelta0 -
-                f54mBaselineThreat0 - expectedFlashThreat) < 0.50f &&
-            std::fabs(finalThreatDelta1 -
-                f54mBaselineThreat1 - expectedFlashThreat) < 0.50f;
+            std::fabs(f54mObservedFourthThreat0 -
+                f54mExpectedFourthThreat) < 0.50f &&
+            std::fabs(f54mObservedFourthThreat1 -
+                f54mExpectedFourthThreat) < 0.50f;
     }
 
     healer->RemoveAurasDueToSpell(f54gAuraSpell->Id);
@@ -11552,7 +11556,7 @@ bool const f54mPassed = f54mRowReady && f54mConfigApplied &&
     f54mAuraRemoved && f54mAuraRowsRestored &&
     f54mSpellRowsRestored && f54mConfigRestored && f54mHealthRestored;
 sLog.Out(LOG_BASIC, f54mPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-    "[PartyBotSimulator] F54m bounded child-chain depth/loop guard: rowReady=%u castLimit=%u configApplied=%u baselineAuraAttached=%u baselineCast=%u baselineTargets=%u baselineAuraRemoved=%u auraAttached=%u rootCast=%u fourthTargets=%u threatMatched=%u auraRemoved=%u auraRowsRestored=%u spellRowsRestored=%u configRestored=%u healthRestored=%u guardExpected=5 baselineGain=%u/%u/%u/%u/%u fourthGain=%u/%u/%u/%u/%u.",
+    "[PartyBotSimulator] F54m bounded child-chain depth/loop guard: rowReady=%u castLimit=%u configApplied=%u baselineAuraAttached=%u baselineCast=%u baselineTargets=%u baselineAuraRemoved=%u auraAttached=%u rootCast=%u fourthTargets=%u threatMatched=%u auraRemoved=%u auraRowsRestored=%u spellRowsRestored=%u configRestored=%u healthRestored=%u guardExpected=5 baselineThreat=%.3f/%.3f expectedFourthThreat=%.3f observedFourthThreat=%.3f/%.3f baselineGain=%u/%u/%u/%u/%u fourthGain=%u/%u/%u/%u/%u.",
     f54mRowReady ? 1u : 0u, f54mCastLimit,
     f54mConfigApplied ? 1u : 0u,
     f54mBaselineAuraAttached ? 1u : 0u,
@@ -11566,6 +11570,9 @@ sLog.Out(LOG_BASIC, f54mPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
     f54mSpellRowsRestored ? 1u : 0u,
     f54mConfigRestored ? 1u : 0u,
     f54mHealthRestored ? 1u : 0u,
+    f54mBaselineThreat0, f54mBaselineThreat1,
+    f54mExpectedFourthThreat,
+    f54mObservedFourthThreat0, f54mObservedFourthThreat1,
     f54mBaselineTotalGain[0], f54mBaselineTotalGain[1],
     f54mBaselineTotalGain[2], f54mBaselineTotalGain[3],
     f54mBaselineTotalGain[4],

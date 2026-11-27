@@ -600,10 +600,10 @@ if ! awk -v b0="$f54m_baseline0" -v b1="$f54m_baseline1" \
     exit 1
 fi
 
-f54n_line="$(grep -F '[PartyBotSimulator] F54n single-target direct-heal threat closure:' "$LOG_FILE" | tail -n 1 | sed -E 's/\x1B\[[0-9;]*[[:alpha:]]//g')"
+f54n_line="$(grep -F '[PartyBotSimulator] F54n deferred instant-heal recipient race:' "$LOG_FILE" | tail -n 1 | sed -E 's/\x1B\[[0-9;]*[[:alpha:]]//g')"
 for expected in "rowReady=1" "hostilesCreated=1" "hostilesCleaned=1" "aiRestored=1" "livePreflight=1" "estimateUnknown=1" "snapshotMatches=1" "impacts=0" "componentImpacts=2" "targetRefs=2" "uniqueHostiles=2" "procVeto=1" "procAuraRemoved=1" "procFlagsRestored=1" "castTimeUnknown=1" "aoeRejected=1" "castStarted=1" "eventDeferred=1" "lateRecipientAdded=1" "lateRecipientUnpredicted=1" "lateRecipientThreatApplied=1" "healApplied=1" "threatBoundsMatched=1" "stateRestored=1" "spellListRestored=1"; do
     if [[ "$f54n_line" != *"$expected"* ]]; then
-        echo "[PartyBotSimulator] F54n direct-heal whole-action assertion missing $expected." | tee -a "$LOG_FILE"
+        echo "[PartyBotSimulator] F54n deferred-recipient fail-closed assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1
     fi
 done
@@ -632,7 +632,7 @@ if ! awk -v e0="$f54n_expected0" -v e1="$f54n_expected1" \
             if (e0 <= 0 || e1 <= 0 || a0 < -0.5 || a1 < -0.5 || late <= 0.5) exit 1;
             if (a0 > e0 + 0.5 || a1 > e1 + 0.5) exit 1;
         }'; then
-    echo "[PartyBotSimulator] F54n actual Core threat exceeded the estimated full-health upper bound." | tee -a "$LOG_FILE"
+    echo "[PartyBotSimulator] F54n observed Core threat/late-recipient values failed numeric closure checks." | tee -a "$LOG_FILE"
     exit 1
 fi
 if ! grep -Fq "[PartyBotSimulator] PASS: F54n kept the deferred instant self-heal Unknown, added a third hostile reference after cast start but before its queued SpellEvent, observed Core apply healing threat to that previously unpredicted recipient, and restored Player/AI/actor state." "$LOG_FILE"; then

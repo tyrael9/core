@@ -11,7 +11,7 @@ Validation after the fix is pending: trusted push [#45973495263](https://github.
 Keep the F54o fixture assertions mandatory. Do not weaken authorization, terminal, no-side-effect, positive-heal, mana or threat checks, and do not restore the old false-green aggregate behavior. Default PlayerAI remains `Unmanaged`; PartyBotAI still has no admission override, PriestDirectHealAction and Priest Healing Strategy remain unregistered, and the whole-action estimate remains `Unknown`.
 
 Next: inspect the trusted run after `70b1181`. If the self-target fixture reaches authorization but fails later, use its resolved-target/terminal diagnostics to correct the Core lifecycle; if it passes, add separate runtime assertions for GCD/cooldown/proc/aura invariants, stale targets/recipient changes, cancellation and terminal cleanup.
- 
+
 ## F54d damage-aware healing forecast runtime evidence
 
 Trusted Core push [#45558184533](https://github.com/tyrael9/core/actions/runs/45558184533) passed the real health-order fixture: two `SpellCaster::DealHeal` calls with an intervening Core `Unit::DealDamage` SELF_DAMAGE event. The observed deltas were +40 / -30 / +40; the explicit timeline projected effective healing 80, damage 30, overheal 0 and final health 1667, matching observed final health 1667. Artifact [#14996164672](https://github.com/tyrael9/core/actions/runs/45558184533/artifacts/14996164672).

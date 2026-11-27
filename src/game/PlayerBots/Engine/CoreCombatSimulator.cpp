@@ -11887,9 +11887,14 @@ if (f54mPassed)
     // accepted when the target GUID resolves back to the caster itself.
     bool f54nRowReady = false;
     bool f54nLivePreflight = false;
-    bool f54nEstimateComplete = false;
+    bool f54nEstimateUnknown = false;
     bool f54nSnapshotMatches = false;
     bool f54nImpactHostilesMatch = false;
+    bool f54nEventDeferred = false;
+    bool f54nLateRecipientAdded = false;
+    bool f54nLateRecipientUnpredicted = false;
+    bool f54nLateRecipientThreatApplied = false;
+    float f54nLateRecipientThreat = 0.0f;
     bool f54nProcVeto = false;
     bool f54nProcAuraRemoved = false;
     bool f54nCastTimeUnknown = false;
@@ -11903,7 +11908,7 @@ if (f54mPassed)
     bool f54nHostilesCreated = false;
     bool f54nHostilesCleaned = false;
     bool f54nAiRestored = false;
-    SimulatorActor f54nHostiles[2];
+    SimulatorActor f54nHostiles[3];
     bool f54nOuterGateEntered = false;
     bool f54nPriestAIReady = false;
     bool f54nHealerReady = false;
@@ -11912,6 +11917,7 @@ if (f54mPassed)
     bool f54nSpellLearnedBeforeListInsert = false;
     bool f54nListContainsSpellBeforeRestore = false;
     std::uint32_t f54nImpactCount = 0;
+    std::uint32_t f54nComponentImpactCount = 0;
     std::uint32_t f54nTargetReferenceCount = 0;
     std::uint32_t f54nUniqueHostileCount = 0;
     std::uint32_t f54nEventUpdates = 0;
@@ -11967,9 +11973,12 @@ if (f54mPassed)
             CreateSimulatorActor(
                 map, *info, hostileFaction, 20.0f, 10.0f, f54nHostiles[0]) &&
             CreateSimulatorActor(
-                map, *info, hostileFaction, 24.0f, 10.0f, f54nHostiles[1]);
+                map, *info, hostileFaction, 24.0f, 10.0f, f54nHostiles[1]) &&
+            CreateSimulatorActor(
+                map, *info, hostileFaction, 28.0f, 10.0f, f54nHostiles[2]);
         if (!f54nHostilesCreated)
         {
+            DestroySimulatorActor(map, f54nHostiles[2]);
             DestroySimulatorActor(map, f54nHostiles[1]);
             DestroySimulatorActor(map, f54nHostiles[0]);
         }
@@ -12061,22 +12070,33 @@ if (f54mPassed)
                 f54nLivePreflight = f54nHealerAI->CanCastDirectHeal(
                     f54nContext, f54nCandidate.targetGuid,
                     f54nCandidate.spellId);
-                f54nEstimateComplete =
+                f54nEstimateUnknown =
                     initialEstimate.completeness ==
-                        ThreatImpactCompleteness::Complete &&
-                    IsWellFormedThreatImpactEstimate(initialEstimate);
+                        ThreatImpactCompleteness::Unknown &&
+                    initialEstimate.impacts.empty() &&
+                    initialEstimate.reason ==
+                        "direct_heal_spell_event_deferred_recipient_set_unbounded";
                 f54nSnapshotMatches =
                     IsThreatImpactEstimateForSnapshot(
                         initialEstimate, f54nSnapshot->epoch);
                 f54nImpactCount = static_cast<std::uint32_t>(
                     initialEstimate.impacts.size());
 
+                // Preserve the currently observed Core threat components for
+                // diagnostics only. These partial rows are not an action estimate.
+                ThreatImpactEstimate const initialComponents =
+                    EstimateDirectHealingThreatComponents(
+                        healer, healer,
+                        static_cast<float>(healer->GetMaxHealth()),
+                        f54nDesperatePrayer, *f54nSnapshot);
+                f54nComponentImpactCount = static_cast<std::uint32_t>(
+                    initialComponents.impacts.size());
                 std::vector<Guid> f54nUniqueHostiles;
                 for (HostileReference* reference =
                          healer->GetHostileRefManager().getFirst();
                      reference; reference = reference->next())
                     ++f54nTargetReferenceCount;
-                for (ThreatImpactEntry const& impact : initialEstimate.impacts)
+                for (ThreatImpactEntry const& impact : initialComponents.impacts)
                 {
                     if (std::find(f54nUniqueHostiles.begin(),
                                   f54nUniqueHostiles.end(),
@@ -12092,7 +12112,12 @@ if (f54mPassed)
                 f54nUniqueHostileCount =
                     static_cast<std::uint32_t>(f54nUniqueHostiles.size());
                 f54nImpactHostilesMatch =
+                    initialComponents.completeness ==
+                        ThreatImpactCompleteness::Unknown &&
+                    initialComponents.reason ==
+                        "direct_heal_threat_components_only" &&
                     f54nTargetReferenceCount == 2 &&
+                    f54nComponentImpactCount == 2 &&
                     f54nUniqueHostileCount == 2 &&
                     f54nExpectedThreat0 > 0.0f &&
                     f54nExpectedThreat1 > 0.0f;
@@ -12144,41 +12169,58 @@ if (f54mPassed)
                     !IsSupportedSingleTargetDirectHealSpellShape(
                         f54nPrayerOfHealing);
 
-                // Re-estimate after removing Inspiration; only now may the
-                // action cross the threat budget boundary.
+                // Removing Inspiration restores the clean component view,
+                // but the whole action must stay Unknown: Spell::prepare queues
+                // even an instant direct heal for a later Unit::Update.
                 ThreatImpactEstimate const restoredEstimate =
                     f54nAction.EstimateThreatImpact(
                         f54nContext, f54nCandidate);
-                if (restoredEstimate.completeness ==
-                        ThreatImpactCompleteness::Complete &&
-                    IsWellFormedThreatImpactEstimate(restoredEstimate))
+                f54nEstimateUnknown =
+                    restoredEstimate.completeness ==
+                        ThreatImpactCompleteness::Unknown &&
+                    restoredEstimate.impacts.empty() &&
+                    restoredEstimate.reason ==
+                        "direct_heal_spell_event_deferred_recipient_set_unbounded";
+                if (f54nEstimateUnknown)
                 {
-                    f54nExpectedThreat0 = 0.0f;
-                    f54nExpectedThreat1 = 0.0f;
-                    for (ThreatImpactEntry const& impact :
-                         restoredEstimate.impacts)
-                    {
-                        if (impact.hostileGuid ==
-                            f54nHostiles[0].creature->GetObjectGuid().GetRawValue())
-                            f54nExpectedThreat0 += impact.threatPoints;
-                        else if (impact.hostileGuid ==
-                                 f54nHostiles[1].creature->GetObjectGuid().GetRawValue())
-                            f54nExpectedThreat1 += impact.threatPoints;
-                    }
-
                     float const beforeThreat0 =
                         f54nHostiles[0].creature->GetThreatManager().getThreat(healer);
                     float const beforeThreat1 =
                         f54nHostiles[1].creature->GetThreatManager().getThreat(healer);
+                    float lateRecipientBaseline = 0.0f;
                     f54nCastStarted = f54nHealerAI->StartDirectHeal(
                         f54nContext, f54nCandidate.targetGuid,
                         f54nCandidate.spellId);
                     f54nHealApplied =
                         healer->GetHealth() > f54nHealthBeforeCast;
-                    // Core Spell::prepare queues even an instant non-triggered
-                    // cast through the caster's SpellEvent processor. Advance
-                    // the real Player Unit clock (bounded to 1 second) before
-                    // reading the applied heal and its ThreatManager deltas.
+                    f54nEventDeferred = f54nCastStarted && !f54nHealApplied;
+
+                    // Add a new hostile reference after Core accepted the cast
+                    // but before its queued SpellEvent applies the heal. Core's
+                    // live threatAssist fan-out must include it even though the
+                    // pre-cast component view did not.
+                    if (f54nEventDeferred)
+                    {
+                        float const beforeLateRecipient =
+                            f54nHostiles[2].creature->GetThreatManager().getThreat(healer);
+                        f54nHostiles[2].creature->AddThreat(
+                            healer, 20.0f, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
+                        lateRecipientBaseline =
+                            f54nHostiles[2].creature->GetThreatManager().getThreat(healer);
+                        f54nLateRecipientAdded =
+                            lateRecipientBaseline > beforeLateRecipient + 0.5f;
+                        Guid const lateHostileGuid =
+                            f54nHostiles[2].creature->GetObjectGuid().GetRawValue();
+                        bool lateHostileWasPredicted = false;
+                        for (ThreatImpactEntry const& impact : initialComponents.impacts)
+                            if (impact.hostileGuid == lateHostileGuid)
+                                lateHostileWasPredicted = true;
+                        f54nLateRecipientUnpredicted =
+                            f54nLateRecipientAdded && !lateHostileWasPredicted;
+                    }
+
+                    // Advance the real Player Unit clock (bounded to one second)
+                    // and allow the queued Core SpellEvent to apply heal/threat.
                     for (uint32 tick = 0;
                          f54nCastStarted && !f54nHealApplied && tick < 20;
                          ++tick)
@@ -12194,11 +12236,18 @@ if (f54mPassed)
                     f54nActualThreat1 =
                         f54nHostiles[1].creature->GetThreatManager().getThreat(healer) -
                         beforeThreat1;
+                    f54nLateRecipientThreat =
+                        f54nHostiles[2].creature->GetThreatManager().getThreat(healer) -
+                        lateRecipientBaseline;
+                    f54nLateRecipientThreatApplied =
+                        f54nLateRecipientThreat > 0.5f;
                     f54nThreatBoundsMatched =
                         f54nActualThreat0 >= -0.5f &&
                         f54nActualThreat1 >= -0.5f &&
                         f54nActualThreat0 <= f54nExpectedThreat0 + 0.5f &&
-                        f54nActualThreat1 <= f54nExpectedThreat1 + 0.5f;
+                        f54nActualThreat1 <= f54nExpectedThreat1 + 0.5f &&
+                        f54nLateRecipientThreatApplied &&
+                        f54nLateRecipientUnpredicted;
                 }
             }
 
@@ -12226,22 +12275,27 @@ if (f54mPassed)
         healer->SetAI(f54nPreviousHealerAI);
     f54nHealerAI.reset();
     f54nAiRestored = !healer || healer->AI() == f54nPreviousHealerAI;
+    bool const f54nHostile2Cleaned =
+        DestroySimulatorActor(map, f54nHostiles[2]);
     bool const f54nHostile1Cleaned =
         DestroySimulatorActor(map, f54nHostiles[1]);
     bool const f54nHostile0Cleaned =
         DestroySimulatorActor(map, f54nHostiles[0]);
-    f54nHostilesCleaned = f54nHostile0Cleaned && f54nHostile1Cleaned;
+    f54nHostilesCleaned =
+        f54nHostile0Cleaned && f54nHostile1Cleaned && f54nHostile2Cleaned;
 
     bool const f54nPassed =
-        f54nRowReady && f54nLivePreflight && f54nEstimateComplete &&
+        f54nRowReady && f54nLivePreflight && f54nEstimateUnknown &&
         f54nSnapshotMatches && f54nImpactHostilesMatch &&
         f54nProcVeto && f54nProcAuraRemoved && f54nProcFlagsRestored &&
         f54nCastTimeUnknown && f54nAoeRejected && f54nCastStarted &&
+        f54nEventDeferred && f54nLateRecipientAdded &&
+        f54nLateRecipientUnpredicted && f54nLateRecipientThreatApplied &&
         f54nHealApplied && f54nThreatBoundsMatched &&
         f54nStateRestored && f54nSpellListRestored &&
         f54nHostilesCreated && f54nHostilesCleaned && f54nAiRestored;
     sLog.Out(LOG_BASIC, f54nPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54n single-target direct-heal threat closure: rowReady=%u outerGate=%u priestAI=%u hostilesCreated=%u hostilesCleaned=%u aiRestored=%u healerReady=%u inspirationEntry=%u inspirationAbsent=%u learnedBeforeList=%u listBeforeRestore=%u hasSpellAfterCleanup=%u listAfterCleanup=%u supportedShape=%u effect0=%u targetA=%u targetB=%u effect1=%u speed=%.3f castTime=%u scriptId=%u noHelpfulThreat=%u weaponProcs=%u reflectable=%u channeled=%u livePreflight=%u estimateComplete=%u snapshotMatches=%u impacts=%u targetRefs=%u uniqueHostiles=%u procVeto=%u procAuraRemoved=%u procFlagsRestored=%u castTimeUnknown=%u aoeRejected=%u castStarted=%u eventUpdates=%u healApplied=%u threatBoundsMatched=%u stateRestored=%u spellListRestored=%u expectedThreat=%.3f/%.3f actualThreat=%.3f/%.3f.",
+        "[PartyBotSimulator] F54n deferred instant-heal recipient race: rowReady=%u outerGate=%u priestAI=%u hostilesCreated=%u hostilesCleaned=%u aiRestored=%u healerReady=%u inspirationEntry=%u inspirationAbsent=%u learnedBeforeList=%u listBeforeRestore=%u hasSpellAfterCleanup=%u listAfterCleanup=%u supportedShape=%u effect0=%u targetA=%u targetB=%u effect1=%u speed=%.3f castTime=%u scriptId=%u noHelpfulThreat=%u weaponProcs=%u reflectable=%u channeled=%u livePreflight=%u estimateUnknown=%u snapshotMatches=%u impacts=%u componentImpacts=%u targetRefs=%u uniqueHostiles=%u procVeto=%u procAuraRemoved=%u procFlagsRestored=%u castTimeUnknown=%u aoeRejected=%u castStarted=%u eventDeferred=%u lateRecipientAdded=%u lateRecipientUnpredicted=%u lateRecipientThreatApplied=%u lateRecipientThreat=%.3f eventUpdates=%u healApplied=%u threatBoundsMatched=%u stateRestored=%u spellListRestored=%u expectedThreat=%.3f/%.3f actualThreat=%.3f/%.3f.",
         f54nRowReady ? 1u : 0u,
         f54nOuterGateEntered ? 1u : 0u,
         f54nPriestAIReady ? 1u : 0u,
@@ -12271,9 +12325,10 @@ if (f54mPassed)
         f54nDesperatePrayer && f54nDesperatePrayer->IsReflectableSpell() ? 1u : 0u,
         f54nDesperatePrayer && f54nDesperatePrayer->IsChanneledSpell() ? 1u : 0u,
         f54nLivePreflight ? 1u : 0u,
-        f54nEstimateComplete ? 1u : 0u,
+        f54nEstimateUnknown ? 1u : 0u,
         f54nSnapshotMatches ? 1u : 0u,
         f54nImpactCount,
+        f54nComponentImpactCount,
         f54nTargetReferenceCount,
         f54nUniqueHostileCount,
         f54nProcVeto ? 1u : 0u,
@@ -12282,6 +12337,11 @@ if (f54mPassed)
         f54nCastTimeUnknown ? 1u : 0u,
         f54nAoeRejected ? 1u : 0u,
         f54nCastStarted ? 1u : 0u,
+        f54nEventDeferred ? 1u : 0u,
+        f54nLateRecipientAdded ? 1u : 0u,
+        f54nLateRecipientUnpredicted ? 1u : 0u,
+        f54nLateRecipientThreatApplied ? 1u : 0u,
+        f54nLateRecipientThreat,
         f54nEventUpdates,
         f54nHealApplied ? 1u : 0u,
         f54nThreatBoundsMatched ? 1u : 0u,
@@ -12291,7 +12351,7 @@ if (f54mPassed)
         f54nActualThreat0, f54nActualThreat1);
     if (f54nPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: F54n promoted one supported instant self-target heal to Complete, rejected active helpful-proc and cast-time/AoE paths, matched both real Core hostile ThreatManagers within the full-health upper bound, and restored Player state.");
+            "[PartyBotSimulator] PASS: F54n kept the deferred instant self-heal Unknown, added a third hostile reference after cast start but before its queued SpellEvent, observed Core apply healing threat to that previously unpredicted recipient, and restored Player/AI/actor state.");
 
     // F54f must run before this boundary so its real proc/child Spell work
     // still has live source-Map Players. Restore the original Group/session

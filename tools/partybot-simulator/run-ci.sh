@@ -607,6 +607,11 @@ for expected in "rowReady=1" "hostilesCreated=1" "hostilesCleaned=1" "aiRestored
         exit 1
     fi
 done
+f54n_event_updates="$(grep -oE 'eventUpdates=[0-9]+' <<< "$f54n_line" | cut -d= -f2)"
+if ! [[ "$f54n_event_updates" =~ ^[0-9]+$ ]] || (( f54n_event_updates < 1 || f54n_event_updates > 20 )); then
+    echo "[PartyBotSimulator] F54n expected 1..20 bounded Core Unit::Update ticks to process the instant SpellEvent, found '$f54n_event_updates'." | tee -a "$LOG_FILE"
+    exit 1
+fi
 f54n_expected="$(grep -oE 'expectedThreat=[0-9]+([.][0-9]+)?/[0-9]+([.][0-9]+)?' <<< "$f54n_line" | cut -d= -f2)"
 f54n_actual="$(grep -oE 'actualThreat=[-]?[0-9]+([.][0-9]+)?/[-]?[0-9]+([.][0-9]+)?' <<< "$f54n_line" | cut -d= -f2)"
 IFS='/' read -r f54n_expected0 f54n_expected1 <<< "$f54n_expected"

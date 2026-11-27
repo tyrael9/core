@@ -805,6 +805,7 @@ bool PartyBotAI::CanCastDirectHeal(
     // sole implicit target selector resolves the explicitly supplied friendly
     // Unit. This intentionally excludes chain, party/AoE and near-caster modes.
     std::uint32_t activeEffectCount = 0;
+    bool hasDirectHealEffect = false;
     bool allActiveEffectsAreDirectHeals = true;
     std::uint32_t targetA = TARGET_NONE;
     std::uint32_t targetB = TARGET_NONE;
@@ -818,6 +819,7 @@ bool PartyBotAI::CanCastDirectHeal(
             allActiveEffectsAreDirectHeals = false;
             continue;
         }
+        hasDirectHealEffect = true;
         targetA = spell->EffectImplicitTargetA[effect];
         targetB = spell->EffectImplicitTargetB[effect];
     }

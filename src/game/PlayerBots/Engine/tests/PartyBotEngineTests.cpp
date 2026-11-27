@@ -4047,6 +4047,53 @@ void TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots() {
     assert(coordinator.ObserveNonBotPartyMemberStateChanges(snapshot).empty());
 }
 
+void TestSupportedSingleTargetDirectHealSpellShape() {
+    constexpr std::uint32_t kNone = 0;
+    constexpr std::uint32_t kUnitCaster = 1;
+    constexpr std::uint32_t kUnitFriendNearCaster = 3;
+    constexpr std::uint32_t kUnitFriend = 21;
+    constexpr std::uint32_t kUnit = 25;
+    constexpr std::uint32_t kPartyAoeAtSource = 33;
+    constexpr std::uint32_t kUnitParty = 35;
+    constexpr std::uint32_t kUnitFriendChainHeal = 45;
+    constexpr std::uint32_t kUnitRaid = 57;
+
+    auto supportedMode = [](std::uint32_t mode)
+    {
+        return IsSupportedDirectHealTargetMode(
+            mode, kUnitFriend, kUnitParty, kUnitRaid, kUnit);
+    };
+
+    assert(supportedMode(kUnitFriend));
+    assert(supportedMode(kUnitParty));
+    assert(supportedMode(kUnitRaid));
+    assert(supportedMode(kUnit));
+    assert(!supportedMode(kUnitCaster));
+    assert(!supportedMode(kUnitFriendNearCaster));
+    assert(!supportedMode(kPartyAoeAtSource));
+    assert(!supportedMode(kUnitFriendChainHeal));
+
+    assert(IsSupportedSingleTargetDirectHealEffectShape(
+        1, true, false, true, true, false));
+    assert(IsSupportedSingleTargetDirectHealEffectShape(
+        1, true, true, false, false, true));
+
+    // Multiple effects, mixed effects, no selected target, two selected
+    // targets and unsupported implicit target modes all remain outside scope.
+    assert(!IsSupportedSingleTargetDirectHealEffectShape(
+        2, true, false, true, true, false));
+    assert(!IsSupportedSingleTargetDirectHealEffectShape(
+        1, false, false, true, true, false));
+    assert(!IsSupportedSingleTargetDirectHealEffectShape(
+        1, true, true, true, false, false));
+    assert(!IsSupportedSingleTargetDirectHealEffectShape(
+        1, true, false, false, true, true));
+    assert(!IsSupportedSingleTargetDirectHealEffectShape(
+        1, true, false, true, false, false));
+    assert(!IsSupportedSingleTargetDirectHealEffectShape(
+        0, true, false, true, true, false));
+}
+
 void TestDirectHealHelpfulProcRiskClassifier() {
     constexpr std::uint32_t kDealHelpfulSpell = 1u << 4;
     constexpr std::uint32_t kTakeHelpfulSpell = 1u << 7;
@@ -7120,6 +7167,7 @@ int main() {
     TestEncounterTraceBudgetConfigurationIsClampedAndBounded();
     TestNonBotPartyMemberStateChangesAreSampledWithoutDuplicates();
     TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots();
+    TestSupportedSingleTargetDirectHealSpellShape();
     TestDirectHealHelpfulProcRiskClassifier();
     TestDirectHealThreatComponentsSplitAcrossAllHostileReferences();
     TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure();

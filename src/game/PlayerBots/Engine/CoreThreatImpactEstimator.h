@@ -11,6 +11,9 @@
 #include "ThreatManager.h"
 #include "Unit.h"
 
+#include <cmath>
+#include <limits>
+
 namespace PartyBotEngine {
 
 // Estimate one applied, spell-less direct-damage component using the same
@@ -448,9 +451,16 @@ inline ThreatImpactEstimate EstimateSupportedInstantDirectHealThreat(
         return estimate;
     }
 
+    float maxEffectiveHealing = static_cast<float>(targetMaxHealth);
+    // Preserve a true upper bound if an unusually large uint32 health value
+    // is not exactly representable as float.
+    if (static_cast<double>(maxEffectiveHealing) <
+        static_cast<double>(targetMaxHealth))
+        maxEffectiveHealing = std::nextafter(
+            maxEffectiveHealing, std::numeric_limits<float>::infinity());
+
     estimate = EstimateDirectHealingThreatComponents(
-        realCaster, healedTarget, static_cast<float>(targetMaxHealth),
-        spellInfo, snapshot);
+        realCaster, healedTarget, maxEffectiveHealing, spellInfo, snapshot);
 
     if (estimate.completeness == ThreatImpactCompleteness::NoThreat)
     {

@@ -11882,6 +11882,298 @@ if (f54mPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F54g skipped a target removed after the delayed projectile captured its GUID; the live-target control triggered a caster self-heal, while the removed-target projectile produced no child self-heal or healing-assist threat.");
 
+    // F54n: the first whole-action Complete case is Desperate Prayer,
+    // an instant self-target direct heal. The caster-target selector is only
+    // accepted when the target GUID resolves back to the caster itself.
+    bool f54nRowReady = false;
+    bool f54nLivePreflight = false;
+    bool f54nEstimateComplete = false;
+    bool f54nSnapshotMatches = false;
+    bool f54nImpactHostilesMatch = false;
+    bool f54nProcVeto = false;
+    bool f54nProcAuraRemoved = false;
+    bool f54nCastTimeUnknown = false;
+    bool f54nAoeRejected = false;
+    bool f54nCastStarted = false;
+    bool f54nHealApplied = false;
+    bool f54nThreatBoundsMatched = false;
+    bool f54nStateRestored = false;
+    bool f54nSpellListRestored = false;
+    bool f54nProcFlagsRestored = false;
+    std::uint32_t f54nImpactCount = 0;
+    std::uint32_t f54nTargetReferenceCount = 0;
+    std::uint32_t f54nUniqueHostileCount = 0;
+    float f54nExpectedThreat0 = 0.0f;
+    float f54nExpectedThreat1 = 0.0f;
+    float f54nActualThreat0 = 0.0f;
+    float f54nActualThreat1 = 0.0f;
+
+    SpellEntry const* const f54nDesperatePrayer =
+        sSpellMgr.GetSpellEntry(19236);
+    SpellEntry const* const f54nInspiration =
+        sSpellMgr.GetSpellEntry(14892);
+    SpellEntry const* const f54nLesserHeal =
+        sSpellMgr.GetSpellEntry(2050);
+    SpellEntry const* const f54nPrayerOfHealing =
+        sSpellMgr.GetSpellEntry(596);
+
+    if (priestHealerAI && healer && healer->IsAlive() &&
+        healer->GetClass() == CLASS_PRIEST && f54nDesperatePrayer &&
+        f54nInspiration && !healer->GetSpellAuraHolder(f54nInspiration->Id))
+    {
+        if (!healer->HasSpell(f54nDesperatePrayer->Id))
+            healer->LearnSpell(f54nDesperatePrayer->Id, false);
+
+        bool const f54nWasInHealList =
+            priestHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
+            priestHealerAI->m_spellListDirectHeal.end();
+        if (!f54nWasInHealList)
+            priestHealerAI->m_spellListDirectHeal.insert(f54nDesperatePrayer);
+
+        f54nRowReady =
+            healer->HasSpell(f54nDesperatePrayer->Id) &&
+            priestHealerAI->m_spellListDirectHeal.find(f54nDesperatePrayer) !=
+                priestHealerAI->m_spellListDirectHeal.end() &&
+            IsSupportedSingleTargetDirectHealSpellShape(f54nDesperatePrayer) &&
+            f54nDesperatePrayer->Effect[0] == SPELL_EFFECT_HEAL &&
+            f54nDesperatePrayer->EffectImplicitTargetA[0] == TARGET_UNIT_CASTER &&
+            f54nDesperatePrayer->EffectImplicitTargetB[0] == TARGET_NONE &&
+            f54nDesperatePrayer->Effect[1] == 0 &&
+            f54nDesperatePrayer->speed == 0.0f &&
+            f54nDesperatePrayer->GetCastTime(healer) == 0 &&
+            f54nDesperatePrayer->ScriptId == 0 &&
+            !f54nDesperatePrayer->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT) &&
+            !f54nDesperatePrayer->CanTriggerWeaponProcs() &&
+            !f54nDesperatePrayer->IsReflectableSpell() &&
+            !f54nDesperatePrayer->IsChanneledSpell();
+        if (f54nRowReady)
+        {
+            map.Update(2000);
+            healer->GetHostileRefManager().deleteReferences();
+            hostiles[0].creature->AddThreat(
+                healer, 20.0f, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
+            hostiles[1].creature->AddThreat(
+                healer, 20.0f, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
+
+            std::uint32_t const savedHealth = healer->GetHealth();
+            std::uint32_t const savedMana = healer->GetPower(POWER_MANA);
+            std::uint32_t const savedTankHealth = tank->GetHealth();
+            healer->SetHealth(std::max<std::uint32_t>(
+                1u, healer->GetMaxHealth() / 2u));
+            healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+            tank->SetHealth(std::max<std::uint32_t>(
+                1u, tank->GetMaxHealth() / 2u));
+            std::uint32_t const f54nHealthBeforeCast = healer->GetHealth();
+
+            PartyCoordinator f54nCoordinator;
+            std::uint32_t const f54nNowMs = WorldTimer::getMSTime();
+            PartySnapshot const* const f54nSnapshot =
+                PartySnapshotBuilder::GetOrBuild(
+                    healer, f54nCoordinator, f54nNowMs, 0);
+            PartyMemberSnapshot const* const f54nBotSnapshot =
+                f54nSnapshot
+                    ? f54nSnapshot->FindMember(
+                        healer->GetObjectGuid().GetRawValue())
+                    : nullptr;
+            if (f54nSnapshot && f54nBotSnapshot)
+            {
+                DecisionContext f54nContext(
+                    *f54nSnapshot, *f54nBotSnapshot, f54nCoordinator,
+                    f54nNowMs, nullptr, nullptr, nullptr, nullptr,
+                    priestHealerAI.get());
+                ActionCandidate f54nCandidate;
+                f54nCandidate.targetGuid =
+                    healer->GetObjectGuid().GetRawValue();
+                f54nCandidate.spellId = f54nDesperatePrayer->Id;
+                f54nCandidate.channel = ActionChannel::GlobalCooldown;
+
+                PriestDirectHealAction f54nAction;
+                ThreatImpactEstimate const initialEstimate =
+                    f54nAction.EstimateThreatImpact(
+                        f54nContext, f54nCandidate);
+                f54nLivePreflight = priestHealerAI->CanCastDirectHeal(
+                    f54nContext, f54nCandidate.targetGuid,
+                    f54nCandidate.spellId);
+                f54nEstimateComplete =
+                    initialEstimate.completeness ==
+                        ThreatImpactCompleteness::Complete &&
+                    IsWellFormedThreatImpactEstimate(initialEstimate);
+                f54nSnapshotMatches =
+                    IsThreatImpactEstimateForSnapshot(
+                        initialEstimate, f54nSnapshot->epoch);
+                f54nImpactCount = static_cast<std::uint32_t>(
+                    initialEstimate.impacts.size());
+
+                std::vector<Guid> f54nUniqueHostiles;
+                for (HostileReference* reference =
+                         healer->GetHostileRefManager().getFirst();
+                     reference; reference = reference->next())
+                    ++f54nTargetReferenceCount;
+                for (ThreatImpactEntry const& impact : initialEstimate.impacts)
+                {
+                    if (std::find(f54nUniqueHostiles.begin(),
+                                  f54nUniqueHostiles.end(),
+                                  impact.hostileGuid) == f54nUniqueHostiles.end())
+                        f54nUniqueHostiles.push_back(impact.hostileGuid);
+                    if (impact.hostileGuid ==
+                        hostiles[0].creature->GetObjectGuid().GetRawValue())
+                        f54nExpectedThreat0 += impact.threatPoints;
+                    else if (impact.hostileGuid ==
+                             hostiles[1].creature->GetObjectGuid().GetRawValue())
+                        f54nExpectedThreat1 += impact.threatPoints;
+                }
+                f54nUniqueHostileCount =
+                    static_cast<std::uint32_t>(f54nUniqueHostiles.size());
+                f54nImpactHostilesMatch =
+                    f54nTargetReferenceCount == 2 &&
+                    f54nUniqueHostileCount == 2 &&
+                    f54nExpectedThreat0 > 0.0f &&
+                    f54nExpectedThreat1 > 0.0f;
+
+                // Inspiration has a hard-coded helpful-proc branch in Vanilla
+                // even when the database proc flags are empty. It must veto
+                // promotion to Complete while its aura is active.
+                std::uint32_t const savedInspirationProcFlags =
+                    const_cast<SpellEntry*>(f54nInspiration)->procFlags;
+                const_cast<SpellEntry*>(f54nInspiration)->procFlags |=
+                    PROC_FLAG_DEAL_HELPFUL_SPELL;
+                SpellAuraHolder* const f54nProcAura =
+                    healer->AddAura(
+                        f54nInspiration->Id, EFFECT_INDEX_0, healer);
+                if (f54nProcAura)
+                {
+                    ThreatImpactEstimate const procEstimate =
+                        f54nAction.EstimateThreatImpact(
+                            f54nContext, f54nCandidate);
+                    f54nProcVeto =
+                        procEstimate.completeness ==
+                            ThreatImpactCompleteness::Unknown &&
+                        procEstimate.impacts.empty() &&
+                        procEstimate.reason ==
+                            "direct_heal_proc_closure_unbounded";
+                    healer->RemoveAurasDueToSpell(f54nInspiration->Id);
+                    f54nProcAuraRemoved =
+                        !healer->GetSpellAuraHolder(f54nInspiration->Id);
+                }
+                const_cast<SpellEntry*>(f54nInspiration)->procFlags =
+                    savedInspirationProcFlags;
+                f54nProcFlagsRestored =
+                    f54nInspiration->procFlags == savedInspirationProcFlags;
+
+                // Ordinary Lesser Heal has a cast time, so its detached
+                // pre-cast threat forecast must remain Unknown.
+                ThreatImpactEstimate const castTimeEstimate =
+                    f54nLesserHeal
+                        ? EstimateSupportedInstantDirectHealThreat(
+                            healer, tank, f54nLesserHeal, *f54nSnapshot)
+                        : ThreatImpactEstimate();
+                f54nCastTimeUnknown =
+                    castTimeEstimate.completeness ==
+                        ThreatImpactCompleteness::Unknown &&
+                    castTimeEstimate.impacts.empty() &&
+                    castTimeEstimate.reason ==
+                        "direct_heal_cast_time_or_projectile_allows_future_threat_changes";
+                f54nAoeRejected = f54nPrayerOfHealing &&
+                    !IsSupportedSingleTargetDirectHealSpellShape(
+                        f54nPrayerOfHealing);
+
+                // Re-estimate after removing Inspiration; only now may the
+                // action cross the threat budget boundary.
+                ThreatImpactEstimate const restoredEstimate =
+                    f54nAction.EstimateThreatImpact(
+                        f54nContext, f54nCandidate);
+                if (restoredEstimate.completeness ==
+                        ThreatImpactCompleteness::Complete &&
+                    IsWellFormedThreatImpactEstimate(restoredEstimate))
+                {
+                    f54nExpectedThreat0 = 0.0f;
+                    f54nExpectedThreat1 = 0.0f;
+                    for (ThreatImpactEntry const& impact :
+                         restoredEstimate.impacts)
+                    {
+                        if (impact.hostileGuid ==
+                            hostiles[0].creature->GetObjectGuid().GetRawValue())
+                            f54nExpectedThreat0 += impact.threatPoints;
+                        else if (impact.hostileGuid ==
+                                 hostiles[1].creature->GetObjectGuid().GetRawValue())
+                            f54nExpectedThreat1 += impact.threatPoints;
+                    }
+
+                    float const beforeThreat0 =
+                        hostiles[0].creature->GetThreatManager().getThreat(healer);
+                    float const beforeThreat1 =
+                        hostiles[1].creature->GetThreatManager().getThreat(healer);
+                    f54nCastStarted = priestHealerAI->StartDirectHeal(
+                        f54nContext, f54nCandidate.targetGuid,
+                        f54nCandidate.spellId);
+                    f54nActualThreat0 =
+                        hostiles[0].creature->GetThreatManager().getThreat(healer) -
+                        beforeThreat0;
+                    f54nActualThreat1 =
+                        hostiles[1].creature->GetThreatManager().getThreat(healer) -
+                        beforeThreat1;
+                    f54nHealApplied =
+                        healer->GetHealth() > f54nHealthBeforeCast;
+                    f54nThreatBoundsMatched =
+                        f54nActualThreat0 >= -0.5f &&
+                        f54nActualThreat1 >= -0.5f &&
+                        f54nActualThreat0 <= f54nExpectedThreat0 + 0.5f &&
+                        f54nActualThreat1 <= f54nExpectedThreat1 + 0.5f;
+                }
+            }
+
+            healer->RemoveAurasDueToSpell(f54nInspiration->Id);
+            healer->SetHealth(savedHealth);
+            healer->SetPower(POWER_MANA, savedMana);
+            tank->SetHealth(savedTankHealth);
+            if (!f54nWasInHealList)
+                priestHealerAI->m_spellListDirectHeal.erase(
+                    f54nDesperatePrayer);
+            f54nSpellListRestored =
+                f54nWasInHealList ||
+                priestHealerAI->m_spellListDirectHeal.find(
+                    f54nDesperatePrayer) ==
+                    priestHealerAI->m_spellListDirectHeal.end();
+            f54nStateRestored =
+                healer->GetHealth() == savedHealth &&
+                healer->GetPower(POWER_MANA) == savedMana &&
+                tank->GetHealth() == savedTankHealth &&
+                !healer->GetSpellAuraHolder(f54nInspiration->Id);
+        }
+    }
+
+    bool const f54nPassed =
+        f54nRowReady && f54nLivePreflight && f54nEstimateComplete &&
+        f54nSnapshotMatches && f54nImpactHostilesMatch &&
+        f54nProcVeto && f54nProcAuraRemoved && f54nProcFlagsRestored &&
+        f54nCastTimeUnknown && f54nAoeRejected && f54nCastStarted &&
+        f54nHealApplied && f54nThreatBoundsMatched &&
+        f54nStateRestored && f54nSpellListRestored;
+    sLog.Out(LOG_BASIC, f54nPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F54n single-target direct-heal threat closure: rowReady=%u livePreflight=%u estimateComplete=%u snapshotMatches=%u impacts=%u targetRefs=%u uniqueHostiles=%u procVeto=%u procAuraRemoved=%u procFlagsRestored=%u castTimeUnknown=%u aoeRejected=%u castStarted=%u healApplied=%u threatBoundsMatched=%u stateRestored=%u spellListRestored=%u expectedThreat=%.3f/%.3f actualThreat=%.3f/%.3f.",
+        f54nRowReady ? 1u : 0u,
+        f54nLivePreflight ? 1u : 0u,
+        f54nEstimateComplete ? 1u : 0u,
+        f54nSnapshotMatches ? 1u : 0u,
+        f54nImpactCount,
+        f54nTargetReferenceCount,
+        f54nUniqueHostileCount,
+        f54nProcVeto ? 1u : 0u,
+        f54nProcAuraRemoved ? 1u : 0u,
+        f54nProcFlagsRestored ? 1u : 0u,
+        f54nCastTimeUnknown ? 1u : 0u,
+        f54nAoeRejected ? 1u : 0u,
+        f54nCastStarted ? 1u : 0u,
+        f54nHealApplied ? 1u : 0u,
+        f54nThreatBoundsMatched ? 1u : 0u,
+        f54nStateRestored ? 1u : 0u,
+        f54nSpellListRestored ? 1u : 0u,
+        f54nExpectedThreat0, f54nExpectedThreat1,
+        f54nActualThreat0, f54nActualThreat1);
+    if (f54nPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F54n promoted one supported instant self-target heal to Complete, rejected active helpful-proc and cast-time/AoE paths, matched both real Core hostile ThreatManagers within the full-health upper bound, and restored Player state.");
+
     // F54f must run before this boundary so its real proc/child Spell work
     // still has live source-Map Players. Restore the original Group/session
     // teardown immediately afterward; otherwise the five Players, Group and

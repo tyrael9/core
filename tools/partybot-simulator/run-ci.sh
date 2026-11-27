@@ -600,6 +600,35 @@ if ! awk -v b0="$f54m_baseline0" -v b1="$f54m_baseline1" \
     exit 1
 fi
 
+f54n_line="$(grep -F '[PartyBotSimulator] F54n single-target direct-heal threat closure:' "$LOG_FILE" | tail -n 1 | sed -E 's/\x1B\[[0-9;]*[[:alpha:]]//g')"
+for expected in "rowReady=1" "livePreflight=1" "estimateComplete=1" "snapshotMatches=1" "impacts=2" "targetRefs=2" "uniqueHostiles=2" "procVeto=1" "procAuraRemoved=1" "procFlagsRestored=1" "castTimeUnknown=1" "aoeRejected=1" "castStarted=1" "healApplied=1" "threatBoundsMatched=1" "stateRestored=1" "spellListRestored=1"; do
+    if [[ "$f54n_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F54n direct-heal whole-action assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+f54n_expected="$(grep -oE 'expectedThreat=[0-9]+([.][0-9]+)?/[0-9]+([.][0-9]+)?' <<< "$f54n_line" | cut -d= -f2)"
+f54n_actual="$(grep -oE 'actualThreat=[-]?[0-9]+([.][0-9]+)?/[-]?[0-9]+([.][0-9]+)?' <<< "$f54n_line" | cut -d= -f2)"
+IFS='/' read -r f54n_expected0 f54n_expected1 <<< "$f54n_expected"
+IFS='/' read -r f54n_actual0 f54n_actual1 <<< "$f54n_actual"
+if [[ -z "$f54n_expected0" || -z "$f54n_expected1" || -z "$f54n_actual0" || -z "$f54n_actual1" ]]; then
+    echo "[PartyBotSimulator] F54n numeric threat bounds are missing or malformed." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! awk -v e0="$f54n_expected0" -v e1="$f54n_expected1" \
+        -v a0="$f54n_actual0" -v a1="$f54n_actual1" \
+        'BEGIN {
+            if (e0 <= 0 || e1 <= 0 || a0 < -0.5 || a1 < -0.5) exit 1;
+            if (a0 > e0 + 0.5 || a1 > e1 + 0.5) exit 1;
+        }'; then
+    echo "[PartyBotSimulator] F54n actual Core threat exceeded the estimated full-health upper bound." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! grep -Fq "[PartyBotSimulator] PASS: F54n promoted one supported instant self-target heal to Complete, rejected active helpful-proc and cast-time/AoE paths, matched both real Core hostile ThreatManagers within the full-health upper bound, and restored Player state." "$LOG_FILE"; then
+    echo "[PartyBotSimulator] F54n Core-backed whole-action PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 f54m_guard_count="$(grep -Fc 'Spell 2061 triggered by aura spell 14892 too deep in cast chain for cast.' "$LOG_FILE" || true)"
 if [[ "$f54m_guard_count" != "5" ]]; then
     echo "[PartyBotSimulator] Expected exactly five Core cast-chain guard rejections for the cyclic Flash Heal child, found $f54m_guard_count." | tee -a "$LOG_FILE"
@@ -1161,4 +1190,4 @@ for expected in "engineCastSkipped=1" "externalDirectCaptured=1" "hotCaptured=1"
 done
 grep -F "[PartyBotSimulator] PASS: F54c live Core snapshot skipped an Engine-owned heal already covered by its Heal reservation" "$LOG_FILE" >/dev/null
 
-echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, explicit damage-interleaved healing projection, triggered caster/recipient child-heal and per-hostile threat parity, periodic-healing-assist, periodic-power-assist, periodic-mana-leech and composite periodic-life-leech threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Engine-selected item-backed self-utility action and stale-inventory race rejection, single-/multi-slot Core item-use aggregation, stack-count consumable and item-as-reagent mutations, per-child Spell correlation and independent charge mutations, CoreAction map-thread actor/target/map-instance preflight, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, PartyBotAI encounter-correlated death/resurrection trace records, party-wide trace-budget overflow/one-shot marker, sampled non-PlayerBots health/death/resurrection events, server-shutdown encounter flush, source-map final-bot departure closure, source-to-destination dungeon-map transfer and destination shard recreation, five-Player party-wipe/resurrection recovery, NewEngine ghost self-resurrection and formation recovery, sampled trigger activation/cadence and originating-trigger candidate correlation, Engine action ID propagation through PartyBotAI and Core Spell prepare/finish terminal, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup, F54i same-millisecond Core Heal/Damage fail-closed, F54j caster damage pushback plus refreshed snapshot/interruption invalidation, F54k random HoT tick bounds, F54l school-aware absorb matching, F54m bounded four-cast child-chain depth/loop protection and four-spell per-hostile threat parity, F54g target-trigger fan-out plus F54h nested child/grandchild chain." | tee -a "$LOG_FILE"
+echo "[PartyBotSimulator] Runtime PASS: Core map, Creature updates, Core-applied direct/periodic-damage, explicit damage-interleaved healing projection, triggered caster/recipient child-heal and per-hostile threat parity, periodic-healing-assist, periodic-power-assist, periodic-mana-leech and composite periodic-life-leech threat-impact parity, threat switching, Engine attack, triggered spell healing, Player non-triggered spell completion, Engine-selected item-backed self-utility action and stale-inventory race rejection, single-/multi-slot Core item-use aggregation, stack-count consumable and item-as-reagent mutations, per-child Spell correlation and independent charge mutations, CoreAction map-thread actor/target/map-instance preflight, Core point movement, native FollowMovementGenerator tracking, Player follow pause/resume around a non-triggered cast, follow retarget/recovery after leader handoff and target removal, Player heal range/resource/LOS rejection, movement refusal under CAN_NOT_MOVE/POSSESSED, combined real five-Player Core Group roster/cache snapshot, multi-add healer-threat and Core threat projection, Tank/Healer death-reference cleanup, PartyBotAI encounter-correlated death/resurrection trace records, party-wide trace-budget overflow/one-shot marker, sampled non-PlayerBots health/death/resurrection events, server-shutdown encounter flush, source-map final-bot departure closure, source-to-destination dungeon-map transfer and destination shard recreation, five-Player party-wipe/resurrection recovery, NewEngine ghost self-resurrection and formation recovery, sampled trigger activation/cadence and originating-trigger candidate correlation, Engine action ID propagation through PartyBotAI and Core Spell prepare/finish terminal, multi-add retarget recovery, non-victim/offline HostileRefManager threat discovery, movement-driven Player cast interruption and actor cleanup, F54i same-millisecond Core Heal/Damage fail-closed, F54j caster damage pushback plus refreshed snapshot/interruption invalidation, F54k random HoT tick bounds, F54l school-aware absorb matching, F54m bounded four-cast child-chain depth/loop protection and four-spell per-hostile threat parity, F54n instant self-target direct-heal whole-action threat bounds plus active-proc/cast-time/AoE fail-closed gates, F54g target-trigger fan-out plus F54h nested child/grandchild chain." | tee -a "$LOG_FILE"

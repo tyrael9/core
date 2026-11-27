@@ -1,18 +1,32 @@
 # PartyBot Core build, runtime and trace testing
 
-## F54o — deferred pre-impact spell admission (trusted runtime pending)
+## F54p — deferred-admission cooldown/GCD commit boundary (trusted runtime pending)
 
-Trusted push [#45974197713](https://github.com/tyrael9/core/actions/runs/45974197713) passed pure Engine tests, report collector tests, Configure, the full Linux ARM64 / Vanilla 5875 build and simulator-harness syntax, then failed the required Core-backed runtime assertion. The fixture reported `rejectIntent=1 rejectAuthorize=0 rejectTerminal=1 rejectNoEffects=0 rejectThreatDelta=0.000 acceptIntent=1 acceptAuthorize=0 acceptTerminal=0 acceptHeal=0`. Its log showed `[PartyBotSpellAdmission] prepare CheckCast(true) rejected: spell=19236 result=60 target=42 state=1`.
+Commit [`dd4b26b`](https://github.com/tyrael9/core/commit/dd4b26b263e185920aa52cb41a1214455a53e357) extends the real F54o simulator fixture to close a specific assertion gap. Immediately after the denied pre-impact authorization returns, and before the second cast trial resets any state, the fixture now requires `IsSpellReady()` and no active GCD. On the accepted path it derives applicability from the loaded SpellEntry's `RecoveryTime` / `CategoryRecoveryTime` and `StartRecoveryTime` / `StartRecoveryCategory`, then requires Core to have committed each applicable cooldown. The original health, mana, hostile-threat, terminal-callback, positive-heal and adapter-restoration checks remain mandatory.
 
-Result 60 is `SPELL_FAILED_NOT_READY`. The source path in `Spell::CheckCast(true)` checks `IsSpellReady()` (spell/category cooldown state) before the separate GCD check. The preceding F54n test had successfully cast the same Desperate Prayer spell (19236) on the same simulator Player, so Core correctly retained its cooldown and rejected F54o's immediate reuse. The batching gate was already corrected by `70b1181`; this is a separate test-fixture state-isolation issue, not an admission or target-shape failure.
+Trusted push [#45982411756](https://github.com/tyrael9/core/actions/runs/45982411756) is running the full ARM64 / Vanilla 5875 build and fixture-backed simulator. Matching PR-safe run [#45982421185](https://github.com/tyrael9/core/actions/runs/45982421185) is queued; it must not be treated as runtime evidence because PR context intentionally skips the private fixture. Keep F54p open until the new boundary flags pass and the trusted job reaches final `Runtime PASS`.
 
-Commit `f2a1106b766e23a8e4182981973484e8a14909f2` clears the temporary Player's Desperate Prayer spell cooldown, its cooldown category when nonzero, and its matching GCD before each F54o trial. The fixture records and requires `IsSpellReady()` and no matching GCD before both the reject and accept attempts. It leaves the shared SpellEntry unchanged, keeps Core's CheckCast validation intact, and retains the strict resolved target/zero-impact-delay authorization gate. The trusted runtime after this change is pending.
+## F54o — Core-owned deferred pre-impact admission (trusted runtime validated)
 
-**Test-map aggregate clarification:** trusted run [#45974197713](https://github.com/tyrael9/core/actions/runs/45974197713) printed `groupThreatSnapshot=0` in the Test-map stage matrix, while all other listed components were 1. This is not a separate Group fixture failure: the matrix value is the return of `RunEngineCoreRealGroupThreatSnapshotSmokeTest()`, whose final code returns false when the nested F54o fixture fails. The same run reported final five-Player Group/session cleanup `passed=1`. Do not carry forward the earlier claim that a second independent Group/combat fixture was failing.
+Trusted push [#45976622135](https://github.com/tyrael9/core/actions/runs/45976622135) passed the Linux ARM64 / Vanilla 5875 build, simulator harness, fixture-backed Core runtime, clean shutdown and final `Runtime PASS`. Artifact: [partybot-simulator-f2a1106](https://github.com/tyrael9/core/actions/runs/45976622135/artifacts/15186994795). The mandatory fixture marker reported:
 
-Keep all F54o assertions mandatory. Do not weaken authorization, terminal, no-side-effect, positive-heal, mana or threat checks, and do not restore the old false-green aggregate behavior. Default PlayerAI remains `Unmanaged`; PartyBotAI still has no admission override, PriestDirectHealAction and Priest Healing Strategy remain unregistered, and the whole-action estimate remains `Unknown`.
+```
+rejectIntent=1 rejectAuthorize=1 rejectTerminal=1 rejectNoEffects=1 rejectThreatDelta=0.000
+rejectSpellReady=1 rejectNoGcd=1 rejectHealth=858/858 rejectMana=2896/2896
+acceptIntent=1 acceptAuthorize=1 acceptTerminal=1 acceptHeal=1
+acceptSpellReady=1 acceptNoGcd=1 acceptHealth=858/1192 acceptMana=2896/2896
+adapterRestored=1
+```
 
-Next: verify the trusted run after `f2a1106`. If readiness preconditions are true and the calls reach authorization, validate rejection/acceptance plus cooldown/GCD/proc/aura and terminal invariants. Then continue with stale target/recipient changes, cancellation and cleanup.
+The rejection path therefore reached the real authorization callback and terminal notification without changing health, mana or hostile threat; the explicitly authorized path completed the self-heal. The full Test-map matrix reported every fixture as 1, including `groupThreatSnapshot=1`; final five-Player Group/session cleanup was `passed=1`. Matching PR-safe build [#45976630677](https://github.com/tyrael9/core/actions/runs/45976630677) passed its available checks; the secret-backed runtime is intentionally skipped in PR context.
+
+The first trusted attempt [#45971844860](https://github.com/tyrael9/core/actions/runs/45971844860) revealed that Desperate Prayer (19236) had `m_delayed=1` despite `speed=0`. This flag is coarse batching eligibility, not the resolved target's actual impact delay; for the non-chain self-target, `GetSpellBatchingEffectDelay()` returns zero. Commit `70b1181` removed only that premature global gate; the resolved target check still requires exactly one caster recipient and `TargetInfo.timeDelay == 0`.
+
+The next trusted attempt reached `Spell::CheckCast(true)` but returned result 60, `SPELL_FAILED_NOT_READY`. F54n had just cast the same spell on the same temporary simulator Player, leaving its legitimate spell/category cooldown active. Commit `f2a1106` isolates F54o's trials by clearing the temporary Player's spell cooldown, category cooldown (when nonzero) and matching GCD before each trial; it does not alter the shared SpellEntry or bypass Core readiness checks.
+
+**Test-map aggregate clarification:** the earlier failing run [#45974197713](https://github.com/tyrael9/core/actions/runs/45974197713) printed `groupThreatSnapshot=0`, but that value propagated the nested F54o failure through `RunEngineCoreRealGroupThreatSnapshotSmokeTest()`; it was not an independent Group fixture failure. The later successful run's matrix is fully green, and the final Group/session cleanup assertion passed.
+
+Keep the admission path narrow and fail-closed. Default PlayerAI remains `Unmanaged`; PartyBotAI still has no admission override; `PriestDirectHealAction` and Priest Healing Strategy remain unregistered; whole-action threat estimate remains `Unknown`. F54o validates the opt-in Core seam, not production healing policy.
 
 ## F54d damage-aware healing forecast runtime evidence
 

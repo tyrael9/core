@@ -68,7 +68,7 @@ This validates ordered Core health application for direct calls only. It does no
 
 ## Automated compile CI
 
-The focused workflow at .github/workflows/partybot-core-build.yml runs the standalone PartyBot Engine tests, Python unit tests for the read-only encounter report collector, and builds the pinned Vanilla 1.12.1 / build 5875 C++14 Core on Linux ARM64, matching the Oracle A1 target. Trusted branch pushes additionally run the fixture-backed simulator when the extracted-data URL and checksum secrets are available; PR jobs deliberately skip that fixture runtime because secrets are not exposed.
+The focused workflow at .github/workflows/partybot-core-build.yml runs the standalone PartyBot Engine tests, Python unit tests for the read-only encounter report collector, and builds the pinned Vanilla 1.12.1 / build 5875 C++14 Core on Linux ARM64, matching the Oracle A1 target. Trusted branch pushes and manual full-validation dispatches run the fixture-backed simulator. Both extracted-data URL and checksum secrets are mandatory in those contexts; the workflow preflight fails if either is missing, so a green trusted run cannot silently skip runtime. PR jobs deliberately skip the fixture runtime because secrets are not exposed.
 
 A successful run proves configure/compile/link in that CI environment. It does not prove runtime behavior, live snapshot correctness, instance persistence, database compatibility beyond compilation or successful operation on the Oracle realm. It is not permission to deploy.
 

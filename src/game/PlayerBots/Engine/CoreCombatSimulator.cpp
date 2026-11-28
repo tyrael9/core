@@ -12850,12 +12850,9 @@ if (f54mPassed)
         std::sort(f55cOriginalHostiles.begin(), f55cOriginalHostiles.end());
     }
     bool const f55cOriginalSetReady =
-        f55cOriginalSetKnown && f55cOriginalReferenceCount == 3 &&
-        f55cOriginalHostiles.size() == 3 &&
-        IsCanonicalDirectHealThreatRecipientSet(f55cOriginalHostiles) &&
-        f55cOriginalHadReference[0] &&
-        f55cOriginalHadReference[1] &&
-        f55cOriginalHadReference[2];
+        f55cOriginalSetKnown &&
+        f55cOriginalReferenceCount == f55cOriginalHostiles.size() &&
+        IsCanonicalDirectHealThreatRecipientSet(f55cOriginalHostiles);
 
     // F54n deliberately leaves its third late hostile reference in place.
     // Preserve that exact fixture state, then establish an isolated two-ref

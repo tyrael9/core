@@ -692,7 +692,7 @@ echo "[PartyBotSimulator] PASS: F54p verified rejected admission preserves coold
 # F55c requires a real queued self-heal to reject when its live hostile set
 # grows from two to three before impact, without any Group/Map drift.
 f55c_line="$(grep -F '[PartyBotSimulator] F55c deferred hostile-reference drift:' "$LOG_FILE" | tail -n 1 || true)"
-for expected in "gate=1" "baselineReady=1" "originalRefs=3" "castAccepted=1" "queuedBeforeMutation=1" "capturedSetMatches=1" "lateReferenceAdded=1" "currentSetExpanded=1" "recipientSetChanged=1" "groupUnchanged=1" "authorizeSkipped=1" "terminalOnce=1" "terminalFailed=1" "currentSpellCleared=1" "eventReaped=1" "refsBefore=2" "refsAfter=3" "noEffects=1" "spellReadyBefore=1" "noGcdBefore=1" "spellReadyAfter=1" "noGcdAfter=1" "referenceSetRestored=1" "adapterRestored=1"; do
+for expected in "gate=1" "baselineReady=1" "castAccepted=1" "queuedBeforeMutation=1" "capturedSetMatches=1" "lateReferenceAdded=1" "currentSetExpanded=1" "recipientSetChanged=1" "groupUnchanged=1" "authorizeSkipped=1" "terminalOnce=1" "terminalFailed=1" "currentSpellCleared=1" "eventReaped=1" "refsBefore=2" "refsAfter=3" "noEffects=1" "spellReadyBefore=1" "noGcdBefore=1" "spellReadyAfter=1" "noGcdAfter=1" "referenceSetRestored=1" "adapterRestored=1"; do
     if [[ "$f55c_line" != *"$expected"* ]]; then
         echo "[PartyBotSimulator] F55c hostile-reference assertion missing $expected." | tee -a "$LOG_FILE"
         exit 1

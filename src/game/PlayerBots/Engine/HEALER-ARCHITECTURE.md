@@ -20,10 +20,10 @@ The branch already contains useful shared infrastructure:
 
 These are shared mechanisms, not yet a complete shared healer implementation. Important current Priest-only gates remain:
 
-1. `PartySnapshotBuilder.cpp` populates `directHealSpells` only when the member is `CLASS_PRIEST` with `ROLE_HEALER`. The snapshot row is class-neutral in shape (`spellId`, `baseHealing`, `manaCost`), but the collector is not class-neutral.
-2. `PriestHealingPolicy.h` owns Priest-named target selection, uncovered-health accounting and rank selection. It consumes supported incoming HoT/absorb/current-cast forecasts and reservations, but these helpers have not yet been extracted as shared policies.
-3. `PriestDirectHealAction.h` checks class ID 5, uses the Priest policy and Priest-specific runtime calls/reasons. `PartyBotAI::CanCastDirectHeal` independently rejects non-Priest actors.
-4. No healing action/strategy is registered in production NewEngine. Default spell-cast admission remains `Unmanaged`; the Priest direct-heal action's whole-action threat estimate remains fail-closed until its complete proc/child-effect fan-out is established.
+1. `PartySnapshotBuilder.cpp` now collects value-only direct-heal profiles for healer-role Paladin, Shaman, Priest and Druid bots. Rows contain spell ID, positive direct-heal base amount, Core-calculated mana cost, actor-adjusted Core cast time and a strict `supportedSingleTargetDirect` effect-shape flag. This catalog change is in CI validation; its shape flag is not whole-action safety.
+2. `HealerPolicy.h` now owns class-neutral uncovered-health accounting, incoming-credit, target triage, Heal-reservation and deterministic direct-heal rank selection. `PriestHealingPolicy.h` preserves Priest-named compatibility wrappers and the explicit Priest class gate.
+3. `PriestDirectHealAction.h` and `PartyBotAI::CanCastDirectHeal` remain Priest-only. No Paladin/Shaman/Druid action adapter exists yet; a later adapter must apply its own spell allow-list and class-specific policy.
+4. No healing action/strategy is registered in production NewEngine. Default spell-cast admission remains `Unmanaged`; whole-action healing threat remains fail-closed until complete proc/child-effect fan-out and the relevant Core admission shape are proven.
 
 ## Non-negotiable safety boundaries
 

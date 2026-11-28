@@ -43,6 +43,7 @@
 #include "PlayerBots/Engine/HealingForecast.h"
 #include "PlayerBots/Engine/PriestDirectHealAction.h"
 #include "PlayerBots/Engine/CoreThreatImpactEstimator.h"
+#include "PlayerBots/Engine/DirectHealImpactContract.h"
 #include "PlayerBots/Engine/ThreatBudgetPolicy.h"
 #include "PlayerBots/Engine/Strategy.h"
 #include "PlayerBots/Engine/Trigger.h"

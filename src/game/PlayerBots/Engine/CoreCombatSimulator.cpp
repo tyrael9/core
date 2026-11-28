@@ -13488,7 +13488,7 @@ if (f54mPassed)
             // the Player object, so the fixture can safely re-add it afterward.
             map.Remove(f54tMember, false);
             f54tMapRemoved = !f54tMember->IsInWorld() &&
-                f54tMember->GetMap() == nullptr && map.GetUnit(f54tGuid) == nullptr;
+                f54tMember->FindMap() == nullptr && map.GetUnit(f54tGuid) == nullptr;
             f54tGroupPreserved =
                 group->IsMember(f54tGuid) && f54tMember->GetGroup() == group.get() &&
                 group->GetMembersCount() == f54tGroupCount &&
@@ -13563,7 +13563,7 @@ if (f54mPassed)
                 mutableSpell->EffectImplicitTargetA[0] == savedTargetA;
         }
 
-        if (!f54tMember->IsInWorld() && f54tMember->GetMap() == nullptr)
+        if (!f54tMember->IsInWorld() && f54tMember->FindMap() == nullptr)
             f54tMapRestored = map.Add(f54tMember);
         else
             f54tMapRestored = f54tMember->IsInWorld() &&

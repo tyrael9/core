@@ -13715,6 +13715,11 @@ if (f54mPassed)
     bool f54uDestinationMapDeleted = false, f54uAdapterRestored = false;
     bool f54uAdapterIntactBeforeUpdate = false;
     bool f54uAdapterIntactAfterUpdate = false;
+    uint32 f54uObservedTerminalCalls = 0;
+    uint64 f54uObservedTerminalActionId = 0;
+    uint64 f54uObservedTerminalEncounterId = 0;
+    bool f54uObservedTerminalSuccess = false;
+    bool f54uObservedTerminalEngineAction = false;
     uint32 f54uHealerHealthBefore = 0, f54uHealerHealthAfter = 0;
     uint32 f54uMemberHealthBefore = 0, f54uMemberHealthAfter = 0;
     uint32 f54uManaBefore = 0, f54uManaAfter = 0, f54uEventUpdates = 0;
@@ -13863,6 +13868,12 @@ if (f54mPassed)
                         healer->AI() == &destinationAdapter;
                 }
             }
+            // Preserve the actual adapter callback payload before restoring the prior AI.
+            f54uObservedTerminalCalls = destinationAdapter.terminalCalls;
+            f54uObservedTerminalActionId = destinationAdapter.terminalActionId;
+            f54uObservedTerminalEncounterId = destinationAdapter.terminalEncounterId;
+            f54uObservedTerminalSuccess = destinationAdapter.terminalSuccess;
+            f54uObservedTerminalEngineAction = destinationAdapter.terminalEngineAction;
         }
 
         f54uCurrentCleared =
@@ -14022,7 +14033,7 @@ if (f54mPassed)
         static_cast<unsigned long long>(f54uGuid.GetRawValue()));
 
     sLog.Out(LOG_BASIC, f54uPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54u cross-Map Group recipient: gatePassed=%u castAccepted=%u queuedBeforeTransfer=%u selectorChanged=%u inputTargetChanged=%u sourceRemoved=%u groupPreserved=%u destinationAdded=%u liveOnDestination=%u sourceCannotResolve=%u queuedGuidRetained=%u coreCanceled=%u authorizeSkipped=%u terminalOnce=%u terminalInterrupted=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u adapterIntactBeforeUpdate=%u adapterIntactAfterUpdate=%u healerHealth=%u/%u recipientHealth=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u selectorRestored=%u destinationRemoved=%u mapRestored=%u worldRestored=%u locationRestored=%u groupRestored=%u subgroupRestored=%u instanceValidRestored=%u leaderRestored=%u assistantRestored=%u destinationBindReleased=%u destinationMapDeleted=%u adapterRestored=%u expectedTargetGuid=%llu.",
+        "[PartyBotSimulator] F54u cross-Map Group recipient: gatePassed=%u castAccepted=%u queuedBeforeTransfer=%u selectorChanged=%u inputTargetChanged=%u sourceRemoved=%u groupPreserved=%u destinationAdded=%u liveOnDestination=%u sourceCannotResolve=%u queuedGuidRetained=%u coreCanceled=%u authorizeSkipped=%u terminalOnce=%u terminalInterrupted=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u adapterIntactBeforeUpdate=%u adapterIntactAfterUpdate=%u terminalCalls=%u terminalActionId=%llu terminalEncounterId=%llu terminalSuccess=%u terminalEngineAction=%u healerHealth=%u/%u recipientHealth=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u selectorRestored=%u destinationRemoved=%u mapRestored=%u worldRestored=%u locationRestored=%u groupRestored=%u subgroupRestored=%u instanceValidRestored=%u leaderRestored=%u assistantRestored=%u destinationBindReleased=%u destinationMapDeleted=%u adapterRestored=%u expectedTargetGuid=%llu.",
         f54uGate ? 1u : 0u, f54uCastAccepted ? 1u : 0u,
         f54uQueued ? 1u : 0u, f54uSelectorChanged ? 1u : 0u,
         f54uTargetChanged ? 1u : 0u, f54uSourceRemoved ? 1u : 0u,
@@ -14034,6 +14045,11 @@ if (f54mPassed)
         f54uEventReaped ? 1u : 0u, f54uEventUpdates,
         f54uAdapterIntactBeforeUpdate ? 1u : 0u,
         f54uAdapterIntactAfterUpdate ? 1u : 0u,
+        f54uObservedTerminalCalls,
+        static_cast<unsigned long long>(f54uObservedTerminalActionId),
+        static_cast<unsigned long long>(f54uObservedTerminalEncounterId),
+        f54uObservedTerminalSuccess ? 1u : 0u,
+        f54uObservedTerminalEngineAction ? 1u : 0u,
         f54uHealerHealthBefore, f54uHealerHealthAfter,
         f54uMemberHealthBefore, f54uMemberHealthAfter,
         f54uManaBefore, f54uManaAfter, f54uThreatDelta,

@@ -13654,7 +13654,21 @@ if (f54mPassed)
     static uint32 constexpr F54uDestinationMapId = 34; // Stockades.
     uint64 const f54uActionId = 0xF54F000BULL;
     uint64 const f54uEncounterId = 0xF54F000CULL;
-    Player* const f54uMember = f54tMember;
+    Player* f54uCandidate = nullptr;
+    for (Player* candidate : players)
+    {
+        if (candidate && candidate != healer && candidate != tank &&
+            candidate != f54tMember && candidate->IsAlive() &&
+            candidate->IsInWorld() && candidate->GetMap() == &map &&
+            group && group->IsMember(candidate->GetObjectGuid()) &&
+            candidate->GetGroup() == group.get() &&
+            candidate->GetObjectGuid() != group->GetLeaderGuid())
+        {
+            f54uCandidate = candidate;
+            break;
+        }
+    }
+    Player* const f54uMember = f54uCandidate;
     ObjectGuid const f54uGuid = f54uMember
         ? f54uMember->GetObjectGuid() : ObjectGuid();
     uint32 const f54uGroupCount = group ? group->GetMembersCount() : 0;

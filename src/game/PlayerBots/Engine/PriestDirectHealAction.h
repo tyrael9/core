@@ -70,7 +70,8 @@ public:
             [&context, &candidate](DirectHealSpellSnapshot const& spell)
             {
                 return spell.spellId == candidate.spellId &&
-                    spell.baseHealing && spell.manaCost <= context.bot.power;
+                    spell.baseHealing && spell.supportedSingleTargetDirect &&
+                    spell.manaCost <= context.bot.power;
             });
         if (!spellAvailable)
         {
@@ -128,7 +129,8 @@ protected:
 
         DirectHealSpellSnapshot const* selectedSpell = nullptr;
         for (DirectHealSpellSnapshot const& spell : context.bot.directHealSpells)
-            if (spell.spellId == candidate.spellId && spell.baseHealing) {
+            if (spell.spellId == candidate.spellId && spell.baseHealing &&
+                spell.supportedSingleTargetDirect) {
                 if (selectedSpell)
                     return Reject("priest_direct_heal_duplicate_spell_snapshot");
                 selectedSpell = &spell;

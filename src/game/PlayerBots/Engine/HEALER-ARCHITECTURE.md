@@ -58,7 +58,7 @@ The estimate must enumerate every hostile/actual-recipient pair affected by the 
 
 The shared engine owns the lifecycle and party-level math:
 
-1. Build an immutable, value-only party snapshot. No Core object pointers escape snapshot construction.
+1. Build an immutable, value-only party snapshot. Collect supported healer-class direct-heal spell profiles and preserve Core-calculated cost/cast time plus a conservative shape classification. No Core object pointers escape snapshot construction.
 2. Compute each member's raw missing health and supported incoming healing/absorb credit. Use only conservative lower bounds for uncertain future healing.
 3. Subtract current in-flight heals and active Heal reservations without double-counting the acting bot's own reservation.
 4. Produce a triage candidate using generic policy inputs: effective health fraction, uncovered deficit, role priority, and deterministic tie-breaks.
@@ -89,7 +89,7 @@ Use Paladin as the second-class abstraction test because its first slice can sta
 
 Initial scope:
 
-- Holy Light and Flash of Light ranks known by the bot;
+- Holy Light and Flash of Light ranks known by the bot from the generalized value-only catalog; the adapter must explicitly allow-list those profiles and not select Lay on Hands, Holy Shock, or unknown healing spells by base amount alone;
 - explicit single friendly Player target in the same Group, Map and instance;
 - direct heal only, with Core-calculated mana cost and cast time;
 - rank selection balancing uncovered deficit, cast time and mana reserve;
@@ -126,3 +126,12 @@ Acceptance gates:
 ## Production rule
 
 Until a class adapter has a complete spell-shape profile, live Core preflight, complete threat envelope, terminal reconciliation and trusted Core-backed acceptance, it stays unregistered. Missing NewEngine healer behavior remains a safe no-op; it must never fall through to Legacy healer decisions.
+
+
+## H1 implementation note — generalized value-only spell catalog
+
+The follow-up to the common-policy extraction records direct-heal profiles for all four supported Vanilla healer classes (Paladin, Shaman, Priest and Druid) when their CombatBot role is Healer. Each profile now carries the learned spell ID, positive base direct-heal amount, Core-calculated mana cost, actor-adjusted Core cast time, and a `supportedSingleTargetDirect` shape bit computed from the pinned Core spell definition.
+
+The shape bit is deliberately narrow: one positive single-target direct-heal effect with a supported explicit friendly/self target mode, excluding AoE, chain/fan-out selectors, extra non-heal effects, scripts, weapon procs, reflects and channels. It is a candidate/profile filter only. It does not prove the active aura/proc graph, child-cast closure, full hostile threat set, or whether F54o's deferred pre-impact admission hook accepts the spell. In particular, nonzero cast-time party heals are still blocked by the current threat/admission path.
+
+The shared pure rank selector ignores profile rows without this shape bit. Priest compatibility entry points remain class-gated; a later class adapter must apply its own explicit spell allow-list and class-specific rank/cast-time policy.

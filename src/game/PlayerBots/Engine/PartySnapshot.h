@@ -19,11 +19,19 @@ struct DirectHealSpellSnapshot
     std::uint32_t spellId = 0;
     std::uint32_t baseHealing = 0;
     std::uint32_t manaCost = 0;
+    // Actual Core cast time, including the actor's current modifiers.
+    std::uint32_t castTimeMs = 0;
+    // This certifies only the one-target direct-heal effect shape. It does
+    // not certify proc closure, threat bounds or Core pre-impact admission.
+    bool supportedSingleTargetDirect = true;
 
     DirectHealSpellSnapshot() = default;
     DirectHealSpellSnapshot(std::uint32_t spell, std::uint32_t healing,
-                            std::uint32_t mana)
-        : spellId(spell), baseHealing(healing), manaCost(mana) {}
+                            std::uint32_t mana, std::uint32_t castTime = 0,
+                            bool supportedSingleTarget = true)
+        : spellId(spell), baseHealing(healing), manaCost(mana),
+          castTimeMs(castTime),
+          supportedSingleTargetDirect(supportedSingleTarget) {}
 };
 constexpr std::size_t MAX_PERIODIC_HEAL_FORECASTS_PER_MEMBER = 32;
 

@@ -1,3 +1,13 @@
+## H1 — class-neutral healer policy and value-only class spell catalog
+
+Commit `b6f3b05` extracted the common missing-health, incoming-credit, target triage, Heal-reservation and direct-heal rank-selection policy to `HealerPolicy.h`. Priest entry points remain compatibility wrappers and continue to reject a non-Priest healer.
+
+The follow-up catalog change extends `PartySnapshotBuilder` to collect learned direct-heal rows for healer-role Paladin, Shaman, Priest and Druid bots. Rows contain only scalar data: spell ID, base heal amount, Core-calculated mana cost, actor-adjusted cast time and `supportedSingleTargetDirect`. The shape flag means only that the pinned Core SpellEntry describes one supported single-target direct-heal effect; it is not proof of proc closure, whole-action threat completeness or admission safety.
+
+Pure tests use a synthetic Paladin profile with cast-time ranks and a deliberately larger unsupported-shape row. The generic rank selector must skip the unsupported row, preserve cast-time metadata for the class adapter and maintain the pre-existing Priest-only compatibility gate. The Core-backed snapshot collector itself is covered by the ARM64 build; no healer action is registered or dispatched by this catalog milestone.
+
+Trusted validation of the catalog change is pending on the new HEAD. PR-safe CI must pass the pure Engine tests, report collector, full ARM64 Server/Realm build and harness syntax. Trusted push must additionally pass the full Core-backed simulator through final `Runtime PASS` and normal GDB exit.
+
 # PartyBot Core build, runtime and trace testing
 
 ## F54p — deferred-admission cooldown/GCD commit boundary (trusted runtime validated)

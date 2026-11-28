@@ -2,6 +2,7 @@
 #include "HealingForecast.h"
 #include "CombatBotBaseAI.h"
 #include "Creature.h"
+#include "PlayerBots/Engine/CoreThreatImpactEstimator.h"
 #include "Group.h"
 #include "Map.h"
 #include "MovementGenerator.h"
@@ -33,6 +34,20 @@ PartyRole ToPartyRole(CombatBotRoles role)
         case ROLE_RANGE_DPS: return PartyRole::RangedDamage;
         case ROLE_MELEE_DPS: return PartyRole::MeleeDamage;
         default: return PartyRole::Unknown;
+    }
+}
+
+bool IsSupportedHealerClass(std::uint8_t classId)
+{
+    switch (classId)
+    {
+        case CLASS_PALADIN:
+        case CLASS_SHAMAN:
+        case CLASS_PRIEST:
+        case CLASS_DRUID:
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -426,12 +441,13 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
                 ? combatAI->m_resurrectionSpell->Id : 0;
             memberData.inDuel = combatAI->IsInDuel();
 
-            // F53a: expose the Priest Healer's learned direct-heal spell ranks
-            // as scalar values. The immutable snapshot never retains SpellEntry
-            // pointers; live castability and threat closure remain action-time
-            // Core responsibilities.
-            if (member->GetClass() == CLASS_PRIEST &&
-                combatAI->GetRole() == ROLE_HEALER)
+            // H1: collect value-only direct-heal spell profiles for each
+            // supported healer class. The spell-shape bit is deliberately
+            // narrower than action safety: it describes only a single-target
+            // direct-heal effect, not proc closure, whole-action threat or
+            // Core pre-impact admission.
+            if (combatAI->GetRole() == ROLE_HEALER &&
+                IsSupportedHealerClass(member->GetClass()))
             {
                 for (SpellEntry const* spell : combatAI->m_spellListDirectHeal)
                 {
@@ -454,11 +470,13 @@ bool PartySnapshotBuilder::Build(Player* bot, PartySnapshot& snapshot,
                     DirectHealSpellSnapshot healSpell;
                     healSpell.spellId = spell->Id;
                     healSpell.baseHealing = static_cast<std::uint32_t>(baseHealing);
-                    // Reuse Core's cost calculation with charge consumption
-                    // disabled; the pure selector then sees the exact current
-                    // mana cost, including level and aura modifiers.
                     healSpell.manaCost =
                         Spell::CalculatePowerCost(spell, member, nullptr, nullptr, false);
+                    std::int32_t const castTimeMs = spell->GetCastTime(member);
+                    healSpell.castTimeMs = castTimeMs > 0
+                        ? static_cast<std::uint32_t>(castTimeMs) : 0u;
+                    healSpell.supportedSingleTargetDirect =
+                        IsSupportedSingleTargetDirectHealSpellShape(spell);
                     memberData.directHealSpells.push_back(healSpell);
                 }
 

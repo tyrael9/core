@@ -213,7 +213,8 @@ inline bool SelectDirectHealSpell(
     DirectHealSpellSnapshot const* bestUnder = nullptr;
     for (DirectHealSpellSnapshot const& spell : healer.directHealSpells)
     {
-        if (!spell.spellId || !spell.baseHealing || spell.manaCost > healer.power)
+        if (!spell.spellId || !spell.baseHealing ||
+            !spell.supportedSingleTargetDirect || spell.manaCost > healer.power)
             continue;
 
         if (spell.baseHealing >= missingHealth)

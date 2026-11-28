@@ -4332,7 +4332,12 @@ void TestClassNeutralHealerPolicyAcceptsPaladinProfile()
     paladin.classId = 2; // Vanilla Paladin; the shared policy has no Priest gate.
     paladin.isPlayerBot = true;
     paladin.power = 40;
-    paladin.directHealSpells = {{1501, 70, 20}, {1502, 120, 35}};
+    paladin.directHealSpells = {
+        {1501, 70, 20, 2500, true},
+        {1502, 120, 35, 3500, true},
+        // A larger spell with an unsupported fan-out shape must not win rank selection.
+        {1503, 900, 0, 0, false}
+    };
     paladin.mapId = snapshot.mapId;
     paladin.instanceId = snapshot.instanceId;
 
@@ -4355,8 +4360,12 @@ void TestClassNeutralHealerPolicyAcceptsPaladinProfile()
     assert(spell.baseHealing == 120);
     assert(spell.manaCost == 35);
 
-    // If no affordable rank covers the deficit, the strongest affordable
-    // under-heal remains selectable; Core still owns final castability.
+    // Cast time is available to a class adapter for its rank policy, but does
+    // not authorize dispatch or imply that the current threat gate accepts it.
+    assert(snapshot.FindMember(paladin.guid)->directHealSpells[0].castTimeMs == 2500);
+
+    // If no affordable supported rank covers the deficit, choose the strongest
+    // affordable supported under-heal. The unsupported stronger row stays out.
     snapshot.members[0].power = 25;
     assert(SelectDirectHealSpell(snapshot.members[0], 80, spell));
     assert(spell.spellId == 1501);

@@ -723,13 +723,35 @@ if [[ -z "$f54t_expected_guid" ]]; then
     echo "[PartyBotSimulator] F54t expected detached recipient GUID was not reported." | tee -a "$LOG_FILE"
     exit 1
 fi
-f54t_core_cancel="$(grep -F '[PartyBotSpellAdmission] update canceled deferred cast after explicit target left world: spell=19236' "$LOG_FILE" | grep -F "targetGuid=$f54t_expected_guid" | grep -F 'targetUnit=0' | tail -n 1 || true)"
+f54t_core_cancel="$(grep -F '[PartyBotSpellAdmission] update canceled deferred cast because explicit target is unavailable from caster map: spell=19236' "$LOG_FILE" | grep -F "targetGuid=$f54t_expected_guid" | grep -F 'targetUnit=0' | tail -n 1 || true)"
 if [[ -z "$f54t_core_cancel" ]]; then
     echo "[PartyBotSimulator] F54t Core did not prove the retained explicit GUID resolved to no live world target." | tee -a "$LOG_FILE"
     exit 1
 fi
 if ! grep -Fq "[PartyBotSimulator] PASS: F54t detached a queued recipient from the live Map while retaining Group membership;" "$LOG_FILE"; then
     echo "[PartyBotSimulator] F54t detached-recipient PASS marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+f54u_line="$(grep -F '[PartyBotSimulator] F54u cross-Map Group recipient:' "$LOG_FILE" | tail -n 1 | sed -E 's/\\x1B\\[[0-9;]*[[:alpha:]]//g')"
+for expected in "castAccepted=1" "queuedBeforeTransfer=1" "selectorChanged=1" "inputTargetChanged=1" "sourceRemoved=1" "groupPreserved=1" "destinationAdded=1" "liveOnDestination=1" "sourceCannotResolve=1" "queuedGuidRetained=1" "coreCanceled=1" "authorizeSkipped=1" "terminalOnce=1" "terminalInterrupted=1" "currentSpellCleared=1" "eventReaped=1" "noEffects=1" "threatDelta=0.000" "spellReadyBefore=1" "noGcdBefore=1" "spellReadyAfter=1" "noGcdAfter=1" "selectorRestored=1" "destinationRemoved=1" "mapRestored=1" "worldRestored=1" "locationRestored=1" "groupRestored=1" "subgroupRestored=1" "instanceValidRestored=1" "leaderRestored=1" "assistantRestored=1" "destinationBindReleased=1" "destinationMapDeleted=1" "adapterRestored=1"; do
+    if [[ "$f54u_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F54u cross-Map recipient assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+f54u_expected_guid="$(printf '%s\\n' "$f54u_line" | sed -nE 's/.*expectedTargetGuid=([0-9]+).*/\\1/p')"
+if [[ -z "$f54u_expected_guid" ]]; then
+    echo "[PartyBotSimulator] F54u expected cross-Map recipient GUID was not reported." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f54u_core_cancel="$(grep -F '[PartyBotSpellAdmission] update canceled deferred cast because explicit target is unavailable from caster map: spell=19236' "$LOG_FILE" | grep -F "targetGuid=$f54u_expected_guid" | grep -F 'targetUnit=0' | tail -n 1 || true)"
+if [[ -z "$f54u_core_cancel" ]]; then
+    echo "[PartyBotSimulator] F54u Core did not prove the exact live cross-Map GUID was unavailable from the caster's source Map." | tee -a "$LOG_FILE"
+    exit 1
+fi
+if ! grep -Fq "[PartyBotSimulator] PASS: F54u kept the queued recipient alive and in the Group on a distinct destination Map/instance;" "$LOG_FILE"; then
+    echo "[PartyBotSimulator] F54u cross-Map recipient PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 

@@ -257,33 +257,43 @@ A New Engine milestone is complete when:
 
 Experimental combat quality may be poor while features are being built. Runtime safety, thread safety, bounded work and lifecycle/data integrity remain hard requirements. A CI pass is not an in-game test or deployment authorization.
 
-## 17. Current implementation status (2026-11-26)
+## 17. Current implementation status (2026-11-28)
 
-Implemented and supported by pure tests and/or fixture-backed Core runtime, as stated in ROADMAP.md:
+The project-wide phase status and F/H numbering rules are authoritative in `ROADMAP.md`. This section records the architecture-level reality:
 
-- C++14 Strategy/Trigger/Action/Value/Multiplier engine, typed per-bot ValueCache and TriggerScheduler, deterministic evaluation/arbitration, bounded immediate/pending dispatch, explicit continuations/dependencies and authoritative Core action results.
+### Established foundations
+
+- C++14 Strategy / Trigger / Action / Value / Multiplier engine, typed per-bot ValueCache and TriggerScheduler, deterministic evaluation/arbitration, bounded immediate/pending dispatch, continuations/dependencies and authoritative Core action results.
 - GUID/scalar-only PartySnapshot, same-map five-Player Group/hostile/threat builder, shared map/instance PartyCoordinator, reservations, stable formation slots and value-only death/resurrection/cast/movement/item lifecycle events.
-- Exclusive NewEngine authority with no Legacy policy fallback. The only production NewEngine behavior currently registered is narrow out-of-combat Group-leader Follow plus StopFollowing recovery; Legacy remains the default runtime mode.
-- Core-backed simulator coverage for follow/formation, leader handoff, five-Player regroup, wipe/death/resurrection, generic action preflight, movement/item-use lifecycle, trace budgets and Priest direct-heal forecast/source audits.
-- Priest Phase 6 has a substantial test-only vertical slice: target/rank selection, cross-Bot Heal reservations, direct-heal/HoT/absorb snapshots, bounded timeline, Core heal/damage ordering, proc/target-trigger paths, a representative nested child chain, pushback and interruption invalidation. F54k random HoT bounds and F54l school-aware absorb pools/known-school damage matching are trusted-runtime validated; F54m adds bounded child-chain depth/loop coverage.
+- Exclusive NewEngine authority with no Legacy policy fallback. Legacy remains the default runtime mode.
+- Seventeen generic CoreAction adapters have action-specific preflight/structured results and fixture coverage. The only production NewEngine registrations are `FollowPartyMemberAction` and `StopFollowingAction`.
+- Core-backed simulator coverage includes follow/formation, leader handoff, party wipe/death/resurrection, map/instance transfer, generic action preflight, item-use lifecycle, bounded trace behavior and extensive Priest/healer spell/threat boundaries.
+- Phase 5 party lifecycle/formation scope is closed. Phase 6 is active.
 
-Still gated:
+### Current healer architecture state
 
-- `PriestDirectHealAction` and the Priest Healing Strategy are not registered in production. Its whole-action threat estimate remains fail-closed/Unknown; the test-only execution fixture is not a production policy.
-- F54m deeper child-chain closure, complete Core ordering and the whole-action helpful-threat/proc/recipient envelope (F54n) must each close independently. F54k/F54l have trusted-runtime evidence but remain diagnostic/test-only.
-- Druid, Shaman, Paladin, Warrior, Mage, Warlock, Hunter and Rogue class/role strategies are not implemented as production policies.
-- Broader party-wide target/threat/CC/interrupt/dispel coordination and Vanilla dungeon/raid encounter strategies remain future phases.
-- The trace/reporting pipeline is bounded and useful; richer AI/boss state, broader arbitration detail, ordinary-member per-hit health deltas, cross-map closure and deployment-diagnostics integration remain explicit gaps.
+- H1 shared class-neutral healer policy and value-only healer spell catalog are implemented and validated.
+- H2 Shaman Lesser Healing Wave policy adapter is implemented with a six-rank allow-list and pure tests. It does not dispatch or cast.
+- F54o proves a narrow deferred admission seam for an instant, non-scripted, single-effect self Mana heal. F54u proves a queued Group recipient moved to another Map/instance is rejected before authorization, with one Failed terminal and no side effects.
+- Priest direct-heal forecasting, target/rank selection, Heal reservations, direct-heal/HoT/absorb snapshots, bounded timeline, Core heal/damage ordering, target-trigger/proc paths, child-cast bounds, pushback and interruption invalidation have substantial fixture-backed evidence.
+- H3 remains open: cast-time party-target admission and dynamic per-hostile/per-recipient threat closure are not implemented.
+
+### Explicitly not production-enabled
+
+- No Priest, Shaman, Paladin or Druid healing action/strategy is registered.
+- No full DPS/role combat, CC, interrupt, dispel or dungeon/raid encounter policy set is registered.
+- Most of the 17 reusable generic CoreAction adapters are test/library capability only.
+- The trace/reporting pipeline remains bounded and does not yet cover every desired AI/Boss/ordinary-member detail.
 
 NewEngine is an exclusive development mode, not a complete/playable combat AI. Missing behavior is a deliberate no-op, never Legacy fallback. CI and trusted simulator fixtures validate only the paths they execute; in-game quality and deployment remain separate gates.
 
 ## 18. Immediate next implementation sequence
 
-1. F54k is trusted-runtime validated: keep the guaranteed floor in triage and both reachable bounds in the diagnostic timeline.
-2. F54l is trusted-runtime validated: bounded School Absorb pools match only known intersecting damage schools; Mana Shield, charged Aura paths, AuraScript paths, unknown schools and ambiguous same-time matching remain excluded.
-3. F54m: extend the representative three-cast nested chain to a bounded four-cast chain with a deliberate cycle; prove Core rejects the fifth cast at the configured chain limit, while every recipient's healing/threat parity and complete cleanup are preserved.
-4. F54n: close supported Core ordering plus helpful-threat, proc, script and recipient paths. Unknown remains a hard veto.
-5. Register `PriestDirectHealAction` and the Priest Healing Strategy only after the full action threat estimate is Complete or NoThreat for the exact supported spell shape.
-6. Extend the same action/trace/runtime contracts across remaining classes, then party coordination and encounter-specific Vanilla strategies.
+1. Start H3 with a design/acceptance breakdown for one supported cast-time, single-target friendly heal. Keep the allowed spell shape explicit and narrow.
+2. Implement Core-owned impact-time recipient re-resolution and validation on the owning Map thread. Reject changed Group membership, dead/removed targets, Map/instance mismatch, range/LOS failure and unsupported effect shapes before irreversible side effects.
+3. Build a fresh impact-time snapshot and compute the complete threat envelope for every hostile and every actual recipient, including supported child/proc effects. Unknown or incomplete threat remains a hard veto.
+4. Reconcile reservations and exactly one terminal outcome for success, failure, interruption, target movement/removal and actor/target lifecycle changes. Prove rejected casts do not consume mana, GCD, cooldown or apply partial effects.
+5. Add trusted Core simulator fixtures for hostile joins during cast, target leaves Group/Map/instance, LOS/range changes, interruption, no-side-effect rejection and cleanup.
+6. Only after H3 is fully validated should a Shaman cast action be considered. Keep every healer action unregistered until the complete production gate and separate enablement review pass.
 
 No merge, image publication, production deployment or live-realm change is implied by these milestones.

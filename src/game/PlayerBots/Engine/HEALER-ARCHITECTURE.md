@@ -1,6 +1,6 @@
 # Cross-class healer architecture
 
-Status: design contract and rollout plan, 2026-11-28. This document does not claim that Priest healing is production-enabled or that Paladin/Shaman/Druid adapters already exist.
+Status: architecture contract and implementation snapshot, 2026-11-28. H1 and H2 are implemented at shared-policy/profile scope; no healer cast action or strategy is production-enabled.
 
 ## Decision
 
@@ -10,20 +10,35 @@ Priest remains the first safety vertical slice. Shaman Lesser Healing Wave is th
 
 ## Verified current state
 
-The branch already contains useful shared infrastructure:
+The branch contains the following shared infrastructure and validated limits:
 
-- `PartySnapshot` carries class/role identity, party health and resources, map/instance identity, in-flight spell data, value-only direct-heal spell rows, bounded periodic-heal forecasts and bounded school-absorb forecasts.
-- `HealingForecast` models ordered Heal/Damage events and lower/upper outcome bounds. HoT tick values preserve Core random-dither bounds rather than inventing an exact future tick.
+- `PartySnapshot` carries class/role identity, party health/resources, map/instance identity, in-flight spell data, value-only direct-heal spell rows, bounded periodic-heal forecasts and bounded school-absorb forecasts.
+- `HealingForecast` models ordered Heal/Damage events and lower/upper outcome bounds. HoT ticks preserve Core random-dither bounds rather than inventing an exact future tick.
 - `PartyCoordinator` reservations prevent multiple bots from independently claiming the same uncovered heal deficit.
 - `Action::EstimateThreatImpact` defaults to `Unknown`; the threat budget accepts only an epoch-matched complete estimate or explicit `NoThreat`. Unknown/incomplete fan-out remains fail-closed.
-- `PlayerAI` exposes generic spell lifecycle/admission hooks, but admission is opt-in and the defaults do not authorize a cast.
+- `PlayerAI` exposes generic spell lifecycle/admission hooks, but admission is opt-in and defaults do not authorize a cast.
 
-These are shared mechanisms, not yet a complete shared healer implementation. Important current Priest-only gates remain:
+Completed at their stated scope:
 
-1. `PartySnapshotBuilder.cpp` now collects value-only direct-heal profiles for healer-role Paladin, Shaman, Priest and Druid bots. Rows contain spell ID, positive direct-heal base amount, Core-calculated mana cost, actor-adjusted Core cast time and a strict `supportedSingleTargetDirect` effect-shape flag. This catalog change is in CI validation; its shape flag is not whole-action safety.
-2. `HealerPolicy.h` now owns class-neutral uncovered-health accounting, incoming-credit, target triage, Heal-reservation and deterministic direct-heal rank selection. `PriestHealingPolicy.h` preserves Priest-named compatibility wrappers and the explicit Priest class gate.
-3. `PriestDirectHealAction.h` and `PartyBotAI::CanCastDirectHeal` remain Priest-only. No Paladin/Shaman/Druid action adapter exists yet; a later adapter must apply its own spell allow-list and class-specific policy.
-4. No healing action/strategy is registered in production NewEngine. Default spell-cast admission remains `Unmanaged`; whole-action healing threat remains fail-closed until complete proc/child-effect fan-out and the relevant Core admission shape are proven.
+1. **H1 — shared policy and catalog:** `HealerPolicy.h` owns class-neutral missing-health accounting, incoming credit, target triage, Heal reservations and direct-heal rank selection. `PriestHealingPolicy.h` retains Priest compatibility wrappers and class gating. `PartySnapshotBuilder` captures value-only direct-heal profiles for healer-role Paladin, Shaman, Priest and Druid bots, including Core mana cost, cast time and the strict supported-single-target-direct shape flag.
+2. **H2 — Shaman profile adapter:** `ShamanHealingPolicy.h` allows only Lesser Healing Wave ranks 8004, 8008, 8010, 10469, 10470 and 10471. Pure tests cover class/role, allow-list, affordability, rank fallback and cast-time propagation. Chain Heal and unrelated rows are rejected.
+3. **Priest safety evidence:** the F54 fixtures validate selected forecast, healing, aura, proc/child, threat, queued-cast, interruption and recipient-lifecycle boundaries, including cross-Map rejection at F54u.
+
+Still Priest-only or not yet authorized:
+
+1. `PriestDirectHealAction.h` and `PartyBotAI::CanCastDirectHeal` remain Priest-only. H2 is a Shaman policy/profile adapter, not a Shaman runtime action.
+2. The proven F54o Core admission shape is a non-triggered, non-scripted, instant, single-effect self Mana heal with exactly one resolved recipient (the caster) and zero impact delay. It does not authorize party-target or cast-time heals.
+3. The whole-action threat estimator remains fail-closed for nonzero cast time because the hostile and recipient sets may change during the wind-up.
+4. No healer action/strategy is registered in production NewEngine. Default spell admission remains `Unmanaged`; complete child/proc/recipient threat closure and terminal/reservation reconciliation are required before enablement.
+
+## Numbering and roadmap relationship
+
+The numbering systems describe different scopes:
+
+- **Phase 0–8** in `ROADMAP.md` is the project-wide development stage. Healer work belongs to Phase 6.
+- **F54a–F54u** are historical engineering work items and Core safety/regression milestones within the healer implementation stream; F54u is the latest validated item.
+- **H0–H6** are the healer-architecture milestones below. H1 and H2 are complete at policy/profile scope; H3 is the next open architecture gate.
+- An H milestone can be split into multiple F work items (for example, H3 may use F55a/F55b). F54 does not convert numerically into H3.
 
 ## Non-negotiable safety boundaries
 
@@ -83,22 +98,21 @@ Each adapter supplies explicit, independently testable policy for:
 
 The adapter returns a value-only candidate/description to the common pipeline; it does not own a separate scheduler, reservation store, snapshot clock or threat-budget implementation.
 
-## Second adapter: Shaman Lesser Healing Wave MVP
+## H2 — Shaman Lesser Healing Wave profile adapter (validated; pure policy only)
 
-Use Shaman Lesser Healing Wave (six known ranks) as the next pure class-adapter trial. The Vanilla 1.12 spell profiles identify these ranks as one friendly-target Heal effect; the rank allow-list is explicit:
+The Shaman adapter is implemented in `ShamanHealingPolicy.h`. Its explicit allow-list contains Lesser Healing Wave ranks 8004, 8008, 8010, 10469, 10470 and 10471. It requires the snapshot row to carry `supportedSingleTargetDirect=true`, then composes the shared target triage and direct-heal rank selector.
 
-- 8004, 8008, 8010, 10469, 10470, 10471;
-- use only rows whose snapshot also has `supportedSingleTargetDirect=true`;
-- exclude Chain Heal, Healing Wave ranks with unsupported target metadata, totems, proc-triggered spells and all other Shaman healing abilities from this first adapter.
+The pure test covers Shaman class/role gating, rank filtering, mana affordability, fallback selection, selected base amount and cast-time propagation (1,500 ms). Chain Heal (1064) and unrelated direct-heal rows are rejected even when their synthetic profile has a larger amount.
 
-The pure adapter owns only the class/rank allow-list and shared triage/rank-selection composition. It preserves Core-calculated mana cost and cast time. It is not a Core action and cannot dispatch spells. These ranks have nonzero cast time; the current whole-action threat estimator remains instant-only, and F54o's proven admission shape remains self-only. A future action therefore stays blocked until Core cast-time recipient/threat closure and pre-impact admission are separately implemented and trusted-runtime tested.
+**Validation on exact branch HEAD `09ec3dd`:** PR-safe run [#46128866209](https://github.com/tyrael9/core/actions/runs/46128866209) passed. Trusted push [#46128859679](https://github.com/tyrael9/core/actions/runs/46128859679) passed the pure tests, full Linux ARM64 Vanilla 5875 Core build and complete existing Core-backed simulator through final `Runtime PASS`, with normal GDB exit. Artifact [#15256659780](https://github.com/tyrael9/core/actions/runs/46128859679/artifacts/15256659780). This is CI validation of the pure profile adapter plus regression suite; it is **not** a real Shaman LHW cast fixture or production action.
+
+Lesser Healing Wave is a 1.5-second party-target cast. The current estimator/admission path remains instant/self-only. H3 must prove impact-time recipient re-resolution and complete threat closure before a Shaman cast action can be implemented or registered.
 
 Acceptance gates:
-
-1. Pure tests cover the Shaman class/role guard, all six known LHW rank IDs, mana affordability, selected rank/base amount/cast time, and rejection of Chain Heal or unrelated direct-heal IDs.
-2. Snapshot collection includes the learned ranks only as value data; no Core pointers escape the snapshot.
-3. Core-backed tests prove a real accepted cast only after cast-time target/recipient re-resolution, terminal outcomes, mana/GCD/cooldown, complete effect/proc closure and full hostile threat fan-out are modeled.
-4. Production registration remains off until all gates pass and a separate review explicitly enables it.
+1. Pure tests cover class/role, all six allowed ranks, mana affordability, fallback and cast-time metadata — **passed**.
+2. Snapshot rows remain value-only and filter unsupported spell shapes — **passed**.
+3. Core-backed accepted Shaman cast, dynamic target/threat revalidation and no-side-effect failure matrix — **not started; H3**.
+4. Production registration — **prohibited until H3 and the complete healer production gate pass**.
 
 ## Paladin scripted-heal follow-on
 
@@ -117,9 +131,9 @@ Paladin remains in scope, but its first implementation must be a separately audi
 | Milestone | Scope | Exit condition |
 |---|---|---|
 | H0 (this document) | Record the shared-engine / class-adapter contract and current support limits | Docs agree with current code and trusted evidence |
-| H1 | Extract class-neutral missing-health, incoming-credit and reservation helpers without changing Priest decisions | Existing Priest unit/fixture behavior stays identical; generic helper tests pass |
-| H2 | Implement a non-production Shaman Lesser Healing Wave profile adapter with an explicit six-rank allow-list | Pure tests prove class/rank filtering, mana and cast-time metadata; no Core dispatch |
-| H3 | Extend and validate Core cast-time admission/threat closure for the Shaman direct-heal MVP | Trusted Core simulator proves accepted cast and every target/recipient rejection and cleanup boundary |
+| H1 | Extract class-neutral policy and generalize the value-only healer spell catalog | **Complete:** pure policy tests, catalog build and trusted Core CI pass; no action dispatch |
+| H2 | Implement a non-production Shaman Lesser Healing Wave profile adapter with an explicit six-rank allow-list | **Complete:** pure tests prove class/rank filtering, mana and cast-time metadata; no Core dispatch |
+| H3 | Extend and validate Core cast-time admission/threat closure for the Shaman direct-heal MVP | **Next / not started:** trusted Core simulator must prove accepted cast and every target/recipient rejection and cleanup boundary |
 | H4 | Reassess Priest adapter against the common contract; enable neither class by default | Review confirms parity and complete threat closure |
 | H5 | Add the separate Paladin Holy Light / Flash of Light ScriptEffect adapter | Core script/child-cast behavior and complete threat effects are audited and trusted-tested |
 | H6 | Add Druid direct / HoT / hybrid slices, then separately channel/AoE | Timing, form and multi-target acceptance gates pass |
@@ -129,10 +143,12 @@ Paladin remains in scope, but its first implementation must be a separately audi
 Until a class adapter has a complete spell-shape profile, live Core preflight, complete threat envelope, terminal reconciliation and trusted Core-backed acceptance, it stays unregistered. Missing NewEngine healer behavior remains a safe no-op; it must never fall through to Legacy healer decisions.
 
 
-## H1 implementation note — generalized value-only spell catalog
+## H1 implementation note — shared policy and generalized value-only spell catalog
 
-The follow-up to the common-policy extraction records direct-heal profiles for all four supported Vanilla healer classes (Paladin, Shaman, Priest and Druid) when their CombatBot role is Healer. Each profile now carries the learned spell ID, positive base direct-heal amount, Core-calculated mana cost, actor-adjusted Core cast time, and a `supportedSingleTargetDirect` shape bit computed from the pinned Core spell definition.
+Commit `b6f3b05` extracted the class-neutral missing-health, incoming-credit, target triage, Heal-reservation and direct-heal rank-selection logic into `HealerPolicy.h`; Priest compatibility wrappers retain the existing Priest gate.
 
-The shape bit is deliberately narrow: one positive single-target direct-heal effect with a supported explicit friendly/self target mode, excluding AoE, chain/fan-out selectors, extra non-heal effects, scripts, weapon procs, reflects and channels. It is a candidate/profile filter only. It does not prove the active aura/proc graph, child-cast closure, full hostile threat set, or whether F54o's deferred pre-impact admission hook accepts the spell. In particular, nonzero cast-time party heals are still blocked by the current threat/admission path.
+The generalized catalog records learned direct-heal profiles for healer-role Paladin, Shaman, Priest and Druid bots. Rows contain spell ID, positive base heal, Core-calculated mana cost, actor-adjusted cast time and `supportedSingleTargetDirect`. The shape bit means only that the pinned Core SpellEntry matches the strict supported single-target direct-heal profile. It is not proof of proc/child closure, complete hostile threat coverage or admission safety.
 
-The shared pure rank selector ignores profile rows without this shape bit. Priest compatibility entry points remain class-gated; a later class adapter must apply its own explicit spell allow-list and class-specific rank/cast-time policy.
+The synthetic Paladin policy fixture proves the class-neutral selector can use a second class profile while ignoring a larger unsupported-shape row. The corrected Core include order compiled on ARM64 and the trusted simulator passed on parent `c82ec9c` (PR [#46128285712](https://github.com/tyrael9/core/actions/runs/46128285712), trusted push [#46128282616](https://github.com/tyrael9/core/actions/runs/46128282616)). The H2 exact-HEAD runs [#46128866209](https://github.com/tyrael9/core/actions/runs/46128866209) and [#46128859679](https://github.com/tyrael9/core/actions/runs/46128859679) passed the new Shaman pure tests and revalidated the complete trusted Core simulator. H1 and H2 are therefore complete at their stated policy/profile scope.
+
+Paladin Holy Light / Flash of Light remain outside the ordinary Heal-effect catalog: their ScriptEffect/child-cast behavior requires a separate H5 audit. Shaman Chain Heal and Druid HoT/hybrid/channel behavior also remain separate spell-shape capabilities.

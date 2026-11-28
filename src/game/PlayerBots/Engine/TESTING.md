@@ -1,20 +1,25 @@
-## H2 — Shaman Lesser Healing Wave profile adapter (pure policy)
+## H1 — class-neutral healer policy and value-only class spell catalog (validated)
 
-This adapter is deliberately limited to Shaman Lesser Healing Wave ranks 8004, 8008, 8010, 10469, 10470 and 10471. It calls the shared healer rank selector through an explicit spell-ID allow-list and retains the snapshot's Core-calculated mana cost and cast time. It rejects Chain Heal and unrelated direct-heal spell IDs even when their synthetic profile row has a larger base amount.
+The common missing-health, incoming-credit, target-triage, Heal-reservation and direct-heal rank-selection policy is extracted into `HealerPolicy.h`; `PriestHealingPolicy.h` retains Priest compatibility wrappers and the explicit Priest class gate.
 
-The new pure test verifies Shaman class/role eligibility, affordable rank selection, under-heal fallback, cast-time propagation and the explicit allow-list. This is a policy/profile adapter only: it does not register a Core action, cast a spell or claim that the current instant-only threat/admission path supports a 1.5-second party-target cast. Core cast-time admission and complete per-hostile threat closure remain a separate required milestone.
+The snapshot catalog collects value-only direct-heal profiles for healer-role Paladin, Shaman, Priest and Druid bots. Rows include spell ID, base heal, Core-calculated mana cost, actor-adjusted cast time and a strict `supportedSingleTargetDirect` shape bit. The bit is a profile filter, not proof of whole-action threat/effect closure or permission to cast.
 
-Paladin's main heals are not the same shape: Holy Light and Flash of Light use `SPELL_EFFECT_SCRIPT_EFFECT` in Vanilla 1.12 spell data. The pinned Core has a special Flash of Light effect path that triggers child spell 19993 after applying the rank amount and Libram modifiers. That path stays outside the generic Heal-effect catalog pending a separate child-cast and threat audit.
+The generalized catalog and Core include-order fix passed PR-safe [#46128285712](https://github.com/tyrael9/core/actions/runs/46128285712) and trusted push [#46128282616](https://github.com/tyrael9/core/actions/runs/46128282616); the trusted simulator reached final `Runtime PASS` with normal GDB exit. Exact-HEAD H2 runs [#46128866209](https://github.com/tyrael9/core/actions/runs/46128866209) and [#46128859679](https://github.com/tyrael9/core/actions/runs/46128859679) passed again.
 
-## H1 — class-neutral healer policy and value-only class spell catalog
+## H2 — Shaman Lesser Healing Wave profile adapter (validated; pure policy only)
 
-Commit `b6f3b05` extracted the common missing-health, incoming-credit, target triage, Heal-reservation and direct-heal rank-selection policy to `HealerPolicy.h`. Priest entry points remain compatibility wrappers and continue to reject a non-Priest healer.
+The Shaman adapter explicitly allows Lesser Healing Wave ranks 8004, 8008, 8010, 10469, 10470 and 10471. Its pure tests cover class/role gating, rank allow-list, mana affordability, under-heal fallback, base healing and propagation of the Core cast-time value (1,500 ms). Chain Heal and unrelated direct-heal spell IDs are rejected.
 
-The follow-up catalog change extends `PartySnapshotBuilder` to collect learned direct-heal rows for healer-role Paladin, Shaman, Priest and Druid bots. Rows contain only scalar data: spell ID, base heal amount, Core-calculated mana cost, actor-adjusted cast time and `supportedSingleTargetDirect`. The shape flag means only that the pinned Core SpellEntry describes one supported single-target direct-heal effect; it is not proof of proc closure, whole-action threat completeness or admission safety.
+On exact HEAD `09ec3dd`, PR-safe [#46128866209](https://github.com/tyrael9/core/actions/runs/46128866209) and trusted push [#46128859679](https://github.com/tyrael9/core/actions/runs/46128859679) passed. The trusted job completed the Linux ARM64 Vanilla 5875 Server/Realm build and fixture-backed simulator, reached final `Runtime PASS`, and GDB exited normally. Artifact: [#15256659780](https://github.com/tyrael9/core/actions/runs/46128859679/artifacts/15256659780).
 
-Pure tests use a synthetic Paladin profile with cast-time ranks and a deliberately larger unsupported-shape row. The generic rank selector must skip the unsupported row, preserve cast-time metadata for the class adapter and maintain the pre-existing Priest-only compatibility gate. The Core-backed snapshot collector itself is covered by the ARM64 build; no healer action is registered or dispatched by this catalog milestone.
+**Evidence boundary:** H2 is a pure policy/profile adapter. It does not register a Core action, dispatch or cast Shaman LHW, or establish that a 1.5-second party-target cast is safe. H3 must first implement and trusted-test cast-time admission, impact-time target re-resolution, complete per-hostile threat closure, and all terminal/no-side-effect cleanup paths.
 
-Trusted validation of the catalog change is pending on the new HEAD. PR-safe CI must pass the pure Engine tests, report collector, full ARM64 Server/Realm build and harness syntax. Trusted push must additionally pass the full Core-backed simulator through final `Runtime PASS` and normal GDB exit.
+## Numbering and scope
+
+- Project-wide **Phase 0–8** status is maintained in `ROADMAP.md`; Healer work is Phase 6.
+- **F54a–F54u** are historical work-item and regression-milestone IDs in the healer implementation stream.
+- **H0–H6** are architecture capability milestones. H1/H2 are complete at policy/profile scope; H3 is next.
+- F-items may split an H milestone (for example H3 may later use F55a/F55b). F54 and H3 are not interchangeable or consecutive numbers.
 
 # PartyBot Core build, runtime and trace testing
 

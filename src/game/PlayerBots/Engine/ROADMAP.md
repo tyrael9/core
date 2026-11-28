@@ -15,7 +15,7 @@ Legacy PartyBot fixes are maintenance work and do not count as NewEngine milesto
 
 **The project is in Phase 6 (Healer), with Phase 0–5 foundations established.** Phase 7 combat coordination is partial; Phase 8 encounter strategies have not started. The repository is not yet a complete/playable autonomous combat AI.
 
-Current branch: `work/partybot-engine-foundation`, HEAD [`09ec3dd`](https://github.com/tyrael9/core/commit/09ec3dda874aa677bf3612b35686505cb66447a7). PR [#1](https://github.com/tyrael9/core/pull/1) remains Open / Draft against pinned base `validation/partybot-engine-base-0e3ff01` (`0e3ff01e76d4758e8a7c3108b2717cc785ed56fa`). Keep it Draft. No merge, image publication, Oracle deployment or live-realm change is part of this work.
+Branch: `work/partybot-engine-foundation`. Latest full code-validation revision: [`09ec3dd`](https://github.com/tyrael9/core/commit/09ec3dda874aa677bf3612b35686505cb66447a7); the subsequent documentation reconciliation is [`c8bfe0c`](https://github.com/tyrael9/core/commit/c8bfe0caf2f38db474ba19c197e4cea3847abb67). PR [#1](https://github.com/tyrael9/core/pull/1) remains Open / Draft against pinned base `validation/partybot-engine-base-0e3ff01` (`0e3ff01e76d4758e8a7c3108b2717cc785ed56fa`). Keep it Draft. No merge, image publication, Oracle deployment or live-realm change is part of this work.
 
 ### Latest validation on the current HEAD
 

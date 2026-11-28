@@ -6,7 +6,7 @@ Independent party-coordinated AI for the pinned Vanilla 1.12.1 / build 5875 vMaN
 
 **Overall position: Phase 6 / Healer in progress.** Project foundations Phases 0–5 are established; Phase 7 combat coordination is partial and Phase 8 encounter strategies have not started. This repository is not yet a complete/playable autonomous combat AI.
 
-**Current branch:** `work/partybot-engine-foundation`, HEAD [`09ec3dd`](https://github.com/tyrael9/core/commit/09ec3dda874aa677bf3612b35686505cb66447a7). PR [#1](https://github.com/tyrael9/core/pull/1) remains Open / Draft against the pinned Vanilla 5875 validation base.
+**Current branch:** `work/partybot-engine-foundation`. Latest full code-validation revision: [`09ec3dd`](https://github.com/tyrael9/core/commit/09ec3dda874aa677bf3612b35686505cb66447a7); the subsequent documentation reconciliation is [`c8bfe0c`](https://github.com/tyrael9/core/commit/c8bfe0caf2f38db474ba19c197e4cea3847abb67). PR [#1](https://github.com/tyrael9/core/pull/1) remains Open / Draft against the pinned Vanilla 5875 validation base.
 
 **Latest CI on exact HEAD:**
 - PR-safe [#46128866209](https://github.com/tyrael9/core/actions/runs/46128866209): success.

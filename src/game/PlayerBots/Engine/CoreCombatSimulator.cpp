@@ -13701,8 +13701,8 @@ if (f54mPassed)
     bool f54uSourceRemoved = false, f54uGroupPreserved = false;
     bool f54uDestinationAdded = false, f54uLiveOnDestination = false;
     bool f54uSourceCannotResolve = false, f54uGuidRetained = false;
-    bool f54uCoreCanceled = false, f54uAuthorizeSkipped = false;
-    bool f54uTerminalOnce = false, f54uInterrupted = false;
+    bool f54uCoreRejected = false, f54uAuthorizeSkipped = false;
+    bool f54uTerminalOnce = false, f54uTerminalFailed = false;
     bool f54uCurrentCleared = false, f54uEventReaped = false;
     bool f54uNoEffects = false, f54uReadyBefore = false;
     bool f54uNoGcdBefore = false, f54uReadyAfter = false;
@@ -13719,6 +13719,7 @@ if (f54mPassed)
     uint64 f54uObservedTerminalActionId = 0;
     uint64 f54uObservedTerminalEncounterId = 0;
     bool f54uObservedTerminalSuccess = false;
+    bool f54uObservedTerminalInterrupted = false;
     bool f54uObservedTerminalEngineAction = false;
     uint32 f54uHealerHealthBefore = 0, f54uHealerHealthAfter = 0;
     uint32 f54uMemberHealthBefore = 0, f54uMemberHealthAfter = 0;
@@ -13873,26 +13874,28 @@ if (f54mPassed)
             f54uObservedTerminalActionId = destinationAdapter.terminalActionId;
             f54uObservedTerminalEncounterId = destinationAdapter.terminalEncounterId;
             f54uObservedTerminalSuccess = destinationAdapter.terminalSuccess;
+            f54uObservedTerminalInterrupted = destinationAdapter.terminalInterrupted;
             f54uObservedTerminalEngineAction = destinationAdapter.terminalEngineAction;
         }
 
         f54uCurrentCleared =
             healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
-        f54uCoreCanceled =
+        f54uCoreRejected =
             destinationAdapter.terminalCalls == 1 &&
             destinationAdapter.terminalActionId == f54uActionId &&
             destinationAdapter.terminalEncounterId == f54uEncounterId &&
             destinationAdapter.terminalEngineAction &&
-            !destinationAdapter.terminalSuccess &&
-            destinationAdapter.terminalInterrupted;
+            !destinationAdapter.terminalSuccess;
         f54uAuthorizeSkipped = destinationAdapter.authorizeCalls == 0;
         f54uTerminalOnce =
             destinationAdapter.terminalCalls == 1 &&
             destinationAdapter.terminalActionId == f54uActionId;
-        f54uInterrupted = f54uCoreCanceled &&
-            destinationAdapter.terminalInterrupted;
+        // A CheckCast(false) rejection is a failed cast, not an explicit
+        // Spell::cancel() interruption. Preserve that Core lifecycle distinction.
+        f54uTerminalFailed = f54uCoreRejected &&
+            !destinationAdapter.terminalInterrupted;
 
-        // The target must stay on the destination until Core has canceled and
+        // The target must stay on the destination until Core has rejected it and
         // the SpellEvent has been reaped; only then restore it to the source.
         if (queuedSpell &&
             healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == queuedSpell)
@@ -14001,8 +14004,8 @@ if (f54mPassed)
             f54uTargetChanged && f54uSourceRemoved && f54uGroupPreserved &&
             f54uDestinationAdded && f54uLiveOnDestination &&
             f54uSourceCannotResolve && f54uGuidRetained &&
-            f54uCoreCanceled && f54uAuthorizeSkipped && f54uTerminalOnce &&
-            f54uInterrupted && f54uCurrentCleared && f54uEventReaped &&
+            f54uCoreRejected && f54uAuthorizeSkipped && f54uTerminalOnce &&
+            f54uTerminalFailed && f54uCurrentCleared && f54uEventReaped &&
             f54uNoEffects && f54uReadyBefore && f54uNoGcdBefore &&
             f54uReadyAfter && f54uNoGcdAfter && f54uSelectorRestored &&
             f54uDestinationRemoved && f54uMapRestored && f54uWorldRestored &&
@@ -14033,15 +14036,15 @@ if (f54mPassed)
         static_cast<unsigned long long>(f54uGuid.GetRawValue()));
 
     sLog.Out(LOG_BASIC, f54uPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F54u cross-Map Group recipient: gatePassed=%u castAccepted=%u queuedBeforeTransfer=%u selectorChanged=%u inputTargetChanged=%u sourceRemoved=%u groupPreserved=%u destinationAdded=%u liveOnDestination=%u sourceCannotResolve=%u queuedGuidRetained=%u coreCanceled=%u authorizeSkipped=%u terminalOnce=%u terminalInterrupted=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u adapterIntactBeforeUpdate=%u adapterIntactAfterUpdate=%u terminalCalls=%u terminalActionId=%llu terminalEncounterId=%llu terminalSuccess=%u terminalEngineAction=%u healerHealth=%u/%u recipientHealth=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u selectorRestored=%u destinationRemoved=%u mapRestored=%u worldRestored=%u locationRestored=%u groupRestored=%u subgroupRestored=%u instanceValidRestored=%u leaderRestored=%u assistantRestored=%u destinationBindReleased=%u destinationMapDeleted=%u adapterRestored=%u expectedTargetGuid=%llu.",
+        "[PartyBotSimulator] F54u cross-Map Group recipient: gatePassed=%u castAccepted=%u queuedBeforeTransfer=%u selectorChanged=%u inputTargetChanged=%u sourceRemoved=%u groupPreserved=%u destinationAdded=%u liveOnDestination=%u sourceCannotResolve=%u queuedGuidRetained=%u coreRejected=%u authorizeSkipped=%u terminalOnce=%u terminalFailed=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u adapterIntactBeforeUpdate=%u adapterIntactAfterUpdate=%u terminalCalls=%u terminalActionId=%llu terminalEncounterId=%llu terminalSuccess=%u terminalInterrupted=%u terminalEngineAction=%u healerHealth=%u/%u recipientHealth=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u selectorRestored=%u destinationRemoved=%u mapRestored=%u worldRestored=%u locationRestored=%u groupRestored=%u subgroupRestored=%u instanceValidRestored=%u leaderRestored=%u assistantRestored=%u destinationBindReleased=%u destinationMapDeleted=%u adapterRestored=%u expectedTargetGuid=%llu.",
         f54uGate ? 1u : 0u, f54uCastAccepted ? 1u : 0u,
         f54uQueued ? 1u : 0u, f54uSelectorChanged ? 1u : 0u,
         f54uTargetChanged ? 1u : 0u, f54uSourceRemoved ? 1u : 0u,
         f54uGroupPreserved ? 1u : 0u, f54uDestinationAdded ? 1u : 0u,
         f54uLiveOnDestination ? 1u : 0u, f54uSourceCannotResolve ? 1u : 0u,
-        f54uGuidRetained ? 1u : 0u, f54uCoreCanceled ? 1u : 0u,
+        f54uGuidRetained ? 1u : 0u, f54uCoreRejected ? 1u : 0u,
         f54uAuthorizeSkipped ? 1u : 0u, f54uTerminalOnce ? 1u : 0u,
-        f54uInterrupted ? 1u : 0u, f54uCurrentCleared ? 1u : 0u,
+        f54uTerminalFailed ? 1u : 0u, f54uCurrentCleared ? 1u : 0u,
         f54uEventReaped ? 1u : 0u, f54uEventUpdates,
         f54uAdapterIntactBeforeUpdate ? 1u : 0u,
         f54uAdapterIntactAfterUpdate ? 1u : 0u,
@@ -14049,6 +14052,7 @@ if (f54mPassed)
         static_cast<unsigned long long>(f54uObservedTerminalActionId),
         static_cast<unsigned long long>(f54uObservedTerminalEncounterId),
         f54uObservedTerminalSuccess ? 1u : 0u,
+        f54uObservedTerminalInterrupted ? 1u : 0u,
         f54uObservedTerminalEngineAction ? 1u : 0u,
         f54uHealerHealthBefore, f54uHealerHealthAfter,
         f54uMemberHealthBefore, f54uMemberHealthAfter,
@@ -14067,7 +14071,7 @@ if (f54mPassed)
         static_cast<unsigned long long>(f54uGuid.GetRawValue()));
     if (f54uPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-            "[PartyBotSimulator] PASS: F54u kept the queued recipient alive and in the Group on a distinct destination Map/instance; the caster's source Map could not resolve its GUID, so Core canceled before authorization with no effects and full restoration.");
+            "[PartyBotSimulator] PASS: F54u kept the queued recipient alive and in the Group on a distinct destination Map/instance; the caster's source Map could not resolve its GUID, so Core rejected the cast before authorization with no effects and full restoration.");
 
     if (f54uDestinationMap)
     {

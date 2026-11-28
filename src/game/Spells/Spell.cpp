@@ -32,6 +32,7 @@
 #include "SpellMgr.h"
 #include "Player.h"
 #include "PlayerAI.h"
+#include "PlayerBots/Engine/DirectHealImpactContract.h"
 #include "Pet.h"
 #include "DynamicObject.h"
 #include "Group.h"
@@ -3729,18 +3730,30 @@ bool Spell::IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) con
     if (!requireResolvedTargets)
         return true;
 
-    if (m_targets.getUnitTarget() != m_casterUnit ||
-        m_UniqueTargetInfo.size() != 1 ||
-        !m_UniqueGOTargetInfo.empty() ||
-        !m_UniqueItemInfo.empty())
+    if (m_targets.getUnitTarget() != m_casterUnit)
         return false;
 
-    TargetInfo const& target = m_UniqueTargetInfo.front();
-    return target.targetGUID == m_casterUnit->GetObjectGuid() &&
-        target.timeDelay == 0 && target.effectMask == 0x01 &&
-        target.missCondition == SPELL_MISS_NONE &&
-        target.reflectResult == SPELL_MISS_NONE &&
-        !target.deleted && !target.processed;
+    PartyBotEngine::ResolvedDirectHealTarget resolvedTarget;
+    if (!m_UniqueTargetInfo.empty())
+    {
+        TargetInfo const& target = m_UniqueTargetInfo.front();
+        resolvedTarget.targetGuid = target.targetGUID.GetRawValue();
+        resolvedTarget.timeDelayMs = static_cast<uint32>(target.timeDelay);
+        resolvedTarget.effectMask = target.effectMask;
+        resolvedTarget.missCondition = static_cast<uint8>(target.missCondition);
+        resolvedTarget.reflectResult = static_cast<uint8>(target.reflectResult);
+        resolvedTarget.deleted = target.deleted;
+        resolvedTarget.processed = target.processed;
+    }
+
+    return PartyBotEngine::IsExactSingleResolvedDirectHealTarget(
+        m_casterUnit->GetObjectGuid().GetRawValue(),
+        static_cast<uint32>(m_UniqueTargetInfo.size()),
+        static_cast<uint32>(m_UniqueGOTargetInfo.size()),
+        static_cast<uint32>(m_UniqueItemInfo.size()),
+        resolvedTarget, 0, 0x01,
+        static_cast<uint8>(SPELL_MISS_NONE),
+        static_cast<uint8>(SPELL_MISS_NONE));
 }
 
 bool Spell::CommitPartyBotDeferredEffects()

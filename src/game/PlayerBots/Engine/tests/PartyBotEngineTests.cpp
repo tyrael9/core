@@ -11,6 +11,7 @@
 #include "HealingForecast.h"
 #include "PriestDirectHealAction.h"
 #include "DirectHealThreatComponents.h"
+#include "DirectHealImpactContract.h"
 #include "FollowPartyLeaderTrigger.h"
 #include "BotBehaviorState.h"
 #include "AutoResurrectSelfTrigger.h"
@@ -4098,6 +4099,57 @@ void TestSupportedSingleTargetDirectHealSpellShape() {
         0, true, false, true, true, false));
 }
 
+void TestExactSingleResolvedDirectHealTargetContract()
+{
+    ResolvedDirectHealTarget target;
+    target.targetGuid = 77;
+    target.timeDelayMs = 0;
+    target.effectMask = 0x01;
+    target.missCondition = 0;
+    target.reflectResult = 0;
+
+    auto accepted = [&target](std::uint64_t expectedGuid = 77,
+                              std::uint32_t unitCount = 1,
+                              std::uint32_t gameObjectCount = 0,
+                              std::uint32_t itemCount = 0)
+    {
+        return IsExactSingleResolvedDirectHealTarget(
+            expectedGuid, unitCount, gameObjectCount, itemCount,
+            target, 0, 0x01, 0, 0);
+    };
+
+    assert(accepted());
+
+    // Exact recipient identity and a single resolved Unit are mandatory.
+    assert(!accepted(0));
+    assert(!accepted(78));
+    assert(!accepted(77, 0));
+    assert(!accepted(77, 2));
+    assert(!accepted(77, 1, 1, 0));
+    assert(!accepted(77, 1, 0, 1));
+
+    // A nominally single Unit row is not enough if its impact state differs.
+    target.timeDelayMs = 1;
+    assert(!accepted());
+    target.timeDelayMs = 0;
+    target.effectMask = 0x03;
+    assert(!accepted());
+    target.effectMask = 0x01;
+    target.missCondition = 1;
+    assert(!accepted());
+    target.missCondition = 0;
+    target.reflectResult = 1;
+    assert(!accepted());
+    target.reflectResult = 0;
+    target.deleted = true;
+    assert(!accepted());
+    target.deleted = false;
+    target.processed = true;
+    assert(!accepted());
+    target.processed = false;
+    assert(accepted());
+}
+
 void TestDirectHealHelpfulProcRiskClassifier() {
     constexpr std::uint32_t kDealHelpfulSpell = 1u << 4;
     constexpr std::uint32_t kTakeHelpfulSpell = 1u << 7;
@@ -7314,6 +7366,7 @@ int main() {
     TestNonBotPartyMemberStateChangesAreSampledWithoutDuplicates();
     TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots();
     TestSupportedSingleTargetDirectHealSpellShape();
+    TestExactSingleResolvedDirectHealTargetContract();
     TestDirectHealHelpfulProcRiskClassifier();
     TestDirectHealThreatComponentsSplitAcrossAllHostileReferences();
     TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure();

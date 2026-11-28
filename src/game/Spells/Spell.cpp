@@ -3403,12 +3403,17 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
                     // m_delayed is a coarse spell-batching eligibility flag. It can be
                     // true even when this self-targeted effect has no actual impact delay.
                     // The resolved TargetInfo::timeDelay == 0 check below is authoritative.
-                    if (!IsSafePartyBotDeferredSelfHealShape(false))
+                    bool const safeStaticShape =
+                        IsSafePartyBotDeferredSelfHealShape(false);
+                    bool const impactContextCaptured =
+                        safeStaticShape && CapturePartyBotDeferredImpactContext();
+                    if (!safeStaticShape || !impactContextCaptured)
                     {
                         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                            "[PartyBotSpellAdmission] prepare rejected static shape: spell=%u safeShape=%u batchDelayEligible=%u triggered=%u script=%u castTime=%u speed=%.3f.",
+                            "[PartyBotSpellAdmission] prepare rejected static/context gate: spell=%u safeShape=%u impactContextCaptured=%u batchDelayEligible=%u triggered=%u script=%u castTime=%u speed=%.3f.",
                             m_spellInfo ? m_spellInfo->Id : 0u,
-                            IsSafePartyBotDeferredSelfHealShape(false) ? 1u : 0u,
+                            safeStaticShape ? 1u : 0u,
+                            impactContextCaptured ? 1u : 0u,
                             m_delayed ? 1u : 0u, m_IsTriggeredSpell ? 1u : 0u,
                             m_spellInfo ? m_spellInfo->ScriptId : 0u,
                             m_spellInfo ? m_spellInfo->GetCastTime(m_caster, this) : 0u,
@@ -3694,6 +3699,93 @@ void Spell::cancel()
         m_casterUnit->RemoveGameObject(m_spellInfo->Id, true);
 }
 
+
+bool Spell::CapturePartyBotDeferredImpactContext()
+{
+    m_partyBotDeferredImpactContextCaptured = false;
+    m_partyBotDeferredExpectedCasterGuid = 0;
+    m_partyBotDeferredExpectedRecipientGuid = 0;
+    m_partyBotDeferredExpectedGroupId = 0;
+    m_partyBotDeferredExpectedMapId = 0;
+    m_partyBotDeferredExpectedInstanceId = 0;
+
+    Player* caster = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
+    Player* recipient = m_targets.getUnitTarget()
+        ? m_targets.getUnitTarget()->ToPlayer() : nullptr;
+    if (!caster || !recipient || recipient != caster ||
+        !caster->IsInWorld() || !recipient->IsInWorld() ||
+        !caster->IsAlive() || !recipient->IsAlive())
+        return false;
+
+    Group* casterGroup = caster->GetGroup();
+    Group* recipientGroup = recipient->GetGroup();
+    Map* casterMap = caster->GetMap();
+    Map* recipientMap = recipient->GetMap();
+    if (!casterGroup || casterGroup != recipientGroup ||
+        !casterMap || casterMap != recipientMap ||
+        !casterGroup->GetId() ||
+        !casterGroup->IsMember(caster->GetObjectGuid()) ||
+        !casterGroup->IsMember(recipient->GetObjectGuid()) ||
+        caster->GetMapId() != recipient->GetMapId() ||
+        caster->GetInstanceId() != recipient->GetInstanceId())
+        return false;
+
+    m_partyBotDeferredExpectedCasterGuid =
+        caster->GetObjectGuid().GetRawValue();
+    m_partyBotDeferredExpectedRecipientGuid =
+        recipient->GetObjectGuid().GetRawValue();
+    m_partyBotDeferredExpectedGroupId = casterGroup->GetId();
+    m_partyBotDeferredExpectedMapId = caster->GetMapId();
+    m_partyBotDeferredExpectedInstanceId = caster->GetInstanceId();
+    m_partyBotDeferredImpactContextCaptured = true;
+    return true;
+}
+
+bool Spell::IsPartyBotDeferredImpactContextCurrent() const
+{
+    if (!m_partyBotDeferredImpactContextCaptured)
+        return false;
+
+    Player* caster = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
+    Player* recipient = m_targets.getUnitTarget()
+        ? m_targets.getUnitTarget()->ToPlayer() : nullptr;
+    if (!caster || !recipient)
+        return false;
+
+    Group* casterGroup = caster->GetGroup();
+    Group* recipientGroup = recipient->GetGroup();
+    Map* casterMap = caster->GetMap();
+    Map* recipientMap = recipient->GetMap();
+
+    PartyBotEngine::ResolvedDirectHealImpactContext context;
+    context.expectedCasterGuid = m_partyBotDeferredExpectedCasterGuid;
+    context.currentCasterGuid = caster->GetObjectGuid().GetRawValue();
+    context.expectedRecipientGuid = m_partyBotDeferredExpectedRecipientGuid;
+    context.currentRecipientGuid = recipient->GetObjectGuid().GetRawValue();
+    context.expectedGroupId = m_partyBotDeferredExpectedGroupId;
+    context.casterGroupId = casterGroup ? casterGroup->GetId() : 0;
+    context.recipientGroupId = recipientGroup ? recipientGroup->GetId() : 0;
+    context.expectedMapId = m_partyBotDeferredExpectedMapId;
+    context.casterMapId = caster->GetMapId();
+    context.recipientMapId = recipient->GetMapId();
+    context.expectedInstanceId = m_partyBotDeferredExpectedInstanceId;
+    context.casterInstanceId = caster->GetInstanceId();
+    context.recipientInstanceId = recipient->GetInstanceId();
+    context.casterAndRecipientShareGroup =
+        casterGroup && casterGroup == recipientGroup;
+    context.casterIsGroupMember = casterGroup &&
+        casterGroup->IsMember(caster->GetObjectGuid());
+    context.recipientIsGroupMember = recipientGroup &&
+        recipientGroup->IsMember(recipient->GetObjectGuid());
+    context.casterAndRecipientShareMap =
+        casterMap && casterMap == recipientMap;
+    context.casterInWorld = caster->IsInWorld();
+    context.recipientInWorld = recipient->IsInWorld();
+    context.casterAlive = caster->IsAlive();
+    context.recipientAlive = recipient->IsAlive();
+    return PartyBotEngine::IsCurrentLiveGroupDirectHealImpactContext(context);
+}
+
 bool Spell::IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) const
 {
     if (!m_casterUnit || !m_casterUnit->IsPlayer() ||
@@ -3760,6 +3852,19 @@ bool Spell::CommitPartyBotDeferredEffects()
 {
     if (!m_partyBotDeferredEffectsRequested || m_partyBotDeferredEffectsCommitted)
         return false;
+
+    if (!IsPartyBotDeferredImpactContextCurrent())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSpellAdmission] impact Group/map/instance context rejected: spell=%u expectedCaster=%llu expectedRecipient=%llu expectedGroup=%u expectedMap=%u expectedInstance=%u.",
+            m_spellInfo ? m_spellInfo->Id : 0u,
+            static_cast<unsigned long long>(m_partyBotDeferredExpectedCasterGuid),
+            static_cast<unsigned long long>(m_partyBotDeferredExpectedRecipientGuid),
+            m_partyBotDeferredExpectedGroupId,
+            m_partyBotDeferredExpectedMapId,
+            m_partyBotDeferredExpectedInstanceId);
+        return false;
+    }
 
     if (!IsSafePartyBotDeferredSelfHealShape(true))
     {

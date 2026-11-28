@@ -47,6 +47,63 @@ inline bool IsExactSingleResolvedDirectHealTarget(
         !target.deleted && !target.processed;
 }
 
+
+struct ResolvedDirectHealImpactContext
+{
+    std::uint64_t expectedCasterGuid = 0;
+    std::uint64_t currentCasterGuid = 0;
+    std::uint64_t expectedRecipientGuid = 0;
+    std::uint64_t currentRecipientGuid = 0;
+
+    std::uint32_t expectedGroupId = 0;
+    std::uint32_t casterGroupId = 0;
+    std::uint32_t recipientGroupId = 0;
+
+    std::uint32_t expectedMapId = 0;
+    std::uint32_t casterMapId = 0;
+    std::uint32_t recipientMapId = 0;
+    std::uint32_t expectedInstanceId = 0;
+    std::uint32_t casterInstanceId = 0;
+    std::uint32_t recipientInstanceId = 0;
+
+    bool casterAndRecipientShareGroup = false;
+    bool casterIsGroupMember = false;
+    bool recipientIsGroupMember = false;
+    bool casterAndRecipientShareMap = false;
+    bool casterInWorld = false;
+    bool recipientInWorld = false;
+    bool casterAlive = false;
+    bool recipientAlive = false;
+};
+
+// Validate the impact-time identity of a party heal against the context
+// captured when the Engine requested deferred effects. This is necessary but
+// not sufficient for authorization: spell shape, successful target rows,
+// proc/child closure and complete threat impact remain separate gates.
+inline bool IsCurrentLiveGroupDirectHealImpactContext(
+    ResolvedDirectHealImpactContext const& context)
+{
+    return context.expectedCasterGuid &&
+        context.expectedRecipientGuid &&
+        context.expectedGroupId &&
+        context.currentCasterGuid == context.expectedCasterGuid &&
+        context.currentRecipientGuid == context.expectedRecipientGuid &&
+        context.casterGroupId == context.expectedGroupId &&
+        context.recipientGroupId == context.expectedGroupId &&
+        context.casterAndRecipientShareGroup &&
+        context.casterIsGroupMember &&
+        context.recipientIsGroupMember &&
+        context.casterMapId == context.expectedMapId &&
+        context.recipientMapId == context.expectedMapId &&
+        context.casterInstanceId == context.expectedInstanceId &&
+        context.recipientInstanceId == context.expectedInstanceId &&
+        context.casterAndRecipientShareMap &&
+        context.casterInWorld &&
+        context.recipientInWorld &&
+        context.casterAlive &&
+        context.recipientAlive;
+}
+
 } // namespace PartyBotEngine
 
 #endif

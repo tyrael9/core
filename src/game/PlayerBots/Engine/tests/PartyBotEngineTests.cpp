@@ -4152,6 +4152,63 @@ void TestExactSingleResolvedDirectHealTargetContract()
     assert(accepted());
 }
 
+void TestResolvedDirectHealImpactContextRequiresSameLiveGroupShard()
+{
+    ResolvedDirectHealImpactContext context;
+    context.expectedCasterGuid = 10;
+    context.currentCasterGuid = 10;
+    context.expectedRecipientGuid = 20;
+    context.currentRecipientGuid = 20;
+    context.expectedGroupId = 300;
+    context.casterGroupId = 300;
+    context.recipientGroupId = 300;
+    context.expectedMapId = 33;
+    context.casterMapId = 33;
+    context.recipientMapId = 33;
+    context.expectedInstanceId = 7;
+    context.casterInstanceId = 7;
+    context.recipientInstanceId = 7;
+    context.casterAndRecipientShareGroup = true;
+    context.casterIsGroupMember = true;
+    context.recipientIsGroupMember = true;
+    context.casterAndRecipientShareMap = true;
+    context.casterInWorld = true;
+    context.recipientInWorld = true;
+    context.casterAlive = true;
+    context.recipientAlive = true;
+
+    assert(IsCurrentLiveGroupDirectHealImpactContext(context));
+
+    auto rejectedAfterMutation = [&context](auto mutation)
+    {
+        ResolvedDirectHealImpactContext changed = context;
+        mutation(changed);
+        assert(!IsCurrentLiveGroupDirectHealImpactContext(changed));
+    };
+
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.expectedCasterGuid = 0; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.currentCasterGuid = 11; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.expectedRecipientGuid = 0; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.currentRecipientGuid = 21; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.expectedGroupId = 0; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterGroupId = 301; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.recipientGroupId = 301; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterAndRecipientShareGroup = false; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterIsGroupMember = false; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.recipientIsGroupMember = false; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.expectedMapId = 0; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterMapId = 34; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.recipientMapId = 34; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterAndRecipientShareMap = false; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.expectedInstanceId = 0; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterInstanceId = 8; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.recipientInstanceId = 8; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterInWorld = false; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.recipientInWorld = false; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterAlive = false; });
+    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.recipientAlive = false; });
+}
+
 void TestDirectHealHelpfulProcRiskClassifier() {
     constexpr std::uint32_t kDealHelpfulSpell = 1u << 4;
     constexpr std::uint32_t kTakeHelpfulSpell = 1u << 7;
@@ -7369,6 +7426,7 @@ int main() {
     TestNonBotPartyMemberStateSamplingRejectsForeignShardSnapshots();
     TestSupportedSingleTargetDirectHealSpellShape();
     TestExactSingleResolvedDirectHealTargetContract();
+    TestResolvedDirectHealImpactContextRequiresSameLiveGroupShard();
     TestDirectHealHelpfulProcRiskClassifier();
     TestDirectHealThreatComponentsSplitAcrossAllHostileReferences();
     TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure();

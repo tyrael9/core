@@ -297,6 +297,12 @@ class Spell
         bool m_partyBotTraceInterrupted = false;
         bool m_partyBotTraceEngineAction = false;
         bool m_partyBotDeferredEffectsRequested = false;
+        bool m_partyBotDeferredImpactContextCaptured = false;
+        uint64 m_partyBotDeferredExpectedCasterGuid = 0;
+        uint64 m_partyBotDeferredExpectedRecipientGuid = 0;
+        uint32 m_partyBotDeferredExpectedGroupId = 0;
+        uint32 m_partyBotDeferredExpectedMapId = 0;
+        uint32 m_partyBotDeferredExpectedInstanceId = 0;
         bool m_partyBotDeferredEffectsCommitted = false;
         uint32 m_partyBotDeferredInterruptFlags = 0;
         uint64 m_partyBotItemUseId = 0;
@@ -541,6 +547,8 @@ class Spell
         void DoAllEffectOnTarget(TargetInfo *target);
         void HandleDelayedSpellLaunch(TargetInfo *target);
         bool IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) const;
+        bool CapturePartyBotDeferredImpactContext();
+        bool IsPartyBotDeferredImpactContextCurrent() const;
         bool CommitPartyBotDeferredEffects();
         void RejectPartyBotDeferredEffects();
         void InitializeDamageMultipliers();

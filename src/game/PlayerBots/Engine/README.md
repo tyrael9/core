@@ -6,14 +6,14 @@ Independent party-coordinated AI for the pinned Vanilla 1.12.1 / build 5875 vMaN
 
 **Overall position: Phase 6 / Healer in progress.** Project foundations Phases 0–5 are established; Phase 7 combat coordination is partial and Phase 8 encounter strategies have not started. This repository is not yet a complete/playable autonomous combat AI.
 
-**Current branch:** `work/partybot-engine-foundation`. Latest full code-validation revision: [`09ec3dd`](https://github.com/tyrael9/core/commit/09ec3dda874aa677bf3612b35686505cb66447a7); the subsequent documentation reconciliation is [`c8bfe0c`](https://github.com/tyrael9/core/commit/c8bfe0caf2f38db474ba19c197e4cea3847abb67). PR [#1](https://github.com/tyrael9/core/pull/1) remains Open / Draft against the pinned Vanilla 5875 validation base.
+**Current branch:** `work/partybot-engine-foundation`. Latest code-validation revision: [`f7d5201`](https://github.com/tyrael9/core/commit/f7d52013803ad3fa7b34a6330a200f9a54530b25) (F55a). PR [#1](https://github.com/tyrael9/core/pull/1) remains Open / Draft against the pinned Vanilla 5875 validation base.
 
-**Latest CI on exact HEAD:**
-- PR-safe [#46128866209](https://github.com/tyrael9/core/actions/runs/46128866209): success.
-- Trusted push [#46128859679](https://github.com/tyrael9/core/actions/runs/46128859679): success, including full Linux ARM64 Core build and fixture-backed simulator to final `Runtime PASS`; GDB exited normally.
-- Artifact [#15256659780](https://github.com/tyrael9/core/actions/runs/46128859679/artifacts/15256659780).
+**Latest CI on F55a code commit:**
+- PR-safe [#46132022118](https://github.com/tyrael9/core/actions/runs/46132022118): **success**, including pure Engine tests, report collector, Configure, full Linux ARM64 Vanilla 5875 Server/Realm build and simulator-harness syntax.
+- Trusted push [#46132017347](https://github.com/tyrael9/core/actions/runs/46132017347): **success**, including fixture-backed Core simulator, F54u regression marker, final `Runtime PASS` and normal GDB exit.
+- Simulator artifact [partybot-simulator-f7d5201](https://github.com/tyrael9/core/actions/runs/46132017347/artifacts/15258368151).
 
-**Latest healer state:** F54u is trusted-runtime validated. H1 shared policy/catalog and H2 Shaman Lesser Healing Wave pure profile adapter are complete at their stated scope. H3 cast-time party-heal admission and dynamic threat closure are next. H2 does not cast a spell; no healer action or strategy is production-registered.
+**Latest healer state:** H1 shared policy/catalog and H2 Shaman Lesser Healing Wave pure profile adapter are complete at their stated scope. H3 is in progress: F55a provides a tested exact single-recipient target contract reused by the narrow F54o self-heal gate. F55a does not authorize party-target/cast-time healing or complete dynamic threat closure. No healer action or strategy is production-registered.
 
 **Production behavior:** only `FollowPartyMemberAction` and `StopFollowingAction` are registered in production NewEngine. Legacy remains the default runtime mode. The remaining generic CoreAction adapters and all combat/healer/encounter policies are not production gameplay behavior.
 
@@ -45,7 +45,7 @@ See [ROADMAP.md](ROADMAP.md) for the full Phase 0–8 status matrix and acceptan
 - **Phase 3:** trace/reporting is useful but intentionally bounded; richer AI/Boss state and deployment-side integration remain open.
 - **Phase 4:** exclusive NewEngine execution and 17 generic CoreAction adapters are tested; production registration remains limited to Follow and StopFollowing.
 - **Phase 5:** party formation and death/resurrection/map-instance lifecycle slice is closed.
-- **Phase 6:** healer work is active. H1 and H2 are complete at policy/profile scope; H3 cast-time admission/threat closure is the next blocker. No healer strategy is production-enabled.
+- **Phase 6:** healer work is active. H1 and H2 are complete at policy/profile scope; H3 has started with F55a's exact resolved-recipient contract, while party-target cast-time admission and dynamic threat closure remain open. No healer strategy is production-enabled.
 - **Phase 7:** combat coordination is partial.
 - **Phase 8:** encounter strategies are not started.
 

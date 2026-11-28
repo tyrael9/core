@@ -119,10 +119,16 @@ Paladin remains in scope, but its first implementation must be a separately audi
 | H0 (this document) | Record the shared-engine / class-adapter contract and current support limits | Docs agree with current code and trusted evidence |
 | H1 | Extract class-neutral missing-health, incoming-credit and reservation helpers without changing Priest decisions | Existing Priest unit/fixture behavior stays identical; generic helper tests pass |
 | H2 | Implement a non-production Shaman Lesser Healing Wave profile adapter with an explicit six-rank allow-list | Pure tests prove class/rank filtering, mana and cast-time metadata; no Core dispatch |
-| H3 | Extend and validate Core cast-time admission/threat closure for the Shaman direct-heal MVP | Trusted Core simulator proves accepted cast and every target/recipient rejection and cleanup boundary |
+| H3 | Extend and validate Core cast-time admission/threat closure for the Shaman direct-heal MVP | **In progress (F55a complete):** trusted Core simulator must prove accepted cast and every target/recipient rejection and cleanup boundary before any cast-time action is enabled |
 | H4 | Reassess Priest adapter against the common contract; enable neither class by default | Review confirms parity and complete threat closure |
 | H5 | Add the separate Paladin Holy Light / Flash of Light ScriptEffect adapter | Core script/child-cast behavior and complete threat effects are audited and trusted-tested |
 | H6 | Add Druid direct / HoT / hybrid slices, then separately channel/AoE | Timing, form and multi-target acceptance gates pass |
+
+## H3 progress — F55a exact resolved-recipient contract
+
+F55a extracts Core's single resolved Unit-target shape into `DirectHealImpactContract.h` and reuses it from the existing F54o deferred self-heal gate. The predicate checks exact recipient GUID, exactly one Unit target, zero GameObject/Item targets, exact effect mask, zero `uint64` delay, no miss/reflect, and not deleted/processed. Pure tests cover each rejection and verify that a delay greater than 32 bits cannot narrow or wrap to zero. The F55a revision is [`f7d5201`](https://github.com/tyrael9/core/commit/f7d52013803ad3fa7b34a6330a200f9a54530b25), with PR-safe [#46132022118](https://github.com/tyrael9/core/actions/runs/46132022118) and trusted push [#46132017347](https://github.com/tyrael9/core/actions/runs/46132017347) passing; the trusted simulator reached final `Runtime PASS` and normal GDB exit.
+
+This is a reusable target-shape contract, not a new admission mode. It still expects the caster as recipient and does not prove party membership, map/instance validity, hostile-reference fan-out, proc/child-cast closure or whole-action threat completeness. Shaman's 1.5-second Lesser Healing Wave remains non-dispatchable. Proposed next slices: F55b impact-time Group/map/instance revalidation, F55c dynamic hostile/proc/child-threat closure, F55d trusted cast-time acceptance/rejection and cleanup fixtures.
 
 ## Production rule
 

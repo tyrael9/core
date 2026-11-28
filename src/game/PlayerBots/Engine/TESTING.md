@@ -1,3 +1,17 @@
+## F55a — exact resolved single-recipient impact contract (validated)
+
+Code commit [`f7d5201`](https://github.com/tyrael9/core/commit/f7d52013803ad3fa7b34a6330a200f9a54530b25) adds `DirectHealImpactContract.h`, a Core-independent value contract shared by the pure Engine tests and `Spell::IsSafePartyBotDeferredSelfHealShape()`.
+
+The test `TestExactSingleResolvedDirectHealTargetContract` verifies the accepted row and rejects: missing/wrong expected GUID, zero or multiple Unit targets, any GameObject or Item target, nonzero impact delay (including `1ULL << 32`), an unexpected effect mask, miss, reflection, deleted target rows and already-processed rows. The helper stores the Core `TargetInfo::timeDelay` as `uint64`; no narrowing conversion is permitted.
+
+The F54o caller still requires the caster's exact GUID, exactly one Unit target and no GO/Item target. This refactor does not enable Group recipients, cast-time spells, Shaman LHW, or any healer action. It deliberately does not certify Group/map/instance membership, dynamic HostileRefManager recipients, proc/child-cast closure or complete threat impact.
+
+Validation for the F55a code revision:
+- PR-safe [#46132022118](https://github.com/tyrael9/core/actions/runs/46132022118): success; pure Engine tests, report collector, CMake configure, full Linux ARM64 Vanilla 5875 Server/Realm build and simulator-harness syntax passed.
+- Trusted push [#46132017347](https://github.com/tyrael9/core/actions/runs/46132017347): success; full fixture-backed Core simulator reached final `Runtime PASS`, included F54o/F54u regressions and GDB exited normally. Artifact: [partybot-simulator-f7d5201](https://github.com/tyrael9/core/actions/runs/46132017347/artifacts/15258368151).
+
+There is no dedicated F55a simulator marker or successful party-target cast-time-heal fixture in this run; its direct behavior coverage is the pure contract test plus full Core compile. Trusted simulator success confirms the existing runtime regression suite remains intact.
+
 ## H2 — Shaman Lesser Healing Wave profile adapter (pure policy)
 
 This adapter is deliberately limited to Shaman Lesser Healing Wave ranks 8004, 8008, 8010, 10469, 10470 and 10471. It calls the shared healer rank selector through an explicit spell-ID allow-list and retains the snapshot's Core-calculated mana cost and cast time. It rejects Chain Heal and unrelated direct-heal spell IDs even when their synthetic profile row has a larger base amount.

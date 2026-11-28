@@ -4131,6 +4131,8 @@ void TestExactSingleResolvedDirectHealTargetContract()
     // A nominally single Unit row is not enough if its impact state differs.
     target.timeDelayMs = 1;
     assert(!accepted());
+    target.timeDelayMs = (static_cast<std::uint64_t>(1) << 32);
+    assert(!accepted()); // The impact delay must never be narrowed or wrap to zero.
     target.timeDelayMs = 0;
     target.effectMask = 0x03;
     assert(!accepted());

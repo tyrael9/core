@@ -12,7 +12,7 @@ namespace PartyBotEngine
 struct ResolvedDirectHealTarget
 {
     std::uint64_t targetGuid = 0;
-    std::uint32_t timeDelayMs = 0;
+    std::uint64_t timeDelayMs = 0;
     std::uint8_t effectMask = 0;
     std::uint8_t missCondition = 0;
     std::uint8_t reflectResult = 0;
@@ -30,7 +30,7 @@ inline bool IsExactSingleResolvedDirectHealTarget(
     std::uint32_t resolvedGameObjectTargetCount,
     std::uint32_t resolvedItemTargetCount,
     ResolvedDirectHealTarget const& target,
-    std::uint32_t expectedDelayMs,
+    std::uint64_t expectedDelayMs,
     std::uint8_t expectedEffectMask,
     std::uint8_t noMissCondition,
     std::uint8_t noReflectResult)

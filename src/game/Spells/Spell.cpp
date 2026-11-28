@@ -3738,7 +3738,7 @@ bool Spell::IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) con
     {
         TargetInfo const& target = m_UniqueTargetInfo.front();
         resolvedTarget.targetGuid = target.targetGUID.GetRawValue();
-        resolvedTarget.timeDelayMs = static_cast<uint32>(target.timeDelay);
+        resolvedTarget.timeDelayMs = target.timeDelay;
         resolvedTarget.effectMask = target.effectMask;
         resolvedTarget.missCondition = static_cast<uint8>(target.missCondition);
         resolvedTarget.reflectResult = static_cast<uint8>(target.reflectResult);

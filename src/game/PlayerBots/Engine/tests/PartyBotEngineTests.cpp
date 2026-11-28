@@ -5,6 +5,7 @@
 #include "Value.h"
 #include "ShadowStrategies.h"
 #include "DpsAssistTrigger.h"
+#include "HealerPolicy.h"
 #include "PriestHealingPolicy.h"
 #include "HealingForecast.h"
 #include "PriestDirectHealAction.h"
@@ -4318,6 +4319,65 @@ void TestPriestDirectHealSelectionUsesAffordableClosestRank() {
     assert(!SelectPriestDirectHealSpell(healer, 700, selection));
 }
 
+void TestClassNeutralHealerPolicyAcceptsPaladinProfile()
+{
+    PartySnapshot snapshot;
+    snapshot.groupId = 910;
+    snapshot.mapId = 1;
+    snapshot.instanceId = 12;
+    snapshot.epoch = 91;
+
+    PartyMemberSnapshot paladin, tank;
+    ConfigureMember(paladin, 101, PartyRole::Healer, 100, 100);
+    paladin.classId = 2; // Vanilla Paladin; the shared policy has no Priest gate.
+    paladin.isPlayerBot = true;
+    paladin.power = 40;
+    paladin.directHealSpells = {{1501, 70, 20}, {1502, 120, 35}};
+    paladin.mapId = snapshot.mapId;
+    paladin.instanceId = snapshot.instanceId;
+
+    ConfigureMember(tank, 202, PartyRole::Tank, 20, 100, true);
+    tank.mapId = snapshot.mapId;
+    tank.instanceId = snapshot.instanceId;
+    snapshot.members = {paladin, tank};
+
+    HealerTargetSelection target;
+    assert(SelectHealerTarget(snapshot, paladin.guid, target));
+    assert(target.targetGuid == tank.guid);
+    assert(target.missingHealth == 80);
+    assert(target.deficitBasisPoints == 8000);
+    assert(GetUncoveredMissingHealth(
+        snapshot, *snapshot.FindMember(tank.guid), paladin.guid, nullptr, 0) == 80);
+
+    DirectHealSpellSelection spell;
+    assert(SelectDirectHealSpell(*snapshot.FindMember(paladin.guid), 80, spell));
+    assert(spell.spellId == 1502);
+    assert(spell.baseHealing == 120);
+    assert(spell.manaCost == 35);
+
+    // If no affordable rank covers the deficit, the strongest affordable
+    // under-heal remains selectable; Core still owns final castability.
+    snapshot.members[0].power = 25;
+    assert(SelectDirectHealSpell(snapshot.members[0], 80, spell));
+    assert(spell.spellId == 1501);
+
+    HealerDecisionSelection decision;
+    assert(SelectHealerDecision(snapshot, paladin.guid, decision));
+    assert(decision.IsValid());
+    assert(decision.target.targetGuid == tank.guid);
+    assert(decision.spell.spellId == 1501);
+
+    // The legacy Priest entry point retains its explicit class restriction.
+    PriestHealingTargetSelection priestTarget;
+    assert(!SelectPriestHealingTarget(snapshot, paladin.guid, priestTarget));
+    assert(!priestTarget.IsValid());
+
+    snapshot.members[0].roleId =
+        static_cast<std::uint8_t>(PartyRole::Tank);
+    assert(!SelectHealerTarget(snapshot, paladin.guid, target));
+    assert(!target.IsValid());
+}
+
 void TestPriestHealingTargetSelectionIsDeterministicAndSnapshotBounded()
 {
     PartySnapshot snapshot;
@@ -7174,6 +7234,7 @@ int main() {
     TestDirectHealThreatComponentsSplitAcrossAllHostileReferences();
     TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure();
     TestPriestDirectHealSelectionUsesAffordableClosestRank();
+    TestClassNeutralHealerPolicyAcceptsPaladinProfile();
     TestPriestHealingTargetSelectionIsDeterministicAndSnapshotBounded();
     TestPriestHealingTargetSelectionAccountsForOtherBotHealReservations();
     TestPriestHealingTargetSelectionAccountsForIncomingHealsHotsAndAbsorbs();

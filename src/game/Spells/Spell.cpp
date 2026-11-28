@@ -3853,19 +3853,6 @@ bool Spell::CommitPartyBotDeferredEffects()
     if (!m_partyBotDeferredEffectsRequested || m_partyBotDeferredEffectsCommitted)
         return false;
 
-    if (!IsPartyBotDeferredImpactContextCurrent())
-    {
-        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-            "[PartyBotSpellAdmission] impact Group/map/instance context rejected: spell=%u expectedCaster=%llu expectedRecipient=%llu expectedGroup=%u expectedMap=%u expectedInstance=%u.",
-            m_spellInfo ? m_spellInfo->Id : 0u,
-            static_cast<unsigned long long>(m_partyBotDeferredExpectedCasterGuid),
-            static_cast<unsigned long long>(m_partyBotDeferredExpectedRecipientGuid),
-            m_partyBotDeferredExpectedGroupId,
-            m_partyBotDeferredExpectedMapId,
-            m_partyBotDeferredExpectedInstanceId);
-        return false;
-    }
-
     if (!IsSafePartyBotDeferredSelfHealShape(true))
     {
         TargetInfo const* target = m_UniqueTargetInfo.empty()
@@ -3885,6 +3872,19 @@ bool Spell::CommitPartyBotDeferredEffects()
             target ? target->reflectResult : 0u,
             target && target->deleted ? 1u : 0u,
             target && target->processed ? 1u : 0u);
+        return false;
+    }
+
+    if (!IsPartyBotDeferredImpactContextCurrent())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSpellAdmission] impact Group/map/instance context rejected: spell=%u expectedCaster=%llu expectedRecipient=%llu expectedGroup=%u expectedMap=%u expectedInstance=%u.",
+            m_spellInfo ? m_spellInfo->Id : 0u,
+            static_cast<unsigned long long>(m_partyBotDeferredExpectedCasterGuid),
+            static_cast<unsigned long long>(m_partyBotDeferredExpectedRecipientGuid),
+            m_partyBotDeferredExpectedGroupId,
+            m_partyBotDeferredExpectedMapId,
+            m_partyBotDeferredExpectedInstanceId);
         return false;
     }
 

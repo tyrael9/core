@@ -12871,6 +12871,10 @@ if (f54mPassed)
         PlayerAI* const previousAI = healer->AI();
         uint32 const savedHealth = healer->GetHealth();
         uint32 const savedMana = healer->GetPower(POWER_MANA);
+        float const originalThreat0 =
+            f54nHostiles[0].creature->GetThreatManager().getThreat(healer);
+        float const originalThreat1 =
+            f54nHostiles[1].creature->GetThreatManager().getThreat(healer);
         healer->RemoveSpellCooldown(f54nDesperatePrayer, false);
         if (f54nDesperatePrayer->Category)
             healer->RemoveSpellCategoryCooldown(
@@ -12939,8 +12943,13 @@ if (f54mPassed)
                         source->GetObjectGuid().GetRawValue());
             }
             std::sort(currentHostiles.begin(), currentHostiles.end());
-            f55cCurrentSetExpanded =
-                f55cRefsAfter == 3 && currentHostiles.size() == 3;
+            std::vector<uint64> expectedWithThird = f55cExpectedHostiles;
+            expectedWithThird.push_back(
+                f54nHostiles[2].creature->GetObjectGuid().GetRawValue());
+            std::sort(expectedWithThird.begin(), expectedWithThird.end());
+            f55cCurrentSetExpanded = f55cRefsAfter == 3 &&
+                PartyBotEngine::IsExactDirectHealThreatRecipientSet(
+                    expectedWithThird, currentHostiles);
             f55cRecipientSetChanged = f55cCurrentSetExpanded &&
                 !PartyBotEngine::IsExactDirectHealThreatRecipientSet(
                     f55cExpectedHostiles, currentHostiles);
@@ -12998,9 +13007,12 @@ if (f54mPassed)
         healer->SetAI(previousAI);
         f55cAdapterRestored = healer->AI() == previousAI;
         healer->GetHostileRefManager().deleteReferences();
-        for (uint32 i = 0; i < 2; ++i)
-            f54nHostiles[i].creature->AddThreat(
-                healer, 20.0f, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
+        if (originalThreat0 > 0.0f)
+            f54nHostiles[0].creature->AddThreat(
+                healer, originalThreat0, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
+        if (originalThreat1 > 0.0f)
+            f54nHostiles[1].creature->AddThreat(
+                healer, originalThreat1, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
         std::vector<uint64> restoredHostiles;
         uint32 restoredRefs = 0;
         for (HostileReference* ref = healer->GetHostileRefManager().getFirst();

@@ -745,6 +745,10 @@ if [[ -z "$f54u_expected_guid" ]]; then
     echo "[PartyBotSimulator] F54u expected cross-Map recipient GUID was not reported." | tee -a "$LOG_FILE"
     exit 1
 fi
+if [[ "$f54u_expected_guid" == "$f54t_expected_guid" ]]; then
+    echo "[PartyBotSimulator] F54u must use a different live Group recipient from F54t." | tee -a "$LOG_FILE"
+    exit 1
+fi
 f54u_core_cancel="$(grep -F '[PartyBotSpellAdmission] update canceled deferred cast because explicit target is unavailable from caster map: spell=19236' "$LOG_FILE" | grep -F "targetGuid=$f54u_expected_guid" | grep -F 'targetUnit=0' | tail -n 1 || true)"
 if [[ -z "$f54u_core_cancel" ]]; then
     echo "[PartyBotSimulator] F54u Core did not prove the exact live cross-Map GUID was unavailable from the caster's source Map." | tee -a "$LOG_FILE"

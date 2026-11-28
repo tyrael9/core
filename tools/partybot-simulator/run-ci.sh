@@ -749,9 +749,9 @@ if [[ "$f54u_expected_guid" == "$f54t_expected_guid" ]]; then
     echo "[PartyBotSimulator] F54u must use a different live Group recipient from F54t." | tee -a "$LOG_FILE"
     exit 1
 fi
-f54u_core_cancel="$(grep -F '[PartyBotSpellAdmission] update canceled deferred cast because explicit target is unavailable from caster map: spell=19236' "$LOG_FILE" | grep -F "targetGuid=$f54u_expected_guid" | grep -F 'targetUnit=0' | tail -n 1 || true)"
-if [[ -z "$f54u_core_cancel" ]]; then
-    echo "[PartyBotSimulator] F54u Core did not prove the exact live cross-Map GUID was unavailable from the caster's source Map." | tee -a "$LOG_FILE"
+f54u_core_rejection="$(grep -F '[PartyBotSpellAdmission] cast CheckCast(false) rejected: spell=19236' "$LOG_FILE" | grep -F "target=$f54u_expected_guid" | grep -F 'skipCheck=0 state=1' | tail -n 1 || true)"
+if [[ -z "$f54u_core_rejection" ]]; then
+    echo "[PartyBotSimulator] F54u Core did not reject the exact queued cross-Map target during CheckCast(false)." | tee -a "$LOG_FILE"
     exit 1
 fi
 if ! grep -Fq "[PartyBotSimulator] PASS: F54u kept the queued recipient alive and in the Group on a distinct destination Map/instance;" "$LOG_FILE"; then

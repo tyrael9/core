@@ -6,14 +6,14 @@ Independent party-coordinated AI for the pinned Vanilla 1.12.1 / build 5875 vMaN
 
 **Overall position: Phase 6 / Healer in progress.** Project foundations Phases 0–5 are established; Phase 7 combat coordination is partial and Phase 8 encounter strategies have not started. This repository is not yet a complete/playable autonomous combat AI.
 
-**Current branch:** `work/partybot-engine-foundation`. Current submitted HEAD: [`3bd3af5`](https://github.com/tyrael9/core/commit/3bd3af598193f3fc5fdc3d5f64a47fe19205fcd0); its CI is pending. The previous code revision [`da38917`](https://github.com/tyrael9/core/commit/da38917408db886946a4752c7357e3cd01094a9b) passed both PR-safe and trusted workflows, including the fixture-backed simulator and final `Runtime PASS`. PR [#1](https://github.com/tyrael9/core/pull/1) remains Open / Draft against the pinned Vanilla 5875 validation base.
+**Current branch:** `work/partybot-engine-foundation`. Current validated code HEAD: [`2390efe`](https://github.com/tyrael9/core/commit/2390efe42e8456f2bb329459f0a05354ea0376f4). PR [#1](https://github.com/tyrael9/core/pull/1) remains Open / Draft against the pinned Vanilla 5875 validation base.
 
-**Latest validation on code commit `da38917`:**
-- PR-safe [#46134339779](https://github.com/tyrael9/core/actions/runs/46134339779): **success**, including pure Engine tests, report collector, Configure, full Linux ARM64 Vanilla 5875 Server/Realm build and simulator-harness syntax.
-- Trusted push [#46134335966](https://github.com/tyrael9/core/actions/runs/46134335966): **success**, including fixture-backed Core simulator, final `Runtime PASS`, artifact [#15258974889](https://github.com/tyrael9/core/actions/runs/46134335966/artifacts/15258974889) and normal GDB exit.
-- F54o traverses F55b's live positive context gate. F54r/s/t/u remain validated regressions, but their rejected target shapes are stopped by earlier Core gates and are not F55b negative-branch evidence.
+**Latest validation on code commit `2390efe`:**
+- PR-safe [#46177348656](https://github.com/tyrael9/core/actions/runs/46177348656): **success**, including pure Engine tests, report collector, Configure, full Linux ARM64 Vanilla 5875 Server/Realm build and simulator-harness syntax.
+- Trusted push [#46177343863](https://github.com/tyrael9/core/actions/runs/46177343863): **success**, including fixture-backed Core simulator, F55b real Group-drift rejection marker, final `Runtime PASS`, artifact [#15276392748](https://github.com/tyrael9/core/actions/runs/46177343863/artifacts/15276392748) and normal GDB exit.
+- F55b's trusted negative fixture removed the still-live/self-targeted caster from its actual Group after the SpellEvent was queued; the new Core impact-context rejection fired before authorization, with no heal/mana/threat/GCD/cooldown effects and exactly-once failed terminal. Group and Player state were restored.
 
-**Latest healer state:** H1/H2 are complete at their non-production policy/profile scope. H3 includes F55a's exact resolved-target contract and F55b's Core impact-time Group/map/instance identity gate. Pure negative contract tests pass and the trusted F54o positive path passes. A dedicated live Group-drift rejection fixture, full dynamic threat closure and cast-time admission/cleanup fixtures remain open. No healer action or strategy is production-registered.
+**Latest healer state:** H1/H2 are complete at their non-production policy/profile scope. F55a/F55b are complete at their scoped exact-target and impact-context safety gates. H3 remains in progress: dynamic hostile/proc/child-effect threat closure and trusted cast-time acceptance/rejection with terminal/reservation/resource/cooldown lifecycle proof remain open. No healer action or strategy is production-registered.
 
 **Production behavior:** only `FollowPartyMemberAction` and `StopFollowingAction` are registered in production NewEngine. Legacy remains the default runtime mode. The remaining generic CoreAction adapters and all combat/healer/encounter policies are not production gameplay behavior.
 
@@ -45,7 +45,7 @@ See [ROADMAP.md](ROADMAP.md) for the full Phase 0–8 status matrix and acceptan
 - **Phase 3:** trace/reporting is useful but intentionally bounded; richer AI/Boss state and deployment-side integration remain open.
 - **Phase 4:** exclusive NewEngine execution and 17 generic CoreAction adapters are tested; production registration remains limited to Follow and StopFollowing.
 - **Phase 5:** party formation and death/resurrection/map-instance lifecycle slice is closed.
-- **Phase 6:** healer work is active. H1 and H2 are complete at policy/profile scope; H3 has F55a's exact recipient contract and F55b's Core impact-time identity gate; a dedicated live negative Group-drift fixture, party-target cast-time admission and dynamic threat closure remain open. No healer strategy is production-enabled.
+- **Phase 6:** healer work is active. H1 and H2 are complete at policy/profile scope; H3 has F55a's exact recipient contract and F55b's trusted-runtime-validated Core impact-time identity gate. Party-target cast-time admission and dynamic threat closure remain open. No healer strategy is production-enabled.
 - **Phase 7:** combat coordination is partial.
 - **Phase 8:** encounter strategies are not started.
 

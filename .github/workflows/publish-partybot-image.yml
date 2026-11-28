@@ -1,0 +1,88 @@
+name: Publish PartyBot legacy-safe ARM64 container
+
+on:
+  push:
+    branches:
+      - work/partybot-engine-foundation
+    paths:
+      - .github/workflows/publish-partybot-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: partybot-image-publish
+  cancel-in-progress: false
+
+# One-shot release trigger: publish the legacy-safe Core commit below.
+# This revision includes owner disconnect grace/reconnect protection and the
+# temporary-Bot bind fix, but predates the unfinished New AI Engine implementation.
+env:
+  CORE_REPOSITORY: tyrael9/core
+  CORE_REVISION: 46890eb77a3e452fcd0638beb43e5bab4940108d
+  DEPLOY_REPOSITORY: tyrael9/vmangos-deploy
+  DEPLOY_REVISION: ebaa560951459419c35140e20d787ec5db2905b8
+  IMAGE_NAME: ghcr.io/tyrael9/vmangos-server
+  IMAGE_TAG: partybot-instance-bind-46890eb77a3e
+
+jobs:
+  build-and-publish:
+    name: Build and publish linux/arm64 image
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - name: Check out PartyBot Core
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CORE_REPOSITORY }}
+          ref: ${{ env.CORE_REVISION }}
+          path: core
+          persist-credentials: false
+
+      - name: Run standalone PartyBot engine tests when included in this Core revision
+        working-directory: core
+        shell: bash
+        run: |
+          if [[ -f src/game/PlayerBots/Engine/tests/run_tests.sh ]]; then
+            bash src/game/PlayerBots/Engine/tests/run_tests.sh
+          else
+            echo "Legacy-safe release: New AI Engine implementation and its tests are intentionally excluded."
+          fi
+
+      - name: Check out pinned deployment wrapper
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DEPLOY_REPOSITORY }}
+          ref: ${{ env.DEPLOY_REVISION }}
+          path: deploy
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ARM64 server image
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy
+          file: deploy/docker/server/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          build-args: |
+            VMANGOS_REPOSITORY_URL=https://github.com/${{ env.CORE_REPOSITORY }}.git
+            VMANGOS_REVISION=${{ env.CORE_REVISION }}
+            VMANGOS_CLIENT_VERSION=5875
+            VMANGOS_FAIL_ON_PATCH_ERROR=0
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.CORE_REPOSITORY }}
+            org.opencontainers.image.revision=${{ env.CORE_REVISION }}
+            org.opencontainers.image.description=vMaNGOS Vanilla 5875 PartyBot legacy policy with owner disconnect grace; temporary bot instance binds are non-permanent; New AI Engine excluded

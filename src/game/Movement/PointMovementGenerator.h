@@ -29,8 +29,14 @@ class PointMovementGenerator
 : public MovementGeneratorMedium< T, PointMovementGenerator<T> >
 {
     public:
-        PointMovementGenerator(uint32 _id, float _x, float _y, float _z, uint32 options, float speed = 0.0f, float finalOrientation = -10.0f) :
-          m_id(_id), m_x(_x), m_y(_y), m_z(_z), m_o(finalOrientation), m_options(options), m_speed(speed), m_recalculateSpeed(false) {}
+        PointMovementGenerator(uint32 _id, float _x, float _y, float _z, uint32 options,
+                               float speed = 0.0f, float finalOrientation = -10.0f,
+                               uint64 engineActionId = 0, uint64 engineEncounterId = 0,
+                               float engineArrivalTolerance = 1.5f) :
+          m_id(_id), m_x(_x), m_y(_y), m_z(_z), m_o(finalOrientation), m_options(options),
+          m_speed(speed), m_recalculateSpeed(false), m_engineActionId(engineActionId),
+          m_engineEncounterId(engineEncounterId), m_engineArrivalTolerance(engineArrivalTolerance),
+          m_engineNaturalCompletion(false) {}
         virtual ~PointMovementGenerator() {}
 
         virtual void Initialize(T&);
@@ -46,12 +52,20 @@ class PointMovementGenerator
         MovementGeneratorType GetMovementGeneratorType() const override { return POINT_MOTION_TYPE; }
 
         bool GetDestination(float& x, float& y, float& z) const { x=m_x; y=m_y; z=m_z; return true; }
+        uint64 GetEngineActionId() const { return m_engineActionId; }
+        uint64 GetEngineEncounterId() const { return m_engineEncounterId; }
+        uint32 GetPointId() const { return m_id; }
     protected:
         uint32 m_id;
         float m_x,m_y,m_z,m_o;
         uint32 m_options;
         float m_speed;
         bool m_recalculateSpeed;
+        // Nonzero only for the explicit PartyBotEngine MovePoint entry point.
+        uint64 m_engineActionId;
+        uint64 m_engineEncounterId;
+        float m_engineArrivalTolerance;
+        bool m_engineNaturalCompletion;
 };
 
 template<class T>

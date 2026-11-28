@@ -20,6 +20,7 @@
  */
 
 #include "Spell.h"
+#include <algorithm>
 #include "Log.h"
 #include "Opcodes.h"
 #include "CharacterDatabaseCache.h"
@@ -31,9 +32,12 @@
 #include "ObjectMgr.h"
 #include "SpellMgr.h"
 #include "Player.h"
+#include "PlayerAI.h"
+#include "PlayerBots/Engine/DirectHealImpactContract.h"
 #include "Pet.h"
 #include "DynamicObject.h"
 #include "Group.h"
+#include "HostileRefManager.h"
 #include "MapManager.h"
 #include "ScriptMgr.h"
 #include "ObjectAccessor.h"
@@ -3358,6 +3362,24 @@ SpellCastResult Spell::prepare(SpellCastTargets targets, Aura* triggeredByAura, 
 SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
 {
     m_spellState = SPELL_STATE_PREPARING;
+
+    // The owning PlayerAI may associate this Core Spell object with a
+    // previously traced DoCastSpell attempt. The action ID then survives
+    // synchronous instant casts and asynchronous cast/channel completion.
+    if (!m_partyBotTraceActionId && !m_partyBotItemUseId &&
+        m_casterUnit && m_casterUnit->IsPlayer())
+    {
+        if (Player* player = m_casterUnit->ToPlayer())
+        {
+            if (PlayerAI* ai = player->AI())
+                m_partyBotTraceActionId = ai->OnSpellCastPreparing(
+                    this, m_spellInfo->Id,
+                    m_targets.getUnitTargetGuid().GetRawValue(),
+                    m_partyBotTraceEncounterId, m_partyBotTraceTargetGuid,
+                    m_partyBotTraceEngineAction);
+        }
+    }
+
     m_delayed = m_spellInfo->speed > 0.0f || CanDelaySpellDueToBatching();
 
     UpdateCastStartPosition();
@@ -3366,6 +3388,45 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
     {
         m_triggeredByAuraSpell = triggeredByAura->GetSpellProto();
         m_triggeredByAuraBasePoints = triggeredByAura->GetBasePoints();
+    }
+
+    if (m_partyBotTraceEngineAction && m_partyBotTraceActionId &&
+        !m_partyBotItemUseId && m_casterUnit && m_casterUnit->IsPlayer())
+    {
+        if (Player* player = m_casterUnit->ToPlayer())
+        {
+            if (PlayerAI* ai = player->AI())
+            {
+                PlayerSpellCastAdmissionPolicy const admission =
+                    ai->OnSpellCastAdmissionIntent(this);
+                if (admission == PlayerSpellCastAdmissionPolicy::DeferEffectsUntilImpact)
+                {
+                    m_partyBotDeferredEffectsRequested = true;
+                    // m_delayed is a coarse spell-batching eligibility flag. It can be
+                    // true even when this self-targeted effect has no actual impact delay.
+                    // The resolved TargetInfo::timeDelay == 0 check below is authoritative.
+                    bool const safeStaticShape =
+                        IsSafePartyBotDeferredSelfHealShape(false);
+                    bool const impactContextCaptured =
+                        safeStaticShape && CapturePartyBotDeferredImpactContext();
+                    if (!safeStaticShape || !impactContextCaptured)
+                    {
+                        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                            "[PartyBotSpellAdmission] prepare rejected static/context/threat-recipient gate: spell=%u safeShape=%u impactContextCaptured=%u batchDelayEligible=%u triggered=%u script=%u castTime=%u speed=%.3f.",
+                            m_spellInfo ? m_spellInfo->Id : 0u,
+                            safeStaticShape ? 1u : 0u,
+                            impactContextCaptured ? 1u : 0u,
+                            m_delayed ? 1u : 0u, m_IsTriggeredSpell ? 1u : 0u,
+                            m_spellInfo ? m_spellInfo->ScriptId : 0u,
+                            m_spellInfo ? m_spellInfo->GetCastTime(m_caster, this) : 0u,
+                            m_spellInfo ? m_spellInfo->speed : 0.0f);
+                        SendCastResult(SPELL_FAILED_ERROR);
+                        finish(false);
+                        return SPELL_FAILED_ERROR;
+                    }
+                }
+            }
+        }
     }
 
     try
@@ -3379,6 +3440,14 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
         {
             if (!m_originalCasterGUID.IsGameObject())
             {
+                if (m_partyBotDeferredEffectsRequested)
+                    sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                        "[PartyBotSpellAdmission] prepare rejected spell-in-progress: spell=%u triggered=%u currentNonMelee=%u state=%u target=%llu.",
+                        m_spellInfo ? m_spellInfo->Id : 0u,
+                        m_IsTriggeredSpell ? 1u : 0u,
+                        m_caster->IsNonMeleeSpellCasted(false, true, true) ? 1u : 0u,
+                        static_cast<uint32>(m_spellState),
+                        static_cast<unsigned long long>(m_targets.getUnitTarget() ? m_targets.getUnitTarget()->GetGUID() : 0));
                 SendCastResult(SPELL_FAILED_SPELL_IN_PROGRESS);
                 finish(false);
                 return SPELL_FAILED_SPELL_IN_PROGRESS;
@@ -3386,6 +3455,10 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
         }
         if (sObjectMgr.IsSpellDisabled(m_spellInfo->Id))
         {
+            if (m_partyBotDeferredEffectsRequested)
+                sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                    "[PartyBotSpellAdmission] prepare rejected disabled spell: spell=%u state=%u.",
+                    m_spellInfo ? m_spellInfo->Id : 0u, static_cast<uint32>(m_spellState));
             SendCastResult(SPELL_FAILED_SPELL_UNAVAILABLE);
             finish(false);
             return SPELL_FAILED_SPELL_UNAVAILABLE;
@@ -3404,6 +3477,12 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
             Unit* pTarget = m_targets.getUnitTarget();
             if (result != SPELL_CAST_OK || (IsAutoRepeat() && m_caster == pTarget))
             {
+                if (m_partyBotDeferredEffectsRequested)
+                    sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                        "[PartyBotSpellAdmission] prepare CheckCast(true) rejected: spell=%u result=%u target=%llu state=%u.",
+                        m_spellInfo ? m_spellInfo->Id : 0u, static_cast<uint32>(result),
+                        static_cast<unsigned long long>(pTarget ? pTarget->GetGUID() : 0),
+                        static_cast<uint32>(m_spellState));
                 if (!IsAutoRepeat() || !IsAcceptableAutorepeatError(result))
                 {
                     DEBUG_FILTER_LOG(LOG_FILTER_SPELL_CAST, "Spell %u failed for reason 0x%x (target %u)", m_spellInfo->Id, result, pTarget ? pTarget->GetGUIDLow() : 0);
@@ -3440,6 +3519,19 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
         // set timer base at cast time
         ReSetTimer();
 
+        // The admission contract currently supports instant self-heals only.
+        // Deferring GCD until impact would change normal cast-time semantics.
+        if (m_partyBotDeferredEffectsRequested && m_timer > 0)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSpellAdmission] prepare rejected non-instant timer: spell=%u timer=%u castTime=%u.",
+                m_spellInfo ? m_spellInfo->Id : 0u, m_timer,
+                m_spellInfo ? m_spellInfo->GetCastTime(m_caster, this) : 0u);
+            SendCastResult(SPELL_FAILED_ERROR);
+            finish(false);
+            return SPELL_FAILED_ERROR;
+        }
+
         if (!m_IsTriggeredSpell && m_casterUnit)
         {
             uint32 interruptFlags = AURA_INTERRUPT_ACTION_CANCELS;
@@ -3452,10 +3544,17 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
             if (m_targets.getGOTarget())
                 interruptFlags |= AURA_INTERRUPT_LOOTING_CANCELS;
 
-            m_casterUnit->RemoveAurasWithInterruptFlags(interruptFlags, m_spellInfo->Id, false, !ShouldRemoveStealthAuras(), m_spellInfo->HasAttribute(SPELL_ATTR_EX2_ALLOW_WHILE_INVISIBLE));
+            if (m_partyBotDeferredEffectsRequested)
+                m_partyBotDeferredInterruptFlags = interruptFlags;
+            else
+                m_casterUnit->RemoveAurasWithInterruptFlags(
+                    interruptFlags, m_spellInfo->Id, false,
+                    !ShouldRemoveStealthAuras(),
+                    m_spellInfo->HasAttribute(SPELL_ATTR_EX2_ALLOW_WHILE_INVISIBLE));
         }
 
-        OnSpellLaunch();
+        if (!m_partyBotDeferredEffectsRequested)
+            OnSpellLaunch();
 
         bool channeled = m_channeled;
 
@@ -3488,8 +3587,10 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
         {
             // will show cast bar
             SendSpellStart();
-            // add gcd server side (client side is handled by client itself)
-            if (!m_caster->IsPlayer() || !static_cast<Player*>(m_caster)->HasCheatOption(PLAYER_CHEAT_NO_COOLDOWN))
+            // add gcd server side (client side is handled by client itself).
+            // Deferred Engine effects wait for the pre-impact authorization hook.
+            if (!m_partyBotDeferredEffectsRequested &&
+                (!m_caster->IsPlayer() || !static_cast<Player*>(m_caster)->HasCheatOption(PLAYER_CHEAT_NO_COOLDOWN)))
                 m_caster->AddGCD(m_spellInfo);
         }
         // execute triggered without cast time explicitly in call point
@@ -3522,6 +3623,8 @@ void Spell::cancel()
     if (m_spellState == SPELL_STATE_FINISHED)
         return;
 
+    m_partyBotTraceInterrupted = true;
+
     // channeled spells don't display interrupted message even if they are interrupted, possible other cases with no "Interrupted" message
     bool sendInterrupt = !(m_channeled && m_spellState != SPELL_STATE_PREPARING);
 
@@ -3529,7 +3632,8 @@ void Spell::cancel()
     switch (m_spellState)
     {
         case SPELL_STATE_PREPARING:
-            m_caster->ResetGCD(m_spellInfo);
+            if (!m_partyBotDeferredEffectsRequested)
+                m_caster->ResetGCD(m_spellInfo);
             if (m_caster->IsPlayer())
                 m_caster->ToPlayer()->RestoreSpellMods(this);
         //(no break)
@@ -3597,6 +3701,336 @@ void Spell::cancel()
         m_casterUnit->RemoveGameObject(m_spellInfo->Id, true);
 }
 
+
+
+namespace
+{
+// Capture the live threat owners referenced by this heal recipient. This is
+// an identity snapshot only: it intentionally does not estimate threat points
+// or claim proc/child-effect closure.
+bool CollectPartyBotDeferredThreatRecipientGuids(
+    Unit* recipient, std::vector<uint64>& hostileGuids)
+{
+    hostileGuids.clear();
+    if (!recipient || !recipient->IsInWorld() || !recipient->IsAlive() ||
+        !recipient->GetMap())
+        return false;
+
+    uint64 const recipientGuid =
+        recipient->GetObjectGuid().GetRawValue();
+    if (!recipientGuid)
+        return false;
+
+    HostileRefManager& hostileRefs = recipient->GetHostileRefManager();
+    for (HostileReference* reference = hostileRefs.getFirst();
+         reference; reference = reference->next())
+    {
+        Unit* hostileUnit = reference->getSourceUnit();
+        if (!hostileUnit || reference->getTarget() != recipient ||
+            reference->getUnitGuid().GetRawValue() != recipientGuid ||
+            !hostileUnit->CanHaveThreatList() || !hostileUnit->IsAlive() ||
+            !hostileUnit->IsInWorld() ||
+            hostileUnit->GetMap() != recipient->GetMap())
+        {
+            hostileGuids.clear();
+            return false;
+        }
+
+        uint64 const hostileGuid =
+            hostileUnit->GetObjectGuid().GetRawValue();
+        if (!hostileGuid)
+        {
+            hostileGuids.clear();
+            return false;
+        }
+        hostileGuids.push_back(hostileGuid);
+    }
+
+    std::sort(hostileGuids.begin(), hostileGuids.end());
+    return PartyBotEngine::IsCanonicalDirectHealThreatRecipientSet(
+        hostileGuids);
+}
+} // namespace
+
+bool Spell::CapturePartyBotDeferredImpactContext()
+{
+    m_partyBotDeferredImpactContextCaptured = false;
+    m_partyBotDeferredExpectedCasterGuid = 0;
+    m_partyBotDeferredExpectedRecipientGuid = 0;
+    m_partyBotDeferredExpectedGroupId = 0;
+    m_partyBotDeferredExpectedMapId = 0;
+    m_partyBotDeferredExpectedInstanceId = 0;
+    m_partyBotDeferredExpectedHostileGuids.clear();
+
+    Player* caster = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
+    Player* recipient = m_targets.getUnitTarget()
+        ? m_targets.getUnitTarget()->ToPlayer() : nullptr;
+    if (!caster || !recipient || recipient != caster ||
+        !caster->IsInWorld() || !recipient->IsInWorld() ||
+        !caster->IsAlive() || !recipient->IsAlive())
+        return false;
+
+    Group* casterGroup = caster->GetGroup();
+    Group* recipientGroup = recipient->GetGroup();
+    Map* casterMap = caster->GetMap();
+    Map* recipientMap = recipient->GetMap();
+    if (!casterGroup || casterGroup != recipientGroup ||
+        !casterMap || casterMap != recipientMap ||
+        !casterGroup->GetId() ||
+        !casterGroup->IsMember(caster->GetObjectGuid()) ||
+        !casterGroup->IsMember(recipient->GetObjectGuid()) ||
+        caster->GetMapId() != recipient->GetMapId() ||
+        caster->GetInstanceId() != recipient->GetInstanceId() ||
+        !CollectPartyBotDeferredThreatRecipientGuids(
+            recipient, m_partyBotDeferredExpectedHostileGuids))
+        return false;
+
+    m_partyBotDeferredExpectedCasterGuid =
+        caster->GetObjectGuid().GetRawValue();
+    m_partyBotDeferredExpectedRecipientGuid =
+        recipient->GetObjectGuid().GetRawValue();
+    m_partyBotDeferredExpectedGroupId = casterGroup->GetId();
+    m_partyBotDeferredExpectedMapId = caster->GetMapId();
+    m_partyBotDeferredExpectedInstanceId = caster->GetInstanceId();
+    m_partyBotDeferredImpactContextCaptured = true;
+    return true;
+}
+
+bool Spell::IsPartyBotDeferredImpactContextCurrent() const
+{
+    if (!m_partyBotDeferredImpactContextCaptured)
+        return false;
+
+    Player* caster = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
+    Player* recipient = m_targets.getUnitTarget()
+        ? m_targets.getUnitTarget()->ToPlayer() : nullptr;
+    if (!caster || !recipient ||
+        !caster->IsInWorld() || !recipient->IsInWorld() ||
+        !caster->IsAlive() || !recipient->IsAlive())
+        return false;
+
+    std::vector<uint64> currentHostileGuids;
+    if (!CollectPartyBotDeferredThreatRecipientGuids(
+            recipient, currentHostileGuids) ||
+        !PartyBotEngine::IsExactDirectHealThreatRecipientSet(
+            m_partyBotDeferredExpectedHostileGuids, currentHostileGuids))
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSpellAdmission] impact threat-recipient set changed: spell=%u expectedCount=%u currentCount=%u.",
+            m_spellInfo ? m_spellInfo->Id : 0u,
+            static_cast<uint32>(m_partyBotDeferredExpectedHostileGuids.size()),
+            static_cast<uint32>(currentHostileGuids.size()));
+        return false;
+    }
+
+    Group* casterGroup = caster->GetGroup();
+    Group* recipientGroup = recipient->GetGroup();
+    Map* casterMap = caster->GetMap();
+    Map* recipientMap = recipient->GetMap();
+
+    PartyBotEngine::ResolvedDirectHealImpactContext context;
+    context.expectedCasterGuid = m_partyBotDeferredExpectedCasterGuid;
+    context.currentCasterGuid = caster->GetObjectGuid().GetRawValue();
+    context.expectedRecipientGuid = m_partyBotDeferredExpectedRecipientGuid;
+    context.currentRecipientGuid = recipient->GetObjectGuid().GetRawValue();
+    context.expectedGroupId = m_partyBotDeferredExpectedGroupId;
+    context.casterGroupId = casterGroup ? casterGroup->GetId() : 0;
+    context.recipientGroupId = recipientGroup ? recipientGroup->GetId() : 0;
+    context.expectedMapId = m_partyBotDeferredExpectedMapId;
+    context.casterMapId = caster->GetMapId();
+    context.recipientMapId = recipient->GetMapId();
+    context.expectedInstanceId = m_partyBotDeferredExpectedInstanceId;
+    context.casterInstanceId = caster->GetInstanceId();
+    context.recipientInstanceId = recipient->GetInstanceId();
+    context.casterAndRecipientShareGroup =
+        casterGroup && casterGroup == recipientGroup;
+    context.casterIsGroupMember = casterGroup &&
+        casterGroup->IsMember(caster->GetObjectGuid());
+    context.recipientIsGroupMember = recipientGroup &&
+        recipientGroup->IsMember(recipient->GetObjectGuid());
+    context.casterAndRecipientShareMap =
+        casterMap && casterMap == recipientMap;
+    context.casterInWorld = caster->IsInWorld();
+    context.recipientInWorld = recipient->IsInWorld();
+    context.casterAlive = caster->IsAlive();
+    context.recipientAlive = recipient->IsAlive();
+    return PartyBotEngine::IsCurrentLiveGroupDirectHealImpactContext(context);
+}
+
+bool Spell::IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) const
+{
+    if (!m_casterUnit || !m_casterUnit->IsPlayer() ||
+        !m_partyBotTraceEngineAction || !m_partyBotTraceActionId ||
+        m_partyBotItemUseId || m_IsTriggeredSpell || m_triggeredByAuraSpell ||
+        m_CastItem || m_spellScript || !m_spellInfo ||
+        m_spellInfo->ScriptId != 0 || m_spellInfo->speed != 0.0f ||
+        m_channeled || m_autoRepeat ||
+        m_spellInfo->powerType != POWER_MANA ||
+        !m_spellInfo->IsHealSpell() ||
+        !m_spellInfo->IsPositiveSpell(m_casterUnit, m_casterUnit) ||
+        m_spellInfo->IsAreaOfEffectSpell() ||
+        m_spellInfo->IsReflectableSpell() ||
+        m_spellInfo->CanTriggerWeaponProcs() ||
+        m_spellInfo->HasDirectThreatIncreaseEffect() ||
+        m_spellInfo->HasAttribute(SPELL_ATTR_EX4_NO_HELPFUL_THREAT) ||
+        m_spellInfo->EquippedItemClass != -1 ||
+        m_spellInfo->Effect[0] != SPELL_EFFECT_HEAL ||
+        m_spellInfo->EffectImplicitTargetA[0] != TARGET_UNIT_CASTER ||
+        m_spellInfo->EffectImplicitTargetB[0] != 0 ||
+        m_spellInfo->Effect[1] != 0 || m_spellInfo->Effect[2] != 0 ||
+        m_spellInfo->EffectImplicitTargetA[1] != 0 ||
+        m_spellInfo->EffectImplicitTargetA[2] != 0 ||
+        m_spellInfo->EffectImplicitTargetB[1] != 0 ||
+        m_spellInfo->EffectImplicitTargetB[2] != 0 ||
+        m_targets.getGOTargetGuid() || m_targets.getItemTargetGuid() ||
+        m_targets.getCorpseTargetGuid())
+        return false;
+
+    for (uint8 index = 0; index < MAX_SPELL_REAGENTS; ++index)
+        if (m_spellInfo->Reagent[index] || m_spellInfo->ReagentCount[index])
+            return false;
+
+    if (!requireResolvedTargets)
+        return true;
+
+    if (m_targets.getUnitTarget() != m_casterUnit)
+        return false;
+
+    PartyBotEngine::ResolvedDirectHealTarget resolvedTarget;
+    if (!m_UniqueTargetInfo.empty())
+    {
+        TargetInfo const& target = m_UniqueTargetInfo.front();
+        resolvedTarget.targetGuid = target.targetGUID.GetRawValue();
+        resolvedTarget.timeDelayMs = target.timeDelay;
+        resolvedTarget.effectMask = target.effectMask;
+        resolvedTarget.missCondition = static_cast<uint8>(target.missCondition);
+        resolvedTarget.reflectResult = static_cast<uint8>(target.reflectResult);
+        resolvedTarget.deleted = target.deleted;
+        resolvedTarget.processed = target.processed;
+    }
+
+    return PartyBotEngine::IsExactSingleResolvedDirectHealTarget(
+        m_casterUnit->GetObjectGuid().GetRawValue(),
+        static_cast<uint32>(m_UniqueTargetInfo.size()),
+        static_cast<uint32>(m_UniqueGOTargetInfo.size()),
+        static_cast<uint32>(m_UniqueItemInfo.size()),
+        resolvedTarget, 0, 0x01,
+        static_cast<uint8>(SPELL_MISS_NONE),
+        static_cast<uint8>(SPELL_MISS_NONE));
+}
+
+bool Spell::CommitPartyBotDeferredEffects()
+{
+    if (!m_partyBotDeferredEffectsRequested || m_partyBotDeferredEffectsCommitted)
+        return false;
+
+    if (!IsSafePartyBotDeferredSelfHealShape(true))
+    {
+        TargetInfo const* target = m_UniqueTargetInfo.empty()
+            ? nullptr : &m_UniqueTargetInfo.front();
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSpellAdmission] resolved self-heal shape rejected: spell=%u caster=%llu targetUnit=%llu targetCount=%u goCount=%u itemCount=%u targetGuid=%llu delay=%llu effectMask=%u miss=%u reflect=%u deleted=%u processed=%u.",
+            m_spellInfo ? m_spellInfo->Id : 0u,
+            static_cast<unsigned long long>(m_casterUnit ? m_casterUnit->GetGUID() : 0),
+            static_cast<unsigned long long>(m_targets.getUnitTarget() ? m_targets.getUnitTarget()->GetGUID() : 0),
+            static_cast<uint32>(m_UniqueTargetInfo.size()),
+            static_cast<uint32>(m_UniqueGOTargetInfo.size()),
+            static_cast<uint32>(m_UniqueItemInfo.size()),
+            static_cast<unsigned long long>(target ? target->targetGUID.GetRawValue() : 0),
+            static_cast<unsigned long long>(target ? target->timeDelay : 0),
+            target ? target->effectMask : 0u,
+            target ? target->missCondition : 0u,
+            target ? target->reflectResult : 0u,
+            target && target->deleted ? 1u : 0u,
+            target && target->processed ? 1u : 0u);
+        return false;
+    }
+
+    if (!IsPartyBotDeferredImpactContextCurrent())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSpellAdmission] impact Group/map/instance context rejected: spell=%u expectedCaster=%llu expectedRecipient=%llu expectedGroup=%u expectedMap=%u expectedInstance=%u.",
+            m_spellInfo ? m_spellInfo->Id : 0u,
+            static_cast<unsigned long long>(m_partyBotDeferredExpectedCasterGuid),
+            static_cast<unsigned long long>(m_partyBotDeferredExpectedRecipientGuid),
+            m_partyBotDeferredExpectedGroupId,
+            m_partyBotDeferredExpectedMapId,
+            m_partyBotDeferredExpectedInstanceId);
+        return false;
+    }
+
+    Player* impactCaster = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
+    Player* impactRecipient = m_targets.getUnitTarget()
+        ? m_targets.getUnitTarget()->ToPlayer() : nullptr;
+    Group* impactGroup = impactCaster ? impactCaster->GetGroup() : nullptr;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSpellAdmission] impact Group/map/instance context accepted: spell=%u caster=%llu recipient=%llu group=%u map=%u instance=%u groupSame=1 memberBoth=1 mapSame=1 liveBoth=1 aliveBoth=1.",
+        m_spellInfo ? m_spellInfo->Id : 0u,
+        static_cast<unsigned long long>(impactCaster ? impactCaster->GetGUID() : 0),
+        static_cast<unsigned long long>(impactRecipient ? impactRecipient->GetGUID() : 0),
+        impactGroup ? impactGroup->GetId() : 0u,
+        impactCaster ? impactCaster->GetMapId() : 0u,
+        impactCaster ? impactCaster->GetInstanceId() : 0u);
+
+    Player* player = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
+    PlayerAI* ai = player ? player->AI() : nullptr;
+    if (!ai || !ai->OnSpellCastPreImpactAuthorize(this))
+        return false;
+
+    // Everything below is the previously deferred, irreversible Core commit.
+    // This strict self-heal shape has no script, item, reagent, projectile,
+    // extra recipient or cast-end child path; authorization and application
+    // therefore remain on the same owning Map thread.
+    if (m_partyBotDeferredInterruptFlags && m_casterUnit)
+        m_casterUnit->RemoveAurasWithInterruptFlags(
+            m_partyBotDeferredInterruptFlags, m_spellInfo->Id, false,
+            !ShouldRemoveStealthAuras(),
+            m_spellInfo->HasAttribute(SPELL_ATTR_EX2_ALLOW_WHILE_INVISIBLE));
+
+    OnSpellLaunch();
+
+    if (!m_caster->IsPlayer() ||
+        !static_cast<Player*>(m_caster)->HasCheatOption(PLAYER_CHEAT_NO_COOLDOWN))
+        m_caster->AddGCD(m_spellInfo);
+
+    SendSpellCooldown();
+
+    if (!m_IsTriggeredSpell && m_casterUnit)
+    {
+        uint32 interruptFlags = AURA_INTERRUPT_ACTION_CANCELS_LATE;
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_6_1
+        if (!Spells::IsPositiveTarget(
+                m_spellInfo->EffectImplicitTargetA[0],
+                m_spellInfo->EffectImplicitTargetB[0]))
+#else
+        if (Spells::IsExplicitlySelectedUnitTarget(
+                m_spellInfo->EffectImplicitTargetA[0]) &&
+            m_casterUnit != m_targets.getUnitTarget())
+#endif
+            interruptFlags |= AURA_INTERRUPT_ATTACKING_CANCELS;
+
+        m_casterUnit->RemoveAurasWithInterruptFlags(
+            interruptFlags, m_spellInfo->Id, false,
+            !ShouldRemoveStealthAuras(),
+            m_spellInfo->HasAttribute(SPELL_ATTR_EX2_ALLOW_WHILE_INVISIBLE));
+    }
+
+    TakePower();
+    TakeReagents();
+    TakeAmmo();
+    m_partyBotDeferredEffectsCommitted = true;
+    return true;
+}
+
+void Spell::RejectPartyBotDeferredEffects()
+{
+    // Deferred casts have not committed GCD or cooldown. Clearing either here
+    // could erase state belonging to another action; reject without touching it.
+    SendInterrupted(2);
+    SendCastResult(SPELL_FAILED_ERROR);
+    finish(false);
+}
+
 void Spell::cast(bool skipCheck)
 {
     SetExecutedCurrently(true);
@@ -3621,6 +4055,12 @@ void Spell::cast(bool skipCheck)
     // cancel at lost main target unit
     if (!m_targets.getUnitTarget() && m_targets.getUnitTargetGuid() && m_targets.getUnitTargetGuid() != m_caster->GetObjectGuid())
     {
+        if (m_partyBotDeferredEffectsRequested)
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSpellAdmission] cast lost explicit target before target map: spell=%u targetGuid=%llu state=%u.",
+                m_spellInfo ? m_spellInfo->Id : 0u,
+                static_cast<unsigned long long>(m_targets.getUnitTargetGuid().GetRawValue()),
+                static_cast<uint32>(m_spellState));
         SendInterrupted(2);
         cancel();
         m_caster->DecreaseCastCounter();
@@ -3647,6 +4087,11 @@ void Spell::cast(bool skipCheck)
         castResult = CheckPower();
         if (castResult != SPELL_CAST_OK)
         {
+            if (m_partyBotDeferredEffectsRequested)
+                sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                    "[PartyBotSpellAdmission] cast CheckPower rejected: spell=%u result=%u skipCheck=%u state=%u.",
+                    m_spellInfo ? m_spellInfo->Id : 0u, static_cast<uint32>(castResult),
+                    skipCheck ? 1u : 0u, static_cast<uint32>(m_spellState));
             SendInterrupted(2);
             SendCastResult(castResult);
             //restore spell mods
@@ -3662,6 +4107,12 @@ void Spell::cast(bool skipCheck)
         castResult = CheckCast(false);
         if (castResult != SPELL_CAST_OK)
         {
+            if (m_partyBotDeferredEffectsRequested)
+                sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                    "[PartyBotSpellAdmission] cast CheckCast(false) rejected: spell=%u result=%u target=%llu skipCheck=%u state=%u.",
+                    m_spellInfo ? m_spellInfo->Id : 0u, static_cast<uint32>(castResult),
+                    static_cast<unsigned long long>(m_targets.getUnitTarget() ? m_targets.getUnitTarget()->GetGUID() : 0),
+                    skipCheck ? 1u : 0u, static_cast<uint32>(m_spellState));
             SendInterrupted(2);
             SendCastResult(castResult);
             finish(false);
@@ -3684,6 +4135,11 @@ void Spell::cast(bool skipCheck)
 
     if (m_spellState == SPELL_STATE_FINISHED)                // stop cast if spell marked as finish somewhere in FillTargetMap
     {
+        if (m_partyBotDeferredEffectsRequested)
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSpellAdmission] spell finished during FillTargetMap before authorization: spell=%u targets=%u.",
+                m_spellInfo ? m_spellInfo->Id : 0u,
+                static_cast<uint32>(m_UniqueTargetInfo.size()));
         m_caster->DecreaseCastCounter();
         SetExecutedCurrently(false);
         if (m_caster->IsPlayer())
@@ -3691,11 +4147,23 @@ void Spell::cast(bool skipCheck)
         return;
     }
 
+    // Deferred Engine roots authorize only after Core has built the actual
+    // target list, but before the spell commits GCD/cooldown, power, procs,
+    // threat or target effects.
+    if (m_partyBotDeferredEffectsRequested && !CommitPartyBotDeferredEffects())
+    {
+        RejectPartyBotDeferredEffects();
+        m_caster->DecreaseCastCounter();
+        SetExecutedCurrently(false);
+        return;
+    }
+
     // CAST SPELL
-    SendSpellCooldown();
+    if (!m_partyBotDeferredEffectsRequested)
+        SendSpellCooldown();
 
     // Remove any remaining invis auras on cast completion, should only be gnomish cloaking device
-    if (!m_IsTriggeredSpell && m_casterUnit)
+    if (!m_partyBotDeferredEffectsRequested && !m_IsTriggeredSpell && m_casterUnit)
     {
         uint32 interruptFlags = AURA_INTERRUPT_ACTION_CANCELS_LATE;
 
@@ -3713,9 +4181,12 @@ void Spell::cast(bool skipCheck)
         m_casterUnit->RemoveAurasWithInterruptFlags(interruptFlags, m_spellInfo->Id, false, !ShouldRemoveStealthAuras(), m_spellInfo->HasAttribute(SPELL_ATTR_EX2_ALLOW_WHILE_INVISIBLE));
     }
 
-    TakePower();
-    TakeReagents();                                         // we must remove reagents before HandleEffects to allow place crafted item in same slot
-    TakeAmmo();
+    if (!m_partyBotDeferredEffectsRequested)
+    {
+        TakePower();
+        TakeReagents();                                     // we must remove reagents before HandleEffects to allow place crafted item in same slot
+        TakeAmmo();
+    }
 
     SendCastResult(castResult);
     InitializeDamageMultipliers();
@@ -4004,6 +4475,13 @@ void Spell::update(uint32 difftime)
 
     if (m_targets.getUnitTargetGuid() && !m_targets.getUnitTarget())
     {
+        if (m_partyBotDeferredEffectsRequested)
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                "[PartyBotSpellAdmission] update canceled deferred cast because explicit target is unavailable from caster map: spell=%u targetGuid=%llu state=%u targetUnit=0.",
+                m_spellInfo ? m_spellInfo->Id : 0u,
+                static_cast<unsigned long long>(
+                    m_targets.getUnitTargetGuid().GetRawValue()),
+                static_cast<uint32>(m_spellState));
         cancel();
         return;
     }
@@ -4328,6 +4806,46 @@ void Spell::finish(bool ok)
         return;
 
     m_spellState = SPELL_STATE_FINISHED;
+
+    if (m_partyBotDeferredEffectsRequested)
+    {
+        Player* const tracePlayer = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
+        PlayerAI* const traceAI = tracePlayer ? tracePlayer->AI() : nullptr;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSpellAdmission] deferred finish observer state: spell=%u actionId=%llu encounterId=%llu casterUnit=%u casterPlayer=%u casterAI=%u casterAIPtr=%p success=%u traceInterrupted=%u engineAction=%u.",
+            m_spellInfo ? m_spellInfo->Id : 0u,
+            static_cast<unsigned long long>(m_partyBotTraceActionId),
+            static_cast<unsigned long long>(m_partyBotTraceEncounterId),
+            m_casterUnit ? 1u : 0u,
+            tracePlayer ? 1u : 0u,
+            traceAI ? 1u : 0u,
+            static_cast<void*>(traceAI),
+            ok ? 1u : 0u,
+            m_partyBotTraceInterrupted ? 1u : 0u,
+            m_partyBotTraceEngineAction ? 1u : 0u);
+    }
+
+    if (m_partyBotItemUseId && m_partyBotItemUseChildId &&
+        m_casterUnit && m_casterUnit->IsPlayer())
+    {
+        if (Player* player = m_casterUnit->ToPlayer())
+            if (PlayerAI* ai = player->AI())
+                ai->OnItemUseChildFinished(
+                    m_partyBotItemUseId, m_partyBotItemUseChildId,
+                    m_spellInfo->Id, ok, m_partyBotTraceInterrupted);
+    }
+
+    if (m_partyBotTraceActionId && m_casterUnit && m_casterUnit->IsPlayer())
+    {
+        if (Player* player = m_casterUnit->ToPlayer())
+        {
+            if (PlayerAI* ai = player->AI())
+                ai->OnSpellCastFinished(
+                    this, m_partyBotTraceActionId, m_partyBotTraceEncounterId,
+                    m_spellInfo->Id, m_partyBotTraceTargetGuid,
+                    ok, m_partyBotTraceInterrupted, m_partyBotTraceEngineAction);
+        }
+    }
 
     // Clear the creature's casting target so it faces victim
     if (m_setCreatureTarget)
@@ -5007,6 +5525,21 @@ void Spell::TakeCastItem()
         return;
     }
 
+    Player* player = (Player*)m_caster;
+    PlayerAI* itemUseAI = m_partyBotItemUseId ? player->AI() : nullptr;
+    std::uint8_t const mutationPhase = m_delayed ? 0 : 2; // BeforeEffects / AfterEffects
+    auto recordMutation = [&](std::uint8_t kind, std::uint8_t slotIndex,
+        std::uint32_t beforeCount, std::uint32_t afterCount,
+        std::int32_t beforeCharges, std::int32_t afterCharges,
+        bool itemExistsAfter, std::uint64_t itemGuid, std::uint32_t itemEntry)
+    {
+        if (itemUseAI)
+            itemUseAI->OnItemUseMutation(
+                m_partyBotItemUseId, m_partyBotItemUseChildId, itemGuid, itemEntry,
+                kind, mutationPhase, slotIndex, beforeCount, afterCount,
+                beforeCharges, afterCharges, itemExistsAfter);
+    };
+
     bool expendable = false;
     bool withoutCharges = false;
 
@@ -5014,24 +5547,31 @@ void Spell::TakeCastItem()
     {
         if (proto->Spells[i].SpellId)
         {
-            // item has limited charges
             if (proto->Spells[i].SpellCharges)
             {
                 if (proto->Spells[i].SpellCharges < 0)
                     expendable = true;
 
-                int32 charges = m_CastItem->GetSpellCharges(i);
+                int32 const beforeCharges = m_CastItem->GetSpellCharges(i);
+                int32 charges = beforeCharges;
 
-                // item has charges left
                 if (charges)
                 {
-                    (charges > 0) ? --charges : ++charges;  // abs(charges) less at 1 after use
+                    (charges > 0) ? --charges : ++charges;
                     if (proto->Stackable < 2)
+                    {
                         m_CastItem->SetSpellCharges(i, charges);
-                    m_CastItem->SetState(ITEM_CHANGED, (Player*)m_caster);
+                        m_CastItem->SetState(ITEM_CHANGED, player);
+                        if (beforeCharges != charges)
+                            recordMutation(0, static_cast<std::uint8_t>(i),
+                                m_CastItem->GetCount(), m_CastItem->GetCount(),
+                                beforeCharges, charges, true,
+                                m_CastItem->GetObjectGuid().GetRawValue(), proto->ItemId);
+                    }
+                    else
+                        m_CastItem->SetState(ITEM_CHANGED, player);
                 }
 
-                // all charges used
                 withoutCharges = (charges == 0);
             }
         }
@@ -5039,12 +5579,20 @@ void Spell::TakeCastItem()
 
     if (expendable && withoutCharges)
     {
-        uint32 count = 1;
+        uint32 const countBefore = m_CastItem->GetCount();
+        std::uint64_t const itemGuid = m_CastItem->GetObjectGuid().GetRawValue();
+        std::uint32_t const itemEntry = proto->ItemId;
         Item* castItem = m_CastItem;
-        // prevent crash at access to deleted m_targets.getItemTarget
+        uint32 countToDestroy = 1;
         ClearCastItem();
-        // Destroying the item involved in a spell interrupts the spell. So delete the item once we cleared the spell cast item.
-        ((Player*)m_caster)->DestroyItemCount(castItem, count, true);
+        player->DestroyItemCount(castItem, countToDestroy, true);
+
+        // A surviving stack is still valid after DestroyItemCount; a depleted
+        // single item is reported from saved scalar identity only.
+        bool const itemExistsAfter = countBefore > 1;
+        std::uint32_t const countAfter = itemExistsAfter ? castItem->GetCount() : 0;
+        recordMutation(itemExistsAfter ? 1 : 2, 0xff,
+            countBefore, countAfter, 0, 0, itemExistsAfter, itemGuid, itemEntry);
     }
 }
 
@@ -5122,7 +5670,17 @@ void Spell::TakeReagents()
         if (m_targets.getItemTargetEntry() == itemid)
             m_targets.setItemTarget(nullptr);
 
+        uint32 const countBefore = p_caster->GetItemCount(itemid);
         p_caster->DestroyItemCount(itemid, itemcount, true);
+        uint32 const countAfter = p_caster->GetItemCount(itemid);
+        if (m_partyBotItemUseId && countAfter < countBefore)
+        {
+            if (PlayerAI* itemUseAI = p_caster->AI())
+                itemUseAI->OnItemUseMutation(
+                    m_partyBotItemUseId, m_partyBotItemUseChildId, 0, itemid,
+                    3, 0, 0xff, countBefore, countAfter, 0, 0,
+                    countAfter != 0);
+        }
     }
 }
 

@@ -15,7 +15,9 @@
 */
 
 #include "PartyBotAI.h"
+#include "Config/Config.h"
 #include "Player.h"
+#include "Map.h"
 #include "CreatureAI.h"
 #include "MotionMaster.h"
 #include "ObjectMgr.h"
@@ -27,7 +29,16 @@
 #include "SpellAuras.h"
 #include "Chat.h"
 #include "Utilities/Random.h"
+#include "Engine/PartySnapshotBuilder.h"
+#include "Engine/DirectHealThreatComponents.h"
+#include "Engine/CoreThreatImpactEstimator.h"
+#include "Engine/ShadowStrategies.h"
+#include "Engine/ProductionStrategies.h"
+#include "Engine/ExecutionAuthority.h"
+#include "Timer.h"
 
+#include <algorithm>
+#include <cstring>
 #include <random>
 
 enum PartyBotSpells
@@ -44,6 +55,39 @@ enum PartyBotSpells
 #define PB_MAX_FOLLOW_DIST 6.0f
 #define PB_MIN_FOLLOW_ANGLE 0.0f
 #define PB_MAX_FOLLOW_ANGLE 6.0f
+
+namespace
+{
+    PartyBotEngine::ExecutionAuthorityMode GetPartyBotExecutionAuthority(int32 simulatorOverride)
+    {
+        int32 const configuredValue = simulatorOverride >= 0
+            ? simulatorOverride
+            : sConfig.GetIntDefault("PlayerBot.EngineAuthority", 0);
+        return PartyBotEngine::ResolveExecutionAuthorityMode(configuredValue);
+    }
+
+    bool AdmitPartyEncounterTrace(
+        PartyBotEngine::DecisionTrace const& trace, Player const* bot,
+        PartyBotEngine::PartyCoordinator& coordinator, uint64 encounterId,
+        uint32 groupId, uint32 mapId, uint32 instanceId, uint32 elapsedMs,
+        PartyBotEngine::EncounterTraceEventClass eventClass)
+    {
+        PartyBotEngine::EncounterTraceAdmission const admission =
+            coordinator.TryAdmitEncounterTraceEvent(encounterId, eventClass);
+        if (admission == PartyBotEngine::EncounterTraceAdmission::EmitLimitMarker)
+        {
+            uint32 const sequence = coordinator.NextEncounterSequence();
+            if (sequence)
+            {
+                char const* reason = eventClass == PartyBotEngine::EncounterTraceEventClass::Important
+                    ? "important_budget_exhausted" : "detail_budget_exhausted";
+                trace.RecordEncounterBoundary(bot, "trace_limit", groupId, mapId,
+                    instanceId, encounterId, sequence, elapsedMs, reason);
+            }
+        }
+        return admission == PartyBotEngine::EncounterTraceAdmission::Accepted;
+    }
+}
 
 bool PartyBotAI::OnSessionLoaded(PlayerBotEntry* entry, WorldSession* sess)
 {
@@ -118,15 +162,47 @@ Player* PartyBotAI::GetPartyLeader() const
             if (pGroup != originalLeader->GetGroup())
                 return nullptr;
 
-            // In case the current leader is the bot itself and it's not inside a Battleground.
+            // If the original owner has returned, restore their leadership when a
+            // PartyBot was promoted during the disconnect.
             ObjectGuid currentLeaderGuid = pGroup->GetLeaderGuid();
             if (currentLeaderGuid == me->GetObjectGuid() && !me->InBattleGround())
+            {
+                if (originalLeader->IsInWorld())
+                {
+                    pGroup->ChangeLeader(originalLeader->GetObjectGuid());
+                    return originalLeader;
+                }
+
+                // The owner is still loading/reconnecting; let the offline grace
+                // handling below retain the bots until the owner is in the world.
                 return nullptr;
+            }
         }
 
         return originalLeader;
     }
     return nullptr;
+}
+
+bool PartyBotAI::IsPartyInCombat() const
+{
+    if (!me)
+        return false;
+
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            if (Player* pMember = itr->getSource())
+            {
+                // Only coordinate with members in this map/instance.
+                if (pMember->GetMap() == me->GetMap() && pMember->IsInCombat())
+                    return true;
+            }
+        }
+    }
+
+    return me->IsInCombat();
 }
 
 bool PartyBotAI::IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy)
@@ -273,7 +349,11 @@ bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpell
     if (pSpellEntry->IsAreaOfEffectSpell() && !pSpellEntry->IsPositiveSpell() && !IsInDuel())
     {
         if (!m_marksToCC.empty())
+        {
+            TraceDecision("spell_rejected", pTarget, pSpellEntry, "crowd_control_marks_active",
+                          static_cast<uint32>(m_marksToCC.size()));
             return false;
+        }
 
         // do not cast aoe if it will pull aggro
         if (m_role != ROLE_TANK)
@@ -303,13 +383,824 @@ bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpell
                     float const victimThreat = pEnemy->GetThreatManager().getThreat(pEnemy->GetVictim());
 
                     if (victimThreat < (myThreat + me->GetMaxHealth()))
+                    {
+                        TraceDecision("spell_rejected", pTarget, pSpellEntry, "aoe_threat_safety_gate", 0);
                         return false;
+                    }
                 }
             }
         }
     }
 
     return true;
+}
+
+void PartyBotAI::TraceDecision(char const* event, Unit const* pTarget, SpellEntry const* pSpellEntry,
+                               char const* reason, uint32 detail) const
+{
+    if (!me)
+        return;
+
+    m_decisionTrace.Record(me, event, pTarget, pSpellEntry, reason, detail);
+
+    bool const castAttempt = event && std::strcmp(event, "spell_cast_attempt") == 0;
+    bool const castResult = event && std::strcmp(event, "spell_cast_result") == 0;
+    if (!castAttempt && !castResult)
+        return;
+
+    if (castAttempt)
+    {
+        // DoCastSpell calls this immediately before the real Core Player::CastSpell.
+        // Use the attempt sequence as the action ID so its synchronous result can
+        // be paired with it even though the result gets its own later sequence.
+        m_pendingCastTraceActionId = 0;
+        m_pendingCastTraceEncounterId = 0;
+        m_pendingCastTraceTargetGuid = 0;
+        m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
+    }
+
+    if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
+        !m_partyCoordinator->HasActiveEncounter())
+    {
+        if (castResult)
+        {
+            m_pendingCastTraceActionId = 0;
+            m_pendingCastTraceEncounterId = 0;
+            m_pendingCastTraceTargetGuid = 0;
+            m_pendingCastTraceSpellId = 0;
+            m_pendingCastTraceSpellBound = false;
+        }
+        return;
+    }
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    if (m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId ||
+        m_partyCoordinator->GetEncounterMapId() != mapId ||
+        m_partyCoordinator->GetEncounterInstanceId() != instanceId)
+    {
+        if (castResult)
+        {
+            m_pendingCastTraceActionId = 0;
+            m_pendingCastTraceEncounterId = 0;
+            m_pendingCastTraceTargetGuid = 0;
+            m_pendingCastTraceSpellId = 0;
+            m_pendingCastTraceSpellBound = false;
+        }
+        return;
+    }
+
+    uint64 const encounterId = m_partyCoordinator->GetEncounterId();
+    uint32 const elapsedMs =
+        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime());
+    uint64 const targetGuid =
+        pTarget ? pTarget->GetObjectGuid().GetRawValue() : 0;
+    uint32 const spellId = pSpellEntry ? pSpellEntry->Id : 0;
+
+    if (castAttempt)
+    {
+        if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+                instanceId, elapsedMs,
+                PartyBotEngine::EncounterTraceEventClass::Important))
+        {
+            m_pendingCastTraceActionId = 0;
+            m_pendingCastTraceEncounterId = 0;
+            m_pendingCastTraceTargetGuid = 0;
+            m_pendingCastTraceSpellId = 0;
+            m_pendingCastTraceSpellBound = false;
+            return;
+        }
+        uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+        bool const matchesEngineAction = m_activeEngineActionId &&
+            m_activeEngineActionEncounterId == encounterId &&
+            (!m_activeEngineActionSpellId || m_activeEngineActionSpellId == spellId) &&
+            (!m_activeEngineActionTargetGuid || m_activeEngineActionTargetGuid == targetGuid);
+        uint64 const actionId = matchesEngineAction ? m_activeEngineActionId : sequence;
+        if (m_decisionTrace.RecordEncounterCastAttempt(
+                me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+                encounterId, sequence, elapsedMs, actionId, targetGuid, spellId))
+        {
+            m_pendingCastTraceActionId = actionId;
+            m_pendingCastTraceEncounterId = encounterId;
+            m_pendingCastTraceTargetGuid = targetGuid;
+            m_pendingCastTraceSpellId = spellId;
+            m_pendingCastTraceSpellBound = false;
+        }
+        return;
+    }
+
+    // The result callback is synchronous with DoCastSpell. Pair it only with
+    // the attempt just emitted for this same active encounter.
+    if (!m_pendingCastTraceActionId ||
+        m_pendingCastTraceEncounterId != encounterId)
+    {
+        m_pendingCastTraceActionId = 0;
+        m_pendingCastTraceEncounterId = 0;
+        m_pendingCastTraceTargetGuid = 0;
+        m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
+        return;
+    }
+
+    if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+            encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+            instanceId, elapsedMs,
+            PartyBotEngine::EncounterTraceEventClass::Important))
+    {
+        m_pendingCastTraceActionId = 0;
+        m_pendingCastTraceEncounterId = 0;
+        m_pendingCastTraceTargetGuid = 0;
+        m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
+        return;
+    }
+    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+    m_decisionTrace.RecordEncounterCastResult(
+        me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+        encounterId, sequence, elapsedMs, m_pendingCastTraceActionId,
+        targetGuid, spellId, detail, detail == SPELL_CAST_OK,
+        reason ? reason : "unspecified");
+    m_pendingCastTraceActionId = 0;
+    m_pendingCastTraceEncounterId = 0;
+    m_pendingCastTraceTargetGuid = 0;
+    m_pendingCastTraceSpellId = 0;
+    m_pendingCastTraceSpellBound = false;
+}
+
+uint64 PartyBotAI::OnSpellCastPreparing(Spell const* /*spell*/, uint32 spellId,
+                                        uint64 coreTargetGuid, uint64& encounterId,
+                                        uint64& traceTargetGuid, bool& engineAction)
+{
+    encounterId = 0;
+    traceTargetGuid = 0;
+    engineAction = false;
+    if (me)
+        m_partyBotEngine.InvalidateDecisionState();
+
+    // EngineActionObserver brackets Action::Execute even with DecisionTrace off.
+    // Bind the action ID to this root Spell independently of diagnostics; Spell
+    // carries the source bit until its later Core finish/cancel callback.
+    bool const matchesActiveEngineAction = m_activeEngineActionId &&
+        !m_activeEngineActionSpellBound &&
+        (!m_activeEngineActionSpellId || m_activeEngineActionSpellId == spellId) &&
+        (!m_activeEngineActionTargetGuid ||
+         !coreTargetGuid || m_activeEngineActionTargetGuid == coreTargetGuid);
+    if (matchesActiveEngineAction)
+    {
+        engineAction = true;
+        encounterId = m_activeEngineActionEncounterId;
+        traceTargetGuid = m_activeEngineActionTargetGuid
+            ? m_activeEngineActionTargetGuid : coreTargetGuid;
+        m_activeEngineActionSpellBound = true;
+
+        // Preserve diagnostic cast_terminal correlation if an active encounter
+        // and trace window exist. Listener delivery does not depend on this.
+        if (!m_pendingCastTraceActionId && me && m_decisionTrace.IsEnabled() &&
+            m_partyCoordinator && m_partyCoordinator->HasActiveEncounter() &&
+            m_partyCoordinatorMapId == me->GetMapId() &&
+            m_partyCoordinatorInstanceId == me->GetInstanceId() &&
+            m_partyCoordinator->GetEncounterId() == m_activeEngineActionEncounterId)
+        {
+            m_pendingCastTraceActionId = m_activeEngineActionId;
+            m_pendingCastTraceEncounterId = m_activeEngineActionEncounterId;
+            m_pendingCastTraceTargetGuid = traceTargetGuid;
+            m_pendingCastTraceSpellId = spellId;
+            m_pendingCastTraceSpellBound = false;
+        }
+        if (!m_decisionTrace.IsEnabled() || !m_pendingCastTraceActionId ||
+            m_pendingCastTraceActionId != m_activeEngineActionId)
+            return m_activeEngineActionId;
+    }
+
+    // Legacy DoCastSpell correlation remains trace-only and never masquerades
+    // as an Engine action ID.
+    if (!me || !m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
+        !m_partyCoordinator->HasActiveEncounter() ||
+        !m_pendingCastTraceActionId || m_pendingCastTraceSpellBound ||
+        m_pendingCastTraceSpellId != spellId ||
+        (coreTargetGuid && coreTargetGuid != m_pendingCastTraceTargetGuid))
+        return 0;
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    if (m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId ||
+        m_partyCoordinator->GetEncounterMapId() != mapId ||
+        m_partyCoordinator->GetEncounterInstanceId() != instanceId ||
+        m_partyCoordinator->GetEncounterId() != m_pendingCastTraceEncounterId)
+        return 0;
+
+    m_pendingCastTraceSpellBound = true;
+    encounterId = m_pendingCastTraceEncounterId;
+    traceTargetGuid = m_pendingCastTraceTargetGuid;
+    return m_pendingCastTraceActionId;
+}
+
+void PartyBotAI::OnSpellCastFinished(Spell const* /*spell*/, uint64 actionId,
+                                     uint64 encounterId, uint32 spellId,
+                                     uint64 targetGuid, bool success,
+                                     bool interrupted, bool engineAction)
+{
+    if (me)
+        m_partyBotEngine.InvalidateDecisionState();
+
+    // A resurrection action owns one exact corpse reservation while the Core
+    // Spell is in flight. Release only that (type,target,caster) row at terminal;
+    // other Bots' and this Bot's unrelated reservations remain untouched.
+    if (engineAction && me && m_resurrectionSpell &&
+        spellId == m_resurrectionSpell->Id && targetGuid && m_partyCoordinator &&
+        m_partyCoordinatorMapId == me->GetMapId() &&
+        m_partyCoordinatorInstanceId == me->GetInstanceId())
+        m_partyCoordinator->ReleaseReservation(
+            PartyBotEngine::ReservationType::Resurrection, targetGuid,
+            me->GetObjectGuid().GetRawValue());
+
+    // Core terminal is separate from the synchronous Action::Execute result.
+    // Notify before trace gates so listeners work with DecisionTrace disabled.
+    if (engineAction && actionId)
+    {
+        PartyBotEngine::CoreSpellTerminalEvent event;
+        event.actionId = actionId;
+        event.encounterId = encounterId;
+        event.targetGuid = targetGuid;
+        event.spellId = spellId;
+        event.occurredAtMs = WorldTimer::getMSTime();
+        event.status = interrupted
+            ? PartyBotEngine::CoreSpellTerminalStatus::Interrupted
+            : (success ? PartyBotEngine::CoreSpellTerminalStatus::Succeeded
+                       : PartyBotEngine::CoreSpellTerminalStatus::Failed);
+        m_partyBotEngine.NotifyCoreSpellTerminal(event);
+    }
+
+    bool const matchingPendingCast = actionId &&
+        actionId == m_pendingCastTraceActionId &&
+        encounterId == m_pendingCastTraceEncounterId;
+    if (matchingPendingCast)
+    {
+        m_pendingCastTraceActionId = 0;
+        m_pendingCastTraceEncounterId = 0;
+        m_pendingCastTraceTargetGuid = 0;
+        m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
+    }
+
+    if (!me || !m_decisionTrace.IsEnabled() || !actionId || !encounterId ||
+        !m_partyCoordinator || !m_partyCoordinator->HasActiveEncounter() ||
+        m_partyCoordinator->GetEncounterId() != encounterId)
+        return;
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    if (m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId ||
+        m_partyCoordinator->GetEncounterMapId() != mapId ||
+        m_partyCoordinator->GetEncounterInstanceId() != instanceId)
+        return;
+
+    uint32 const elapsedMs = m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime());
+    if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+            encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+            instanceId, elapsedMs,
+            PartyBotEngine::EncounterTraceEventClass::Important))
+        return;
+    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+    m_decisionTrace.RecordEncounterCastTerminal(
+        me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+        encounterId, sequence,
+        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
+        actionId, spellId, targetGuid, success, interrupted);
+}
+
+std::uint32_t PartyBotAI::GetResurrectionSpellId() const
+{
+    return m_resurrectionSpell ? m_resurrectionSpell->Id : 0;
+}
+
+bool PartyBotAI::CanResurrectGroupMember(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const
+{
+    if (!me || !me->IsInWorld() || !me->IsAlive() || !targetGuid ||
+        targetGuid == me->GetObjectGuid().GetRawValue() ||
+        !m_resurrectionSpell || m_resurrectionSpell->Id != spellId ||
+        context.bot.guid != me->GetObjectGuid().GetRawValue() ||
+        context.bot.resurrectionSpellId != spellId ||
+        context.snapshot.mapId != me->GetMapId() ||
+        context.snapshot.instanceId != me->GetInstanceId() ||
+        !me->GetMap() || context.snapshot.mapId != me->GetMap()->GetId() ||
+        context.snapshot.instanceId != me->GetMap()->GetInstanceId() ||
+        IsInDuel() || me->InBattleGround() || me->IsInCombat() ||
+        me->GetVictim() || me->IsNonMeleeSpellCasted())
+        return false;
+
+    Group* const group = me->GetGroup();
+    Unit* const targetUnit = me->GetMap()->GetUnit(ObjectGuid(targetGuid));
+    Player* const target = targetUnit ? targetUnit->ToPlayer() : nullptr;
+    if (!group || group->isBGGroup() || group->GetId() != context.snapshot.groupId ||
+        !group->IsMember(me->GetObjectGuid()) ||
+        !target || targetUnit != target || !target->IsInWorld() ||
+        target->IsAlive() || target->GetDeathState() != CORPSE ||
+        target->IsRessurectRequested() || target->GetGroup() != group ||
+        !group->IsMember(target->GetObjectGuid()) ||
+        target->GetMap() != me->GetMap() ||
+        target->GetMapId() != context.snapshot.mapId ||
+        target->GetInstanceId() != context.snapshot.instanceId ||
+        !me->IsWithinLOSInMap(target) ||
+        !m_resurrectionSpell->IsTargetInRange(me, target) ||
+        !CanTryToCastSpell(target, m_resurrectionSpell) ||
+        context.coordinator.HasReservation(
+            PartyBotEngine::ReservationType::Resurrection, targetGuid, 0,
+            context.nowMs))
+        return false;
+
+    return true;
+}
+
+bool PartyBotAI::StartGroupResurrection(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid, std::uint32_t spellId)
+{
+    if (!CanResurrectGroupMember(context, targetGuid, spellId))
+        return false;
+
+    Player* const target = me->GetMap()->GetUnit(ObjectGuid(targetGuid))->ToPlayer();
+    PartyBotEngine::Reservation reservation;
+    reservation.type = PartyBotEngine::ReservationType::Resurrection;
+    reservation.targetGuid = targetGuid;
+    reservation.ownerGuid = me->GetObjectGuid().GetRawValue();
+    reservation.spellId = spellId;
+    reservation.expiresAtMs = context.nowMs + 60000u;
+    if (!context.coordinator.TryReserve(reservation, context.nowMs))
+        return false;
+
+    // Match the established Bot spell helper's dismount/facing/target behavior,
+    // while retaining Engine action correlation through Core Spell prepare/finish.
+    me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
+    me->SetFacingToObject(target);
+    me->SetTargetGuid(target->GetObjectGuid());
+    SpellCastResult const castResult = me->CastSpell(target, m_resurrectionSpell, false);
+    if (castResult != SPELL_CAST_OK)
+    {
+        context.coordinator.ReleaseReservation(
+            PartyBotEngine::ReservationType::Resurrection, targetGuid,
+            me->GetObjectGuid().GetRawValue());
+        return false;
+    }
+
+    context.coordinator.InvalidateSnapshot();
+    return true;
+}
+
+PartyBotEngine::ThreatImpactEstimate PartyBotAI::EstimateDirectHealThreatImpact(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const
+{
+    using namespace PartyBotEngine;
+    ThreatImpactEstimate estimate;
+    estimate.snapshotEpoch = context.snapshot.epoch;
+    estimate.reason = "priest_direct_heal_core_context_unresolved";
+
+    if (!CanCastDirectHeal(context, targetGuid, spellId))
+    {
+        estimate.reason = "priest_direct_heal_live_preflight_rejected";
+        return estimate;
+    }
+
+    Unit* const target = me->GetMap()->GetUnit(ObjectGuid(targetGuid));
+    SpellEntry const* const spell = sSpellMgr.GetSpellEntry(spellId);
+    if (!target || !target->IsPlayer() || !spell)
+    {
+        estimate.reason = "priest_direct_heal_target_or_spell_unresolved";
+        return estimate;
+    }
+
+    return EstimateSupportedInstantDirectHealThreat(
+        me, target, spell, context.snapshot);
+}
+
+bool PartyBotAI::CanCastDirectHeal(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const
+{
+    using namespace PartyBotEngine;
+    if (!me || !me->IsInWorld() || !me->IsAlive() ||
+        me->GetClass() != CLASS_PRIEST || GetRole() != ROLE_HEALER ||
+        !targetGuid || !spellId || !me->GetMap() ||
+        context.bot.guid != me->GetObjectGuid().GetRawValue() ||
+        context.bot.classId != CLASS_PRIEST ||
+        context.bot.roleId != static_cast<std::uint8_t>(PartyRole::Healer) ||
+        !context.bot.isPlayerBot || !context.bot.online || !context.bot.alive ||
+        context.bot.currentSpellId ||
+        context.snapshot.mapId != me->GetMapId() ||
+        context.snapshot.instanceId != me->GetInstanceId() ||
+        context.snapshot.mapId != me->GetMap()->GetId() ||
+        context.snapshot.instanceId != me->GetMap()->GetInstanceId())
+        return false;
+
+    PartyMemberSnapshot const* targetSnapshot =
+        context.snapshot.FindMember(targetGuid);
+    if (!targetSnapshot || !targetSnapshot->online || !targetSnapshot->alive ||
+        !targetSnapshot->maxHealth ||
+        targetSnapshot->mapId != context.snapshot.mapId ||
+        targetSnapshot->instanceId != context.snapshot.instanceId ||
+        targetSnapshot->health >= targetSnapshot->maxHealth)
+        return false;
+
+    Group* const group = me->GetGroup();
+    Unit* const targetUnit = me->GetMap()->GetUnit(ObjectGuid(targetGuid));
+    Player* const target = targetUnit ? targetUnit->ToPlayer() : nullptr;
+    SpellEntry const* const spell = sSpellMgr.GetSpellEntry(spellId);
+    if (!group || group->isBGGroup() ||
+        group->GetId() != context.snapshot.groupId ||
+        !group->IsMember(me->GetObjectGuid()) ||
+        !target || targetUnit != target || !target->IsInWorld() ||
+        !target->IsAlive() || target->GetHealth() >= target->GetMaxHealth() ||
+        target->GetGroup() != group || !group->IsMember(target->GetObjectGuid()) ||
+        target->GetMap() != me->GetMap() ||
+        target->GetMapId() != context.snapshot.mapId ||
+        target->GetInstanceId() != context.snapshot.instanceId ||
+        !spell || spell->IsAreaOfEffectSpell() ||
+        !spell->IsPositiveSpell() || spell->ScriptId != 0 ||
+        spell->CanTriggerWeaponProcs() || spell->IsReflectableSpell() ||
+        m_spellListDirectHeal.find(spell) == m_spellListDirectHeal.end() ||
+        !me->IsWithinLOSInMap(target))
+        return false;
+
+    if (!IsSupportedSingleTargetDirectHealSpellShape(spell))
+        return false;
+
+    bool hasCasterTargetSelector = false;
+    for (std::uint32_t effect = 0; effect < MAX_SPELL_EFFECTS; ++effect)
+    {
+        if (spell->Effect[effect] != SPELL_EFFECT_HEAL)
+            continue;
+        hasCasterTargetSelector =
+            spell->EffectImplicitTargetA[effect] == TARGET_UNIT_CASTER ||
+            spell->EffectImplicitTargetB[effect] == TARGET_UNIT_CASTER;
+        break;
+    }
+    if (!IsSupportedDirectHealTargetRelation(
+            hasCasterTargetSelector, target == me))
+        return false;
+
+    if (!spell->IsTargetInRange(me, target) ||
+        !CanTryToCastSpell(target, spell))
+        return false;
+
+    return true;
+}
+
+bool PartyBotAI::StartDirectHeal(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid, std::uint32_t spellId)
+{
+    if (!CanCastDirectHeal(context, targetGuid, spellId))
+        return false;
+
+    Unit* const target = me->GetMap()->GetUnit(ObjectGuid(targetGuid));
+    SpellEntry const* const spell = sSpellMgr.GetSpellEntry(spellId);
+    if (!target || !spell || DoCastSpell(target, spell) != SPELL_CAST_OK)
+        return false;
+
+    context.coordinator.InvalidateSnapshot();
+    return true;
+}
+
+PartyBotEngine::CoreActionResolution PartyBotAI::ResolveUnitContext(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::Guid targetGuid) const
+{
+    using namespace PartyBotEngine;
+    CoreActionResolution result;
+    if (!me)
+        return result;
+
+    if (context.bot.guid != me->GetObjectGuid().GetRawValue() || !context.bot.online)
+    {
+        result.status = CoreActionResolveStatus::ActorSnapshotMismatch;
+        result.reason = "core_action_actor_snapshot_guid_mismatch";
+        return result;
+    }
+
+    if (!me->IsInWorld())
+    {
+        result.status = CoreActionResolveStatus::ActorOutOfWorld;
+        result.reason = "core_action_actor_not_in_world";
+        return result;
+    }
+
+    Map* const currentMap = me->GetMap();
+    if (!currentMap)
+    {
+        result.status = CoreActionResolveStatus::MissingMap;
+        result.reason = "core_action_actor_map_missing";
+        return result;
+    }
+
+    if (context.snapshot.mapId != me->GetMapId() ||
+        context.snapshot.mapId != currentMap->GetId() ||
+        context.bot.mapId != context.snapshot.mapId)
+    {
+        result.status = CoreActionResolveStatus::SnapshotMapMismatch;
+        result.reason = "core_action_snapshot_map_mismatch";
+        return result;
+    }
+
+    if (context.snapshot.instanceId != me->GetInstanceId() ||
+        context.snapshot.instanceId != currentMap->GetInstanceId() ||
+        context.bot.instanceId != context.snapshot.instanceId)
+    {
+        result.status = CoreActionResolveStatus::SnapshotInstanceMismatch;
+        result.reason = "core_action_snapshot_instance_mismatch";
+        return result;
+    }
+
+    if (context.coordinator.HasActiveEncounter() &&
+        (context.coordinator.GetEncounterMapId() != context.snapshot.mapId ||
+         context.coordinator.GetEncounterInstanceId() != context.snapshot.instanceId))
+    {
+        result.status = CoreActionResolveStatus::EncounterScopeMismatch;
+        result.reason = "core_action_encounter_scope_mismatch";
+        return result;
+    }
+
+    Unit* target = nullptr;
+    if (targetGuid)
+    {
+        target = currentMap->GetUnit(ObjectGuid(targetGuid));
+        if (!target)
+        {
+            result.status = CoreActionResolveStatus::TargetNotFound;
+            result.reason = "core_action_target_not_found_on_actor_map";
+            return result;
+        }
+
+        if (!target->IsInWorld())
+        {
+            result.status = CoreActionResolveStatus::TargetOutOfWorld;
+            result.reason = "core_action_target_not_in_world";
+            return result;
+        }
+
+        if (target->GetMap() != currentMap ||
+            target->GetMapId() != context.snapshot.mapId)
+        {
+            result.status = CoreActionResolveStatus::TargetMapMismatch;
+            result.reason = "core_action_target_map_mismatch";
+            return result;
+        }
+
+        if (target->GetInstanceId() != context.snapshot.instanceId)
+        {
+            result.status = CoreActionResolveStatus::TargetInstanceMismatch;
+            result.reason = "core_action_target_instance_mismatch";
+            return result;
+        }
+    }
+
+    result.status = CoreActionResolveStatus::Resolved;
+    result.actor = me;
+    result.target = target;
+    result.map = currentMap;
+    result.reason = "core_action_context_resolved";
+    return result;
+}
+
+uint64 PartyBotAI::OnItemUsePreparing(
+    uint64 itemGuid, uint32 itemEntry, uint32 itemCount,
+    uint8 bagIndex, uint8 itemSlot, uint8 requestedSpellSlot)
+{
+    if (!me || !itemGuid || !itemEntry)
+        return 0;
+
+    PartyBotEngine::ItemUseRequestDescriptor request;
+    request.actionId = m_activeEngineActionId;
+    request.encounterId = m_activeEngineActionEncounterId;
+    request.actorGuid = me->GetObjectGuid().GetRawValue();
+    request.itemGuid = itemGuid;
+    request.itemEntry = itemEntry;
+    request.bagIndex = bagIndex;
+    request.itemSlot = itemSlot;
+    request.requestedSpellSlot = requestedSpellSlot;
+    request.itemCountBefore = itemCount;
+    request.startedAtMs = WorldTimer::getMSTime();
+    request.lifetimeMs = 15000;
+
+    PartyBotEngine::ItemUseId itemUseId = 0;
+    if (m_partyBotEngine.BeginItemUse(request, itemUseId) !=
+        PartyBotEngine::ItemUseTrackerResult::Accepted)
+        return 0;
+    m_partyBotEngine.InvalidateDecisionState();
+    return itemUseId;
+}
+
+uint64 PartyBotAI::OnItemUseChildPreparing(
+    uint64 itemUseId, uint8 slotIndex, uint32 spellId, bool triggered)
+{
+    PartyBotEngine::ItemUseChildId childId = 0;
+    if (m_partyBotEngine.RegisterItemUseChild(
+            itemUseId, slotIndex, spellId, triggered, childId) !=
+        PartyBotEngine::ItemUseTrackerResult::Accepted)
+        return 0;
+    return childId;
+}
+
+void PartyBotAI::OnItemUseSlotSkipped(uint64 itemUseId, uint8 slotIndex)
+{
+    m_partyBotEngine.MarkItemUseSlotSkipped(itemUseId, slotIndex);
+}
+
+void PartyBotAI::OnItemUseDispatchComplete(uint64 itemUseId)
+{
+    m_partyBotEngine.CloseItemUseDispatch(itemUseId, WorldTimer::getMSTime());
+}
+
+void PartyBotAI::OnItemUseChildFinished(
+    uint64 itemUseId, uint64 childId, uint32 /*spellId*/,
+    bool success, bool interrupted)
+{
+    PartyBotEngine::ItemUseChildStatus status =
+        interrupted ? PartyBotEngine::ItemUseChildStatus::Interrupted :
+        success ? PartyBotEngine::ItemUseChildStatus::Succeeded :
+                  PartyBotEngine::ItemUseChildStatus::Failed;
+    m_partyBotEngine.RecordItemUseChildTerminal(
+        itemUseId, childId, status, WorldTimer::getMSTime());
+    m_partyBotEngine.InvalidateDecisionState();
+}
+
+void PartyBotAI::OnItemUseMutation(
+    uint64 itemUseId, uint64 childId, uint64 itemGuid, uint32 itemEntry,
+    uint8 kind, uint8 phase, uint8 slotIndex, uint32 beforeCount,
+    uint32 afterCount, int32 beforeCharges, int32 afterCharges,
+    bool itemExistsAfter)
+{
+    PartyBotEngine::ItemUseMutationEvent event;
+    event.itemUseId = itemUseId;
+    event.childId = childId;
+    event.itemGuid = itemGuid;
+    event.itemEntry = itemEntry;
+    event.kind = static_cast<PartyBotEngine::ItemUseMutationKind>(kind);
+    event.phase = static_cast<PartyBotEngine::ItemUseMutationPhase>(phase);
+    event.slotIndex = slotIndex;
+    event.beforeCount = beforeCount;
+    event.afterCount = afterCount;
+    event.beforeCharges = beforeCharges;
+    event.afterCharges = afterCharges;
+    event.itemExistsAfter = itemExistsAfter;
+    event.occurredAtMs = WorldTimer::getMSTime();
+    m_partyBotEngine.RecordItemUseMutation(event);
+    m_partyBotEngine.InvalidateDecisionState();
+}
+
+void PartyBotAI::OnPointMovementResult(uint64 actionId, uint64 encounterId,
+                                       uint32 pointId,
+                                       PlayerPointMovementResult result,
+                                       float finalDistance)
+{
+    if (!actionId || !encounterId)
+        return;
+
+    m_partyBotEngine.InvalidateDecisionState();
+    PartyBotEngine::PointMovementTerminalEvent event;
+    event.actionId = actionId;
+    event.encounterId = encounterId;
+    event.moverGuid = me ? me->GetObjectGuid().GetRawValue() : 0;
+    event.pointId = pointId;
+    event.status = result == PlayerPointMovementResult::Reached
+        ? PartyBotEngine::PointMovementTerminalStatus::Reached
+        : (result == PlayerPointMovementResult::Interrupted
+            ? PartyBotEngine::PointMovementTerminalStatus::Interrupted
+            : PartyBotEngine::PointMovementTerminalStatus::Failed);
+    event.occurredAtMs = WorldTimer::getMSTime();
+    event.finalDistance = finalDistance;
+    m_partyBotEngine.NotifyPointMovementTerminal(event);
+}
+
+void PartyBotAI::OnEngineActionEvent(
+    PartyBotEngine::DecisionContext const& context,
+    PartyBotEngine::EngineActionTraceEvent const& event)
+{
+    if (event.stage == PartyBotEngine::EngineActionTraceStage::Attempt)
+    {
+        m_activeEngineActionId = event.actionId;
+        m_activeEngineActionEncounterId = context.coordinator.GetEncounterId();
+        m_activeEngineActionTargetGuid = event.targetGuid;
+        m_activeEngineActionSpellId = event.spellId;
+        m_activeEngineActionSpellBound = false;
+        return;
+    }
+
+    if (m_activeEngineActionId != event.actionId)
+        return;
+
+    // A Core cast can be rejected before Spell::prepare creates/binds a root
+    // Spell object. Do not leave that unbound action in the one-slot pending
+    // cast correlation state, or it could mask a later successful cast.
+    if (m_pendingCastTraceActionId == event.actionId &&
+        !m_pendingCastTraceSpellBound)
+    {
+        m_pendingCastTraceActionId = 0;
+        m_pendingCastTraceEncounterId = 0;
+        m_pendingCastTraceTargetGuid = 0;
+        m_pendingCastTraceSpellId = 0;
+        m_pendingCastTraceSpellBound = false;
+    }
+
+    // A prepared Spell owns a copy of this ID and may finish asynchronously.
+    // Clearing only the active dispatch slot allows a later movement action
+    // without losing the in-flight spell's terminal correlation.
+    m_activeEngineActionId = 0;
+    m_activeEngineActionEncounterId = 0;
+    m_activeEngineActionTargetGuid = 0;
+    m_activeEngineActionSpellId = 0;
+    m_activeEngineActionSpellBound = false;
+}
+
+void PartyBotAI::OnAliveStateChanged(bool wasAlive, bool isAlive)
+{
+    if (!me || wasAlive == isAlive)
+        return;
+    // Death invalidates every deferred intent owned by this Bot, not just
+    // cached values. Another party member may be the first AI to observe the
+    // shared wipe transition, so each Bot must clear its own pending queue and
+    // asynchronous continuations from the Core alive-state callback.
+    if (isAlive)
+        m_partyBotEngine.InvalidateDecisionState();
+    else
+    {
+        m_partyBotEngine.ResetDecisionState();
+        // Release this Bot's own reservations immediately on its map thread.
+        // Do not mutate a retained coordinator from a different Map after a
+        // teleport; the destination shard will be reacquired on its next tick.
+        if (m_partyCoordinator &&
+            m_partyCoordinatorMapId == me->GetMapId() &&
+            m_partyCoordinatorInstanceId == me->GetInstanceId())
+            m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+    }
+
+    if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
+        !m_partyCoordinator->HasActiveEncounter())
+        return;
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    if (m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId ||
+        m_partyCoordinator->GetEncounterMapId() != mapId ||
+        m_partyCoordinator->GetEncounterInstanceId() != instanceId)
+        return;
+
+    uint32 const elapsedMs = m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime());
+    uint64 const encounterId = m_partyCoordinator->GetEncounterId();
+    if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+            encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+            instanceId, elapsedMs,
+            PartyBotEngine::EncounterTraceEventClass::Important))
+        return;
+    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+    m_decisionTrace.RecordEncounterAliveState(
+        me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+        m_partyCoordinator->GetEncounterId(), sequence,
+        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
+        wasAlive, isAlive);
+}
+
+void PartyBotAI::OnDamageTaken(uint64 attackerGuid, uint32 damage,
+                                  uint32 healthBefore, uint32 healthAfter,
+                                  uint32 spellId, uint8 damageType)
+{
+    if (!me || !damage || healthBefore <= healthAfter)
+        return;
+    m_partyBotEngine.InvalidateDecisionState();
+    if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator ||
+        !m_partyCoordinator->HasActiveEncounter())
+        return;
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    if (m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId ||
+        m_partyCoordinator->GetEncounterMapId() != mapId ||
+        m_partyCoordinator->GetEncounterInstanceId() != instanceId)
+        return;
+
+    uint64 const encounterId = m_partyCoordinator->GetEncounterId();
+    uint32 const elapsedMs =
+        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime());
+    if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+            encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+            instanceId, elapsedMs,
+            PartyBotEngine::EncounterTraceEventClass::Detail))
+        return;
+    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+    m_decisionTrace.RecordEncounterDamageTaken(
+        me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+        encounterId, sequence,
+        m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime()),
+        attackerGuid, damage, healthBefore, healthAfter, spellId, damageType);
 }
 
 bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const
@@ -338,8 +1229,40 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
     if (me->IsMounted())
         me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
 
+    uint64 const oldVictimGuid = me->GetVictim()
+        ? me->GetVictim()->GetObjectGuid().GetRawValue() : 0;
     if (me->Attack(pVictim, true))
     {
+        uint64 const newVictimGuid = me->GetVictim()
+            ? me->GetVictim()->GetObjectGuid().GetRawValue() : 0;
+        if (oldVictimGuid != newVictimGuid)
+            m_partyBotEngine.InvalidateDecisionState();
+        if (oldVictimGuid != newVictimGuid && m_decisionTrace.IsEnabled() &&
+            m_partyCoordinator && m_partyCoordinator->HasActiveEncounter())
+        {
+            uint32 const mapId = me->GetMapId();
+            uint32 const instanceId = me->GetInstanceId();
+            if (m_partyCoordinatorMapId == mapId &&
+                m_partyCoordinatorInstanceId == instanceId &&
+                m_partyCoordinator->GetEncounterMapId() == mapId &&
+                m_partyCoordinator->GetEncounterInstanceId() == instanceId)
+            {
+                uint64 const encounterId = m_partyCoordinator->GetEncounterId();
+                uint32 const elapsedMs = m_partyCoordinator->GetEncounterElapsedMs(WorldTimer::getMSTime());
+                if (AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                        encounterId, m_partyCoordinator->GetEncounterGroupId(), mapId,
+                        instanceId, elapsedMs,
+                        PartyBotEngine::EncounterTraceEventClass::Detail))
+                {
+                    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+                    m_decisionTrace.RecordEncounterTargetChange(
+                        me, m_partyCoordinator->GetEncounterGroupId(), mapId, instanceId,
+                        encounterId, sequence, elapsedMs,
+                        oldVictimGuid, newVictimGuid, "legacy_attack_start");
+                }
+            }
+        }
+
         BeginChasing(pVictim);
         return true;
     }
@@ -595,6 +1518,99 @@ void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
     CombatBotBaseAI::OnPacketReceived(packet);
 }
 
+void PartyBotAI::OnMapLeave(uint32 mapId, uint32 instanceId)
+{
+    m_partyBotEngine.ExpireAllItemUses(WorldTimer::getMSTime());
+    if (!me || !m_partyCoordinator ||
+        m_partyCoordinatorMapId != mapId ||
+        m_partyCoordinatorInstanceId != instanceId)
+        return;
+
+    // This callback runs from Map::Remove on the source Map thread. Keep the
+    // encounter alive while another PartyBotAI from this Group still belongs
+    // to the old (map, instance) shard; the last bot leaving owns the close.
+    bool anotherPartyBotRemains = false;
+    Group* group = me->GetGroup();
+    Map* map = me->GetMap();
+    if (group && map)
+    {
+        for (Group::MemberSlotList::const_iterator itr = group->GetMemberSlots().begin();
+             itr != group->GetMemberSlots().end(); ++itr)
+        {
+            if (itr->guid == me->GetObjectGuid())
+                continue;
+
+            Unit* unit = map->GetUnit(itr->guid);
+            if (!unit || unit->GetTypeId() != TYPEID_PLAYER)
+                continue;
+
+            Player* member = static_cast<Player*>(unit);
+            if (member->GetMapId() == mapId && member->GetInstanceId() == instanceId &&
+                dynamic_cast<CombatBotBaseAI*>(member->AI()))
+            {
+                anotherPartyBotRemains = true;
+                break;
+            }
+        }
+    }
+
+    m_partyBotEngine.ResetDecisionState();
+    m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+    if (!anotherPartyBotRemains && m_partyCoordinator->HasActiveEncounter())
+    {
+        uint32 const nowMs = WorldTimer::getMSTime();
+        PartyBotEngine::EncounterTransition const transition =
+            m_partyCoordinator->CloseEncounter(nowMs, "last_partybot_left_map");
+        if (transition.kind == PartyBotEngine::EncounterTransitionKind::Ended &&
+            m_decisionTrace.IsEnabled() &&
+            m_partyCoordinator->TryAdmitEncounterTraceEvent(
+                transition.encounterId, PartyBotEngine::EncounterTraceEventClass::Terminal) ==
+                PartyBotEngine::EncounterTraceAdmission::Accepted)
+            m_decisionTrace.RecordEncounterBoundary(
+                me, "encounter_end", transition.groupId, transition.mapId,
+                transition.instanceId, transition.encounterId, transition.sequence,
+                transition.elapsedMs, transition.reason);
+    }
+
+    // Drop only this AI's reference. Any remaining bots keep the old shard alive
+    // and will close it when the final bot leaves; a later return can reacquire it.
+    m_partyCoordinator.reset();
+    m_partyCoordinatorMapId = 0;
+    m_partyCoordinatorInstanceId = 0;
+}
+
+void PartyBotAI::OnServerShutdown()
+{
+    m_partyBotEngine.ExpireAllItemUses(WorldTimer::getMSTime());
+    m_partyBotEngine.ResetDecisionState();
+    if (!me || !m_partyCoordinator || !m_partyCoordinator->HasActiveEncounter())
+        return;
+
+    // Shutdown runs after the world update loop has stopped, so all coordinator
+    // shards are quiescent. Still require this AI's retained shard identity to
+    // match before closing it; a stale cross-map AI must never close another shard.
+    if (m_partyCoordinatorMapId != m_partyCoordinator->GetEncounterMapId() ||
+        m_partyCoordinatorInstanceId != m_partyCoordinator->GetEncounterInstanceId())
+        return;
+
+    uint32 const nowMs = WorldTimer::getMSTime();
+    PartyBotEngine::EncounterTransition const transition =
+        m_partyCoordinator->CloseEncounter(nowMs, "server_shutdown");
+    if (transition.kind != PartyBotEngine::EncounterTransitionKind::Ended ||
+        !m_decisionTrace.IsEnabled())
+        return;
+
+    if (m_partyCoordinator->TryAdmitEncounterTraceEvent(
+            transition.encounterId, PartyBotEngine::EncounterTraceEventClass::Terminal) !=
+        PartyBotEngine::EncounterTraceAdmission::Accepted)
+        return;
+
+    m_decisionTrace.RecordEncounterBoundary(
+        me, "encounter_end", transition.groupId, transition.mapId,
+        transition.instanceId, transition.encounterId, transition.sequence,
+        transition.elapsedMs, transition.reason);
+}
+
 void PartyBotAI::OnPlayerLogin()
 {
     if (!m_initialized)
@@ -605,9 +1621,14 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 {
     m_updateTimer.Update(diff);
     if (m_updateTimer.Passed())
+    {
         m_updateTimer.Reset(PB_UPDATE_INTERVAL);
+        m_decisionTrace.BeginTick();
+    }
     else
         return;
+
+    m_partyBotEngine.PruneExpiredItemUses(WorldTimer::getMSTime());
 
     if (!me->IsInWorld() || me->IsBeingTeleported())
         return;
@@ -684,14 +1705,93 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     }
 
     Player* pLeader = GetPartyLeader();
-    if (!pLeader)
+    if (!pLeader || !pLeader->IsInWorld())
     {
+        // A disconnected or still-loading owner remains a member slot in the persisted group.
+        // Keep the PartyBots in the instance during a bounded reconnect window.
+        Group* pGroup = me->GetGroup();
+        bool const ownerStillInGroup = pGroup && pGroup->IsMember(m_leaderGuid);
+        Player* pOwner = ObjectAccessor::FindPlayerNotInWorld(m_leaderGuid);
+        bool const ownerOffline = !pOwner || !pOwner->IsInWorld();
+
+        if (ownerStillInGroup && ownerOffline)
+        {
+            int32 const configuredGraceMs = sConfig.GetIntDefault("PlayerBot.OwnerOfflineGraceMs", 600000);
+            uint32 const graceMs = configuredGraceMs > 0 ? static_cast<uint32>(configuredGraceMs) : 0;
+
+            if (m_ownerOfflineTimer < graceMs)
+            {
+                // UpdateAI reaches this branch once per PB_UPDATE_INTERVAL;
+                // the current call's diff is only the final sub-tick, not the
+                // elapsed time since the previous PartyBot decision tick.
+                uint32 const elapsedMs = PB_UPDATE_INTERVAL;
+                uint32 const remainingMs = graceMs - m_ownerOfflineTimer;
+                if (elapsedMs >= remainingMs)
+                    m_ownerOfflineTimer = graceMs;
+                else
+                    m_ownerOfflineTimer += elapsedMs;
+            }
+
+            if (m_ownerOfflineTimer < graceMs)
+            {
+                // Log at disconnect detection and then at most once per minute.
+                if (m_ownerOfflineTimer == PB_UPDATE_INTERVAL || m_ownerOfflineTimer % 60000 == 0)
+                    TraceDecision("owner_offline", me, nullptr, "waiting_for_owner_reconnect",
+                                  graceMs - m_ownerOfflineTimer);
+                return;
+            }
+
+            TraceDecision("owner_offline_expired", me, nullptr, "reconnect_grace_elapsed", graceMs);
+        }
+
+        m_partyBotEngine.ResetDecisionState();
+        if (m_partyCoordinator && m_partyCoordinatorMapId == me->GetMapId() &&
+            m_partyCoordinatorInstanceId == me->GetInstanceId())
+            m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+        m_partyCoordinator.reset();
+        m_partyCoordinatorMapId = 0;
+        m_partyCoordinatorInstanceId = 0;
         botEntry->requestRemoval = true;
         return;
     }
 
-    if (!pLeader->IsInWorld())
+    // A returning owner resumes control of the existing PartyBot group.
+    if (m_ownerOfflineTimer)
+        m_partyBotEngine.InvalidateDecisionState();
+    m_ownerOfflineTimer = 0;
+
+    // Legacy remains the default. Shadow evaluates read-only; NewEngine is an
+    // explicit exclusive authority mode and never falls through to Legacy policy.
+    PartyBotEngine::ExecutionAuthorityMode const authority =
+        GetPartyBotExecutionAuthority(m_simulatorExecutionAuthorityOverride);
+    UpdatePartyBotEngineShadow();
+    if (!PartyBotEngine::ShouldRunLegacyPolicy(authority))
+    {
+        if (m_simulatorExecutionAuthorityOverride >= 0)
+            ++m_simulatorNewEngineTickCount;
         return;
+    }
+    if (m_simulatorExecutionAuthorityOverride >= 0)
+        ++m_simulatorLegacyPolicyEntryCount;
+
+    // Healers must support the group even when they have not personally entered combat.
+    bool const partyInCombat = IsHealerClass(me->GetClass()) && IsPartyInCombat();
+    bool const healerSupportingPartyCombat = GetRole() == ROLE_HEALER && partyInCombat;
+    if (partyInCombat && !me->IsInCombat() && IsHealerClass(me->GetClass()) &&
+        GetRole() != ROLE_HEALER)
+        TraceDecision("healing_skipped", me, nullptr, "healer_class_assigned_non_healer_role",
+                      static_cast<uint32>(GetRole()));
+    if (healerSupportingPartyCombat && !me->IsInCombat())
+    {
+        if (Spell* pCurrentSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        {
+            if (pCurrentSpell->m_spellInfo->Id == PB_SPELL_FOOD ||
+                pCurrentSpell->m_spellInfo->Id == PB_SPELL_DRINK)
+                me->InterruptSpell(CURRENT_GENERIC_SPELL, true);
+        }
+
+        TraceDecision("healer_party_combat", me, nullptr, "supporting_same_map_party_combat", 0);
+    }
 
     if (pLeader->InBattleGround() &&
         !me->InBattleGround())
@@ -791,7 +1891,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (!me->IsInCombat())
     {
-        if (DrinkAndEat())
+        if (!healerSupportingPartyCombat && DrinkAndEat())
         {
             if (!me->IsWithinDistInMap(pLeader, 100.0f))
             {
@@ -824,8 +1924,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (me->GetSheath() == SHEATH_STATE_UNARMED && !me->IsMounted())
         me->SetSheath(SHEATH_STATE_MELEE);
 
-    if (!me->IsInCombat() && !me->IsMounted())
+    if (!me->IsInCombat() && !healerSupportingPartyCombat && !me->IsMounted())
     {
+        if (m_simulatorExecutionAuthorityOverride >= 0)
+            ++m_simulatorLegacyPolicyDispatchCount;
         UpdateOutOfCombatAI();
 
         if (m_isBuffing)
@@ -907,10 +2009,479 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         }
     }
 
-    if (me->IsInCombat())
+    if (me->IsInCombat() || healerSupportingPartyCombat)
+    {
+        if (m_simulatorExecutionAuthorityOverride >= 0)
+            ++m_simulatorLegacyPolicyDispatchCount;
         UpdateInCombatAI();
+    }
 }
 
+
+
+namespace
+{
+char const* ShadowRoleName(uint8 roleId)
+{
+    using PartyBotEngine::PartyRole;
+    switch (static_cast<PartyRole>(roleId))
+    {
+        case PartyRole::Tank: return "tank";
+        case PartyRole::MainTank: return "main_tank";
+        case PartyRole::Healer: return "healer";
+        case PartyRole::RangedDamage: return "ranged_dps";
+        case PartyRole::MeleeDamage: return "melee_dps";
+        case PartyRole::Support: return "support";
+        default: return "unknown";
+    }
+}
+
+char const* ShadowTriggerStatusName(PartyBotEngine::TriggerEvaluationStatus status)
+{
+    using PartyBotEngine::TriggerEvaluationStatus;
+    switch (status)
+    {
+        case TriggerEvaluationStatus::CadenceSkipped: return "cadence_skipped";
+        case TriggerEvaluationStatus::Inactive: return "inactive";
+        case TriggerEvaluationStatus::Active: return "active";
+        default: return "unknown";
+    }
+}
+
+char const* ShadowCandidateStatusName(PartyBotEngine::CandidateStatus status)
+{
+    using PartyBotEngine::CandidateStatus;
+    switch (status)
+    {
+        case CandidateStatus::RejectedMissingAction: return "rejected_missing_action";
+        case CandidateStatus::RejectedImpossible: return "rejected_impossible";
+        case CandidateStatus::RejectedUseless: return "rejected_useless";
+        case CandidateStatus::RejectedMultiplier: return "rejected_multiplier";
+        case CandidateStatus::RejectedInvalidPriority: return "rejected_invalid_priority";
+        case CandidateStatus::RejectedThreatUnknown: return "rejected_threat_unknown";
+        case CandidateStatus::RejectedThreatBudget: return "rejected_threat_budget";
+        case CandidateStatus::NotSelected: return "not_selected";
+        case CandidateStatus::Selected: return "selected";
+        case CandidateStatus::Queued: return "queued";
+        case CandidateStatus::Executed: return "executed";
+        case CandidateStatus::ExecutionFailed: return "execution_failed";
+        default: return "unknown";
+    }
+}
+} // namespace
+
+void PartyBotAI::UpdatePartyBotEngineShadow()
+{
+    if (!me || !me->IsInWorld())
+        return;
+
+    uint32 const mapId = me->GetMapId();
+    uint32 const instanceId = me->GetInstanceId();
+    uint32 const nowMs = WorldTimer::getMSTime();
+    PartyBotEngine::ExecutionAuthorityMode const authority =
+        GetPartyBotExecutionAuthority(m_simulatorExecutionAuthorityOverride);
+    bool const enabled = PartyBotEngine::ShouldEvaluateEngine(
+        authority, sConfig.GetBoolDefault("PlayerBot.EngineShadow", false));
+    int32 const configuredSettleMs =
+        sConfig.GetIntDefault("PlayerBot.EngineEncounterSettleMs", 30000);
+    uint32 const settleMs = configuredSettleMs > 0
+        ? std::min<uint32>(static_cast<uint32>(configuredSettleMs), 300000u)
+        : 30000u;
+    int32 const configuredHeartbeatMs =
+        sConfig.GetIntDefault("PlayerBot.EngineEncounterHeartbeatMs", 2000);
+    uint32 const heartbeatMs = configuredHeartbeatMs > 0
+        ? std::max<uint32>(1000u, std::min<uint32>(
+            static_cast<uint32>(configuredHeartbeatMs), 60000u))
+        : 0u;
+    int32 const configuredDetailBudget =
+        sConfig.GetIntDefault("PlayerBot.EngineEncounterMaxDetailEvents", 1024);
+    uint32 const detailBudget = configuredDetailBudget > 0
+        ? std::min<uint32>(static_cast<uint32>(configuredDetailBudget),
+                           PartyBotEngine::PartyCoordinator::HardMaxDetailTraceEvents)
+        : 1u;
+    int32 const configuredImportantBudget =
+        sConfig.GetIntDefault("PlayerBot.EngineEncounterMaxImportantEvents", 256);
+    uint32 const importantBudget = configuredImportantBudget > 0
+        ? std::min<uint32>(static_cast<uint32>(configuredImportantBudget),
+                           PartyBotEngine::PartyCoordinator::HardMaxImportantTraceEvents)
+        : 1u;
+
+    auto traceEncounter = [this](PartyBotEngine::EncounterTransition const& transition)
+    {
+        if (transition.kind == PartyBotEngine::EncounterTransitionKind::None)
+            return;
+
+        // A queued action belongs to exactly one encounter. A start/end
+        // boundary invalidates deferred intents even when trace output is off.
+        m_partyBotEngine.ClearPendingActions();
+        m_partyBotEngine.InvalidateDecisionState();
+        if (!m_decisionTrace.IsEnabled() || !m_partyCoordinator)
+            return;
+
+        bool const started =
+            transition.kind == PartyBotEngine::EncounterTransitionKind::Started;
+        if (started)
+        {
+            if (!AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                    transition.encounterId, transition.groupId, transition.mapId,
+                    transition.instanceId, transition.elapsedMs,
+                    PartyBotEngine::EncounterTraceEventClass::Important))
+                return;
+        }
+        else if (m_partyCoordinator->TryAdmitEncounterTraceEvent(
+                     transition.encounterId,
+                     PartyBotEngine::EncounterTraceEventClass::Terminal) !=
+                 PartyBotEngine::EncounterTraceAdmission::Accepted)
+            return;
+
+        m_decisionTrace.RecordEncounterBoundary(
+            me, started ? "encounter_start" : "encounter_end",
+            transition.groupId, transition.mapId, transition.instanceId,
+            transition.encounterId, transition.sequence, transition.elapsedMs,
+            transition.reason);
+    };
+
+    if (!enabled)
+    {
+        m_botBehaviorStateMachine.Reset();
+        if (m_engineShadowStrategiesRegistered || m_newEngineStrategiesRegistered)
+        {
+            m_partyBotEngine.ClearPolicies();
+            m_engineShadowStrategiesRegistered = false;
+            m_newEngineStrategiesRegistered = false;
+        }
+        else
+            m_partyBotEngine.ResetDecisionState();
+        // A bot can change maps before its next AI tick. Never mutate a shard owned by another map thread.
+        if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
+            m_partyCoordinatorInstanceId == instanceId)
+        {
+            traceEncounter(m_partyCoordinator->CloseEncounter(nowMs, "engine_shadow_disabled"));
+            m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+        }
+        m_partyCoordinator.reset();
+        m_partyCoordinatorMapId = 0;
+        m_partyCoordinatorInstanceId = 0;
+        m_engineShadowTraceMs = 0;
+        return;
+    }
+
+    // Share the same per-bot ten-second rate limit between successful summaries
+    // and failure statuses so missing snapshots are visible without log spam.
+    auto traceStatus = [this, mapId, instanceId](char const* status, uint32 groupId)
+    {
+        if (m_engineShadowTraceMs <= PB_UPDATE_INTERVAL)
+        {
+            m_decisionTrace.RecordShadowStatus(me, status, groupId, mapId, instanceId);
+            m_engineShadowTraceMs = 10000;
+        }
+        else
+            m_engineShadowTraceMs -= PB_UPDATE_INTERVAL;
+    };
+
+    if (authority == PartyBotEngine::ExecutionAuthorityMode::NewEngine)
+    {
+        if (!m_newEngineStrategiesRegistered)
+        {
+            // Shadow policies are candidate-only. Clear them before installing
+            // the exclusive CoreAction-backed NewEngine policy.
+            m_partyBotEngine.ClearPolicies();
+            m_engineShadowStrategiesRegistered = false;
+            m_newEngineStrategiesRegistered =
+                PartyBotEngine::RegisterInitialNewEngineStrategies(m_partyBotEngine);
+        }
+        if (!m_newEngineStrategiesRegistered)
+        {
+            traceStatus("new_engine_policy_registration_failed", 0);
+            return;
+        }
+        traceStatus("new_engine_authoritative_no_legacy_fallback", 0);
+    }
+    else
+    {
+        if (m_newEngineStrategiesRegistered)
+        {
+            m_partyBotEngine.ClearPolicies();
+            m_newEngineStrategiesRegistered = false;
+            m_engineShadowStrategiesRegistered = false;
+        }
+        if (!m_engineShadowStrategiesRegistered)
+        {
+            PartyBotEngine::RegisterDefaultShadowStrategies(m_partyBotEngine);
+            m_engineShadowStrategiesRegistered = true;
+        }
+    }
+
+    Group* group = me->GetGroup();
+    if (!group || group->isBGGroup() || group->GetId() == 0)
+    {
+        m_partyBotEngine.ResetDecisionState();
+        if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
+            m_partyCoordinatorInstanceId == instanceId)
+        {
+            traceEncounter(m_partyCoordinator->CloseEncounter(nowMs, "party_unavailable"));
+            m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+        }
+        m_partyCoordinator.reset();
+        m_partyCoordinatorMapId = 0;
+        m_partyCoordinatorInstanceId = 0;
+        m_botBehaviorStateMachine.Reset();
+        traceStatus("no_supported_group", 0);
+        return;
+    }
+
+    std::shared_ptr<PartyBotEngine::PartyCoordinator> coordinator =
+        PartyBotEngine::PartyCoordinatorRegistry::GetOrCreate(group->GetId(), mapId, instanceId);
+    if (!coordinator)
+    {
+        traceStatus("coordinator_unavailable", group->GetId());
+        return;
+    }
+
+    if (m_partyCoordinator != coordinator)
+    {
+        m_partyBotEngine.ResetDecisionState();
+        // Release only when the old shard belongs to this same map update thread.
+        if (m_partyCoordinator && m_partyCoordinatorMapId == mapId &&
+            m_partyCoordinatorInstanceId == instanceId)
+        {
+            traceEncounter(m_partyCoordinator->CloseEncounter(nowMs, "party_changed"));
+            m_partyCoordinator->ReleaseOwner(me->GetObjectGuid().GetRawValue());
+        }
+
+        m_partyCoordinator = coordinator;
+        m_partyCoordinatorMapId = mapId;
+        m_partyCoordinatorInstanceId = instanceId;
+    }
+
+    // Keep one terminal listener per bot and rebind its weak shard reference
+    // when Group/map/instance ownership changes. A terminal from an old
+    // encounter cannot release a reservation in the new shard.
+    if (!m_threatReservationTerminalListener)
+    {
+        std::shared_ptr<PartyBotEngine::ThreatReservationTerminalListener> listener =
+            std::make_shared<PartyBotEngine::ThreatReservationTerminalListener>(
+                me->GetObjectGuid().GetRawValue(), m_partyCoordinator);
+        if (m_partyBotEngine.AddCoreSpellTerminalListener(listener))
+            m_threatReservationTerminalListener = listener;
+    }
+    else
+        m_threatReservationTerminalListener->SetCoordinator(m_partyCoordinator);
+
+    if (!m_healReservationTerminalListener) {
+        std::shared_ptr<PartyBotEngine::HealReservationTerminalListener> listener =
+            std::make_shared<PartyBotEngine::HealReservationTerminalListener>(
+                me->GetObjectGuid().GetRawValue(), m_partyCoordinator);
+        if (m_partyBotEngine.AddCoreSpellTerminalListener(listener))
+            m_healReservationTerminalListener = listener;
+    } else
+        m_healReservationTerminalListener->SetCoordinator(m_partyCoordinator);
+
+    m_partyCoordinator->ConfigureEncounterTraceBudget(detailBudget, importantBudget);
+    m_partyCoordinator->PruneExpired(nowMs);
+    PartyBotEngine::PartySnapshot const* snapshot =
+        PartyBotEngine::PartySnapshotBuilder::GetOrBuild(me, *m_partyCoordinator, nowMs, 250);
+    if (!snapshot)
+    {
+        traceStatus("snapshot_unavailable", group->GetId());
+        return;
+    }
+
+    traceEncounter(m_partyCoordinator->ObserveEncounter(*snapshot, nowMs, settleMs));
+
+    if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter())
+    {
+        std::vector<PartyBotEngine::PartyMemberStateChange> const changes =
+            m_partyCoordinator->ObserveNonBotPartyMemberStateChanges(*snapshot);
+        for (PartyBotEngine::PartyMemberStateChange const& change : changes)
+            m_decisionTrace.RecordEncounterPartyMemberState(
+                me, *m_partyCoordinator, snapshot->groupId, snapshot->mapId,
+                snapshot->instanceId, m_partyCoordinator->GetEncounterId(),
+                m_partyCoordinator->GetEncounterElapsedMs(nowMs), change);
+    }
+
+    if (heartbeatMs && m_decisionTrace.IsEnabled())
+    {
+        PartyBotEngine::EncounterHeartbeat heartbeat;
+        if (m_partyCoordinator->TryBeginEncounterHeartbeat(nowMs, heartbeatMs, heartbeat) &&
+            AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                heartbeat.encounterId, heartbeat.groupId, heartbeat.mapId,
+                heartbeat.instanceId, heartbeat.elapsedMs,
+                PartyBotEngine::EncounterTraceEventClass::Detail))
+            m_decisionTrace.RecordPartyHeartbeat(me, *snapshot, heartbeat);
+    }
+
+    PartyBotEngine::Guid const botGuid = me->GetObjectGuid().GetRawValue();
+    PartyBotEngine::PartyMemberSnapshot const* botSnapshot = snapshot->FindMember(botGuid);
+    if (!botSnapshot)
+    {
+        traceStatus("bot_missing_from_snapshot", group->GetId());
+        return;
+    }
+
+    PartyBotEngine::BotBehaviorStateObservation const behaviorState =
+        m_botBehaviorStateMachine.Observe(*snapshot, *botSnapshot, nowMs);
+    if (behaviorState.changed)
+        m_decisionTrace.Record(me, "engine_state_transition", nullptr, nullptr,
+            behaviorState.reason,
+            (static_cast<uint32>(behaviorState.previousState) << 8) |
+                static_cast<uint32>(behaviorState.state));
+
+    PartyBotEngine::DecisionContext context(*snapshot, *botSnapshot, *m_partyCoordinator,
+                                               nowMs, &m_decisionTrace, nullptr, this,
+                                               &m_partyBotEngine, this,
+                                               behaviorState.state, behaviorState.elapsedMs);
+    PartyBotEngine::DecisionReport report = m_partyBotEngine.Evaluate(context);
+    if (authority == PartyBotEngine::ExecutionAuthorityMode::NewEngine)
+        m_partyBotEngine.ExecuteDecisionCycle(context, report);
+    if (m_simulatorExecutionAuthorityOverride >= 0)
+    {
+        ++m_simulatorEngineDecisionCycleCount;
+        m_simulatorEngineCandidateCount = static_cast<uint32>(report.candidates.size());
+    }
+
+    if (m_engineShadowTraceMs <= PB_UPDATE_INTERVAL)
+    {
+        PartyBotEngine::DecisionSummary const decisionSummary =
+            PartyBotEngine::SummarizeDecisionReport(report);
+        m_decisionTrace.RecordShadowSummary(
+            me, snapshot->groupId, snapshot->mapId, snapshot->instanceId, snapshot->epoch,
+            static_cast<uint32>(snapshot->members.size()),
+            static_cast<uint32>(snapshot->hostiles.size()),
+            static_cast<uint32>(report.candidates.size()),
+            static_cast<uint32>(report.selectedIndices.size()));
+
+        if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter() &&
+            AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                m_partyCoordinator->GetEncounterId(), snapshot->groupId,
+                snapshot->mapId, snapshot->instanceId,
+                m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                PartyBotEngine::EncounterTraceEventClass::Detail))
+        {
+            uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+            m_decisionTrace.RecordEncounterDecisionSummary(
+                me, snapshot->groupId, snapshot->mapId, snapshot->instanceId,
+                snapshot->epoch, m_partyCoordinator->GetEncounterId(), sequence,
+                m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                ShadowRoleName(botSnapshot->roleId), decisionSummary);
+        }
+
+        if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter())
+        {
+            uint32 triggerEvaluated = 0;
+            uint32 triggerActive = 0;
+            uint32 triggerInactive = 0;
+            uint32 triggerCadenceSkipped = 0;
+            for (PartyBotEngine::TriggerEvaluation const& trigger : report.triggerEvaluations)
+            {
+                switch (trigger.status)
+                {
+                    case PartyBotEngine::TriggerEvaluationStatus::CadenceSkipped:
+                        ++triggerCadenceSkipped;
+                        break;
+                    case PartyBotEngine::TriggerEvaluationStatus::Inactive:
+                        ++triggerEvaluated;
+                        ++triggerInactive;
+                        break;
+                    case PartyBotEngine::TriggerEvaluationStatus::Active:
+                        ++triggerEvaluated;
+                        ++triggerActive;
+                        break;
+                }
+            }
+
+            std::vector<std::size_t> const triggerTraceIndices =
+                PartyBotEngine::SelectPriorityTriggerEvaluationIndices(report, 4);
+            uint32 const triggerDetailOmitted = static_cast<uint32>(
+                report.triggerEvaluations.size() - triggerTraceIndices.size());
+
+            if (AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                    m_partyCoordinator->GetEncounterId(), snapshot->groupId,
+                    snapshot->mapId, snapshot->instanceId,
+                    m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                    PartyBotEngine::EncounterTraceEventClass::Detail))
+            {
+                uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+                m_decisionTrace.RecordEncounterTriggerSummary(
+                    me, snapshot->groupId, snapshot->mapId, snapshot->instanceId,
+                    m_partyCoordinator->GetEncounterId(), sequence,
+                    m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                    static_cast<uint32>(report.triggerEvaluations.size() +
+                        report.omittedTriggerEvaluations),
+                    triggerEvaluated, triggerActive, triggerInactive,
+                    triggerCadenceSkipped, report.omittedTriggerEvaluations,
+                    4, triggerDetailOmitted);
+            }
+
+            // Prefer actionable triggers while preserving registration order
+            // within equal-priority rows. The summary reports rows omitted by this cap.
+            for (std::size_t triggerIndex : triggerTraceIndices)
+            {
+                PartyBotEngine::TriggerEvaluation const& trigger =
+                    report.triggerEvaluations[triggerIndex];
+                if (AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                        m_partyCoordinator->GetEncounterId(), snapshot->groupId,
+                        snapshot->mapId, snapshot->instanceId,
+                        m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                        PartyBotEngine::EncounterTraceEventClass::Detail))
+                {
+                    uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+                    m_decisionTrace.RecordEncounterTrigger(
+                        me, snapshot->groupId, snapshot->mapId, snapshot->instanceId,
+                        m_partyCoordinator->GetEncounterId(), sequence,
+                        m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                        ShadowRoleName(botSnapshot->roleId),
+                        trigger.strategyName.c_str(), trigger.triggerName.c_str(),
+                        trigger.intervalMs, ShadowTriggerStatusName(trigger.status),
+                        trigger.candidateCount);
+                }
+            }
+        }
+
+        std::vector<std::size_t> const decisionOrder =
+            PartyBotEngine::SelectPriorityCandidateEvaluationIndices(
+                report, PartyBotEngine::DecisionReport::MaxCandidateTraceRows);
+
+        // Log arbitration-selected candidates first, even if an earlier
+        // executor has already changed their status to Executed/ExecutionFailed.
+        // Evaluation remains read-only; this path never executes actions.
+        for (std::size_t index : decisionOrder)
+        {
+            PartyBotEngine::CandidateEvaluation const& evaluation = report.candidates[index];
+            PartyBotEngine::ActionCandidate const& candidate = evaluation.candidate;
+            m_decisionTrace.RecordShadowDecision(
+                me, snapshot->groupId, snapshot->mapId, snapshot->instanceId, snapshot->epoch,
+                ShadowRoleName(botSnapshot->roleId),
+                candidate.strategyName.c_str(), candidate.actionName.c_str(),
+                candidate.targetGuid, candidate.finalPriority,
+                ShadowCandidateStatusName(evaluation.status),
+                evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
+            if (m_decisionTrace.IsEnabled() && m_partyCoordinator->HasActiveEncounter() &&
+                AdmitPartyEncounterTrace(m_decisionTrace, me, *m_partyCoordinator,
+                    m_partyCoordinator->GetEncounterId(), snapshot->groupId,
+                    snapshot->mapId, snapshot->instanceId,
+                    m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                    PartyBotEngine::EncounterTraceEventClass::Detail))
+            {
+                uint32 const sequence = m_partyCoordinator->NextEncounterSequence();
+                m_decisionTrace.RecordEncounterCandidate(
+                    me, snapshot->groupId, snapshot->mapId, snapshot->instanceId,
+                    snapshot->epoch, m_partyCoordinator->GetEncounterId(), sequence,
+                    m_partyCoordinator->GetEncounterElapsedMs(nowMs),
+                    ShadowRoleName(botSnapshot->roleId),
+                    candidate.strategyName.c_str(), candidate.triggerName.c_str(),
+                    candidate.actionName.c_str(), candidate.targetGuid, candidate.spellId,
+                    static_cast<uint32>(candidate.channel), candidate.finalPriority,
+                    ShadowCandidateStatusName(evaluation.status),
+                    evaluation.reason.empty() ? "none" : evaluation.reason.c_str());
+            }
+        }
+        m_engineShadowTraceMs = 10000;
+    }
+    else
+        m_engineShadowTraceMs -= PB_UPDATE_INTERVAL;
+
+}
 
 void PartyBotAI::UpdateOutOfCombatAI()
 {
@@ -974,9 +2545,14 @@ void PartyBotAI::UpdateInCombatAI()
             {
                 if (pVictim = SelectPartyAttackTarget())
                 {
+                    TraceDecision("tank_assist_target", pVictim, nullptr,
+                                  "party_member_attacker_selected", 0);
                     me->AttackStop(true);
                     AttackStart(pVictim);
                 }
+                else
+                    TraceDecision("tank_assist_skipped", me, nullptr,
+                                  "no_party_member_attacker_found", 0);
             }
 
             // Taunt target if its attacking someone else.
@@ -990,6 +2566,10 @@ void PartyBotAI::UpdateInCombatAI()
                             return;
                     }
                 }
+
+                TraceDecision("tank_taunt_no_action", pVictim, nullptr,
+                              m_spellListTaunt.empty() ? "no_taunt_spell_known" : "no_usable_taunt_spell",
+                              static_cast<uint32>(m_spellListTaunt.size()));
             }
         }
         else if (CrowdControlMarkedTargets())
@@ -1502,9 +3082,20 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
 
         if (FindAndPreHealTarget())
             return;
+
+        TraceDecision("healer_cycle_no_action", me, nullptr, "no_eligible_heal_spell_or_target",
+                      static_cast<uint32>(me->GetPowerPercent(POWER_MANA) * 100.0f));
     }
-    else if (me->GetHealthPercent() < 20.0f)
-        HealInjuredTarget(me);
+    else
+    {
+        if (me->GetHealthPercent() < 20.0f)
+        {
+            if (!HealInjuredTarget(me))
+                TraceDecision("healing_skipped", me, nullptr, "self_heal_spell_unavailable", 0);
+        }
+        else
+            TraceDecision("healing_skipped", me, nullptr, "role_not_healer", static_cast<uint32>(GetRole()));
+    }
 }
 
 void PartyBotAI::UpdateOutOfCombatAI_Hunter()
@@ -1814,7 +3405,8 @@ void PartyBotAI::UpdateInCombatAI_Mage()
             }
         }
 
-        if (me->GetEnemyCountInRadiusAround(me, 10.0f) > 1)
+        uint32 const enemiesNearCaster = me->GetEnemyCountInRadiusAround(me, 10.0f);
+        if (enemiesNearCaster > 1)
         {
             if (m_spells.mage.pConeofCold && !me->IsMoving() &&
                 CanTryToCastSpell(me, m_spells.mage.pConeofCold))
@@ -1836,6 +3428,11 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 if (DoCastSpell(me, m_spells.mage.pArcaneExplosion) == SPELL_CAST_OK)
                     return;
             }
+        }
+        else if (m_spells.mage.pArcaneExplosion)
+        {
+            TraceDecision("aoe_skipped", me, m_spells.mage.pArcaneExplosion,
+                          "insufficient_enemies_near_caster", enemiesNearCaster);
         }
 
         if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
@@ -2067,9 +3664,16 @@ void PartyBotAI::UpdateInCombatAI_Priest()
 
         if (GetRole() == ROLE_HEALER && FindAndPreHealTarget())
             return;
+
+        if (GetRole() == ROLE_HEALER)
+            TraceDecision("healer_cycle_no_action", me, nullptr, "no_eligible_heal_spell_or_target",
+                          static_cast<uint32>(me->GetPowerPercent(POWER_MANA) * 100.0f));
     }
     else if (Unit* pVictim = me->GetVictim())
     {
+        if (GetRole() != ROLE_HEALER)
+            TraceDecision("healing_skipped", me, nullptr, "role_not_healer", static_cast<uint32>(GetRole()));
+
         if (m_spells.priest.pShadowform &&
             CanTryToCastSpell(me, m_spells.priest.pShadowform))
         {
@@ -3040,6 +4644,16 @@ void PartyBotAI::UpdateInCombatAI_Druid()
 {
     ShapeshiftForm const form = me->GetShapeshiftForm();
 
+    // Healers must leave combat forms before trying to heal the party.
+    if (GetRole() == ROLE_HEALER && form != FORM_NONE &&
+        me->HasAuraType(SPELL_AURA_MOD_SHAPESHIFT))
+    {
+        TraceDecision("healing_skipped", me, nullptr, "druid_healer_leaving_shapeshift_form",
+                      static_cast<uint32>(form));
+        me->RemoveSpellsCausingAura(SPELL_AURA_MOD_SHAPESHIFT);
+        return;
+    }
+
     if (m_spells.druid.pBarkskin &&
         (form == FORM_NONE || form == FORM_MOONKIN) &&
         (me->GetHealthPercent() < 50.0f) &&
@@ -3086,9 +4700,17 @@ void PartyBotAI::UpdateInCombatAI_Druid()
         if (GetRole() == ROLE_HEALER && FindAndPreHealTarget())
             return;
 
+        if (GetRole() == ROLE_HEALER)
+            TraceDecision("healer_cycle_no_action", me, nullptr, "no_eligible_heal_spell_or_target",
+                          static_cast<uint32>(me->GetPowerPercent(POWER_MANA) * 100.0f));
+
         if (EnterCombatDruidForm())
             return;
     }
+
+    if (form != FORM_NONE && GetRole() == ROLE_HEALER)
+        TraceDecision("healing_skipped", me, nullptr, "druid_form_prevents_healing",
+                      static_cast<uint32>(form));
 
     Unit* pVictim = me->GetVictim();
     if (!pVictim)

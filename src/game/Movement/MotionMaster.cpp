@@ -38,6 +38,8 @@
 #include "MoveSpline.h"
 #include "MoveSplineInit.h"
 
+#include <cmath>
+
 inline bool isStatic(MovementGenerator* mv)
 {
     return (mv == &si_idleMovement);
@@ -471,6 +473,24 @@ void MotionMaster::MovePoint(uint32 id, float x, float y, float z, uint32 option
         Mutate(new PointMovementGenerator<Player>(id, x, y, z, options, speed, finalOrientation));
     else
         Mutate(new PointMovementGenerator<Creature>(id, x, y, z, options, speed, finalOrientation));
+}
+
+bool MotionMaster::MovePointForEngine(uint32 id, float x, float y, float z,
+                                      uint32 options, uint64 actionId,
+                                      uint64 encounterId, float arrivalTolerance,
+                                      float speed, float finalOrientation)
+{
+    if (!m_owner || !m_owner->IsPlayer() || !actionId || !encounterId ||
+        !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+        !std::isfinite(arrivalTolerance) || arrivalTolerance <= 0.0f ||
+        !std::isfinite(speed) || speed < 0.0f ||
+        !std::isfinite(finalOrientation))
+        return false;
+
+    Mutate(new PointMovementGenerator<Player>(id, x, y, z, options, speed,
+                                               finalOrientation, actionId,
+                                               encounterId, arrivalTolerance));
+    return true;
 }
 
 void MotionMaster::MoveSeekAssistance(float x, float y, float z)

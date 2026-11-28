@@ -1981,10 +1981,40 @@ bool CombatBotBaseAI::HealInjuredTargetDirect(Unit* pTarget)
 
 bool CombatBotBaseAI::IsValidHealTarget(Unit const* pTarget, float healthPercent) const
 {
-    return (pTarget->GetHealthPercent() < healthPercent) &&
-            me->IsValidHelpfulTarget(pTarget) &&
-            me->IsWithinLOSInMap(pTarget) &&
-            me->IsWithinDist(pTarget, 30.0f);
+    if (!pTarget)
+    {
+        TraceDecision("heal_target_rejected", nullptr, nullptr, "null_target", 0);
+        return false;
+    }
+
+    float const targetHealthPercent = pTarget->GetHealthPercent();
+    if (targetHealthPercent >= healthPercent)
+    {
+        TraceDecision("heal_target_rejected", pTarget, nullptr, "health_threshold_not_met",
+                      static_cast<uint32>(targetHealthPercent * 100.0f));
+        return false;
+    }
+
+    if (!me->IsValidHelpfulTarget(pTarget))
+    {
+        TraceDecision("heal_target_rejected", pTarget, nullptr, "not_a_valid_helpful_target", 0);
+        return false;
+    }
+
+    if (!me->IsWithinLOSInMap(pTarget))
+    {
+        TraceDecision("heal_target_rejected", pTarget, nullptr, "line_of_sight_blocked", 0);
+        return false;
+    }
+
+    if (!me->IsWithinDist(pTarget, 30.0f))
+    {
+        TraceDecision("heal_target_rejected", pTarget, nullptr, "beyond_healing_scan_range",
+                      static_cast<uint32>(me->GetCombatDistance(pTarget) * 100.0f));
+        return false;
+    }
+
+    return true;
 }
 
 Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPercent) const
@@ -2008,9 +2038,16 @@ Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPe
                 if (pMember == me)
                     continue;
 
-                // Avoid all healers picking same target.
-                if (pTarget && !IsTankClass(pMember->GetClass()) && AreOthersOnSameTarget(pMember->GetObjectGuid(), false, true))
+                // Avoid duplicate healing decisions when another group member is
+                // already casting at this player. Keep the legacy rule for now, but
+                // expose it in the decision trace because it does not inspect spell intent.
+                if (pTarget && !IsTankClass(pMember->GetClass()) &&
+                    AreOthersOnSameTarget(pMember->GetObjectGuid(), false, true))
+                {
+                    TraceDecision("heal_target_rejected", pMember, nullptr,
+                                  "another_group_member_targeting_and_casting", 0);
                     continue;
+                }
 
                 // Check if we should heal party member.
                 if ((IsValidHealTarget(pMember, groupHealPercent) &&
@@ -2034,9 +2071,13 @@ Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPe
 
 Unit* CombatBotBaseAI::SelectPeriodicHealTarget(float selfHealPercent, float groupHealPercent) const
 {
-    if (me->GetHealthPercent() < selfHealPercent &&
-       !me->HasAuraType(SPELL_AURA_PERIODIC_HEAL))
-        return me;
+    if (me->GetHealthPercent() < selfHealPercent)
+    {
+        if (!me->HasAuraType(SPELL_AURA_PERIODIC_HEAL))
+            return me;
+
+        TraceDecision("periodic_heal_target_rejected", me, nullptr, "self_already_has_periodic_heal", 0);
+    }
 
     if (IsInDuel())
         return nullptr;
@@ -2052,9 +2093,17 @@ Unit* CombatBotBaseAI::SelectPeriodicHealTarget(float selfHealPercent, float gro
                     continue;
 
                 // Check if we should heal party member.
-                if (IsValidHealTarget(pMember, groupHealPercent) &&
-                   !pMember->HasAuraType(SPELL_AURA_PERIODIC_HEAL))
+                if (IsValidHealTarget(pMember, groupHealPercent))
+                {
+                    if (pMember->HasAuraType(SPELL_AURA_PERIODIC_HEAL))
+                    {
+                        TraceDecision("periodic_heal_target_rejected", pMember, nullptr,
+                                      "target_already_has_periodic_heal", 0);
+                        continue;
+                    }
+
                     return pMember;
+                }
             }
         }
     }
@@ -2109,14 +2158,18 @@ bool CombatBotBaseAI::FindAndPreHealTarget()
 
     if (SpellEntry const* pHealSpell = SelectMostEfficientHealingSpell(pTarget, maxIncomingDamage, m_spellListDirectHeal))
     {
-        if (pHealSpell->GetCastTime(me) > 1000 && CanTryToCastSpell(pTarget, pHealSpell))
+        uint32 const castTime = pHealSpell->GetCastTime(me);
+        if (castTime > 1000 && CanTryToCastSpell(pTarget, pHealSpell))
         {
             if (DoCastSpell(pTarget, pHealSpell) == SPELL_CAST_OK)
                 return true;
         }
+        else if (castTime <= 1000)
+            TraceDecision("preheal_skipped", pTarget, pHealSpell, "cast_time_not_over_one_second", castTime);
     }
 
-    return pTarget;
+    TraceDecision("preheal_no_action", pTarget, nullptr, "no_eligible_long_cast_heal", maxIncomingDamage);
+    return false;
 }
 
 bool CombatBotBaseAI::IsValidHostileTarget(Unit const* pTarget) const
@@ -2806,22 +2859,28 @@ void CombatBotBaseAI::AutoEquipGear(uint32 option)
 
 bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const
 {
-    if (m_preventCasting)
+    auto reject = [this, pTarget, pSpellEntry](char const* reason, uint32 detail) -> bool
+    {
+        TraceDecision("spell_rejected", pTarget, pSpellEntry, reason, detail);
         return false;
+    };
+
+    if (m_preventCasting)
+        return reject("casting_prevented", 0);
 
     if (!me->IsSpellReady(pSpellEntry))
-        return false;
+        return reject("spell_not_ready", 0);
 
     if (me->HasGCD(pSpellEntry))
-        return false;
+        return reject("global_cooldown", 0);
 
     if (pSpellEntry->TargetAuraState &&
        !pTarget->HasAuraState(AuraState(pSpellEntry->TargetAuraState)))
-        return false;
+        return reject("target_aura_state_missing", pSpellEntry->TargetAuraState);
 
     if (pSpellEntry->CasterAuraState &&
-        !me->HasAuraState(AuraState(pSpellEntry->CasterAuraState)))
-        return false;
+       !me->HasAuraState(AuraState(pSpellEntry->CasterAuraState)))
+        return reject("caster_aura_state_missing", pSpellEntry->CasterAuraState);
 
     uint32 const powerCost = Spell::CalculatePowerCost(pSpellEntry, me);
     Powers const powerType = Powers(pSpellEntry->powerType);
@@ -2829,21 +2888,21 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
     if (powerType == POWER_HEALTH)
     {
         if (me->GetHealth() <= powerCost)
-            return false;
+            return reject("insufficient_health", powerCost);
         return true;
     }
 
     if (me->GetPower(powerType) < powerCost)
-        return false;
+        return reject("insufficient_power", powerCost);
 
     if (pTarget->IsImmuneToSpell(pSpellEntry, false))
-        return false;
+        return reject("target_immune", 0);
 
     if (pSpellEntry->GetErrorAtShapeshiftedCast(me->GetShapeshiftForm()) != SPELL_CAST_OK)
-        return false;
+        return reject("invalid_shapeshift", me->GetShapeshiftForm());
 
     if (pSpellEntry->IsSpellAppliesAura() && pTarget->HasAura(pSpellEntry->Id))
-        return false;
+        return reject("aura_already_present", pSpellEntry->Id);
 
     SpellRangeEntry const* srange = sSpellRangeStore.LookupEntry(pSpellEntry->rangeIndex);
     if (me != pTarget && pSpellEntry->EffectImplicitTargetA[0] != TARGET_UNIT_CASTER)
@@ -2851,9 +2910,9 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
         float const dist = me->GetCombatDistance(pTarget);
 
         if (dist > srange->maxRange)
-            return false;
+            return reject("out_of_range", static_cast<uint32>(dist * 100.0f));
         if (srange->minRange && dist < srange->minRange)
-            return false;
+            return reject("inside_minimum_range", static_cast<uint32>(dist * 100.0f));
     }
 
     return true;
@@ -2862,7 +2921,10 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
 SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry)
 {
     if (m_preventCasting)
+    {
+        TraceDecision("spell_cast_skipped", pTarget, pSpellEntry, "casting_prevented", 0);
         return SPELL_FAILED_DONT_REPORT;
+    }
 
     if (me != pTarget)
         me->SetFacingToObject(pTarget);
@@ -2871,9 +2933,13 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
         me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
 
     me->SetTargetGuid(pTarget->GetObjectGuid());
+    TraceDecision("spell_cast_attempt", pTarget, pSpellEntry, "core_castspell_call", 0);
     auto result = me->CastSpell(pTarget, pSpellEntry, false);
+    TraceDecision("spell_cast_result", pTarget, pSpellEntry,
+                  result == SPELL_CAST_OK ? "success" : "spell_system_rejected",
+                  static_cast<uint32>(result));
 
-    //printf("cast %s result %u\n", pSpellEntry->SpellName[0].c_str(), result);
+    //printf("cast %s result %u\\n", pSpellEntry->SpellName[0].c_str(), result);
 
     if ((result == SPELL_FAILED_MOVING ||
         result == SPELL_CAST_OK) &&

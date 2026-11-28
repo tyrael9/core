@@ -290,6 +290,30 @@ class Spell
         int32 m_currentBasePoints[MAX_EFFECT_INDEX];        // cache SpellEntry::CalculateSimpleValue and use for set custom base points
         Item* m_CastItem = nullptr;
         SpellCastTargets m_targets;
+        // Optional PartyBot trace correlation copied from the owning PlayerAI.
+        uint64 m_partyBotTraceActionId = 0;
+        uint64 m_partyBotTraceEncounterId = 0;
+        uint64 m_partyBotTraceTargetGuid = 0;
+        bool m_partyBotTraceInterrupted = false;
+        bool m_partyBotTraceEngineAction = false;
+        bool m_partyBotDeferredEffectsRequested = false;
+        bool m_partyBotDeferredImpactContextCaptured = false;
+        uint64 m_partyBotDeferredExpectedCasterGuid = 0;
+        uint64 m_partyBotDeferredExpectedRecipientGuid = 0;
+        uint32 m_partyBotDeferredExpectedGroupId = 0;
+        uint32 m_partyBotDeferredExpectedMapId = 0;
+        uint32 m_partyBotDeferredExpectedInstanceId = 0;
+        std::vector<uint64> m_partyBotDeferredExpectedHostileGuids;
+        bool m_partyBotDeferredEffectsCommitted = false;
+        uint32 m_partyBotDeferredInterruptFlags = 0;
+        uint64 m_partyBotItemUseId = 0;
+        uint64 m_partyBotItemUseChildId = 0;
+
+        void SetPartyBotItemUseCorrelation(uint64 itemUseId, uint64 childId)
+        {
+            m_partyBotItemUseId = itemUseId;
+            m_partyBotItemUseChildId = childId;
+        }
 
         void SetCastTime(int32 castTime) { m_casttime = castTime; }
         int32 GetCastTime() const { return m_casttime; }
@@ -313,6 +337,14 @@ class Spell
         bool IsTriggeredSpellWithRedundentData() const;     // use for ignore some spell data for triggered spells like cast time, some triggered spells have redundent copy data from main spell for client use purpose
 
         CurrentSpellTypes GetCurrentContainer() const;
+
+        // Stable value-only identity for the PartyBotEngine action that owns
+        // this root Spell. These identifiers are copied into PartySnapshot;
+        // no Spell pointer crosses the map-thread execution boundary.
+        uint64 GetPartyBotTraceActionId() const { return m_partyBotTraceActionId; }
+        uint64 GetPartyBotTraceEncounterId() const { return m_partyBotTraceEncounterId; }
+        uint64 GetPartyBotTraceTargetGuid() const { return m_partyBotTraceTargetGuid; }
+        bool IsPartyBotTraceEngineAction() const { return m_partyBotTraceEngineAction; }
 
         // caster types:
         // formal spell caster, in game source of spell affects cast
@@ -515,6 +547,11 @@ class Spell
         void AddItemTarget(Item* target, SpellEffectIndex effIndex);
         void DoAllEffectOnTarget(TargetInfo *target);
         void HandleDelayedSpellLaunch(TargetInfo *target);
+        bool IsSafePartyBotDeferredSelfHealShape(bool requireResolvedTargets) const;
+        bool CapturePartyBotDeferredImpactContext();
+        bool IsPartyBotDeferredImpactContextCurrent() const;
+        bool CommitPartyBotDeferredEffects();
+        void RejectPartyBotDeferredEffects();
         void InitializeDamageMultipliers();
         void ResetEffectDamageAndHeal();
         void DoSpellHitOnUnit(Unit* unit, uint32 effectMask);

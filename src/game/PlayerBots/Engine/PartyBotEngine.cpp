@@ -1,0 +1,1213 @@
+#include "PartyBotEngine.h"
+#include "ThreatBudgetPolicy.h"
+#include <algorithm>
+#include <cmath>
+#include <set>
+#include <limits>
+#include <utility>
+namespace PartyBotEngine {
+void PartyBotEngine::AddStrategy(std::shared_ptr<Strategy> strategy) {
+    if (strategy) m_strategies.push_back(std::move(strategy));
+}
+bool PartyBotEngine::RegisterAction(std::shared_ptr<Action> action) {
+    if (!action || action->GetName().empty()) return false;
+    std::string const name = action->GetName();
+    return m_actions.insert(std::make_pair(name, std::move(action))).second;
+}
+
+void PartyBotEngine::ClearPolicies() {
+    m_strategies.clear();
+    m_actions.clear();
+    m_multipliers.clear();
+    ResetDecisionState();
+}
+bool PartyBotEngine::AddActionResultListener(
+    std::shared_ptr<ActionResultListener> listener) {
+    if (!listener || m_actionResultListeners.size() >= 32)
+        return false;
+    for (auto const& registered : m_actionResultListeners)
+        if (registered == listener)
+            return false;
+    m_actionResultListeners.push_back(std::move(listener));
+    return true;
+}
+bool PartyBotEngine::AddCoreSpellTerminalListener(
+    std::shared_ptr<CoreSpellTerminalListener> listener) {
+    if (!listener || m_coreSpellTerminalListeners.size() >= 32)
+        return false;
+    for (auto const& registered : m_coreSpellTerminalListeners)
+        if (registered == listener)
+            return false;
+    m_coreSpellTerminalListeners.push_back(std::move(listener));
+    return true;
+}
+
+void PartyBotEngine::NotifyActionResult(
+    DecisionContext const& context, CandidateEvaluation const& evaluation,
+    ActionId actionId, bool attempted, ActionResult result,
+    char const* reason) const {
+    ActionResultEvent event;
+    event.candidate = evaluation.candidate;
+    event.candidate.actionId = actionId;
+    event.actionId = actionId;
+    event.encounterId = context.coordinator.GetEncounterId();
+    event.result = result;
+    event.attempted = attempted;
+    event.snapshotEpoch = context.snapshot.epoch;
+    event.occurredAtMs = context.nowMs;
+    event.reason = reason ? reason : "none";
+
+    // Continuations consume the immutable dispatcher result independently of
+    // optional diagnostic listeners. It records only Action::Execute's return;
+    // Core Spell::finish remains a separate prerequisite source.
+    RememberActionResult(event);
+    m_actionContinuationQueue.PruneExpired(event.occurredAtMs);
+    m_actionContinuationQueue.ObserveActionResult(event);
+    ReleaseReadyActionDependencies(event.occurredAtMs);
+
+    if (m_actionResultListeners.empty())
+        return;
+
+    // Snapshot listeners before invoking callbacks. A listener may register
+    // another listener without invalidating this dispatch's iteration.
+    std::vector<std::shared_ptr<ActionResultListener>> const listeners =
+        m_actionResultListeners;
+    for (auto const& listener : listeners)
+        if (listener)
+            listener->OnActionResult(context, event);
+}
+
+void PartyBotEngine::RememberCoreSpellTerminal(
+    CoreSpellTerminalEvent const& event) const {
+    if (!event.actionId || !event.encounterId)
+        return;
+    for (CoreSpellTerminalEvent const& existing : m_recentCoreSpellTerminals)
+        if (existing.actionId == event.actionId &&
+            existing.encounterId == event.encounterId)
+            return;
+    static std::size_t const Capacity = 128;
+    if (m_recentCoreSpellTerminals.size() >= Capacity)
+        m_recentCoreSpellTerminals.erase(m_recentCoreSpellTerminals.begin());
+    m_recentCoreSpellTerminals.push_back(event);
+}
+
+void PartyBotEngine::RememberPointMovementTerminal(
+    PointMovementTerminalEvent const& event) const {
+    if (!event.actionId || !event.encounterId)
+        return;
+    for (PointMovementTerminalEvent const& existing : m_recentPointMovementTerminals)
+        if (existing.actionId == event.actionId &&
+            existing.encounterId == event.encounterId)
+            return;
+    static std::size_t const Capacity = 128;
+    if (m_recentPointMovementTerminals.size() >= Capacity)
+        m_recentPointMovementTerminals.erase(m_recentPointMovementTerminals.begin());
+    m_recentPointMovementTerminals.push_back(event);
+}
+
+void PartyBotEngine::RememberActionResult(ActionResultEvent const& event) const {
+    if (!event.actionId || !event.encounterId)
+        return;
+    for (ActionResultEvent const& existing : m_recentActionResults)
+        if (existing.actionId == event.actionId &&
+            existing.encounterId == event.encounterId)
+            return;
+    static std::size_t const Capacity = 128;
+    if (m_recentActionResults.size() >= Capacity)
+        m_recentActionResults.erase(m_recentActionResults.begin());
+    m_recentActionResults.push_back(event);
+}
+
+bool PartyBotEngine::ReleaseContinuation(
+    ActionContinuationQueue::Entry const& entry, std::uint32_t nowMs,
+    bool& pendingQueueFull) const {
+    pendingQueueFull = false;
+    if (ActionContinuationQueue::IsExpired(nowMs, entry.expiresAtMs))
+        return false;
+    std::uint32_t const remainingMs = entry.expiresAtMs - nowMs;
+    if (static_cast<std::int32_t>(remainingMs) <= 0)
+        return false;
+    std::shared_ptr<Action> action = FindAction(entry.candidate.actionName);
+    if (!action)
+        return false;
+    std::uint32_t const actionLifetimeMs = action->GetPendingLifetimeMs();
+    if (!actionLifetimeMs || actionLifetimeMs > PendingActionQueue::MaxLifetimeMs)
+        return false;
+    std::uint32_t const boundedLifetimeMs = std::min(remainingMs, actionLifetimeMs);
+    PendingActionEnqueueResult const result = m_pendingActionQueue.Enqueue(
+        entry.candidate, nowMs, boundedLifetimeMs, entry.context);
+    pendingQueueFull = result == PendingActionEnqueueResult::Full;
+    return result == PendingActionEnqueueResult::Queued ||
+        result == PendingActionEnqueueResult::UpdatedExisting;
+}
+
+bool PartyBotEngine::ReleaseReadyActionDependencies(
+    std::uint32_t nowMs, ActionCandidate const* registeringCandidate) const {
+    std::vector<ActionContinuationQueue::Entry> ready;
+    m_actionContinuationQueue.CollectReady(ready);
+    bool registeringCandidateReleased = false;
+    auto sameIdentity = [](ActionCandidate const& left, ActionCandidate const& right) {
+        return left.actionName == right.actionName &&
+            left.targetGuid == right.targetGuid &&
+            left.spellId == right.spellId &&
+            left.itemGuid == right.itemGuid &&
+            left.itemEntry == right.itemEntry &&
+            left.itemPosition == right.itemPosition &&
+            left.itemSpellSlot == right.itemSpellSlot &&
+            left.channel == right.channel &&
+            left.hasDestination == right.hasDestination &&
+            (!left.hasDestination ||
+                (left.destinationX == right.destinationX &&
+                 left.destinationY == right.destinationY &&
+                 left.destinationZ == right.destinationZ));
+    };
+    for (ActionContinuationQueue::Entry const& entry : ready) {
+        bool pendingQueueFull = false;
+        bool const released = ReleaseContinuation(entry, nowMs, pendingQueueFull);
+        if (!released && pendingQueueFull)
+            m_actionContinuationQueue.RestoreReady(entry, nowMs);
+        if (released && registeringCandidate &&
+            sameIdentity(entry.candidate, *registeringCandidate))
+            registeringCandidateReleased = true;
+    }
+    return registeringCandidateReleased;
+}
+
+ActionContinuationEnqueueResult PartyBotEngine::QueueActionDependency(
+    DecisionContext const& context, ActionDependencyRequest const& request,
+    ActionCandidate const& continuationCandidate) const {
+    if (!context.coordinator.HasActiveEncounter() ||
+        !context.coordinator.GetEncounterId() ||
+        context.snapshot.groupId != context.coordinator.GetEncounterGroupId() ||
+        context.snapshot.mapId != context.coordinator.GetEncounterMapId() ||
+        context.snapshot.instanceId != context.coordinator.GetEncounterInstanceId())
+        return ActionContinuationEnqueueResult::ParentEncounterInactive;
+    if (!context.snapshot.groupId || !context.bot.guid ||
+        context.snapshot.mapId != context.bot.mapId ||
+        context.snapshot.instanceId != context.bot.instanceId ||
+        request.prerequisites.empty() ||
+        request.prerequisites.size() > ActionContinuationQueue::MaxPrerequisites ||
+        !request.lifetimeMs ||
+        request.lifetimeMs > ActionContinuationQueue::MaxLifetimeMs)
+        return ActionContinuationEnqueueResult::Invalid;
+
+    std::shared_ptr<Action> continuationAction = FindAction(continuationCandidate.actionName);
+    if (!continuationAction)
+        return ActionContinuationEnqueueResult::ChildActionNotRegistered;
+    std::uint32_t const actionLifetimeMs = continuationAction->GetPendingLifetimeMs();
+    if (!actionLifetimeMs || actionLifetimeMs > PendingActionQueue::MaxLifetimeMs)
+        return ActionContinuationEnqueueResult::ChildLifetimeDisabled;
+
+    ActionDependencyRequest boundedRequest = request;
+    boundedRequest.lifetimeMs = std::min(request.lifetimeMs, actionLifetimeMs);
+    for (ActionTerminalPrerequisite const& prerequisite : boundedRequest.prerequisites)
+        if (prerequisite.encounterId != context.coordinator.GetEncounterId())
+            return ActionContinuationEnqueueResult::ParentEncounterInactive;
+
+    PendingActionQueue::Context pendingContext;
+    pendingContext.groupId = context.snapshot.groupId;
+    pendingContext.mapId = context.snapshot.mapId;
+    pendingContext.instanceId = context.snapshot.instanceId;
+    pendingContext.botGuid = context.bot.guid;
+    pendingContext.encounterId = context.coordinator.GetEncounterId();
+    pendingContext.encounterActive = context.coordinator.HasActiveEncounter();
+    pendingContext.scoped = true;
+
+    // Validate before consulting terminal history so malformed requests cannot
+    // be reported as a parent-result rejection.
+    if (!ActionContinuationQueue::IsValidRequest(
+            boundedRequest, continuationCandidate, pendingContext))
+        return ActionContinuationEnqueueResult::Invalid;
+
+    // If every prerequisite already has its typed event, late registration
+    // inherits its deadline from the latest event. Otherwise the normal TTL
+    // starts now and is never extended by later prerequisites.
+    bool allPrerequisitesAlreadyObserved = true;
+    bool hasLatestEvent = false;
+    std::uint32_t latestEventMs = context.nowMs;
+    for (ActionDependencyPrerequisite const& prerequisite : boundedRequest.prerequisites) {
+        std::uint32_t occurredAtMs = 0;
+        bool foundEvent = false;
+        bool matchesPrerequisite = false;
+
+        if (prerequisite.source == ActionDependencyEventSource::CoreSpellTerminal) {
+            CoreSpellTerminalEvent const* matchedTerminal = nullptr;
+            for (CoreSpellTerminalEvent const& terminal : m_recentCoreSpellTerminals)
+                if (terminal.actionId == prerequisite.actionId &&
+                    terminal.encounterId == prerequisite.encounterId) {
+                    matchedTerminal = &terminal;
+                    break;
+                }
+            if (matchedTerminal) {
+                foundEvent = true;
+                occurredAtMs = matchedTerminal->occurredAtMs;
+                matchesPrerequisite =
+                    matchedTerminal->targetGuid == prerequisite.targetGuid &&
+                    matchedTerminal->spellId == prerequisite.spellId &&
+                    matchedTerminal->status == prerequisite.requiredStatus;
+            }
+        } else if (prerequisite.source == ActionDependencyEventSource::ActionResult) {
+            ActionResultEvent const* matchedResult = nullptr;
+            for (ActionResultEvent const& event : m_recentActionResults)
+                if (event.actionId == prerequisite.actionId &&
+                    event.encounterId == prerequisite.encounterId) {
+                    matchedResult = &event;
+                    break;
+                }
+            if (matchedResult) {
+                foundEvent = true;
+                occurredAtMs = matchedResult->occurredAtMs;
+                bool const targetMatches = !prerequisite.targetGuid ||
+                    prerequisite.targetGuid == matchedResult->candidate.targetGuid;
+                bool const spellMatches = !prerequisite.spellId ||
+                    prerequisite.spellId == matchedResult->candidate.spellId;
+                matchesPrerequisite =
+                    prerequisite.expectedActionName == matchedResult->candidate.actionName &&
+                    targetMatches && spellMatches &&
+                    prerequisite.requiredActionResult == matchedResult->result &&
+                    prerequisite.requiredAttempted == matchedResult->attempted;
+            }
+        } else if (prerequisite.source == ActionDependencyEventSource::ItemUseTerminal) {
+            ItemUseTerminalEvent const* matchedItemUse = nullptr;
+            for (ItemUseTerminalEvent const& event : m_recentItemUseTerminals)
+                if (event.actionId == prerequisite.actionId &&
+                    event.encounterId == prerequisite.encounterId &&
+                    event.itemUseId == prerequisite.itemUseId) {
+                    matchedItemUse = &event;
+                    break;
+                }
+            if (matchedItemUse) {
+                foundEvent = true;
+                occurredAtMs = matchedItemUse->occurredAtMs;
+                matchesPrerequisite =
+                    matchedItemUse->status == prerequisite.requiredItemUseStatus;
+            }
+        } else if (prerequisite.source == ActionDependencyEventSource::PointMovementTerminal) {
+            PointMovementTerminalEvent const* matchedMovement = nullptr;
+            for (PointMovementTerminalEvent const& event : m_recentPointMovementTerminals)
+                if (event.actionId == prerequisite.actionId &&
+                    event.encounterId == prerequisite.encounterId) {
+                    matchedMovement = &event;
+                    break;
+                }
+            if (matchedMovement) {
+                foundEvent = true;
+                occurredAtMs = matchedMovement->occurredAtMs;
+                matchesPrerequisite =
+                    matchedMovement->moverGuid == prerequisite.targetGuid &&
+                    matchedMovement->pointId == prerequisite.pointId &&
+                    matchedMovement->status == prerequisite.requiredMovementStatus;
+            }
+        }
+
+        if (!foundEvent) {
+            allPrerequisitesAlreadyObserved = false;
+            continue;
+        }
+        // The caller may have captured a context timestamp just before this
+        // event was observed. Do not use a future event to anchor its TTL.
+        if (static_cast<std::int32_t>(context.nowMs - occurredAtMs) < 0) {
+            allPrerequisitesAlreadyObserved = false;
+            continue;
+        }
+
+        // A rejected parent invalidates an ordinary AND dependency. A
+        // rejected alternative stays registered so another branch can win.
+        if (!matchesPrerequisite && !boundedRequest.alternativeGroupId)
+            return ActionContinuationEnqueueResult::ParentTerminalRejected;
+
+        if (!hasLatestEvent ||
+            static_cast<std::int32_t>(occurredAtMs - latestEventMs) > 0) {
+            latestEventMs = occurredAtMs;
+            hasLatestEvent = true;
+        }
+    }
+    std::uint32_t const ttlStartMs =
+        allPrerequisitesAlreadyObserved && hasLatestEvent
+            ? latestEventMs : context.nowMs;
+    if (ActionContinuationQueue::IsExpired(
+            context.nowMs, ttlStartMs + boundedRequest.lifetimeMs))
+        return ActionContinuationEnqueueResult::Expired;
+
+    ActionContinuationEnqueueResult const result = m_actionContinuationQueue.Enqueue(
+        boundedRequest, continuationCandidate, context.nowMs, pendingContext, ttlStartMs);
+    if (result != ActionContinuationEnqueueResult::Queued)
+        return result;
+
+    // A typed result may precede dependency registration; replay all bounded ledgers.
+    for (CoreSpellTerminalEvent const& event : m_recentCoreSpellTerminals)
+        m_actionContinuationQueue.ObserveTerminal(event);
+    for (ActionResultEvent const& event : m_recentActionResults)
+        m_actionContinuationQueue.ObserveActionResult(event);
+    for (PointMovementTerminalEvent const& event : m_recentPointMovementTerminals)
+        m_actionContinuationQueue.ObservePointMovementTerminal(event);
+    for (ItemUseTerminalEvent const& event : m_recentItemUseTerminals)
+        m_actionContinuationQueue.ObserveItemUseTerminal(event);
+    return ReleaseReadyActionDependencies(context.nowMs, &continuationCandidate)
+        ? ActionContinuationEnqueueResult::ReleasedImmediately
+        : ActionContinuationEnqueueResult::Queued;
+}
+
+ActionContinuationEnqueueResult PartyBotEngine::QueueActionContinuation(
+    DecisionContext const& context, ActionCandidate const& parentCandidate,
+    ActionCandidate const& continuationCandidate, std::uint32_t lifetimeMs) const {
+    ActionDependencyRequest request;
+    request.lifetimeMs = lifetimeMs;
+    ActionTerminalPrerequisite prerequisite;
+    prerequisite.actionId = parentCandidate.actionId;
+    prerequisite.encounterId = context.coordinator.GetEncounterId();
+    prerequisite.targetGuid = parentCandidate.targetGuid;
+    prerequisite.spellId = parentCandidate.spellId;
+    prerequisite.requiredStatus = CoreSpellTerminalStatus::Succeeded;
+    request.prerequisites.push_back(prerequisite);
+    return QueueActionDependency(context, request, continuationCandidate);
+}
+
+void PartyBotEngine::NotifyCoreSpellTerminal(CoreSpellTerminalEvent const& event) const {
+    RememberCoreSpellTerminal(event);
+    m_actionContinuationQueue.PruneExpired(event.occurredAtMs);
+    m_actionContinuationQueue.ObserveTerminal(event);
+    ReleaseReadyActionDependencies(event.occurredAtMs);
+
+    std::vector<std::shared_ptr<CoreSpellTerminalListener>> const listeners =
+        m_coreSpellTerminalListeners;
+    for (auto const& listener : listeners)
+        if (listener)
+            listener->OnCoreSpellTerminal(event);
+}
+bool PartyBotEngine::AddItemUseTerminalListener(
+    std::shared_ptr<ItemUseTerminalListener> listener) {
+    if (!listener || m_itemUseTerminalListeners.size() >= 32)
+        return false;
+    for (auto const& registered : m_itemUseTerminalListeners)
+        if (registered == listener)
+            return false;
+    m_itemUseTerminalListeners.push_back(std::move(listener));
+    return true;
+}
+
+void PartyBotEngine::RememberItemUseTerminal(ItemUseTerminalEvent const& event) const {
+    if (!event.itemUseId)
+        return;
+    for (ItemUseTerminalEvent const& existing : m_recentItemUseTerminals)
+        if (existing.itemUseId == event.itemUseId)
+            return;
+    static std::size_t const Capacity = 128;
+    if (m_recentItemUseTerminals.size() >= Capacity)
+        m_recentItemUseTerminals.erase(m_recentItemUseTerminals.begin());
+    m_recentItemUseTerminals.push_back(event);
+}
+
+void PartyBotEngine::NotifyItemUseTerminal(ItemUseTerminalEvent const& event) const {
+    RememberItemUseTerminal(event);
+    if (event.actionId && event.encounterId) {
+        m_actionContinuationQueue.PruneExpired(event.occurredAtMs);
+        m_actionContinuationQueue.ObserveItemUseTerminal(event);
+        ReleaseReadyActionDependencies(event.occurredAtMs);
+    }
+    std::vector<std::shared_ptr<ItemUseTerminalListener>> const listeners =
+        m_itemUseTerminalListeners;
+    for (auto const& listener : listeners)
+        if (listener)
+            listener->OnItemUseTerminal(event);
+}
+
+ItemUseTrackerResult PartyBotEngine::BeginItemUse(
+    ItemUseRequestDescriptor const& request, ItemUseId& itemUseId) {
+    return m_itemUseAggregateTracker.Begin(request, itemUseId);
+}
+
+ItemUseTrackerResult PartyBotEngine::RegisterItemUseChild(
+    ItemUseId itemUseId, std::uint8_t slotIndex, std::uint32_t spellId,
+    bool triggered, ItemUseChildId& childId) {
+    return m_itemUseAggregateTracker.RegisterChild(itemUseId, slotIndex, spellId, triggered, childId);
+}
+
+ItemUseTrackerResult PartyBotEngine::MarkItemUseSlotSkipped(
+    ItemUseId itemUseId, std::uint8_t slotIndex) {
+    return m_itemUseAggregateTracker.MarkSlotSkipped(itemUseId, slotIndex);
+}
+
+ItemUseTrackerResult PartyBotEngine::CloseItemUseDispatch(
+    ItemUseId itemUseId, std::uint32_t nowMs) {
+    ItemUseTerminalEvent event;
+    ItemUseTrackerResult const result = m_itemUseAggregateTracker.CloseDispatch(itemUseId, nowMs, event);
+    if (result == ItemUseTrackerResult::Completed)
+        NotifyItemUseTerminal(event);
+    return result;
+}
+
+ItemUseTrackerResult PartyBotEngine::RecordItemUseChildTerminal(
+    ItemUseId itemUseId, ItemUseChildId childId, ItemUseChildStatus status, std::uint32_t nowMs) {
+    ItemUseTerminalEvent event;
+    ItemUseTrackerResult const result =
+        m_itemUseAggregateTracker.RecordChildTerminal(itemUseId, childId, status, nowMs, event);
+    if (result == ItemUseTrackerResult::Completed)
+        NotifyItemUseTerminal(event);
+    return result;
+}
+
+ItemUseTrackerResult PartyBotEngine::RecordItemUseMutation(ItemUseMutationEvent const& event) {
+    return m_itemUseAggregateTracker.RecordMutation(event);
+}
+
+std::size_t PartyBotEngine::PruneExpiredItemUses(std::uint32_t nowMs) {
+    std::vector<ItemUseTerminalEvent> expired;
+    expired.reserve(ItemUseAggregateTracker::Capacity);
+    std::size_t const count = m_itemUseAggregateTracker.PruneExpired(nowMs, expired);
+    for (ItemUseTerminalEvent const& event : expired)
+        NotifyItemUseTerminal(event);
+    return count;
+}
+
+std::size_t PartyBotEngine::ExpireAllItemUses(std::uint32_t nowMs) {
+    std::vector<ItemUseTerminalEvent> expired;
+    expired.reserve(ItemUseAggregateTracker::Capacity);
+    std::size_t const count = m_itemUseAggregateTracker.ExpireAll(nowMs, expired);
+    for (ItemUseTerminalEvent const& event : expired)
+        NotifyItemUseTerminal(event);
+    return count;
+}
+
+bool PartyBotEngine::PopItemUseMutationEvent(ItemUseMutationEvent& event) {
+    return m_itemUseAggregateTracker.PopMutationEvent(event);
+}
+
+bool PartyBotEngine::AddPointMovementTerminalListener(
+    std::shared_ptr<PointMovementTerminalListener> listener) {
+    if (!listener || m_pointMovementTerminalListeners.size() >= 32)
+        return false;
+    m_pointMovementTerminalListeners.push_back(std::move(listener));
+    return true;
+}
+
+void PartyBotEngine::NotifyPointMovementTerminal(
+    PointMovementTerminalEvent const& event) const {
+    RememberPointMovementTerminal(event);
+    m_actionContinuationQueue.PruneExpired(event.occurredAtMs);
+    m_actionContinuationQueue.ObservePointMovementTerminal(event);
+    ReleaseReadyActionDependencies(event.occurredAtMs);
+
+    std::vector<std::shared_ptr<PointMovementTerminalListener>> const listeners =
+        m_pointMovementTerminalListeners;
+    for (auto const& listener : listeners)
+        if (listener)
+            listener->OnPointMovementTerminal(event);
+}
+
+void PartyBotEngine::AddMultiplier(std::shared_ptr<Multiplier> multiplier) {
+    if (multiplier) m_multipliers.push_back(std::move(multiplier));
+}
+bool PartyBotEngine::InvalidateValue(std::string const& name) const {
+    return m_valueCache.Invalidate(name);
+}
+void PartyBotEngine::InvalidateAllValues() const {
+    m_valueCache.InvalidateAll();
+}
+void PartyBotEngine::InvalidateDecisionState() const {
+    m_valueCache.InvalidateAll();
+    m_triggerScheduler.InvalidateAll();
+}
+void PartyBotEngine::ResetDecisionState() const {
+    m_valueCache.InvalidateAll();
+    m_triggerScheduler.Clear();
+    m_pendingActionQueue.Clear();
+    m_actionContinuationQueue.Clear();
+    m_recentCoreSpellTerminals.clear();
+    m_recentActionResults.clear();
+    m_recentPointMovementTerminals.clear();
+    m_recentItemUseTerminals.clear();
+    m_itemUseAggregateTracker.Clear();
+}
+bool PartyBotEngine::InvalidateTrigger(std::string const& strategyName,
+                                       std::string const& triggerName) const {
+    if (strategyName.empty() || triggerName.empty()) return false;
+    return m_triggerScheduler.Invalidate(strategyName + "/" + triggerName);
+}
+void PartyBotEngine::InvalidateAllTriggers() const {
+    m_triggerScheduler.InvalidateAll();
+}
+std::shared_ptr<Action> PartyBotEngine::FindAction(std::string const& name) const {
+    auto itr = m_actions.find(name);
+    return itr == m_actions.end() ? std::shared_ptr<Action>() : itr->second;
+}
+CandidateEvaluation PartyBotEngine::EvaluateCandidate(
+    DecisionContext const& context, ActionCandidate candidate) const {
+    CandidateEvaluation evaluation;
+    evaluation.candidate = std::move(candidate);
+    ActionCandidate const& evaluatedCandidate = evaluation.candidate;
+    std::shared_ptr<Action> action = FindAction(evaluatedCandidate.actionName);
+    if (!action) {
+        evaluation.status = CandidateStatus::RejectedMissingAction;
+        evaluation.reason = "action_not_registered";
+        return evaluation;
+    }
+    if (!std::isfinite(evaluatedCandidate.basePriority)) {
+        evaluation.status = CandidateStatus::RejectedInvalidPriority;
+        evaluation.reason = "non_finite_base_priority";
+        return evaluation;
+    }
+    if (!action->IsPossible(context, evaluatedCandidate, evaluation.reason)) {
+        evaluation.status = CandidateStatus::RejectedImpossible;
+        if (evaluation.reason.empty()) evaluation.reason = "action_not_possible";
+        return evaluation;
+    }
+    evaluation.reason.clear();
+    if (!action->IsUseful(context, evaluatedCandidate, evaluation.reason)) {
+        evaluation.status = CandidateStatus::RejectedUseless;
+        if (evaluation.reason.empty()) evaluation.reason = "action_not_useful";
+        return evaluation;
+    }
+    evaluation.threatImpact = action->EstimateThreatImpact(context, evaluatedCandidate);
+    if (!IsWellFormedThreatImpactEstimate(evaluation.threatImpact) ||
+        evaluation.threatImpact.snapshotEpoch != context.snapshot.epoch) {
+        evaluation.status = CandidateStatus::RejectedThreatUnknown;
+        evaluation.reason = "threat_impact_estimate_invalid_or_stale";
+        return evaluation;
+    }
+
+    float priority = evaluatedCandidate.basePriority;
+    for (auto const& multiplier : m_multipliers) {
+        if (!multiplier) continue;
+        float const factor = multiplier->GetValue(context, evaluatedCandidate);
+        if (!std::isfinite(factor) || factor <= 0.0f) {
+            evaluation.status = CandidateStatus::RejectedMultiplier;
+            evaluation.reason = multiplier->GetName();
+            if (evaluation.reason.empty()) evaluation.reason = "multiplier_veto";
+            return evaluation;
+        }
+        priority *= factor;
+    }
+    if (!std::isfinite(priority)) {
+        evaluation.status = CandidateStatus::RejectedInvalidPriority;
+        evaluation.reason = "non_finite_final_priority";
+        return evaluation;
+    }
+    evaluation.candidate.finalPriority = priority;
+    evaluation.status = CandidateStatus::NotSelected;
+    evaluation.reason.clear();
+    return evaluation;
+}
+
+PendingActionEnqueueResult PartyBotEngine::QueuePendingAction(
+    DecisionContext const& context, ActionCandidate const& candidate) const {
+    std::shared_ptr<Action> action = FindAction(candidate.actionName);
+    if (!action)
+        return PendingActionEnqueueResult::ActionNotRegistered;
+    std::uint32_t const lifetimeMs = action->GetPendingLifetimeMs();
+    if (!lifetimeMs || lifetimeMs > PendingActionQueue::MaxLifetimeMs)
+        return PendingActionEnqueueResult::LifetimeDisabled;
+    if (!context.snapshot.groupId || !context.bot.guid ||
+        context.snapshot.mapId != context.bot.mapId ||
+        context.snapshot.instanceId != context.bot.instanceId)
+        return PendingActionEnqueueResult::Invalid;
+
+    DecisionContext evaluationContext(
+        context.snapshot, context.bot, context.coordinator, context.nowMs,
+        context.reservationTrace,
+        context.valueCache ? context.valueCache : &m_valueCache,
+        context.engineActionObserver, this, context.coreActionRuntime);
+    CandidateEvaluation evaluation = EvaluateCandidate(evaluationContext, candidate);
+    if (evaluation.status != CandidateStatus::NotSelected)
+        return PendingActionEnqueueResult::NotEligible;
+
+    PendingActionQueue::Context pendingContext;
+    pendingContext.groupId = context.snapshot.groupId;
+    pendingContext.mapId = context.snapshot.mapId;
+    pendingContext.instanceId = context.snapshot.instanceId;
+    pendingContext.botGuid = context.bot.guid;
+    pendingContext.encounterId = context.coordinator.GetEncounterId();
+    pendingContext.encounterActive = context.coordinator.HasActiveEncounter();
+    pendingContext.scoped = true;
+    return m_pendingActionQueue.Enqueue(
+        evaluation.candidate, context.nowMs, lifetimeMs, pendingContext);
+}
+
+std::size_t PartyBotEngine::QueueSelectedActions(
+    DecisionContext const& context, DecisionReport& report) const {
+    std::size_t queued = 0;
+    for (std::size_t index : report.selectedIndices) {
+        if (index >= report.candidates.size())
+            continue;
+        CandidateEvaluation& evaluation = report.candidates[index];
+        if (evaluation.status != CandidateStatus::Selected)
+            continue;
+        std::shared_ptr<Action> action = FindAction(evaluation.candidate.actionName);
+        if (!action || !action->GetPendingLifetimeMs())
+            continue;
+
+        PendingActionEnqueueResult const result =
+            QueuePendingAction(context, evaluation.candidate);
+        if (result == PendingActionEnqueueResult::Queued ||
+            result == PendingActionEnqueueResult::UpdatedExisting) {
+            evaluation.status = CandidateStatus::Queued;
+            evaluation.actionResult = ActionResult::NotAttempted;
+            evaluation.reason = result == PendingActionEnqueueResult::Queued
+                ? "pending_action_queued" : "pending_action_refreshed";
+            ++queued;
+        } else {
+            evaluation.status = CandidateStatus::ExecutionFailed;
+            evaluation.actionResult = ActionResult::Failed;
+            switch (result) {
+                case PendingActionEnqueueResult::Full:
+                    evaluation.reason = "pending_queue_full";
+                    break;
+                case PendingActionEnqueueResult::Invalid:
+                    evaluation.reason = "pending_queue_invalid";
+                    break;
+                case PendingActionEnqueueResult::ActionNotRegistered:
+                    evaluation.reason = "pending_action_not_registered";
+                    break;
+                case PendingActionEnqueueResult::LifetimeDisabled:
+                    evaluation.reason = "pending_action_lifetime_invalid";
+                    break;
+                case PendingActionEnqueueResult::NotEligible:
+                    evaluation.reason = "pending_action_not_eligible";
+                    break;
+                case PendingActionEnqueueResult::Queued:
+                case PendingActionEnqueueResult::UpdatedExisting:
+                    evaluation.reason = "pending_queue_unexpected_result";
+                    break;
+            }
+        }
+    }
+    return queued;
+}
+
+PendingActionDispatchSummary PartyBotEngine::ExecutePendingActions(
+    DecisionContext& context, std::size_t maxActionsPerDispatch,
+    std::uint32_t blockedChannelMask) const {
+    PendingActionDispatchSummary summary;
+    summary.expiredContinuations = m_actionContinuationQueue.PruneExpired(context.nowMs);
+    if (!maxActionsPerDispatch)
+        return summary;
+    maxActionsPerDispatch = std::min<std::size_t>(maxActionsPerDispatch, 8);
+    DecisionContext executionContext(
+        context.snapshot, context.bot, context.coordinator, context.nowMs,
+        context.reservationTrace,
+        context.valueCache ? context.valueCache : &m_valueCache,
+        context.engineActionObserver, this, context.coreActionRuntime);
+    PendingActionQueue::Context currentContext;
+    currentContext.groupId = executionContext.snapshot.groupId;
+    currentContext.mapId = executionContext.snapshot.mapId;
+    currentContext.instanceId = executionContext.snapshot.instanceId;
+    currentContext.botGuid = executionContext.bot.guid;
+    currentContext.encounterId = executionContext.coordinator.GetEncounterId();
+    currentContext.encounterActive = executionContext.coordinator.HasActiveEncounter();
+    currentContext.scoped = true;
+
+    struct PendingWork {
+        PendingActionQueue::Entry entry;
+        CandidateEvaluation evaluation;
+    };
+    std::vector<PendingWork> work;
+    work.reserve(PendingActionQueue::Capacity);
+    summary.expired = m_pendingActionQueue.PruneExpired(executionContext.nowMs);
+    PendingActionQueue::Entry entry;
+    while (m_pendingActionQueue.PopNext(executionContext.nowMs, entry)) {
+        ++summary.dequeued;
+        PendingActionQueue::Context const& oldContext = entry.context;
+        if (!oldContext.scoped ||
+            oldContext.groupId != currentContext.groupId ||
+            oldContext.mapId != currentContext.mapId ||
+            oldContext.instanceId != currentContext.instanceId ||
+            oldContext.botGuid != currentContext.botGuid ||
+            oldContext.encounterId != currentContext.encounterId ||
+            oldContext.encounterActive != currentContext.encounterActive) {
+            ++summary.staleContext;
+            continue;
+        }
+        CandidateEvaluation evaluation =
+            EvaluateCandidate(executionContext, entry.candidate);
+        if (evaluation.status != CandidateStatus::NotSelected) {
+            ++summary.rejected;
+            summary.completedCandidates.push_back(evaluation);
+            continue;
+        }
+        PendingWork item;
+        item.entry = entry;
+        item.evaluation = std::move(evaluation);
+        // Fairness compares against the currently revalidated priority, not
+        // the potentially stale value captured when the action was enqueued.
+        item.entry.priority = item.evaluation.candidate.finalPriority;
+        work.push_back(std::move(item));
+    }
+
+    std::stable_sort(work.begin(), work.end(),
+        [&executionContext](PendingWork const& left, PendingWork const& right) {
+            // Keep the same age-promotion ordering as PendingActionQueue::PopNext.
+            // This post-revalidation sort must not undo the fairness decision.
+            return PendingActionQueue::ComesBefore(
+                left.entry, right.entry, executionContext.nowMs);
+        });
+
+    DecisionReport report;
+    report.snapshotEpoch = executionContext.snapshot.epoch;
+    std::set<ActionChannel> occupiedChannels;
+    for (std::uint32_t channel = 0;
+         channel <= static_cast<std::uint32_t>(ActionChannel::Utility); ++channel) {
+        if (blockedChannelMask & (1u << channel))
+            occupiedChannels.insert(static_cast<ActionChannel>(channel));
+    }
+    ThreatImpactTotals selectedThreatInReport;
+    auto defer = [&](PendingWork& item) {
+        item.entry.candidate = item.evaluation.candidate;
+        item.entry.priority = item.evaluation.candidate.finalPriority;
+        if (m_pendingActionQueue.Requeue(item.entry, executionContext.nowMs))
+            ++summary.requeued;
+        else
+            ++summary.queueFull;
+    };
+
+    for (PendingWork& item : work) {
+        if (report.selectedIndices.size() >= maxActionsPerDispatch ||
+            occupiedChannels.find(item.evaluation.candidate.channel) !=
+                occupiedChannels.end()) {
+            defer(item);
+            continue;
+        }
+        ThreatImpactBudgetResult const threatBudget = AssessThreatImpactBudget(
+            executionContext.snapshot, item.evaluation.threatImpact,
+            executionContext.coordinator, executionContext.nowMs, 250,
+            &selectedThreatInReport);
+        if (threatBudget.status != ThreatImpactBudgetStatus::Safe) {
+            // Temporary headroom/reservation changes may make this safe later;
+            // requeue only until the original TTL and never bypass the budget.
+            defer(item);
+            continue;
+        }
+        item.evaluation.status = CandidateStatus::Selected;
+        std::size_t const index = report.candidates.size();
+        report.candidates.push_back(std::move(item.evaluation));
+        report.selectedIndices.push_back(index);
+        occupiedChannels.insert(report.candidates.back().candidate.channel);
+    }
+
+    summary.selected = report.selectedIndices.size();
+    if (!report.selectedIndices.empty())
+        ExecuteSelected(context, report);
+    for (CandidateEvaluation const& evaluation : report.candidates) {
+        if (evaluation.status == CandidateStatus::Executed) {
+            ++summary.executed;
+            summary.completedCandidates.push_back(evaluation);
+        } else if (evaluation.status == CandidateStatus::ExecutionFailed) {
+            ++summary.failed;
+            summary.completedCandidates.push_back(evaluation);
+        }
+    }
+
+    // Dispatching or deferring work above may have freed pending-queue slots.
+    // Retry continuations that were already terminal but previously backpressured.
+    ReleaseReadyActionDependencies(executionContext.nowMs);
+    return summary;
+}
+
+PendingActionDispatchSummary PartyBotEngine::ExecuteDecisionCycle(
+    DecisionContext& context, DecisionReport& report) const {
+    // TTL-enabled current decisions enter the pending queue first. Immediate
+    // actions then reserve their channels and share the eight-action tick cap.
+    PendingActionDispatchSummary summary;
+    summary.expiredContinuations = m_actionContinuationQueue.PruneExpired(context.nowMs);
+    summary.newlyQueued = QueueSelectedActions(context, report);
+
+    std::uint32_t blockedChannelMask = 0;
+    std::size_t immediateSelected = 0;
+    for (std::size_t index : report.selectedIndices) {
+        if (index >= report.candidates.size())
+            continue;
+        CandidateEvaluation const& evaluation = report.candidates[index];
+        if (evaluation.status != CandidateStatus::Selected)
+            continue;
+        ++immediateSelected;
+        blockedChannelMask |= 1u << static_cast<std::uint32_t>(
+            evaluation.candidate.channel);
+    }
+
+    if (immediateSelected)
+        ExecuteSelected(context, report);
+
+    std::size_t const pendingBudget =
+        8 - std::min<std::size_t>(immediateSelected, 8);
+    if (pendingBudget) {
+        PendingActionDispatchSummary pending =
+            ExecutePendingActions(context, pendingBudget, blockedChannelMask);
+        summary.expired += pending.expired;
+        summary.expiredContinuations += pending.expiredContinuations;
+        summary.dequeued += pending.dequeued;
+        summary.staleContext += pending.staleContext;
+        summary.rejected += pending.rejected;
+        summary.requeued += pending.requeued;
+        summary.queueFull += pending.queueFull;
+        summary.selected += pending.selected;
+        summary.executed += pending.executed;
+        summary.failed += pending.failed;
+        summary.completedCandidates.insert(summary.completedCandidates.end(),
+            pending.completedCandidates.begin(), pending.completedCandidates.end());
+    }
+
+    auto sameIdentity = [](ActionCandidate const& left, ActionCandidate const& right) {
+        return left.actionName == right.actionName &&
+            left.targetGuid == right.targetGuid &&
+            left.spellId == right.spellId &&
+            left.itemGuid == right.itemGuid &&
+            left.itemEntry == right.itemEntry &&
+            left.itemPosition == right.itemPosition &&
+            left.itemSpellSlot == right.itemSpellSlot &&
+            left.channel == right.channel &&
+            left.hasDestination == right.hasDestination &&
+            (!left.hasDestination ||
+                (left.destinationX == right.destinationX &&
+                 left.destinationY == right.destinationY &&
+                 left.destinationZ == right.destinationZ));
+    };
+    for (CandidateEvaluation const& completed : summary.completedCandidates) {
+        for (std::size_t index : report.selectedIndices) {
+            if (index >= report.candidates.size())
+                continue;
+            CandidateEvaluation& source = report.candidates[index];
+            if (source.status != CandidateStatus::Queued ||
+                !sameIdentity(source.candidate, completed.candidate))
+                continue;
+            source = completed;
+            break;
+        }
+    }
+    return summary;
+}
+
+DecisionReport PartyBotEngine::Evaluate(DecisionContext const& context) const {
+    DecisionContext evaluationContext(
+        context.snapshot, context.bot, context.coordinator, context.nowMs,
+        context.reservationTrace,
+        context.valueCache ? context.valueCache : &m_valueCache,
+        context.engineActionObserver, this, context.coreActionRuntime);
+    DecisionReport report;
+    report.snapshotEpoch = evaluationContext.snapshot.epoch;
+    auto retainTriggerEvaluation = [&report](TriggerEvaluation&& observation) {
+        if (report.triggerEvaluations.size() < DecisionReport::MaxTriggerEvaluations)
+            report.triggerEvaluations.push_back(std::move(observation));
+        else
+            ++report.omittedTriggerEvaluations;
+    };
+    for (auto const& strategy : m_strategies) {
+        if (!strategy) continue;
+        for (auto const& trigger : strategy->GetTriggers()) {
+            if (!trigger) continue;
+            TriggerEvaluation observation;
+            observation.strategyName = strategy->GetName();
+            observation.triggerName = trigger->GetName();
+            observation.intervalMs = trigger->GetCheckIntervalMs();
+            std::string const triggerKey = strategy->GetName() + "/" + trigger->GetName();
+            if (!m_triggerScheduler.ShouldEvaluate(
+                    triggerKey, observation.intervalMs, evaluationContext.nowMs)) {
+                observation.status = TriggerEvaluationStatus::CadenceSkipped;
+                retainTriggerEvaluation(std::move(observation));
+                continue;
+            }
+            if (!trigger->IsActive(evaluationContext)) {
+                observation.status = TriggerEvaluationStatus::Inactive;
+                retainTriggerEvaluation(std::move(observation));
+                continue;
+            }
+            observation.status = TriggerEvaluationStatus::Active;
+            std::vector<ActionCandidate> candidates;
+            trigger->CollectCandidates(evaluationContext, candidates);
+            observation.candidateCount = static_cast<std::uint32_t>(
+                std::min<std::size_t>(candidates.size(),
+                    std::numeric_limits<std::uint32_t>::max()));
+            retainTriggerEvaluation(std::move(observation));
+            for (auto const& candidate : candidates) {
+                ActionCandidate evaluatedCandidate = candidate;
+                if (evaluatedCandidate.strategyName.empty())
+                    evaluatedCandidate.strategyName = strategy->GetName();
+                evaluatedCandidate.triggerName = trigger->GetName();
+                report.candidates.push_back(
+                    EvaluateCandidate(evaluationContext, std::move(evaluatedCandidate)));
+            }
+        }
+    }
+    std::vector<std::size_t> eligible;
+    for (std::size_t i = 0; i < report.candidates.size(); ++i)
+        if (report.candidates[i].status == CandidateStatus::NotSelected) eligible.push_back(i);
+    std::stable_sort(eligible.begin(), eligible.end(), [&report](std::size_t a, std::size_t b) {
+        return report.candidates[a].candidate.finalPriority > report.candidates[b].candidate.finalPriority;
+    });
+    std::set<ActionChannel> occupiedChannels;
+    ThreatImpactTotals selectedThreatInReport;
+    for (std::size_t index : eligible) {
+        CandidateEvaluation& evaluation = report.candidates[index];
+        if (occupiedChannels.find(evaluation.candidate.channel) != occupiedChannels.end()) {
+            evaluation.reason = "lower_priority_same_channel";
+            continue;
+        }
+
+        ThreatImpactBudgetResult const threatBudget = AssessThreatImpactBudget(
+            evaluationContext.snapshot, evaluation.threatImpact, evaluationContext.coordinator,
+            evaluationContext.nowMs, 250, &selectedThreatInReport);
+        if (threatBudget.status == ThreatImpactBudgetStatus::Unknown) {
+            evaluation.status = CandidateStatus::RejectedThreatUnknown;
+            evaluation.reason = threatBudget.reason;
+            continue;
+        }
+        if (threatBudget.status == ThreatImpactBudgetStatus::Exceeded) {
+            evaluation.status = CandidateStatus::RejectedThreatBudget;
+            evaluation.reason = threatBudget.reason;
+            continue;
+        }
+
+        occupiedChannels.insert(evaluation.candidate.channel);
+        evaluation.status = CandidateStatus::Selected;
+        report.selectedIndices.push_back(index);
+    }
+    return report;
+}
+void PartyBotEngine::ExecuteSelected(DecisionContext& context, DecisionReport& report) const {
+    DecisionContext executionContext(
+        context.snapshot, context.bot, context.coordinator, context.nowMs,
+        context.reservationTrace,
+        context.valueCache ? context.valueCache : &m_valueCache,
+        context.engineActionObserver, this, context.coreActionRuntime);
+    auto recordReservation = [&executionContext](ReservationTraceEvent const& event) {
+        if (executionContext.reservationTrace)
+            executionContext.reservationTrace->RecordReservationEvent(executionContext, event);
+    };
+    auto recordAction = [this, &executionContext](
+        CandidateEvaluation& evaluation, ActionId actionId,
+        EngineActionTraceStage stage, bool attempted,
+        ActionResult result, char const* reason) {
+        if (executionContext.reservationTrace ||
+            executionContext.engineActionObserver) {
+            EngineActionTraceEvent event;
+            event.stage = stage;
+            event.actionId = actionId;
+            event.actionName = evaluation.candidate.actionName.c_str();
+            event.targetGuid = evaluation.candidate.targetGuid;
+            event.spellId = evaluation.candidate.spellId;
+            event.channel = evaluation.candidate.channel;
+            event.priority = evaluation.candidate.finalPriority;
+            event.result = result;
+            event.attempted = attempted;
+            event.reason = reason ? reason : "none";
+            if (executionContext.reservationTrace)
+                executionContext.reservationTrace->RecordEngineActionEvent(executionContext, event);
+            if (executionContext.engineActionObserver)
+                executionContext.engineActionObserver->OnEngineActionEvent(executionContext, event);
+        }
+
+        // Result listeners are policy hooks, not trace consumers: they receive
+        // the same immutable event even when all diagnostic sinks are disabled.
+        if (stage == EngineActionTraceStage::Result)
+            NotifyActionResult(executionContext, evaluation, actionId,
+                               attempted, result, reason);
+    };
+
+    // Materialize selected decisions into a bounded queue. The queue contains
+    // indices only; all Core-facing validity, range, LOS, resource and threat
+    // checks remain immediately before dispatch below.
+    ActionQueue queue;
+    for (std::size_t index : report.selectedIndices) {
+        if (index >= report.candidates.size())
+            continue;
+        CandidateEvaluation& queued = report.candidates[index];
+        if (queued.status != CandidateStatus::Selected)
+            continue;
+        if (!std::isfinite(queued.candidate.finalPriority) ||
+            !queue.Push(index, queued.candidate.finalPriority)) {
+            queued.status = CandidateStatus::ExecutionFailed;
+            queued.actionResult = ActionResult::Failed;
+            queued.reason = "action_queue_capacity_or_priority_rejected";
+            ActionId const rejectedActionId = executionContext.coordinator.NextActionId();
+            queued.actionId = rejectedActionId;
+            queued.candidate.actionId = rejectedActionId;
+            recordAction(queued, rejectedActionId, EngineActionTraceStage::Result,
+                         false, ActionResult::Failed, queued.reason.c_str());
+        }
+    }
+
+    ActionQueue::Entry queuedEntry;
+    std::size_t processed = 0;
+    std::size_t const maxActionsPerDispatch = 8;
+    while (processed < maxActionsPerDispatch && queue.PopNext(queuedEntry)) {
+        ++processed;
+        std::size_t const index = queuedEntry.reportIndex;
+        if (index >= report.candidates.size())
+            continue;
+        CandidateEvaluation& evaluation = report.candidates[index];
+        if (evaluation.status != CandidateStatus::Selected)
+            continue;
+
+        // One coordinator-local ID identifies the logical Engine action whether
+        // or not it creates a threat reservation. Reservation rows, when any,
+        // reuse the same ID.
+        ActionId const actionId = executionContext.coordinator.NextActionId();
+        evaluation.actionId = actionId;
+        evaluation.candidate.actionId = actionId;
+        if (!actionId) {
+            evaluation.status = CandidateStatus::ExecutionFailed;
+            evaluation.actionResult = ActionResult::Failed;
+            evaluation.reason = "engine_action_id_unavailable";
+            recordAction(evaluation, 0, EngineActionTraceStage::Result,
+                         false, ActionResult::Failed, evaluation.reason.c_str());
+            continue;
+        }
+
+        std::shared_ptr<Action> action = FindAction(evaluation.candidate.actionName);
+        if (!action) {
+            evaluation.status = CandidateStatus::ExecutionFailed;
+            evaluation.actionResult = ActionResult::Failed;
+            evaluation.reason = "action_unregistered_before_execution";
+            recordAction(evaluation, actionId, EngineActionTraceStage::Result,
+                         false, ActionResult::Failed, evaluation.reason.c_str());
+            continue;
+        }
+
+        // Recheck the action's exact estimate against current coordinator reservations
+        // immediately before execution. New Engine mode never falls back to Legacy.
+        ThreatImpactBudgetResult const threatBudget = AssessThreatImpactBudget(
+            executionContext.snapshot, evaluation.threatImpact, executionContext.coordinator,
+            executionContext.nowMs, 250, nullptr);
+        if (threatBudget.status != ThreatImpactBudgetStatus::Safe) {
+            if (threatBudget.status == ThreatImpactBudgetStatus::Exceeded) {
+                ReservationTraceEvent event;
+                event.stage = ReservationTraceStage::BudgetVeto;
+                event.ownerGuid = executionContext.bot.guid;
+                event.threatOwnerGuid = threatBudget.threatOwnerGuid;
+                event.hostileGuid = threatBudget.hostileGuid;
+                event.threatPoints = static_cast<float>(threatBudget.candidateThreat);
+                event.rawHeadroom = threatBudget.rawHeadroom;
+                event.alreadyReserved = threatBudget.alreadyReserved;
+                event.reason = threatBudget.reason.c_str();
+                recordReservation(event);
+            }
+            evaluation.status = CandidateStatus::ExecutionFailed;
+            evaluation.actionResult = ActionResult::Failed;
+            evaluation.reason = threatBudget.reason;
+            recordAction(evaluation, actionId, EngineActionTraceStage::Result,
+                         false, ActionResult::Failed, evaluation.reason.c_str());
+            continue;
+        }
+
+        bool hasThreatReservation = false;
+        if (evaluation.threatImpact.completeness == ThreatImpactCompleteness::Complete) {
+            ThreatImpactTotals totals;
+            for (ThreatImpactEntry const& impact : evaluation.threatImpact.impacts) {
+                if (impact.threatPoints > 0.0f)
+                    totals[ThreatImpactKey(impact.hostileGuid, impact.threatOwnerGuid)] +=
+                        static_cast<double>(impact.threatPoints);
+            }
+
+            if (!totals.empty()) {
+                std::uint32_t const expiresAtMs =
+                    executionContext.nowMs + evaluation.threatImpact.reservationDurationMs;
+                bool reservationAccepted = true;
+                std::uint32_t reservedRows = 0;
+                for (auto const& entry : totals) {
+                    ThreatReservation reservation;
+                    reservation.ownerGuid = executionContext.bot.guid;
+                    reservation.threatOwnerGuid = entry.first.second;
+                    reservation.hostileGuid = entry.first.first;
+                    reservation.actionId = actionId;
+                    reservation.threatPoints = std::isfinite(entry.second) &&
+                        entry.second <= static_cast<double>(std::numeric_limits<float>::max())
+                        ? static_cast<float>(entry.second) : 0.0f;
+                    reservation.expiresAtMs = expiresAtMs;
+
+                    ReservationTraceEvent attempt;
+                    attempt.stage = ReservationTraceStage::Attempt;
+                    attempt.actionId = actionId;
+                    attempt.ownerGuid = reservation.ownerGuid;
+                    attempt.threatOwnerGuid = reservation.threatOwnerGuid;
+                    attempt.hostileGuid = reservation.hostileGuid;
+                    attempt.threatPoints = reservation.threatPoints;
+                    attempt.expiresAtMs = expiresAtMs;
+                    attempt.reason = "execute_selected";
+                    recordReservation(attempt);
+
+                    bool const validThreat = std::isfinite(entry.second) &&
+                        entry.second > 0.0 &&
+                        entry.second <= static_cast<double>(std::numeric_limits<float>::max());
+                    bool const accepted = validThreat &&
+                        executionContext.coordinator.TryReserveThreatImpact(
+                            reservation, executionContext.nowMs);
+
+                    ReservationTraceEvent result;
+                    result.stage = ReservationTraceStage::Result;
+                    result.actionId = actionId;
+                    result.ownerGuid = reservation.ownerGuid;
+                    result.threatOwnerGuid = reservation.threatOwnerGuid;
+                    result.hostileGuid = reservation.hostileGuid;
+                    result.threatPoints = reservation.threatPoints;
+                    result.expiresAtMs = expiresAtMs;
+                    result.accepted = accepted;
+                    result.reason = !validThreat ? "invalid_threat_reservation_row" :
+                        (accepted ? "coordinator_accepted" : "coordinator_rejected");
+                    recordReservation(result);
+
+                    if (!accepted) {
+                        reservationAccepted = false;
+                        break;
+                    }
+                    ++reservedRows;
+                }
+
+                if (!reservationAccepted) {
+                    executionContext.coordinator.ReleaseThreatAction(actionId);
+                    ReservationTraceEvent release;
+                    release.stage = ReservationTraceStage::Release;
+                    release.actionId = actionId;
+                    release.ownerGuid = executionContext.bot.guid;
+                    release.reservationRows = reservedRows;
+                    release.reason = "partial_acquire_rollback";
+                    recordReservation(release);
+                    evaluation.status = CandidateStatus::ExecutionFailed;
+                    evaluation.actionResult = ActionResult::Failed;
+                    evaluation.reason = "threat_reservation_failed";
+                    recordAction(evaluation, actionId, EngineActionTraceStage::Result,
+                                 false, ActionResult::Failed, evaluation.reason.c_str());
+                    continue;
+                }
+
+                hasThreatReservation = true;
+                evaluation.threatActionId = actionId;
+                evaluation.candidate.threatActionId = actionId;
+            }
+        }
+
+        // This event brackets the synchronous adapter call. A successful result
+        // means Action::Execute returned Success, not that a later spell/movement
+        // effect necessarily completed; Core terminal events remain separate.
+        recordAction(evaluation, actionId, EngineActionTraceStage::Attempt,
+                     true, ActionResult::NotAttempted, "adapter_dispatch");
+        ActionExecutionResult const execution =
+            action->ExecuteDetailed(executionContext, evaluation.candidate);
+        evaluation.actionResult = execution.result;
+        if (evaluation.actionResult == ActionResult::Success) {
+            evaluation.status = CandidateStatus::Executed;
+            evaluation.reason = execution.reason;
+            char const* reason = evaluation.reason.empty()
+                ? "adapter_returned_success" : evaluation.reason.c_str();
+            recordAction(evaluation, actionId, EngineActionTraceStage::Result,
+                         true, evaluation.actionResult, reason);
+        } else {
+            evaluation.reason = execution.reason.empty()
+                ? "action_execution_not_successful" : execution.reason;
+            if (hasThreatReservation) {
+                executionContext.coordinator.ReleaseThreatAction(actionId);
+                ReservationTraceEvent release;
+                release.stage = ReservationTraceStage::Release;
+                release.actionId = actionId;
+                release.ownerGuid = executionContext.bot.guid;
+                release.reason = "action_execution_failed";
+                release.reservationRows = static_cast<std::uint32_t>(
+                    evaluation.threatImpact.impacts.size());
+                recordReservation(release);
+            }
+            evaluation.status = CandidateStatus::ExecutionFailed;
+            if (evaluation.reason.empty())
+                evaluation.reason = "action_execution_not_successful";
+            recordAction(evaluation, actionId, EngineActionTraceStage::Result,
+                         true, evaluation.actionResult, evaluation.reason.c_str());
+        }
+    }
+}
+} // namespace PartyBotEngine

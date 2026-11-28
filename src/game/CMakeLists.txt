@@ -190,6 +190,13 @@ set (game_SRCS
     PacketBroadcast/MovementBroadcaster.cpp
     PacketBroadcast/PlayerBroadcaster.cpp
     PlayerBots/PartyBotAI.cpp
+    PlayerBots/Engine/DecisionTrace.cpp
+    PlayerBots/Engine/PartyCoordinator.cpp
+    PlayerBots/Engine/PartyBotEngine.cpp
+    PlayerBots/Engine/ProductionStrategies.cpp
+    PlayerBots/Engine/ShadowStrategies.cpp
+    PlayerBots/Engine/PartySnapshotBuilder.cpp
+    PlayerBots/Engine/CoreCombatSimulator.cpp
     PlayerBots/CombatBotBaseAI.cpp
     PlayerBots/BattleBotAI.cpp
     PlayerBots/BattleBotWaypoints.cpp
@@ -444,6 +451,7 @@ set (game_SRCS
     PacketBroadcast/PlayerBroadcaster.h
     PlayerBots/CombatBotBaseAI.h
     PlayerBots/PartyBotAI.h
+    PlayerBots/Engine/DecisionTrace.h
     PlayerBots/BattleBotAI.h
     PlayerBots/BattleBotWaypoints.h
     PlayerBots/PlayerBotAI.h

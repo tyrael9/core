@@ -18,10 +18,19 @@
 #define MANGOS_PARTYBOTAI_H
 
 #include "CombatBotBaseAI.h"
+#include "AI/PlayerAI.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
+#include "Engine/DecisionTrace.h"
+#include "Engine/PartyBotEngine.h"
+#include "Engine/PartyCoordinator.h"
+#include "Engine/BotBehaviorState.h"
+#include "Engine/CoreActionRuntime.h"
+#include "Engine/ThreatReservationTerminalListener.h"
+#include "Engine/HealReservationTerminalListener.h"
 
-class PartyBotAI : public CombatBotBaseAI
+class PartyBotAI : public CombatBotBaseAI, public PartyBotEngine::EngineActionObserver,
+                   public PartyBotEngine::CoreActionRuntime
 {
 public:
 
@@ -50,7 +59,59 @@ public:
     void AddToPlayerGroup();
 
     bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const final;
+    void TraceDecision(char const* event, Unit const* pTarget, SpellEntry const* pSpellEntry,
+                       char const* reason, uint32 detail = 0) const final;
+    uint64 OnSpellCastPreparing(Spell const* spell, uint32 spellId,
+                                uint64 coreTargetGuid, uint64& encounterId,
+                                uint64& traceTargetGuid, bool& engineAction) final;
+    void OnSpellCastFinished(Spell const* spell, uint64 actionId,
+                             uint64 encounterId, uint32 spellId,
+                             uint64 targetGuid, bool success,
+                             bool interrupted, bool engineAction) final;
+    uint64 OnItemUsePreparing(uint64 itemGuid, uint32 itemEntry, uint32 itemCount,
+        uint8 bagIndex, uint8 itemSlot, uint8 requestedSpellSlot) final;
+    uint64 OnItemUseChildPreparing(uint64 itemUseId, uint8 slotIndex,
+        uint32 spellId, bool triggered) final;
+    void OnItemUseSlotSkipped(uint64 itemUseId, uint8 slotIndex) final;
+    void OnItemUseDispatchComplete(uint64 itemUseId) final;
+    void OnItemUseChildFinished(uint64 itemUseId, uint64 childId,
+        uint32 spellId, bool success, bool interrupted) final;
+    void OnItemUseMutation(uint64 itemUseId, uint64 childId, uint64 itemGuid,
+        uint32 itemEntry, uint8 kind, uint8 phase, uint8 slotIndex,
+        uint32 beforeCount, uint32 afterCount, int32 beforeCharges,
+        int32 afterCharges, bool itemExistsAfter) final;
+    void OnPointMovementResult(uint64 actionId, uint64 encounterId,
+                               uint32 pointId, PlayerPointMovementResult result,
+                               float finalDistance) final;
+    void OnAliveStateChanged(bool wasAlive, bool isAlive) final;
+    void OnDamageTaken(uint64 attackerGuid, uint32 damage,
+                       uint32 healthBefore, uint32 healthAfter,
+                       uint32 spellId, uint8 damageType) final;
+    void OnServerShutdown() final;
+    void OnMapLeave(uint32 mapId, uint32 instanceId) final;
+    void OnEngineActionEvent(PartyBotEngine::DecisionContext const& context,
+                             PartyBotEngine::EngineActionTraceEvent const& event) final;
+    PartyBotEngine::CoreActionResolution ResolveUnitContext(
+        PartyBotEngine::DecisionContext const& context,
+        PartyBotEngine::Guid targetGuid) const final;
+    std::uint32_t GetResurrectionSpellId() const final;
+    bool CanResurrectGroupMember(
+        PartyBotEngine::DecisionContext const& context,
+        PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const final;
+    bool StartGroupResurrection(
+        PartyBotEngine::DecisionContext const& context,
+        PartyBotEngine::Guid targetGuid, std::uint32_t spellId) final;
+    PartyBotEngine::ThreatImpactEstimate EstimateDirectHealThreatImpact(
+        PartyBotEngine::DecisionContext const& context,
+        PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const final;
+    bool CanCastDirectHeal(
+        PartyBotEngine::DecisionContext const& context,
+        PartyBotEngine::Guid targetGuid, std::uint32_t spellId) const final;
+    bool StartDirectHeal(
+        PartyBotEngine::DecisionContext const& context,
+        PartyBotEngine::Guid targetGuid, std::uint32_t spellId) final;
     Player* GetPartyLeader() const;
+    bool IsPartyInCombat() const;
     bool AttackStart(Unit* pVictim);
     Unit* SelectAttackTarget(Player* pLeader) const;
     Unit* SelectPartyAttackTarget() const;
@@ -93,6 +154,7 @@ public:
     std::vector<RaidTargetIcon> m_marksToCC;
     std::vector<RaidTargetIcon> m_marksToFocus;
     ShortTimeTracker m_updateTimer;
+    mutable PartyBotEngine::DecisionTrace m_decisionTrace;
     ObjectGuid m_leaderGuid;
     ObjectGuid m_cloneGuid;
     uint8 m_race = 0;
@@ -105,6 +167,38 @@ public:
     float m_z = 0.0f;
     float m_o = 0.0f;
     bool m_resetSpellData = false;
+    uint32 m_ownerOfflineTimer = 0;
+
+    // Party/map/instance shard and per-bot decision engine; shard mutation stays map-thread confined.
+    std::shared_ptr<PartyBotEngine::PartyCoordinator> m_partyCoordinator;
+    std::shared_ptr<PartyBotEngine::ThreatReservationTerminalListener> m_threatReservationTerminalListener;
+    std::shared_ptr<PartyBotEngine::HealReservationTerminalListener> m_healReservationTerminalListener;
+    PartyBotEngine::PartyBotEngine m_partyBotEngine;
+    PartyBotEngine::BotBehaviorStateMachine m_botBehaviorStateMachine;
+    uint32 m_partyCoordinatorMapId = 0;
+    uint32 m_partyCoordinatorInstanceId = 0;
+    uint32 m_engineShadowTraceMs = 0;
+    bool m_engineShadowStrategiesRegistered = false;
+    bool m_newEngineStrategiesRegistered = false;
+    // Per-instance simulator seam; -1 keeps the process configuration authoritative.
+    int32 m_simulatorExecutionAuthorityOverride = -1;
+    uint32 m_simulatorNewEngineTickCount = 0;
+    uint32 m_simulatorLegacyPolicyEntryCount = 0;
+    uint32 m_simulatorLegacyPolicyDispatchCount = 0;
+    uint32 m_simulatorEngineDecisionCycleCount = 0;
+    uint32 m_simulatorEngineCandidateCount = 0;
+    mutable uint64 m_pendingCastTraceActionId = 0;
+    uint64 m_activeEngineActionId = 0;
+    uint64 m_activeEngineActionEncounterId = 0;
+    uint64 m_activeEngineActionTargetGuid = 0;
+    uint32 m_activeEngineActionSpellId = 0;
+    bool m_activeEngineActionSpellBound = false;
+    mutable uint64 m_pendingCastTraceEncounterId = 0;
+    mutable uint64 m_pendingCastTraceTargetGuid = 0;
+    mutable uint32 m_pendingCastTraceSpellId = 0;
+    mutable bool m_pendingCastTraceSpellBound = false;
+
+    void UpdatePartyBotEngineShadow();
 };
 
 #endif

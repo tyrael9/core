@@ -199,6 +199,9 @@ World::~World()
 
 void World::Shutdown()
 {
+    // WorldRunnable has stopped map updates. Flush encounter terminal records
+    // while online bot Players and their AI adapters are still alive.
+    sPlayerBotMgr.FlushEncounterTracesForShutdown();
     sPlayerBotMgr.DeleteAll();
     KickAll();                                     // save and kick all players
     UpdateSessions(1);                             // real players unload required UpdateSessions call

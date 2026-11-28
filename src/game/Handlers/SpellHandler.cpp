@@ -136,7 +136,8 @@ void WorldSession::HandleUseItemOpcode(WorldPackets::Spell::UseItem const& packe
         return;
     }
 
-    pUser->CastItemUseSpell(pItem, const_cast<SpellCastTargets&>(packet.targets));
+    pUser->CastItemUseSpell(pItem, const_cast<SpellCastTargets&>(packet.targets),
+                             packet.bagIndex, packet.slot, packet.spellSlot);
 }
 
 void WorldSession::HandleOpenItemOpcode(WorldPackets::Spell::OpenItem const& packet)

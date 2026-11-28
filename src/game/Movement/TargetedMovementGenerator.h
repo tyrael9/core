@@ -140,6 +140,8 @@ class FollowMovementGenerator : public TargetedMovementGeneratorMedium<T, Follow
         ~FollowMovementGenerator() {}
 
         MovementGeneratorType GetMovementGeneratorType() const { return FOLLOW_MOTION_TYPE; }
+        float GetFollowDistance() const { return this->m_fOffset; }
+        float GetFollowAngle() const { return this->m_fAngle; }
 
         bool Update(T &, uint32 const&);
         void Initialize(T &);

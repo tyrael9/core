@@ -12820,6 +12820,56 @@ if (f54mPassed)
     Group* const f55cGroup = healer ? healer->GetGroup() : nullptr;
     uint32 const f55cGroupId = f55cGroup ? f55cGroup->GetId() : 0;
     uint32 const f55cGroupCount = f55cGroup ? f55cGroup->GetMembersCount() : 0;
+    float f55cOriginalThreat[3] = {};
+    bool f55cOriginalHadReference[3] = {};
+    std::vector<uint64> f55cOriginalHostiles;
+    uint32 f55cOriginalReferenceCount = 0;
+    bool f55cOriginalSetKnown = healer && f54nHostilesCreated;
+    if (f55cOriginalSetKnown)
+    {
+        for (HostileReference* ref = healer->GetHostileRefManager().getFirst();
+             ref; ref = ref->next())
+        {
+            ++f55cOriginalReferenceCount;
+            Unit* source = ref->getSourceUnit();
+            bool matchedKnownFixtureHostile = false;
+            for (uint32 i = 0; i < 3; ++i)
+                if (source == f54nHostiles[i].creature)
+                {
+                    f55cOriginalHadReference[i] = true;
+                    f55cOriginalThreat[i] =
+                        f54nHostiles[i].creature->GetThreatManager().getThreat(healer);
+                    f55cOriginalHostiles.push_back(
+                        f54nHostiles[i].creature->GetObjectGuid().GetRawValue());
+                    matchedKnownFixtureHostile = true;
+                    break;
+                }
+            if (!matchedKnownFixtureHostile)
+                f55cOriginalSetKnown = false;
+        }
+        std::sort(f55cOriginalHostiles.begin(), f55cOriginalHostiles.end());
+    }
+    bool const f55cOriginalSetReady =
+        f55cOriginalSetKnown && f55cOriginalReferenceCount == 3 &&
+        f55cOriginalHostiles.size() == 3 &&
+        IsCanonicalDirectHealThreatRecipientSet(f55cOriginalHostiles) &&
+        f55cOriginalHadReference[0] &&
+        f55cOriginalHadReference[1] &&
+        f55cOriginalHadReference[2];
+
+    // F54n deliberately leaves its third late hostile reference in place.
+    // Preserve that exact fixture state, then establish an isolated two-ref
+    // baseline so F55c can add the third source after Spell::prepare.
+    bool f55cBaselinePrepared = false;
+    if (f55cOriginalSetReady)
+    {
+        healer->GetHostileRefManager().deleteReferences();
+        for (uint32 i = 0; i < 2; ++i)
+            f54nHostiles[i].creature->AddThreat(
+                healer, 20.0f, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
+        f55cBaselinePrepared = true;
+    }
+
     std::vector<uint64> f55cExpectedHostiles;
     std::vector<uint64> f55cInitialHostiles;
     if (f54nHostilesCreated)
@@ -12839,7 +12889,8 @@ if (f54mPassed)
         }
     std::sort(f55cExpectedHostiles.begin(), f55cExpectedHostiles.end());
     std::sort(f55cInitialHostiles.begin(), f55cInitialHostiles.end());
-    bool const f55cInitialSetReady = f55cRefsBefore == 2 &&
+    bool const f55cInitialSetReady = f55cBaselinePrepared &&
+        f55cRefsBefore == 2 &&
         IsExactDirectHealThreatRecipientSet(
             f55cExpectedHostiles, f55cInitialHostiles);
 
@@ -12858,7 +12909,8 @@ if (f54mPassed)
     uint32 f55cEventUpdates = 0, f55cRefsAfter = 0;
     float f55cThreatDelta = 0.0f;
     bool const f55cGate = f54oPassed && f54nHostilesCreated &&
-        f55cInitialSetReady && healer && f55cGroup && f55cGroupId &&
+        f55cBaselinePrepared && f55cInitialSetReady &&
+        healer && f55cGroup && f55cGroupId &&
         f55cGroupCount == MAX_GROUP_SIZE &&
         f55cGroup->IsMember(healer->GetObjectGuid()) &&
         healer->GetGroup() == f55cGroup && healer->IsInWorld() &&
@@ -12872,10 +12924,6 @@ if (f54mPassed)
         PlayerAI* const previousAI = healer->AI();
         uint32 const savedHealth = healer->GetHealth();
         uint32 const savedMana = healer->GetPower(POWER_MANA);
-        float const originalThreat0 =
-            f54nHostiles[0].creature->GetThreatManager().getThreat(healer);
-        float const originalThreat1 =
-            f54nHostiles[1].creature->GetThreatManager().getThreat(healer);
         healer->RemoveSpellCooldown(f54nDesperatePrayer, false);
         if (f54nDesperatePrayer->Category)
             healer->RemoveSpellCategoryCooldown(
@@ -13007,13 +13055,33 @@ if (f54mPassed)
 
         healer->SetAI(previousAI);
         f55cAdapterRestored = healer->AI() == previousAI;
+        healer->SetHealth(savedHealth);
+        healer->SetPower(POWER_MANA, savedMana);
+        healer->RemoveSpellCooldown(f54nDesperatePrayer, false);
+        if (f54nDesperatePrayer->Category)
+            healer->RemoveSpellCategoryCooldown(
+                f54nDesperatePrayer->Category, false);
+        healer->ResetGCD(f54nDesperatePrayer);
+    }
+
+    // Restore the exact hostile-reference set and threat amounts that were
+    // present before F55c normalized the preceding F54n fixture's state.
+    if (f55cBaselinePrepared && healer)
+    {
         healer->GetHostileRefManager().deleteReferences();
-        if (originalThreat0 > 0.0f)
-            f54nHostiles[0].creature->AddThreat(
-                healer, originalThreat0, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
-        if (originalThreat1 > 0.0f)
-            f54nHostiles[1].creature->AddThreat(
-                healer, originalThreat1, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
+        std::vector<uint64> expectedRestoredHostiles;
+        for (uint32 i = 0; i < 3; ++i)
+            if (f55cOriginalHadReference[i])
+            {
+                expectedRestoredHostiles.push_back(
+                    f54nHostiles[i].creature->GetObjectGuid().GetRawValue());
+                f54nHostiles[i].creature->AddThreat(
+                    healer, f55cOriginalThreat[i], false,
+                    SPELL_SCHOOL_MASK_NORMAL, nullptr);
+            }
+        std::sort(expectedRestoredHostiles.begin(),
+                  expectedRestoredHostiles.end());
+
         std::vector<uint64> restoredHostiles;
         uint32 restoredRefs = 0;
         for (HostileReference* ref = healer->GetHostileRefManager().getFirst();
@@ -13026,18 +13094,23 @@ if (f54mPassed)
                     source->GetObjectGuid().GetRawValue());
         }
         std::sort(restoredHostiles.begin(), restoredHostiles.end());
-        f55cReferencesRestored = restoredRefs == 2 &&
+        bool threatValuesRestored = true;
+        for (uint32 i = 0; i < 3; ++i)
+        {
+            float const restoredThreat =
+                f54nHostiles[i].creature
+                    ? f54nHostiles[i].creature->GetThreatManager().getThreat(healer)
+                    : 0.0f;
+            if (std::fabs(restoredThreat - f55cOriginalThreat[i]) > 0.01f)
+                threatValuesRestored = false;
+        }
+        f55cReferencesRestored =
+            restoredRefs == f55cOriginalReferenceCount &&
             IsExactDirectHealThreatRecipientSet(
-                f55cExpectedHostiles, restoredHostiles);
-
-        healer->SetHealth(savedHealth);
-        healer->SetPower(POWER_MANA, savedMana);
-        healer->RemoveSpellCooldown(f54nDesperatePrayer, false);
-        if (f54nDesperatePrayer->Category)
-            healer->RemoveSpellCategoryCooldown(
-                f54nDesperatePrayer->Category, false);
-        healer->ResetGCD(f54nDesperatePrayer);
+                expectedRestoredHostiles, restoredHostiles) &&
+            threatValuesRestored;
     }
+
     f55cPassed = f55cGate && f55cCastAccepted && f55cQueued &&
         f55cCapturedSetMatches && f55cLateReferenceAdded &&
         f55cCurrentSetExpanded && f55cRecipientSetChanged &&
@@ -13048,7 +13121,7 @@ if (f54mPassed)
         f55cReferencesRestored && f55cAdapterRestored;
 
     sLog.Out(LOG_BASIC, f55cPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
-        "[PartyBotSimulator] F55c deferred hostile-reference drift: gate=%u castAccepted=%u queuedBeforeMutation=%u capturedSetMatches=%u lateReferenceAdded=%u currentSetExpanded=%u recipientSetChanged=%u groupUnchanged=%u authorizeSkipped=%u terminalOnce=%u terminalFailed=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u refsBefore=%u refsAfter=%u health=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u referenceSetRestored=%u adapterRestored=%u expectedGroupId=%u.",
+        "[PartyBotSimulator] F55c deferred hostile-reference drift: gate=%u castAccepted=%u queuedBeforeMutation=%u capturedSetMatches=%u lateReferenceAdded=%u currentSetExpanded=%u recipientSetChanged=%u groupUnchanged=%u authorizeSkipped=%u terminalOnce=%u terminalFailed=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u refsBefore=%u refsAfter=%u originalRefs=%u baselineReady=%u health=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u referenceSetRestored=%u adapterRestored=%u expectedGroupId=%u.",
         f55cGate ? 1u : 0u, f55cCastAccepted ? 1u : 0u,
         f55cQueued ? 1u : 0u, f55cCapturedSetMatches ? 1u : 0u,
         f55cLateReferenceAdded ? 1u : 0u, f55cCurrentSetExpanded ? 1u : 0u,
@@ -13056,7 +13129,9 @@ if (f54mPassed)
         f55cAuthorizeSkipped ? 1u : 0u, f55cTerminalOnce ? 1u : 0u,
         f55cTerminalFailed ? 1u : 0u, f55cCurrentSpellCleared ? 1u : 0u,
         f55cEventReaped ? 1u : 0u, f55cEventUpdates, f55cRefsBefore,
-        f55cRefsAfter, f55cHealthBefore, f55cHealthAfter,
+        f55cRefsAfter, f55cOriginalReferenceCount,
+        f55cBaselinePrepared ? 1u : 0u,
+        f55cHealthBefore, f55cHealthAfter,
         f55cManaBefore, f55cManaAfter, f55cThreatDelta,
         f55cNoEffects ? 1u : 0u, f55cSpellReadyBefore ? 1u : 0u,
         f55cNoGcdBefore ? 1u : 0u, f55cSpellReadyAfter ? 1u : 0u,

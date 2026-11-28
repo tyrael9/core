@@ -4275,7 +4275,7 @@ void Spell::update(uint32 difftime)
     {
         if (m_partyBotDeferredEffectsRequested)
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                "[PartyBotSpellAdmission] update canceled deferred cast after explicit target left world: spell=%u targetGuid=%llu state=%u targetUnit=0.",
+                "[PartyBotSpellAdmission] update canceled deferred cast because explicit target is unavailable from caster map: spell=%u targetGuid=%llu state=%u targetUnit=0.",
                 m_spellInfo ? m_spellInfo->Id : 0u,
                 static_cast<unsigned long long>(
                     m_targets.getUnitTargetGuid().GetRawValue()),

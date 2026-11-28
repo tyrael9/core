@@ -740,7 +740,7 @@ for expected in "castAccepted=1" "queuedBeforeTransfer=1" "selectorChanged=1" "i
         exit 1
     fi
 done
-f54u_expected_guid="$(printf '%s\\n' "$f54u_line" | sed -nE 's/.*expectedTargetGuid=([0-9]+).*/\\1/p')"
+f54u_expected_guid="$(printf '%s\n' "$f54u_line" | sed -nE 's/.*expectedTargetGuid=([0-9]+).*/\1/p')"
 if [[ -z "$f54u_expected_guid" ]]; then
     echo "[PartyBotSimulator] F54u expected cross-Map recipient GUID was not reported." | tee -a "$LOG_FILE"
     exit 1

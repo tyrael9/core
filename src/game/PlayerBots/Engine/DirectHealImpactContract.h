@@ -2,6 +2,7 @@
 #define MANGOS_PARTYBOT_DIRECT_HEAL_IMPACT_CONTRACT_H
 
 #include <cstdint>
+#include <vector>
 
 namespace PartyBotEngine
 {
@@ -102,6 +103,31 @@ inline bool IsCurrentLiveGroupDirectHealImpactContext(
         context.recipientInWorld &&
         context.casterAlive &&
         context.recipientAlive;
+}
+
+ 
+// The direct-heal threat envelope is tied to the exact live hostile references
+// observed for its recipient. GUIDs are canonical only when sorted, nonzero
+// and unique; an empty set is a valid identity snapshot, not proof of NoThreat.
+inline bool IsCanonicalDirectHealThreatRecipientSet(
+    std::vector<std::uint64_t> const& hostileGuids)
+{
+    for (std::size_t index = 0; index < hostileGuids.size(); ++index)
+    {
+        if (!hostileGuids[index] ||
+            (index && hostileGuids[index - 1] >= hostileGuids[index]))
+            return false;
+    }
+    return true;
+}
+
+inline bool IsExactDirectHealThreatRecipientSet(
+    std::vector<std::uint64_t> const& expected,
+    std::vector<std::uint64_t> const& current)
+{
+    return IsCanonicalDirectHealThreatRecipientSet(expected) &&
+        IsCanonicalDirectHealThreatRecipientSet(current) &&
+        expected == current;
 }
 
 } // namespace PartyBotEngine

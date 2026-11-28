@@ -20,6 +20,7 @@
  */
 
 #include "Spell.h"
+#include <algorithm>
 #include "Log.h"
 #include "Opcodes.h"
 #include "CharacterDatabaseCache.h"
@@ -36,6 +37,7 @@
 #include "Pet.h"
 #include "DynamicObject.h"
 #include "Group.h"
+#include "HostileRefManager.h"
 #include "MapManager.h"
 #include "ScriptMgr.h"
 #include "ObjectAccessor.h"
@@ -3410,7 +3412,7 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
                     if (!safeStaticShape || !impactContextCaptured)
                     {
                         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                            "[PartyBotSpellAdmission] prepare rejected static/context gate: spell=%u safeShape=%u impactContextCaptured=%u batchDelayEligible=%u triggered=%u script=%u castTime=%u speed=%.3f.",
+                            "[PartyBotSpellAdmission] prepare rejected static/context/threat-recipient gate: spell=%u safeShape=%u impactContextCaptured=%u batchDelayEligible=%u triggered=%u script=%u castTime=%u speed=%.3f.",
                             m_spellInfo ? m_spellInfo->Id : 0u,
                             safeStaticShape ? 1u : 0u,
                             impactContextCaptured ? 1u : 0u,
@@ -3700,6 +3702,56 @@ void Spell::cancel()
 }
 
 
+
+namespace
+{
+// Capture the live threat owners referenced by this heal recipient. This is
+// an identity snapshot only: it intentionally does not estimate threat points
+// or claim proc/child-effect closure.
+bool CollectPartyBotDeferredThreatRecipientGuids(
+    Unit* recipient, std::vector<uint64>& hostileGuids)
+{
+    hostileGuids.clear();
+    if (!recipient || !recipient->IsInWorld() || !recipient->IsAlive() ||
+        !recipient->GetMap())
+        return false;
+
+    uint64 const recipientGuid =
+        recipient->GetObjectGuid().GetRawValue();
+    if (!recipientGuid)
+        return false;
+
+    HostileRefManager& hostileRefs = recipient->GetHostileRefManager();
+    for (HostileReference* reference = hostileRefs.getFirst();
+         reference; reference = reference->next())
+    {
+        Unit* hostileUnit = reference->getSourceUnit();
+        if (!hostileUnit || reference->getTarget() != recipient ||
+            reference->getUnitGuid().GetRawValue() != recipientGuid ||
+            !hostileUnit->CanHaveThreatList() || !hostileUnit->IsAlive() ||
+            !hostileUnit->IsInWorld() ||
+            hostileUnit->GetMap() != recipient->GetMap())
+        {
+            hostileGuids.clear();
+            return false;
+        }
+
+        uint64 const hostileGuid =
+            hostileUnit->GetObjectGuid().GetRawValue();
+        if (!hostileGuid)
+        {
+            hostileGuids.clear();
+            return false;
+        }
+        hostileGuids.push_back(hostileGuid);
+    }
+
+    std::sort(hostileGuids.begin(), hostileGuids.end());
+    return PartyBotEngine::IsCanonicalDirectHealThreatRecipientSet(
+        hostileGuids);
+}
+} // namespace
+
 bool Spell::CapturePartyBotDeferredImpactContext()
 {
     m_partyBotDeferredImpactContextCaptured = false;
@@ -3708,6 +3760,7 @@ bool Spell::CapturePartyBotDeferredImpactContext()
     m_partyBotDeferredExpectedGroupId = 0;
     m_partyBotDeferredExpectedMapId = 0;
     m_partyBotDeferredExpectedInstanceId = 0;
+    m_partyBotDeferredExpectedHostileGuids.clear();
 
     Player* caster = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
     Player* recipient = m_targets.getUnitTarget()
@@ -3727,7 +3780,9 @@ bool Spell::CapturePartyBotDeferredImpactContext()
         !casterGroup->IsMember(caster->GetObjectGuid()) ||
         !casterGroup->IsMember(recipient->GetObjectGuid()) ||
         caster->GetMapId() != recipient->GetMapId() ||
-        caster->GetInstanceId() != recipient->GetInstanceId())
+        caster->GetInstanceId() != recipient->GetInstanceId() ||
+        !CollectPartyBotDeferredThreatRecipientGuids(
+            recipient, m_partyBotDeferredExpectedHostileGuids))
         return false;
 
     m_partyBotDeferredExpectedCasterGuid =
@@ -3752,6 +3807,13 @@ bool Spell::IsPartyBotDeferredImpactContextCurrent() const
     if (!caster || !recipient ||
         !caster->IsInWorld() || !recipient->IsInWorld() ||
         !caster->IsAlive() || !recipient->IsAlive())
+        return false;
+
+    std::vector<uint64> currentHostileGuids;
+    if (!CollectPartyBotDeferredThreatRecipientGuids(
+            recipient, currentHostileGuids) ||
+        !PartyBotEngine::IsExactDirectHealThreatRecipientSet(
+            m_partyBotDeferredExpectedHostileGuids, currentHostileGuids))
         return false;
 
     Group* casterGroup = caster->GetGroup();
@@ -3880,7 +3942,7 @@ bool Spell::CommitPartyBotDeferredEffects()
     if (!IsPartyBotDeferredImpactContextCurrent())
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-            "[PartyBotSpellAdmission] impact Group/map/instance context rejected: spell=%u expectedCaster=%llu expectedRecipient=%llu expectedGroup=%u expectedMap=%u expectedInstance=%u.",
+            "[PartyBotSpellAdmission] impact Group/map/instance/threat-recipient context rejected: spell=%u expectedCaster=%llu expectedRecipient=%llu expectedGroup=%u expectedMap=%u expectedInstance=%u.",
             m_spellInfo ? m_spellInfo->Id : 0u,
             static_cast<unsigned long long>(m_partyBotDeferredExpectedCasterGuid),
             static_cast<unsigned long long>(m_partyBotDeferredExpectedRecipientGuid),

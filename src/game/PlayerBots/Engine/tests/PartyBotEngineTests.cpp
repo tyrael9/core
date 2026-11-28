@@ -4215,6 +4215,36 @@ void TestResolvedDirectHealImpactContextRequiresSameLiveGroupShard()
     rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.recipientAlive = false; });
 }
 
+
+void TestDirectHealThreatRecipientSetIdentity()
+{
+    std::vector<std::uint64_t> const expected{101, 202, 303};
+    assert(IsCanonicalDirectHealThreatRecipientSet(expected));
+    assert(IsExactDirectHealThreatRecipientSet(expected, expected));
+
+    std::vector<std::uint64_t> const empty;
+    assert(IsCanonicalDirectHealThreatRecipientSet(empty));
+    assert(IsExactDirectHealThreatRecipientSet(empty, empty));
+
+    assert(!IsExactDirectHealThreatRecipientSet(
+        expected, std::vector<std::uint64_t>{101, 202}));
+    assert(!IsExactDirectHealThreatRecipientSet(
+        expected, std::vector<std::uint64_t>{101, 202, 303, 404}));
+    assert(!IsExactDirectHealThreatRecipientSet(
+        expected, std::vector<std::uint64_t>{101, 202, 404}));
+    assert(!IsExactDirectHealThreatRecipientSet(
+        expected, std::vector<std::uint64_t>{202, 101, 303}));
+    assert(!IsExactDirectHealThreatRecipientSet(
+        expected, std::vector<std::uint64_t>{101, 202, 202, 303}));
+    assert(!IsExactDirectHealThreatRecipientSet(
+        expected, std::vector<std::uint64_t>{0, 101, 202, 303}));
+    assert(!IsExactDirectHealThreatRecipientSet(
+        std::vector<std::uint64_t>{101, 202, 202},
+        std::vector<std::uint64_t>{101, 202, 202}));
+    assert(!IsExactDirectHealThreatRecipientSet(
+        expected, std::vector<std::uint64_t>{}));
+}
+
 void TestDirectHealHelpfulProcRiskClassifier() {
     constexpr std::uint32_t kDealHelpfulSpell = 1u << 4;
     constexpr std::uint32_t kTakeHelpfulSpell = 1u << 7;
@@ -7433,6 +7463,7 @@ int main() {
     TestSupportedSingleTargetDirectHealSpellShape();
     TestExactSingleResolvedDirectHealTargetContract();
     TestResolvedDirectHealImpactContextRequiresSameLiveGroupShard();
+    TestDirectHealThreatRecipientSetIdentity();
     TestDirectHealHelpfulProcRiskClassifier();
     TestDirectHealThreatComponentsSplitAcrossAllHostileReferences();
     TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure();

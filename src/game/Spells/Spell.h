@@ -303,6 +303,7 @@ class Spell
         uint32 m_partyBotDeferredExpectedGroupId = 0;
         uint32 m_partyBotDeferredExpectedMapId = 0;
         uint32 m_partyBotDeferredExpectedInstanceId = 0;
+        std::vector<uint64> m_partyBotDeferredExpectedHostileGuids;
         bool m_partyBotDeferredEffectsCommitted = false;
         uint32 m_partyBotDeferredInterruptFlags = 0;
         uint64 m_partyBotItemUseId = 0;

@@ -3860,7 +3860,7 @@ bool Spell::CommitPartyBotDeferredEffects()
         TargetInfo const* target = m_UniqueTargetInfo.empty()
             ? nullptr : &m_UniqueTargetInfo.front();
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-            "[PartyBotSpellAdmission] resolved self-heal shape rejected: spell=%u caster=%llu targetUnit=%llu targetCount=%u goCount=%u itemCount=%u targetGuid=%llu delay=%u effectMask=%u miss=%u reflect=%u deleted=%u processed=%u.",
+            "[PartyBotSpellAdmission] resolved self-heal shape rejected: spell=%u caster=%llu targetUnit=%llu targetCount=%u goCount=%u itemCount=%u targetGuid=%llu delay=%llu effectMask=%u miss=%u reflect=%u deleted=%u processed=%u.",
             m_spellInfo ? m_spellInfo->Id : 0u,
             static_cast<unsigned long long>(m_casterUnit ? m_casterUnit->GetGUID() : 0),
             static_cast<unsigned long long>(m_targets.getUnitTarget() ? m_targets.getUnitTarget()->GetGUID() : 0),
@@ -3868,7 +3868,7 @@ bool Spell::CommitPartyBotDeferredEffects()
             static_cast<uint32>(m_UniqueGOTargetInfo.size()),
             static_cast<uint32>(m_UniqueItemInfo.size()),
             static_cast<unsigned long long>(target ? target->targetGUID.GetRawValue() : 0),
-            target ? target->timeDelay : 0u,
+            static_cast<unsigned long long>(target ? target->timeDelay : 0),
             target ? target->effectMask : 0u,
             target ? target->missCondition : 0u,
             target ? target->reflectResult : 0u,

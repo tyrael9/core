@@ -4610,16 +4610,17 @@ void Spell::finish(bool ok)
         Player* const tracePlayer = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
         PlayerAI* const traceAI = tracePlayer ? tracePlayer->AI() : nullptr;
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-            "[PartyBotSpellAdmission] deferred finish observer state: spell=%u actionId=%llu encounterId=%llu casterUnit=%u casterPlayer=%u casterAI=%u success=%u interrupted=%u traceInterrupted=%u.",
+            "[PartyBotSpellAdmission] deferred finish observer state: spell=%u actionId=%llu encounterId=%llu casterUnit=%u casterPlayer=%u casterAI=%u casterAIPtr=%p success=%u traceInterrupted=%u engineAction=%u.",
             m_spellInfo ? m_spellInfo->Id : 0u,
             static_cast<unsigned long long>(m_partyBotTraceActionId),
             static_cast<unsigned long long>(m_partyBotTraceEncounterId),
             m_casterUnit ? 1u : 0u,
             tracePlayer ? 1u : 0u,
             traceAI ? 1u : 0u,
+            static_cast<void*>(traceAI),
             ok ? 1u : 0u,
             m_partyBotTraceInterrupted ? 1u : 0u,
-            m_partyBotTraceInterrupted ? 1u : 0u);
+            m_partyBotTraceEngineAction ? 1u : 0u);
     }
 
     if (m_partyBotItemUseId && m_partyBotItemUseChildId &&

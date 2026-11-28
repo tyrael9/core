@@ -6,6 +6,7 @@
 #include "ShadowStrategies.h"
 #include "DpsAssistTrigger.h"
 #include "HealerPolicy.h"
+#include "ShamanHealingPolicy.h"
 #include "PriestHealingPolicy.h"
 #include "HealingForecast.h"
 #include "PriestDirectHealAction.h"
@@ -4319,6 +4320,80 @@ void TestPriestDirectHealSelectionUsesAffordableClosestRank() {
     assert(!SelectPriestDirectHealSpell(healer, 700, selection));
 }
 
+void TestShamanLesserHealingWavePolicyUsesExplicitRankAllowList()
+{
+    PartySnapshot snapshot;
+    snapshot.groupId = 911;
+    snapshot.mapId = 1;
+    snapshot.instanceId = 13;
+    snapshot.epoch = 92;
+
+    PartyMemberSnapshot shaman, tank;
+    ConfigureMember(shaman, 111, PartyRole::Healer, 100, 100);
+    shaman.classId = 7; // Vanilla Shaman.
+    shaman.isPlayerBot = true;
+    shaman.power = 200;
+    shaman.mapId = snapshot.mapId;
+    shaman.instanceId = snapshot.instanceId;
+    shaman.directHealSpells = {
+        {8004, 170, 105, 1500, true},
+        {8008, 257, 145, 1500, true},
+        {8010, 349, 185, 1500, true},
+        {10469, 450, 240, 1500, true},
+        {10470, 620, 330, 1500, true},
+        {10471, 850, 440, 1500, true},
+        // Chain Heal has a Heal effect, but is not a Lesser Healing Wave rank
+        // and its target fan-out is not supported by the one-target adapter.
+        {1064, 1200, 260, 2500, false},
+        // A different class' larger direct heal is not eligible either.
+        {2050, 2000, 20, 2000, true}
+    };
+
+    ConfigureMember(tank, 222, PartyRole::Tank, 100, 400, true);
+    tank.mapId = snapshot.mapId;
+    tank.instanceId = snapshot.instanceId;
+    snapshot.members = {shaman, tank};
+
+    DirectHealSpellSelection selected;
+    assert(SelectShamanLesserHealingWave(
+        *snapshot.FindMember(shaman.guid), 300, selected));
+    assert(selected.spellId == 8010);
+    assert(selected.baseHealing == 349);
+    assert(selected.manaCost == 185);
+    assert(selected.castTimeMs == 1500);
+
+    // When the best rank is unaffordable, fall back to the strongest
+    // affordable LHW rank, not Chain Heal or another class' direct heal.
+    snapshot.members[0].power = 160;
+    assert(SelectShamanLesserHealingWave(snapshot.members[0], 300, selected));
+    assert(selected.spellId == 8008);
+    assert(selected.baseHealing == 257);
+    assert(selected.manaCost == 145);
+    assert(selected.castTimeMs == 1500);
+
+    HealerDecisionSelection decision;
+    assert(SelectShamanHealingDecision(snapshot, shaman.guid, decision));
+    assert(decision.IsValid());
+    assert(decision.target.targetGuid == tank.guid);
+    assert(decision.target.missingHealth == 300);
+    assert(decision.spell.spellId == 8008);
+
+    snapshot.members[0].power = 100;
+    assert(!SelectShamanLesserHealingWave(snapshot.members[0], 300, selected));
+    assert(!selected.IsValid());
+
+    // The adapter is class-locked and cannot be reused as a Paladin/Priest picker.
+    snapshot.members[0].power = 200;
+    snapshot.members[0].classId = 2;
+    assert(!SelectShamanLesserHealingWave(snapshot.members[0], 300, selected));
+    assert(!selected.IsValid());
+
+    assert(IsShamanLesserHealingWaveRank(8004));
+    assert(IsShamanLesserHealingWaveRank(10471));
+    assert(!IsShamanLesserHealingWaveRank(1064));
+    assert(!IsShamanLesserHealingWaveRank(2050));
+}
+
 void TestClassNeutralHealerPolicyAcceptsPaladinProfile()
 {
     PartySnapshot snapshot;
@@ -7243,6 +7318,7 @@ int main() {
     TestDirectHealThreatComponentsSplitAcrossAllHostileReferences();
     TestPriestDirectHealActionRemainsFailClosedUntilThreatClosure();
     TestPriestDirectHealSelectionUsesAffordableClosestRank();
+    TestShamanLesserHealingWavePolicyUsesExplicitRankAllowList();
     TestClassNeutralHealerPolicyAcceptsPaladinProfile();
     TestPriestHealingTargetSelectionIsDeterministicAndSnapshotBounded();
     TestPriestHealingTargetSelectionAccountsForOtherBotHealReservations();

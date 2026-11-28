@@ -1,3 +1,11 @@
+## H2 — Shaman Lesser Healing Wave profile adapter (pure policy)
+
+This adapter is deliberately limited to Shaman Lesser Healing Wave ranks 8004, 8008, 8010, 10469, 10470 and 10471. It calls the shared healer rank selector through an explicit spell-ID allow-list and retains the snapshot's Core-calculated mana cost and cast time. It rejects Chain Heal and unrelated direct-heal spell IDs even when their synthetic profile row has a larger base amount.
+
+The new pure test verifies Shaman class/role eligibility, affordable rank selection, under-heal fallback, cast-time propagation and the explicit allow-list. This is a policy/profile adapter only: it does not register a Core action, cast a spell or claim that the current instant-only threat/admission path supports a 1.5-second party-target cast. Core cast-time admission and complete per-hostile threat closure remain a separate required milestone.
+
+Paladin's main heals are not the same shape: Holy Light and Flash of Light use `SPELL_EFFECT_SCRIPT_EFFECT` in Vanilla 1.12 spell data. The pinned Core has a special Flash of Light effect path that triggers child spell 19993 after applying the rank amount and Libram modifiers. That path stays outside the generic Heal-effect catalog pending a separate child-cast and threat audit.
+
 ## H1 — class-neutral healer policy and value-only class spell catalog
 
 Commit `b6f3b05` extracted the common missing-health, incoming-credit, target triage, Heal-reservation and direct-heal rank-selection policy to `HealerPolicy.h`. Priest entry points remain compatibility wrappers and continue to reject a non-Priest healer.

@@ -6,7 +6,7 @@ Status: design contract and rollout plan, 2026-11-28. This document does not cla
 
 Build one shared PartyBotEngine healing pipeline with explicit per-class adapters. Do not create four independent healer engines, and do not treat class-neutral infrastructure as proof that every spell is supported.
 
-Priest remains the first safety vertical slice. Paladin is the second adapter and the first test that the shared contract is genuinely reusable. Shaman and Druid follow after the contract survives that second class.
+Priest remains the first safety vertical slice. Shaman Lesser Healing Wave is the next adapter trial because its six ranks use an ordinary single-target Heal effect that fits the generic profile model. Paladin follows as a separate scripted-heal capability: Holy Light and Flash of Light are not ordinary Heal-effect profiles and require explicit Core script-effect/child-cast auditing before they can enter the shared action path. Druid follows after the direct-heal contract survives another class.
 
 ## Verified current state
 
@@ -83,31 +83,32 @@ Each adapter supplies explicit, independently testable policy for:
 
 The adapter returns a value-only candidate/description to the common pipeline; it does not own a separate scheduler, reservation store, snapshot clock or threat-budget implementation.
 
-## Second adapter: Paladin MVP
+## Second adapter: Shaman Lesser Healing Wave MVP
 
-Use Paladin as the second-class abstraction test because its first slice can stay within ordinary friendly single-target direct healing while still exercising a different class spell catalog and class-specific tuning.
+Use Shaman Lesser Healing Wave (six known ranks) as the next pure class-adapter trial. The Vanilla 1.12 spell profiles identify these ranks as one friendly-target Heal effect; the rank allow-list is explicit:
 
-Initial scope:
+- 8004, 8008, 8010, 10469, 10470, 10471;
+- use only rows whose snapshot also has `supportedSingleTargetDirect=true`;
+- exclude Chain Heal, Healing Wave ranks with unsupported target metadata, totems, proc-triggered spells and all other Shaman healing abilities from this first adapter.
 
-- Holy Light and Flash of Light ranks known by the bot from the generalized value-only catalog; the adapter must explicitly allow-list those profiles and not select Lay on Hands, Holy Shock, or unknown healing spells by base amount alone;
-- explicit single friendly Player target in the same Group, Map and instance;
-- direct heal only, with Core-calculated mana cost and cast time;
-- rank selection balancing uncovered deficit, cast time and mana reserve;
-- no HoT, multi-target, trigger, proc, scripted or item-backed healing in this first slice.
-
-Do not assume these casts are covered by F54o's instant self-heal admission gate. Cast-time party-target admission and whole-action threat closure must be explicitly proven before the action can be enabled. If Core does not yet provide a safe admission shape, the Paladin adapter may be developed and unit-tested but must remain non-production and unable to dispatch the unsupported cast.
+The pure adapter owns only the class/rank allow-list and shared triage/rank-selection composition. It preserves Core-calculated mana cost and cast time. It is not a Core action and cannot dispatch spells. These ranks have nonzero cast time; the current whole-action threat estimator remains instant-only, and F54o's proven admission shape remains self-only. A future action therefore stays blocked until Core cast-time recipient/threat closure and pre-impact admission are separately implemented and trusted-runtime tested.
 
 Acceptance gates:
 
-1. Pure tests prove the shared triage/deficit/reservation behavior is unchanged from the Priest baseline.
-2. Paladin tests cover known-rank discovery, unaffordable ranks, mana reserve, cast-time trade-offs, zero/full-health targets, tie-breaking and duplicate/stale spell rows.
-3. Core-backed tests cover real accepted cast, terminal success/failure/interruption, movement/Map/Group changes during cast, mana/GCD/cooldown boundaries, all spell effects and every hostile threat recipient.
-4. Unknown spell shape or incomplete threat fan-out rejects the whole action before irreversible cast effects.
-5. Production registration remains off until all gates pass and a separate review explicitly enables it.
+1. Pure tests cover the Shaman class/role guard, all six known LHW rank IDs, mana affordability, selected rank/base amount/cast time, and rejection of Chain Heal or unrelated direct-heal IDs.
+2. Snapshot collection includes the learned ranks only as value data; no Core pointers escape the snapshot.
+3. Core-backed tests prove a real accepted cast only after cast-time target/recipient re-resolution, terminal outcomes, mana/GCD/cooldown, complete effect/proc closure and full hostile threat fan-out are modeled.
+4. Production registration remains off until all gates pass and a separate review explicitly enables it.
+
+## Paladin scripted-heal follow-on
+
+Holy Light (for example spell 635) and Flash of Light (for example spell 19750) are `SPELL_EFFECT_SCRIPT_EFFECT` carriers in the Vanilla 1.12 spell data, not ordinary `SPELL_EFFECT_HEAL` rows. The pinned Core's `Spell::EffectScriptEffect` contains a Paladin Flash of Light path (spell icon 242) that calculates a dithered amount, applies the Libram of Divinity/Light modifiers and triggers spell 19993 on the recipient. The generic one-target Heal profile must keep rejecting this shape. Holy Light's script-effect/DB script path also requires its own trace from the source spell through the actual child heal before an adapter may claim support.
+
+Paladin remains in scope, but its first implementation must be a separately audited ScriptEffect adapter. Do not whitelist all Paladin ScriptEffect spells, and do not infer action-level threat closure from the nominal heal amount alone.
 
 ## Follow-on class slices
 
-- **Shaman:** first implement bounded single-target direct heals (Healing Wave / Lesser Healing Wave). Chain Heal is a separate multi-target/fan-out capability and must model jump order, range, recipient selection and per-hostile threat. Totems are a separate subsystem.
+- **Shaman:** first implement the bounded Lesser Healing Wave rank family through the ordinary Heal-effect profile. Chain Heal is a separate multi-target/fan-out capability and must model jump order, range, recipient selection and per-hostile threat. Healing Wave ranks need target-mode audit where the profile is not single-target; totems are a separate subsystem.
 - **Druid:** Healing Touch is a direct-heal slice; Rejuvenation is periodic; Regrowth is hybrid. Form exit/entry and mana policy are class adapter responsibilities. Tranquility is a later channelled/AoE capability.
 - **Shared expansion:** add additional spell shapes only when at least one real class adapter supplies a complete profile and both pure and Core-backed fixtures validate it. Never broaden support by class label alone.
 
@@ -117,10 +118,10 @@ Acceptance gates:
 |---|---|---|
 | H0 (this document) | Record the shared-engine / class-adapter contract and current support limits | Docs agree with current code and trusted evidence |
 | H1 | Extract class-neutral missing-health, incoming-credit and reservation helpers without changing Priest decisions | Existing Priest unit/fixture behavior stays identical; generic helper tests pass |
-| H2 | Implement a non-production Paladin direct-heal adapter for Holy Light / Flash of Light | Pure profile tests pass; unsupported Core cast shapes remain blocked |
-| H3 | Extend and validate only the Core spell-admission/threat shapes required by the Paladin MVP | Trusted Core simulator proves successful cast and every rejection/cleanup boundary |
+| H2 | Implement a non-production Shaman Lesser Healing Wave profile adapter with an explicit six-rank allow-list | Pure tests prove class/rank filtering, mana and cast-time metadata; no Core dispatch |
+| H3 | Extend and validate Core cast-time admission/threat closure for the Shaman direct-heal MVP | Trusted Core simulator proves accepted cast and every target/recipient rejection and cleanup boundary |
 | H4 | Reassess Priest adapter against the common contract; enable neither class by default | Review confirms parity and complete threat closure |
-| H5 | Add Shaman direct heals, then separately Chain Heal | Direct and fan-out acceptance gates pass |
+| H5 | Add the separate Paladin Holy Light / Flash of Light ScriptEffect adapter | Core script/child-cast behavior and complete threat effects are audited and trusted-tested |
 | H6 | Add Druid direct / HoT / hybrid slices, then separately channel/AoE | Timing, form and multi-target acceptance gates pass |
 
 ## Production rule

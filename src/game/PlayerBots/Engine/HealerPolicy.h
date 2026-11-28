@@ -11,6 +11,7 @@ struct DirectHealSpellSelection
     std::uint32_t spellId = 0;
     std::uint32_t baseHealing = 0;
     std::uint32_t manaCost = 0;
+    std::uint32_t castTimeMs = 0;
 
     bool IsValid() const { return spellId != 0 && baseHealing != 0; }
 };
@@ -185,10 +186,12 @@ inline bool SelectHealerTarget(
 // Shared deterministic rank selector. It chooses the smallest affordable
 // direct heal that covers the deficit, or the strongest affordable under-heal.
 // Castability, target/range/LOS, modifiers and final cost remain Core checks.
-inline bool SelectDirectHealSpell(
+template <class SpellAllowPredicate>
+inline bool SelectDirectHealSpellMatching(
     PartyMemberSnapshot const& healer,
     std::uint32_t missingHealth,
-    DirectHealSpellSelection& selection)
+    DirectHealSpellSelection& selection,
+    SpellAllowPredicate allowSpell)
 {
     selection = DirectHealSpellSelection();
 
@@ -214,7 +217,8 @@ inline bool SelectDirectHealSpell(
     for (DirectHealSpellSnapshot const& spell : healer.directHealSpells)
     {
         if (!spell.spellId || !spell.baseHealing ||
-            !spell.supportedSingleTargetDirect || spell.manaCost > healer.power)
+            !spell.supportedSingleTargetDirect || spell.manaCost > healer.power ||
+            !allowSpell(spell.spellId))
             continue;
 
         if (spell.baseHealing >= missingHealth)
@@ -243,7 +247,21 @@ inline bool SelectDirectHealSpell(
     selection.spellId = selected->spellId;
     selection.baseHealing = selected->baseHealing;
     selection.manaCost = selected->manaCost;
+    selection.castTimeMs = selected->castTimeMs;
     return selection.IsValid();
+}
+
+// Shared default: all spell IDs are eligible only if the snapshot has already
+// certified the strict single-target-direct effect shape. Class adapters should
+// use SelectDirectHealSpellMatching with an explicit allow-list.
+inline bool SelectDirectHealSpell(
+    PartyMemberSnapshot const& healer,
+    std::uint32_t missingHealth,
+    DirectHealSpellSelection& selection)
+{
+    return SelectDirectHealSpellMatching(
+        healer, missingHealth, selection,
+        [](std::uint32_t) { return true; });
 }
 
 inline bool SelectHealerDecision(

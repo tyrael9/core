@@ -4179,6 +4179,14 @@ void TestResolvedDirectHealImpactContextRequiresSameLiveGroupShard()
 
     assert(IsCurrentLiveGroupDirectHealImpactContext(context));
 
+    // Vanilla world Map 0 and non-instanced Instance 0 are valid identities.
+    ResolvedDirectHealImpactContext worldContext = context;
+    worldContext.expectedMapId = worldContext.casterMapId =
+        worldContext.recipientMapId = 0;
+    worldContext.expectedInstanceId = worldContext.casterInstanceId =
+        worldContext.recipientInstanceId = 0;
+    assert(IsCurrentLiveGroupDirectHealImpactContext(worldContext));
+
     auto rejectedAfterMutation = [&context](auto mutation)
     {
         ResolvedDirectHealImpactContext changed = context;
@@ -4196,11 +4204,9 @@ void TestResolvedDirectHealImpactContextRequiresSameLiveGroupShard()
     rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterAndRecipientShareGroup = false; });
     rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterIsGroupMember = false; });
     rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.recipientIsGroupMember = false; });
-    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.expectedMapId = 0; });
     rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterMapId = 34; });
     rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.recipientMapId = 34; });
     rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterAndRecipientShareMap = false; });
-    rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.expectedInstanceId = 0; });
     rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterInstanceId = 8; });
     rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.recipientInstanceId = 8; });
     rejectedAfterMutation([](ResolvedDirectHealImpactContext& c) { c.casterInWorld = false; });

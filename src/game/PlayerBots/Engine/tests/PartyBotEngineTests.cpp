@@ -3258,6 +3258,38 @@ void TestPriestHealReservationStartRollbackAndTerminalRelease()
     assert(successful.coordinator.GetReservedAmount(
         ReservationType::Heal, 22, 0, 1000) == 20);
 
+    // Every Core terminal status releases only this action's exact heal row.
+    // The other healer's reservation is preserved, including on duplicate delivery.
+    CoreSpellTerminalStatus const terminalStatuses[] = {
+        CoreSpellTerminalStatus::Failed,
+        CoreSpellTerminalStatus::Interrupted
+    };
+    for (CoreSpellTerminalStatus status : terminalStatuses)
+    {
+        Reservation pendingHeal;
+        pendingHeal.type = ReservationType::Heal;
+        pendingHeal.targetGuid = 22;
+        pendingHeal.ownerGuid = 11;
+        pendingHeal.expiresAtMs = 10000;
+        pendingHeal.amount = 50;
+        pendingHeal.spellId = 2050;
+        pendingHeal.actionId = successful.coordinator.NextActionId();
+        assert(pendingHeal.actionId);
+        assert(successful.coordinator.TryReserve(pendingHeal, 1100));
+        assert(successful.coordinator.GetReservedAmount(
+            ReservationType::Heal, 22, 0, 1200) == 70);
+
+        CoreSpellTerminalEvent retryTerminal = terminal;
+        retryTerminal.actionId = pendingHeal.actionId;
+        retryTerminal.status = status;
+        listener.OnCoreSpellTerminal(retryTerminal);
+        assert(successful.coordinator.GetReservedAmount(
+            ReservationType::Heal, 22, 0, 1200) == 20);
+        listener.OnCoreSpellTerminal(retryTerminal);
+        assert(successful.coordinator.GetReservedAmount(
+            ReservationType::Heal, 22, 0, 1200) == 20);
+    }
+
     Fixture failed;
     failed.bot.classId = PriestDirectHealAction::PriestClassId;
     failed.bot.roleId = static_cast<std::uint8_t>(PartyRole::Healer);

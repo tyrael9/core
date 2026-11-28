@@ -14141,10 +14141,10 @@ if (f54mPassed)
              finalGroupCleanupPassed ? 1u : 0u);
     if (!finalGroupCleanupPassed)
         return false;
-    if (!f54oPassed || !f54qPassed || !f54rPassed || !f54sPassed || !f54tPassed)
+    if (!f54oPassed || !f54qPassed || !f54rPassed || !f54sPassed || !f54tPassed || !f54uPassed)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Required F54o/F54q/F54r/F54s/F54t Core spell admission lifecycle fixtures failed; refusing aggregate runtime success.");
+                 "[PartyBotSimulator] Required F54o/F54q/F54r/F54s/F54t/F54u Core spell admission lifecycle fixtures failed; refusing aggregate runtime success.");
         return false;
     }
     return true;

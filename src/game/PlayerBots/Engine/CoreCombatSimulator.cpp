@@ -12514,6 +12514,303 @@ if (f54mPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F54o exercised real Core deferred spell admission; rejection preserved health, mana, hostile threat, cooldown and GCD state, while explicit authorization committed the self-heal, applicable cooldown/GCD and terminal callbacks.");
 
+    // F55b: keep the queued cast strictly self-targeted, then remove its
+    // caster from the live Group before the impact-time context validator runs.
+    // This must reach the new Group-context rejection branch rather than the
+    // earlier resolved-target/selector gates covered by F54r/s/t/u.
+    uint64 const f55bActionId = 0xF55B0001ULL;
+    uint64 const f55bEncounterId = 0xF55B0002ULL;
+    ObjectGuid const f55bCasterGuid = healer
+        ? healer->GetObjectGuid() : ObjectGuid();
+    Group* const f55bGroup = healer ? healer->GetGroup() : nullptr;
+    uint32 const f55bSavedGroupCount =
+        f55bGroup ? f55bGroup->GetMembersCount() : 0;
+    uint32 const f55bSavedGroupId = f55bGroup ? f55bGroup->GetId() : 0;
+    uint8 const f55bSavedSubgroup = f55bGroup && !f55bCasterGuid.IsEmpty()
+        ? f55bGroup->GetMemberGroup(f55bCasterGuid)
+        : static_cast<uint8>(MAX_RAID_SUBGROUPS + 1);
+    bool const f55bSavedRaidGroup = f55bGroup && f55bGroup->isRaidGroup();
+    bool const f55bSavedAssistant = f55bSavedRaidGroup && f55bGroup &&
+        !f55bCasterGuid.IsEmpty() && f55bGroup->IsAssistant(f55bCasterGuid);
+    ObjectGuid const f55bSavedLeaderGuid =
+        f55bGroup ? f55bGroup->GetLeaderGuid() : ObjectGuid();
+    bool const f55bSavedInstanceValid = healer && healer->m_instanceValid;
+    uint32 const f55bSavedMapId = healer ? healer->GetMapId() : 0;
+    uint32 const f55bSavedInstanceId = healer ? healer->GetInstanceId() : 0;
+    bool f55bCastAccepted = false;
+    bool f55bQueuedBeforeRemoval = false;
+    bool f55bSelfTargetPreserved = false;
+    bool f55bMemberRemoved = false;
+    bool f55bCasterStillLive = false;
+    bool f55bCoreGateReached = false;
+    bool f55bAuthorizationSkipped = false;
+    bool f55bTerminalExactlyOnce = false;
+    bool f55bTerminalFailed = false;
+    bool f55bCurrentSpellCleared = false;
+    bool f55bEventReaped = false;
+    bool f55bNoEffects = false;
+    bool f55bSpellReadyBefore = false;
+    bool f55bNoGcdBefore = false;
+    bool f55bSpellReadyAfter = false;
+    bool f55bNoGcdAfter = false;
+    bool f55bGroupRestored = false;
+    bool f55bSubgroupRestored = false;
+    bool f55bLeaderRestored = false;
+    bool f55bAssistantRestored = false;
+    bool f55bInstanceValidRestored = false;
+    bool f55bLocationRestored = false;
+    bool f55bAdapterRestored = false;
+    uint32 f55bHealthBefore = 0;
+    uint32 f55bHealthAfter = 0;
+    uint32 f55bManaBefore = 0;
+    uint32 f55bManaAfter = 0;
+    uint32 f55bEventUpdates = 0;
+    float f55bThreatDelta = 0.0f;
+    bool f55bPassed = false;
+    bool const f55bGate = f54oPassed && healer && f55bGroup &&
+        f55bSavedGroupCount == MAX_GROUP_SIZE &&
+        !f55bCasterGuid.IsEmpty() &&
+        f55bGroup->GetId() != 0 &&
+        f55bGroup->IsMember(f55bCasterGuid) &&
+        healer->GetGroup() == f55bGroup &&
+        healer->IsInWorld() && healer->IsAlive() &&
+        healer->GetMap() == &map &&
+        f55bSavedSubgroup < MAX_RAID_SUBGROUPS &&
+        f54nDesperatePrayer &&
+        healer->HasSpell(f54nDesperatePrayer->Id);
+    if (f55bGate)
+    {
+        PlayerAI* const f55bPreviousAI = healer->AI();
+        uint32 const f55bSavedHealth = healer->GetHealth();
+        uint32 const f55bSavedMana = healer->GetPower(POWER_MANA);
+
+        healer->RemoveSpellCooldown(f54nDesperatePrayer, false);
+        if (f54nDesperatePrayer->Category)
+            healer->RemoveSpellCategoryCooldown(
+                f54nDesperatePrayer->Category, false);
+        healer->ResetGCD(f54nDesperatePrayer);
+        f55bSpellReadyBefore = healer->IsSpellReady(f54nDesperatePrayer);
+        f55bNoGcdBefore = !healer->HasGCD(f54nDesperatePrayer);
+        healer->SetHealth(std::max<uint32>(
+            1u, healer->GetMaxHealth() / 2u));
+        healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+        f55bHealthBefore = healer->GetHealth();
+        f55bManaBefore = healer->GetPower(POWER_MANA);
+
+        float f55bThreatBefore[3] = {};
+        for (uint32 i = 0; i < 3; ++i)
+            f55bThreatBefore[i] = f54nHostiles[i].creature
+                ? f54nHostiles[i].creature->GetThreatManager().getThreat(healer)
+                : 0.0f;
+
+        SimulatorDeferredSpellAdmissionAI groupDriftAdapter(
+            healer, true, f55bActionId, f55bEncounterId);
+        healer->SetAI(&groupDriftAdapter);
+        SpellCastResult const castResult =
+            healer->CastSpell(healer, f54nDesperatePrayer, false);
+        f55bCastAccepted = castResult == SPELL_CAST_OK;
+        Spell* const queuedSpell =
+            healer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        auto countF55bQueuedEvents = [&]() -> uint32
+        {
+            uint32 count = 0;
+            for (auto const& event : healer->m_Events.GetEvents())
+            {
+                SpellEvent* spellEvent =
+                    dynamic_cast<SpellEvent*>(event.second);
+                Spell* pendingSpell =
+                    spellEvent ? spellEvent->GetSpell() : nullptr;
+                if (pendingSpell &&
+                    pendingSpell->GetPartyBotTraceActionId() == f55bActionId)
+                    ++count;
+            }
+            return count;
+        };
+
+        f55bQueuedBeforeRemoval =
+            f55bCastAccepted && queuedSpell &&
+            queuedSpell->getState() == SPELL_STATE_PREPARING &&
+            countF55bQueuedEvents() == 1 &&
+            queuedSpell->m_targets.getUnitTarget() == healer &&
+            queuedSpell->m_targets.getUnitTargetGuid() == f55bCasterGuid &&
+            queuedSpell->m_spellInfo &&
+            queuedSpell->m_spellInfo->EffectImplicitTargetA[0] == TARGET_UNIT_CASTER &&
+            queuedSpell->m_spellInfo->EffectImplicitTargetB[0] == 0 &&
+            groupDriftAdapter.intentCalls == 1 &&
+            groupDriftAdapter.authorizeCalls == 0 &&
+            groupDriftAdapter.terminalCalls == 0;
+        f55bSelfTargetPreserved = f55bQueuedBeforeRemoval;
+
+        // Remove the actual caster member through Core Group::RemoveMember.
+        // The Player stays alive/on the same Map; only its Group identity and
+        // membership change between capture and impact.
+        if (f55bQueuedBeforeRemoval)
+        {
+            f55bMemberRemoved =
+                f55bGroup->RemoveMember(f55bCasterGuid, GROUP_LEAVE) ==
+                    f55bSavedGroupCount - 1 &&
+                !f55bGroup->IsMember(f55bCasterGuid) &&
+                healer->GetGroup() == nullptr;
+            f55bCasterStillLive =
+                healer->IsInWorld() && healer->IsAlive() &&
+                healer->GetMap() == &map &&
+                healer->GetMapId() == f55bSavedMapId &&
+                healer->GetInstanceId() == f55bSavedInstanceId;
+
+            // Drive the real queued SpellEvent after the Group change.
+            for (uint32 tick = 0;
+                 f55bMemberRemoved &&
+                 (groupDriftAdapter.terminalCalls == 0 ||
+                  countF55bQueuedEvents() != 0) &&
+                 tick < 20;
+                 ++tick)
+            {
+                healer->Unit::Update(50, 50);
+                ++f55bEventUpdates;
+            }
+        }
+
+        f55bCurrentSpellCleared =
+            healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+        f55bEventReaped = countF55bQueuedEvents() == 0;
+        f55bAuthorizationSkipped = groupDriftAdapter.authorizeCalls == 0;
+        f55bTerminalExactlyOnce =
+            groupDriftAdapter.terminalCalls == 1 &&
+            groupDriftAdapter.terminalActionId == f55bActionId &&
+            groupDriftAdapter.terminalEncounterId == f55bEncounterId &&
+            groupDriftAdapter.terminalEngineAction &&
+            !groupDriftAdapter.terminalSuccess &&
+            !groupDriftAdapter.terminalInterrupted;
+        f55bTerminalFailed =
+            groupDriftAdapter.terminalCalls == 1 &&
+            !groupDriftAdapter.terminalSuccess &&
+            !groupDriftAdapter.terminalInterrupted;
+        f55bCoreGateReached = f55bMemberRemoved &&
+            f55bCurrentSpellCleared && f55bEventReaped &&
+            f55bAuthorizationSkipped && f55bTerminalFailed;
+
+        f55bHealthAfter = healer->GetHealth();
+        f55bManaAfter = healer->GetPower(POWER_MANA);
+        for (uint32 i = 0; i < 3; ++i)
+        {
+            if (f54nHostiles[i].creature)
+            {
+                float const after =
+                    f54nHostiles[i].creature->GetThreatManager().getThreat(healer);
+                f55bThreatDelta += std::fabs(after - f55bThreatBefore[i]);
+            }
+        }
+        f55bNoEffects =
+            f55bHealthAfter == f55bHealthBefore &&
+            f55bManaAfter == f55bManaBefore &&
+            f55bThreatDelta < 0.01f;
+        f55bSpellReadyAfter = healer->IsSpellReady(f54nDesperatePrayer);
+        f55bNoGcdAfter = !healer->HasGCD(f54nDesperatePrayer);
+
+        // Restore the actual Group membership before any later simulator
+        // fixture uses the five-member roster. Restore all captured metadata.
+        bool f55bRejoined =
+            f55bGroup->IsMember(f55bCasterGuid) &&
+            healer->GetGroup() == f55bGroup;
+        if (!f55bRejoined)
+            f55bRejoined = f55bGroup->AddMember(
+                f55bCasterGuid, healer->GetName()) &&
+                f55bGroup->IsMember(f55bCasterGuid) &&
+                healer->GetGroup() == f55bGroup;
+        if (f55bRejoined)
+        {
+            if (f55bSavedRaidGroup &&
+                f55bSavedSubgroup < MAX_RAID_SUBGROUPS)
+                f55bGroup->ChangeMembersGroup(
+                    f55bCasterGuid, f55bSavedSubgroup);
+            if (f55bSavedRaidGroup &&
+                f55bGroup->IsAssistant(f55bCasterGuid) != f55bSavedAssistant)
+                f55bGroup->SetAssistant(
+                    f55bCasterGuid, f55bSavedAssistant);
+            if (f55bGroup->GetLeaderGuid() != f55bSavedLeaderGuid &&
+                f55bGroup->IsMember(f55bSavedLeaderGuid))
+                f55bGroup->ChangeLeader(f55bSavedLeaderGuid);
+            if (healer->m_instanceValid != f55bSavedInstanceValid)
+                healer->m_instanceValid = f55bSavedInstanceValid;
+        }
+
+        f55bGroupRestored =
+            f55bRejoined &&
+            f55bGroup->GetMembersCount() == f55bSavedGroupCount &&
+            f55bGroup->GetId() == f55bSavedGroupId &&
+            f55bGroup->IsMember(f55bCasterGuid) &&
+            healer->GetGroup() == f55bGroup;
+        f55bSubgroupRestored =
+            f55bGroupRestored &&
+            f55bGroup->GetMemberGroup(f55bCasterGuid) == f55bSavedSubgroup;
+        f55bLeaderRestored =
+            f55bGroup->GetLeaderGuid() == f55bSavedLeaderGuid;
+        f55bAssistantRestored =
+            !f55bSavedRaidGroup ||
+            f55bGroup->IsAssistant(f55bCasterGuid) == f55bSavedAssistant;
+        f55bInstanceValidRestored =
+            f55bGroupRestored &&
+            healer->m_instanceValid == f55bSavedInstanceValid;
+        f55bLocationRestored =
+            healer->IsInWorld() && healer->GetMap() == &map &&
+            healer->GetMapId() == f55bSavedMapId &&
+            healer->GetInstanceId() == f55bSavedInstanceId;
+
+        healer->SetAI(f55bPreviousAI);
+        f55bAdapterRestored = healer->AI() == f55bPreviousAI;
+        healer->SetHealth(f55bSavedHealth);
+        healer->SetPower(POWER_MANA, f55bSavedMana);
+        healer->ResetGCD(f54nDesperatePrayer);
+    }
+
+    f55bPassed =
+        f55bGate && f55bCastAccepted && f55bQueuedBeforeRemoval &&
+        f55bSelfTargetPreserved && f55bMemberRemoved &&
+        f55bCasterStillLive && f55bCoreGateReached &&
+        f55bAuthorizationSkipped && f55bTerminalExactlyOnce &&
+        f55bTerminalFailed && f55bCurrentSpellCleared && f55bEventReaped &&
+        f55bNoEffects && f55bSpellReadyBefore && f55bNoGcdBefore &&
+        f55bSpellReadyAfter && f55bNoGcdAfter && f55bGroupRestored &&
+        f55bSubgroupRestored && f55bLeaderRestored &&
+        f55bAssistantRestored && f55bInstanceValidRestored &&
+        f55bLocationRestored && f55bAdapterRestored;
+
+    sLog.Out(LOG_BASIC, f55bPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F55b queued self-heal Group drift: gate=%u castAccepted=%u queuedBeforeRemoval=%u selfTargetPreserved=%u memberRemoved=%u casterStillLive=%u coreGateReached=%u authorizeSkipped=%u terminalOnce=%u terminalFailed=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u health=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u groupRestored=%u subgroupRestored=%u leaderRestored=%u assistantRestored=%u instanceValidRestored=%u locationRestored=%u adapterRestored=%u expectedCasterGuid=%llu expectedGroupId=%u.",
+        f55bGate ? 1u : 0u,
+        f55bCastAccepted ? 1u : 0u,
+        f55bQueuedBeforeRemoval ? 1u : 0u,
+        f55bSelfTargetPreserved ? 1u : 0u,
+        f55bMemberRemoved ? 1u : 0u,
+        f55bCasterStillLive ? 1u : 0u,
+        f55bCoreGateReached ? 1u : 0u,
+        f55bAuthorizationSkipped ? 1u : 0u,
+        f55bTerminalExactlyOnce ? 1u : 0u,
+        f55bTerminalFailed ? 1u : 0u,
+        f55bCurrentSpellCleared ? 1u : 0u,
+        f55bEventReaped ? 1u : 0u,
+        f55bEventUpdates,
+        f55bHealthBefore, f55bHealthAfter,
+        f55bManaBefore, f55bManaAfter,
+        f55bThreatDelta,
+        f55bNoEffects ? 1u : 0u,
+        f55bSpellReadyBefore ? 1u : 0u,
+        f55bNoGcdBefore ? 1u : 0u,
+        f55bSpellReadyAfter ? 1u : 0u,
+        f55bNoGcdAfter ? 1u : 0u,
+        f55bGroupRestored ? 1u : 0u,
+        f55bSubgroupRestored ? 1u : 0u,
+        f55bLeaderRestored ? 1u : 0u,
+        f55bAssistantRestored ? 1u : 0u,
+        f55bInstanceValidRestored ? 1u : 0u,
+        f55bLocationRestored ? 1u : 0u,
+        f55bAdapterRestored ? 1u : 0u,
+        static_cast<unsigned long long>(f55bCasterGuid.GetRawValue()),
+        f55bSavedGroupId);
+    if (f55bPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F55b removed the caster from its actual Group after the self-targeted SpellEvent was queued; Core rejected the new impact-context mismatch before authorization with no heal, mana, hostile threat, cooldown or GCD effect, then fully restored the five-member Group.");
+    
     // F54q: interrupt the real deferred self-heal after prepare queued its
     // SpellEvent but before the event can reach pre-impact authorization.
     uint64 const f54qActionId = 0xF54F0003ULL;

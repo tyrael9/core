@@ -667,7 +667,25 @@ for expected in "groupSame=1" "memberBoth=1" "mapSame=1" "liveBoth=1" "aliveBoth
         exit 1
     fi
 done
-echo "[PartyBotSimulator] PASS: F55b Core revalidated current Group membership and Map/instance identity before deferred effects; positive path observed, negative drift remains pure-contract tested." | tee -a "$LOG_FILE"
+f55b_line="$(grep -F '[PartyBotSimulator] F55b queued self-heal Group drift:' "$LOG_FILE" | tail -n 1 || true)"
+for expected in "gate=1" "castAccepted=1" "queuedBeforeRemoval=1" "selfTargetPreserved=1" "memberRemoved=1" "casterStillLive=1" "coreGateReached=1" "authorizeSkipped=1" "terminalOnce=1" "terminalFailed=1" "currentSpellCleared=1" "eventReaped=1" "noEffects=1" "spellReadyBefore=1" "noGcdBefore=1" "spellReadyAfter=1" "noGcdAfter=1" "groupRestored=1" "subgroupRestored=1" "leaderRestored=1" "assistantRestored=1" "instanceValidRestored=1" "locationRestored=1" "adapterRestored=1"; do
+    if [[ "$f55b_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F55b live Group-drift assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+f55b_expected_guid="$(printf '%s\n' "$f55b_line" | sed -nE 's/.*expectedCasterGuid=([0-9]+).*/\1/p')"
+f55b_expected_group="$(printf '%s\n' "$f55b_line" | sed -nE 's/.*expectedGroupId=([0-9]+).*/\1/p')"
+if [[ -z "$f55b_expected_guid" || -z "$f55b_expected_group" || "$f55b_expected_group" == "0" ]]; then
+    echo "[PartyBotSimulator] F55b expected caster/Group identity diagnostics are missing." | tee -a "$LOG_FILE"
+    exit 1
+fi
+f55b_context_reject="$(grep -F '[PartyBotSpellAdmission] impact Group/map/instance context rejected: spell=19236' "$LOG_FILE" | grep -F "expectedCaster=$f55b_expected_guid" | grep -F "expectedRecipient=$f55b_expected_guid" | grep -F "expectedGroup=$f55b_expected_group" | tail -n 1 || true)"
+if [[ -z "$f55b_context_reject" ]]; then
+    echo "[PartyBotSimulator] F55b did not reach the new Core impact-context rejection branch for the same self-targeted caster and captured Group." | tee -a "$LOG_FILE"
+    exit 1
+fi
+echo "[PartyBotSimulator] PASS: F55b Core revalidated live Group membership at impact; both positive and real negative Group-drift paths rejected/passed at the intended Core gate." | tee -a "$LOG_FILE"
 echo "[PartyBotSimulator] PASS: F54p verified rejected admission preserves cooldown/GCD before reset and authorized admission commits applicable SpellEntry cooldown/GCD." | tee -a "$LOG_FILE"
 
 f54q_line="$(grep -F '[PartyBotSimulator] F54q queued deferred-cast interruption:' "$LOG_FILE" | tail -n 1 | sed -E 's/\\x1B\\[[0-9;]*[[:alpha:]]//g')"

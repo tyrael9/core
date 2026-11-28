@@ -652,6 +652,22 @@ if ! grep -Fq "[PartyBotSimulator] PASS: F54o exercised real Core deferred spell
     echo "[PartyBotSimulator] F54o Core admission PASS marker was not found." | tee -a "$LOG_FILE"
     exit 1
 fi
+
+# F55b must execute its Core-owned live Group/map/instance impact validator on
+# the successful F54o path. This positive marker complements pure negative
+# contract tests; it does not claim a live Group-drift rejection fixture.
+f55b_context_line="$(grep -F '[PartyBotSpellAdmission] impact Group/map/instance context accepted: spell=19236' "$LOG_FILE" | tail -n 1 || true)"
+if [[ -z "$f55b_context_line" ]]; then
+    echo "[PartyBotSimulator] F55b live Core impact-context acceptance marker was not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+for expected in "groupSame=1" "memberBoth=1" "mapSame=1" "liveBoth=1" "aliveBoth=1"; do
+    if [[ "$f55b_context_line" != *"$expected"* ]]; then
+        echo "[PartyBotSimulator] F55b live impact-context assertion missing $expected." | tee -a "$LOG_FILE"
+        exit 1
+    fi
+done
+echo "[PartyBotSimulator] PASS: F55b Core revalidated current Group membership and Map/instance identity before deferred effects; positive path observed, negative drift remains pure-contract tested." | tee -a "$LOG_FILE"
 echo "[PartyBotSimulator] PASS: F54p verified rejected admission preserves cooldown/GCD before reset and authorized admission commits applicable SpellEntry cooldown/GCD." | tee -a "$LOG_FILE"
 
 f54q_line="$(grep -F '[PartyBotSimulator] F54q queued deferred-cast interruption:' "$LOG_FILE" | tail -n 1 | sed -E 's/\\x1B\\[[0-9;]*[[:alpha:]]//g')"

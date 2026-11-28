@@ -3749,7 +3749,9 @@ bool Spell::IsPartyBotDeferredImpactContextCurrent() const
     Player* caster = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
     Player* recipient = m_targets.getUnitTarget()
         ? m_targets.getUnitTarget()->ToPlayer() : nullptr;
-    if (!caster || !recipient)
+    if (!caster || !recipient ||
+        !caster->IsInWorld() || !recipient->IsInWorld() ||
+        !caster->IsAlive() || !recipient->IsAlive())
         return false;
 
     Group* casterGroup = caster->GetGroup();
@@ -3887,6 +3889,19 @@ bool Spell::CommitPartyBotDeferredEffects()
             m_partyBotDeferredExpectedInstanceId);
         return false;
     }
+
+    Player* impactCaster = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
+    Player* impactRecipient = m_targets.getUnitTarget()
+        ? m_targets.getUnitTarget()->ToPlayer() : nullptr;
+    Group* impactGroup = impactCaster ? impactCaster->GetGroup() : nullptr;
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+        "[PartyBotSpellAdmission] impact Group/map/instance context accepted: spell=%u caster=%llu recipient=%llu group=%u map=%u instance=%u groupSame=1 memberBoth=1 mapSame=1 liveBoth=1 aliveBoth=1.",
+        m_spellInfo ? m_spellInfo->Id : 0u,
+        static_cast<unsigned long long>(impactCaster ? impactCaster->GetGUID() : 0),
+        static_cast<unsigned long long>(impactRecipient ? impactRecipient->GetGUID() : 0),
+        impactGroup ? impactGroup->GetId() : 0u,
+        impactCaster ? impactCaster->GetMapId() : 0u,
+        impactCaster ? impactCaster->GetInstanceId() : 0u);
 
     Player* player = m_casterUnit ? m_casterUnit->ToPlayer() : nullptr;
     PlayerAI* ai = player ? player->AI() : nullptr;

@@ -12,6 +12,21 @@ Validation for the F55a code revision:
 
 There is no dedicated F55a simulator marker or successful party-target cast-time-heal fixture in this run; its direct behavior coverage is the pure contract test plus full Core compile. Trusted simulator success confirms the existing runtime regression suite remains intact.
 
+## F55b — impact-time Group/map/instance identity gate (in progress)
+
+Code changes in `DirectHealImpactContract.h`, `Spell.h` and `Spell.cpp` capture the expected caster/recipient GUID, Group ID, Map ID and Instance ID when the existing deferred self-heal shape is accepted. At impact, after `FillTargetMap` resolves the actual target rows and before `OnSpellCastPreImpactAuthorize` or any deferred effects are committed, Core re-resolves both Players and validates exact GUID continuity, same Group identity, both live Group memberships, same Map and Instance, and both Players alive/in World.
+
+The old resolved-target shape rejection intentionally remains first so F54r/s/t/u target-resolution and CheckCast diagnostics are unchanged. The impact-context rejection then fails closed before authorization and therefore before GCD/cooldown, power, threat, proc or healing effects. World/Alive checks occur before `GetMap()`; detached Players must not reach Core's asserting Map accessor. The existing F54o static self-heal shape remains unchanged; this work does not enable a Group recipient or a cast-time heal.
+
+Pure test `TestResolvedDirectHealImpactContextRequiresSameLiveGroupShard` accepts a valid same-Group/Map/Instance context, including legitimate Map 0 / Instance 0, and rejects expected/current GUID changes, Group ID or group-sharing changes, either member's removal, Map/Instance drift, out-of-World state and death.
+
+Validation of implementation commit [`da38917`](https://github.com/tyrael9/core/commit/da38917408db886946a4752c7357e3cd01094a9b):
+- PR-safe [#46134339779](https://github.com/tyrael9/core/actions/runs/46134339779): success; pure Engine tests, report collector, Configure, ARM64 Vanilla 5875 Server/Realm build and harness syntax passed.
+- Trusted push [#46134335966](https://github.com/tyrael9/core/actions/runs/46134335966): success; full fixture-backed Core simulator reached final `Runtime PASS`, artifact [#15258974889](https://github.com/tyrael9/core/actions/runs/46134335966/artifacts/15258974889), normal GDB exit. The F54o accepted cast traverses the F55b positive Core context validator. Existing F54r/s/t/u cases preserve their previous early rejection reasons and are not evidence for F55b's negative context branch.
+- Follow-up [`3bd3af5`](https://github.com/tyrael9/core/commit/3bd3af598193f3fc5fdc3d5f64a47fe19205fcd0) adds an explicit Core acceptance log checked by the trusted simulator runner, and orders World/Alive validation before Map access. Its CI is pending; do not count it as validated yet.
+
+**Still open:** a dedicated trusted fixture must queue a still-self-targeted deferred cast, mutate the caster's Group/membership after capture but before impact, and prove the new negative context branch rejects it with no heal/mana/threat/cooldown/GCD side effects, exactly-once Failed terminal and complete reservation/resource cleanup. Until that exists, F55b remains in progress.
+
 ## H2 — Shaman Lesser Healing Wave profile adapter (pure policy)
 
 This adapter is deliberately limited to Shaman Lesser Healing Wave ranks 8004, 8008, 8010, 10469, 10470 and 10471. It calls the shared healer rank selector through an explicit spell-ID allow-list and retains the snapshot's Core-calculated mana cost and cast time. It rejects Chain Heal and unrelated direct-heal spell IDs even when their synthetic profile row has a larger base amount.

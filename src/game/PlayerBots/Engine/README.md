@@ -2,7 +2,7 @@
 
 Independent party-coordinated AI for the pinned Vanilla 1.12.1 / build 5875 vMaNGOS Core. The design borrows the Strategy / Trigger / Action / Value / Multiplier model from CMaNGOS PlayerBots and encounter-strategy ideas from AzerothCore, but all runtime behavior is implemented against the pinned vMaNGOS C++14 APIs.
 
-## Current status (2026-11-27 PT)
+## Current status (2026-11-28 PT)
 
 ## Latest verified status — F54t detached-Map-recipient trusted runtime passed
 

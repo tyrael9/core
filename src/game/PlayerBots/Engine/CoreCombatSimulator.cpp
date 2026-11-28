@@ -12839,7 +12839,7 @@ if (f54mPassed)
     std::sort(f55cExpectedHostiles.begin(), f55cExpectedHostiles.end());
     std::sort(f55cInitialHostiles.begin(), f55cInitialHostiles.end());
     bool const f55cInitialSetReady = f55cRefsBefore == 2 &&
-        PartyBotEngine::IsExactDirectHealThreatRecipientSet(
+        IsExactDirectHealThreatRecipientSet(
             f55cExpectedHostiles, f55cInitialHostiles);
 
     bool f55cCastAccepted = false, f55cQueued = false;
@@ -12948,10 +12948,10 @@ if (f54mPassed)
                 f54nHostiles[2].creature->GetObjectGuid().GetRawValue());
             std::sort(expectedWithThird.begin(), expectedWithThird.end());
             f55cCurrentSetExpanded = f55cRefsAfter == 3 &&
-                PartyBotEngine::IsExactDirectHealThreatRecipientSet(
+                IsExactDirectHealThreatRecipientSet(
                     expectedWithThird, currentHostiles);
             f55cRecipientSetChanged = f55cCurrentSetExpanded &&
-                !PartyBotEngine::IsExactDirectHealThreatRecipientSet(
+                !IsExactDirectHealThreatRecipientSet(
                     f55cExpectedHostiles, currentHostiles);
         }
 
@@ -13026,7 +13026,7 @@ if (f54mPassed)
         }
         std::sort(restoredHostiles.begin(), restoredHostiles.end());
         f55cReferencesRestored = restoredRefs == 2 &&
-            PartyBotEngine::IsExactDirectHealThreatRecipientSet(
+            IsExactDirectHealThreatRecipientSet(
                 f55cExpectedHostiles, restoredHostiles);
 
         healer->SetHealth(savedHealth);

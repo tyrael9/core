@@ -1,5 +1,15 @@
 # Core-backed PartyBot combat simulator
 
+
+## F55c — deferred hostile-reference identity drift (fixture implemented; validation pending)
+
+F55c extends the real five-Player Core spell-admission fixture. The healer begins with exactly two live hostile-reference sources. The real instant self-targeted Desperate Prayer (19236) SpellEvent is queued and its captured hostile GUID set is inspected. While the event remains queued, the fixture adds threat from a third already-live hostile actor, proving the recipient's live hostile-reference set grows from two to three. It deliberately leaves the caster/recipient GUID, live Group and Map/Instance unchanged, so the new rejection cannot be attributed to the F55b context checks.
+
+The Core impact check must reject the stale captured set before the pre-impact authorization callback or any deferred effect. The fixture requires unchanged health, mana and threat deltas, no GCD/cooldown consumption, exactly one Failed (not Interrupted) terminal, cleared current Spell, reaped SpellEvent, restored original two hostile-reference GUIDs/threat values and restored AI adapter. The runner independently requires the F55c metrics marker and the Core log `expectedCount=2 currentCount=3`; F55c is part of the mandatory aggregate simulator success gate.
+
+Source commit [`881d842`](https://github.com/tyrael9/core/commit/881d842d18274d01e4d8341adc1042013cad5fd1) is under validation in trusted push [#2374](https://github.com/tyrael9/core/actions/runs/46181238913) and PR-safe [#2375](https://github.com/tyrael9/core/actions/runs/46181243064). Pure Engine tests, report collector and Configure passed; ARM64 build and the trusted runtime fixture remain pending. This fixture proves only recipient hostile-reference identity drift, not threat-value changes on stable references or the full proc/child/script threat graph.
+
+
 ## F54s — queued recipient leaves the Group (trusted runtime validated 2026-11-27 PT)
 
 Trusted push [#46065342721](https://github.com/tyrael9/core/actions/runs/46065342721) on F54s code [9648f47](https://github.com/tyrael9/core/commit/9648f476cc1b2b6ff456b8b7b11e5e7413838627) passed the full Linux ARM64 / Vanilla 5875 Core-backed simulator through final Runtime PASS; GDB reported normal inferior exit. Matching PR-safe build [#46065350461](https://github.com/tyrael9/core/actions/runs/46065350461) passed.

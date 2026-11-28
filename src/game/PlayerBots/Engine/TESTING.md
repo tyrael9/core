@@ -29,6 +29,22 @@ Validation of code commit [`2390efe`](https://github.com/tyrael9/core/commit/239
 F55b is complete at this scoped identity-gate level. The fixture observes terminal delivery and event cleanup, but it does not create a production HealReservation; reservation listener lifecycle remains part of later F55d. The work still does not authorize Group-target/cast-time healing, register Shaman LHW, or production-enable any healer action.
 
 
+
+## F55c — deferred hostile-reference identity gate (implementation; validation pending)
+
+Code commit [`87baa1c`](https://github.com/tyrael9/core/commit/87baa1c83a51aea39f290822069ed9907e2b6b58) adds a canonical value-only hostile-reference GUID-set contract to `DirectHealImpactContract.h`, stores the captured set on the deferred `Spell`, and captures/revalidates it in Core's prepare-to-impact path. The current simulator fixture and runner gate are in [`881d842`](https://github.com/tyrael9/core/commit/881d842d18274d01e4d8341adc1042013cad5fd1).
+
+The identity helper requires sorted, nonzero, unique GUIDs and exact expected/current equality. The live Core collector requires each reference to resolve to a live, in-world, same-Map hostile source targeting the exact recipient. It captures the set at prepare and re-collects it after Core rebuilds the impact target list but before authorization or deferred effects. Any missing, additional, replaced, duplicate, zero, stale or invalid reference fails closed. An empty set is allowed as a stable identity snapshot only; it does not mean `NoThreat`.
+
+Pure test `TestDirectHealThreatRecipientSetIdentity` covers stable non-empty and empty sets plus missing, extra, replaced, unordered, duplicate, zero-GUID and noncanonical expected sets. The simulator's F55c fixture queues a real deferred self-targeted Desperate Prayer (19236), verifies its captured two-hostile identity set, then adds a third live hostile reference before impact while Group/Map/caster identity stays unchanged. Required outcomes are Core's exact `expectedCount=2 currentCount=3` rejection, skipped authorization, one Failed terminal, current Spell/event cleanup, unchanged health/mana/threat/GCD/cooldown and restoration of the original two references, threat values and AI adapter. The runner makes the F55c metrics and Core rejection log mandatory for aggregate Runtime PASS.
+
+Validation status for source commit [`881d842`](https://github.com/tyrael9/core/commit/881d842d18274d01e4d8341adc1042013cad5fd1):
+- Push [#2374](https://github.com/tyrael9/core/actions/runs/46181238913) and PR-safe [#2375](https://github.com/tyrael9/core/actions/runs/46181243064): pure Engine tests, report collector and Configure passed; Linux ARM64 build is still running.
+- The previous source attempt [`2079b6c`](https://github.com/tyrael9/core/commit/2079b6cbeba07357f341dfd6c8ac3df3252c4f84) failed compilation because four simulator calls were unnecessarily namespace-qualified from inside `PartyBotEngine`; [`881d842`](https://github.com/tyrael9/core/commit/881d842d18274d01e4d8341adc1042013cad5fd1) fixes those calls.
+- The trusted push has not yet reached the Core-backed simulator. Do not call F55c runtime-validated until the ARM64 build, F55c marker, Core rejection log, final `Runtime PASS` and normal GDB exit all pass.
+
+This is only the hostile-reference **identity** sub-gate. It does not prove changing threat values on stable references, complete hostile/recipient threat deltas, or all helpful-proc/SpellScript/AuraScript/triggered-child effect fan-out. Those remain H3 blockers; no Group-target/cast-time healing or healer action is enabled.
+
 ## H2 — Shaman Lesser Healing Wave profile adapter (pure policy)
 
 This adapter is deliberately limited to Shaman Lesser Healing Wave ranks 8004, 8008, 8010, 10469, 10470 and 10471. It calls the shared healer rank selector through an explicit spell-ID allow-list and retains the snapshot's Core-calculated mana cost and cast time. It rejects Chain Heal and unrelated direct-heal spell IDs even when their synthetic profile row has a larger base amount.

@@ -12811,6 +12811,248 @@ if (f54mPassed)
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
             "[PartyBotSimulator] PASS: F55b removed the caster from its actual Group after the self-targeted SpellEvent was queued; Core rejected the new impact-context mismatch before authorization with no heal, mana, hostile threat, cooldown or GCD effect, then fully restored the five-member Group.");
     
+
+    // F55c: mutate the live hostile-reference set after prepare has captured
+    // it, but before the real queued SpellEvent reaches pre-impact admission.
+    uint64 const f55cActionId = 0xF55C0001ULL;
+    uint64 const f55cEncounterId = 0xF55C0002ULL;
+    Group* const f55cGroup = healer ? healer->GetGroup() : nullptr;
+    uint32 const f55cGroupId = f55cGroup ? f55cGroup->GetId() : 0;
+    uint32 const f55cGroupCount = f55cGroup ? f55cGroup->GetMembersCount() : 0;
+    std::vector<uint64> f55cExpectedHostiles;
+    std::vector<uint64> f55cInitialHostiles;
+    if (f54nHostilesCreated)
+        for (uint32 i = 0; i < 2; ++i)
+            f55cExpectedHostiles.push_back(
+                f54nHostiles[i].creature->GetObjectGuid().GetRawValue());
+    uint32 f55cRefsBefore = 0;
+    if (healer)
+        for (HostileReference* ref = healer->GetHostileRefManager().getFirst();
+             ref; ref = ref->next())
+        {
+            ++f55cRefsBefore;
+            Unit* source = ref->getSourceUnit();
+            if (source)
+                f55cInitialHostiles.push_back(
+                    source->GetObjectGuid().GetRawValue());
+        }
+    std::sort(f55cExpectedHostiles.begin(), f55cExpectedHostiles.end());
+    std::sort(f55cInitialHostiles.begin(), f55cInitialHostiles.end());
+    bool const f55cInitialSetReady = f55cRefsBefore == 2 &&
+        PartyBotEngine::IsExactDirectHealThreatRecipientSet(
+            f55cExpectedHostiles, f55cInitialHostiles);
+
+    bool f55cCastAccepted = false, f55cQueued = false;
+    bool f55cCapturedSetMatches = false, f55cLateReferenceAdded = false;
+    bool f55cCurrentSetExpanded = false, f55cRecipientSetChanged = false;
+    bool f55cGroupUnchanged = false, f55cAuthorizeSkipped = false;
+    bool f55cTerminalOnce = false, f55cTerminalFailed = false;
+    bool f55cCurrentSpellCleared = false, f55cEventReaped = false;
+    bool f55cNoEffects = false, f55cSpellReadyBefore = false;
+    bool f55cNoGcdBefore = false, f55cSpellReadyAfter = false;
+    bool f55cNoGcdAfter = false, f55cReferencesRestored = false;
+    bool f55cAdapterRestored = false, f55cPassed = false;
+    uint32 f55cHealthBefore = 0, f55cHealthAfter = 0;
+    uint32 f55cManaBefore = 0, f55cManaAfter = 0;
+    uint32 f55cEventUpdates = 0, f55cRefsAfter = 0;
+    float f55cThreatDelta = 0.0f;
+    bool const f55cGate = f54oPassed && f54nHostilesCreated &&
+        f55cInitialSetReady && healer && f55cGroup && f55cGroupId &&
+        f55cGroupCount == MAX_GROUP_SIZE &&
+        f55cGroup->IsMember(healer->GetObjectGuid()) &&
+        healer->GetGroup() == f55cGroup && healer->IsInWorld() &&
+        healer->IsAlive() && healer->GetMap() == &map &&
+        f54nHostiles[2].creature && f54nHostiles[2].creature->IsAlive() &&
+        f54nHostiles[2].creature->IsInWorld() &&
+        f54nHostiles[2].creature->GetMap() == &map &&
+        f54nDesperatePrayer && healer->HasSpell(f54nDesperatePrayer->Id);
+    if (f55cGate)
+    {
+        PlayerAI* const previousAI = healer->AI();
+        uint32 const savedHealth = healer->GetHealth();
+        uint32 const savedMana = healer->GetPower(POWER_MANA);
+        healer->RemoveSpellCooldown(f54nDesperatePrayer, false);
+        if (f54nDesperatePrayer->Category)
+            healer->RemoveSpellCategoryCooldown(
+                f54nDesperatePrayer->Category, false);
+        healer->ResetGCD(f54nDesperatePrayer);
+        f55cSpellReadyBefore = healer->IsSpellReady(f54nDesperatePrayer);
+        f55cNoGcdBefore = !healer->HasGCD(f54nDesperatePrayer);
+        healer->SetHealth(std::max<uint32>(1u, healer->GetMaxHealth() / 2u));
+        healer->SetPower(POWER_MANA, healer->GetMaxPower(POWER_MANA));
+        f55cHealthBefore = healer->GetHealth();
+        f55cManaBefore = healer->GetPower(POWER_MANA);
+
+        SimulatorDeferredSpellAdmissionAI adapter(
+            healer, true, f55cActionId, f55cEncounterId);
+        healer->SetAI(&adapter);
+        f55cCastAccepted =
+            healer->CastSpell(healer, f54nDesperatePrayer, false) == SPELL_CAST_OK;
+        Spell* const queuedSpell = healer->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        auto countQueuedEvents = [&]() -> uint32
+        {
+            uint32 count = 0;
+            for (auto const& event : healer->m_Events.GetEvents())
+            {
+                SpellEvent* spellEvent = dynamic_cast<SpellEvent*>(event.second);
+                Spell* pending = spellEvent ? spellEvent->GetSpell() : nullptr;
+                if (pending && pending->GetPartyBotTraceActionId() == f55cActionId)
+                    ++count;
+            }
+            return count;
+        };
+        f55cQueued = f55cCastAccepted && queuedSpell &&
+            queuedSpell->getState() == SPELL_STATE_PREPARING &&
+            countQueuedEvents() == 1 &&
+            queuedSpell->m_targets.getUnitTarget() == healer &&
+            queuedSpell->m_targets.getUnitTargetGuid() == healer->GetObjectGuid() &&
+            queuedSpell->m_spellInfo &&
+            queuedSpell->m_spellInfo->EffectImplicitTargetA[0] == TARGET_UNIT_CASTER &&
+            queuedSpell->m_spellInfo->EffectImplicitTargetB[0] == 0 &&
+            adapter.intentCalls == 1 && adapter.authorizeCalls == 0 &&
+            adapter.terminalCalls == 0;
+        f55cCapturedSetMatches = f55cQueued &&
+            queuedSpell->m_partyBotDeferredExpectedHostileGuids ==
+                f55cExpectedHostiles;
+
+        if (f55cCapturedSetMatches)
+        {
+            float const before = f54nHostiles[2].creature
+                ->GetThreatManager().getThreat(healer);
+            f54nHostiles[2].creature->AddThreat(
+                healer, 20.0f, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
+            float const after = f54nHostiles[2].creature
+                ->GetThreatManager().getThreat(healer);
+            f55cLateReferenceAdded = after > before + 0.5f;
+        }
+
+        std::vector<uint64> currentHostiles;
+        if (f55cLateReferenceAdded)
+        {
+            for (HostileReference* ref = healer->GetHostileRefManager().getFirst();
+                 ref; ref = ref->next())
+            {
+                ++f55cRefsAfter;
+                Unit* source = ref->getSourceUnit();
+                if (source)
+                    currentHostiles.push_back(
+                        source->GetObjectGuid().GetRawValue());
+            }
+            std::sort(currentHostiles.begin(), currentHostiles.end());
+            f55cCurrentSetExpanded =
+                f55cRefsAfter == 3 && currentHostiles.size() == 3;
+            f55cRecipientSetChanged = f55cCurrentSetExpanded &&
+                !PartyBotEngine::IsExactDirectHealThreatRecipientSet(
+                    f55cExpectedHostiles, currentHostiles);
+        }
+
+        float threatBaseline[3] = {};
+        for (uint32 i = 0; i < 3; ++i)
+            threatBaseline[i] = f54nHostiles[i].creature
+                ? f54nHostiles[i].creature->GetThreatManager().getThreat(healer)
+                : 0.0f;
+        f55cGroupUnchanged = healer->GetGroup() == f55cGroup &&
+            f55cGroup->GetId() == f55cGroupId &&
+            f55cGroup->GetMembersCount() == f55cGroupCount &&
+            f55cGroup->IsMember(healer->GetObjectGuid()) &&
+            healer->IsInWorld() && healer->IsAlive() &&
+            healer->GetMap() == &map;
+
+        for (uint32 tick = 0;
+             f55cCastAccepted &&
+             (adapter.terminalCalls == 0 || countQueuedEvents() != 0) &&
+             tick < 20; ++tick)
+        {
+            healer->Unit::Update(50, 50);
+            ++f55cEventUpdates;
+        }
+        f55cCurrentSpellCleared =
+            healer->GetCurrentSpell(CURRENT_GENERIC_SPELL) == nullptr;
+        f55cEventReaped = countQueuedEvents() == 0;
+        f55cAuthorizeSkipped = adapter.authorizeCalls == 0;
+        f55cTerminalOnce = adapter.terminalCalls == 1 &&
+            adapter.terminalActionId == f55cActionId &&
+            adapter.terminalEncounterId == f55cEncounterId &&
+            adapter.terminalEngineAction &&
+            !adapter.terminalSuccess && !adapter.terminalInterrupted;
+        f55cTerminalFailed = adapter.terminalCalls == 1 &&
+            !adapter.terminalSuccess && !adapter.terminalInterrupted;
+
+        f55cHealthAfter = healer->GetHealth();
+        f55cManaAfter = healer->GetPower(POWER_MANA);
+        for (uint32 i = 0; i < 3; ++i)
+            if (f54nHostiles[i].creature)
+                f55cThreatDelta += std::fabs(
+                    f54nHostiles[i].creature->GetThreatManager().getThreat(healer) -
+                    threatBaseline[i]);
+        f55cNoEffects = f55cHealthAfter == f55cHealthBefore &&
+            f55cManaAfter == f55cManaBefore && f55cThreatDelta < 0.01f;
+        f55cSpellReadyAfter = healer->IsSpellReady(f54nDesperatePrayer);
+        f55cNoGcdAfter = !healer->HasGCD(f54nDesperatePrayer);
+        f55cGroupUnchanged = f55cGroupUnchanged &&
+            healer->GetGroup() == f55cGroup &&
+            f55cGroup->GetId() == f55cGroupId &&
+            f55cGroup->GetMembersCount() == f55cGroupCount &&
+            f55cGroup->IsMember(healer->GetObjectGuid());
+
+        healer->SetAI(previousAI);
+        f55cAdapterRestored = healer->AI() == previousAI;
+        healer->GetHostileRefManager().deleteReferences();
+        for (uint32 i = 0; i < 2; ++i)
+            f54nHostiles[i].creature->AddThreat(
+                healer, 20.0f, false, SPELL_SCHOOL_MASK_NORMAL, nullptr);
+        std::vector<uint64> restoredHostiles;
+        uint32 restoredRefs = 0;
+        for (HostileReference* ref = healer->GetHostileRefManager().getFirst();
+             ref; ref = ref->next())
+        {
+            ++restoredRefs;
+            Unit* source = ref->getSourceUnit();
+            if (source)
+                restoredHostiles.push_back(
+                    source->GetObjectGuid().GetRawValue());
+        }
+        std::sort(restoredHostiles.begin(), restoredHostiles.end());
+        f55cReferencesRestored = restoredRefs == 2 &&
+            PartyBotEngine::IsExactDirectHealThreatRecipientSet(
+                f55cExpectedHostiles, restoredHostiles);
+
+        healer->SetHealth(savedHealth);
+        healer->SetPower(POWER_MANA, savedMana);
+        healer->RemoveSpellCooldown(f54nDesperatePrayer, false);
+        if (f54nDesperatePrayer->Category)
+            healer->RemoveSpellCategoryCooldown(
+                f54nDesperatePrayer->Category, false);
+        healer->ResetGCD(f54nDesperatePrayer);
+    }
+    f55cPassed = f55cGate && f55cCastAccepted && f55cQueued &&
+        f55cCapturedSetMatches && f55cLateReferenceAdded &&
+        f55cCurrentSetExpanded && f55cRecipientSetChanged &&
+        f55cGroupUnchanged && f55cAuthorizeSkipped && f55cTerminalOnce &&
+        f55cTerminalFailed && f55cCurrentSpellCleared && f55cEventReaped &&
+        f55cNoEffects && f55cSpellReadyBefore && f55cNoGcdBefore &&
+        f55cSpellReadyAfter && f55cNoGcdAfter &&
+        f55cReferencesRestored && f55cAdapterRestored;
+
+    sLog.Out(LOG_BASIC, f55cPassed ? LOG_LVL_MINIMAL : LOG_LVL_ERROR,
+        "[PartyBotSimulator] F55c deferred hostile-reference drift: gate=%u castAccepted=%u queuedBeforeMutation=%u capturedSetMatches=%u lateReferenceAdded=%u currentSetExpanded=%u recipientSetChanged=%u groupUnchanged=%u authorizeSkipped=%u terminalOnce=%u terminalFailed=%u currentSpellCleared=%u eventReaped=%u eventUpdates=%u refsBefore=%u refsAfter=%u health=%u/%u mana=%u/%u threatDelta=%.3f noEffects=%u spellReadyBefore=%u noGcdBefore=%u spellReadyAfter=%u noGcdAfter=%u referenceSetRestored=%u adapterRestored=%u expectedGroupId=%u.",
+        f55cGate ? 1u : 0u, f55cCastAccepted ? 1u : 0u,
+        f55cQueued ? 1u : 0u, f55cCapturedSetMatches ? 1u : 0u,
+        f55cLateReferenceAdded ? 1u : 0u, f55cCurrentSetExpanded ? 1u : 0u,
+        f55cRecipientSetChanged ? 1u : 0u, f55cGroupUnchanged ? 1u : 0u,
+        f55cAuthorizeSkipped ? 1u : 0u, f55cTerminalOnce ? 1u : 0u,
+        f55cTerminalFailed ? 1u : 0u, f55cCurrentSpellCleared ? 1u : 0u,
+        f55cEventReaped ? 1u : 0u, f55cEventUpdates, f55cRefsBefore,
+        f55cRefsAfter, f55cHealthBefore, f55cHealthAfter,
+        f55cManaBefore, f55cManaAfter, f55cThreatDelta,
+        f55cNoEffects ? 1u : 0u, f55cSpellReadyBefore ? 1u : 0u,
+        f55cNoGcdBefore ? 1u : 0u, f55cSpellReadyAfter ? 1u : 0u,
+        f55cNoGcdAfter ? 1u : 0u, f55cReferencesRestored ? 1u : 0u,
+        f55cAdapterRestored ? 1u : 0u, f55cGroupId);
+    if (f55cPassed)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+            "[PartyBotSimulator] PASS: F55c rejected a queued self-heal when a third live hostile reference appeared after prepare; Group/Map identity stayed unchanged and Core committed no heal, mana, threat, cooldown or GCD effect.");
+
     // F54q: interrupt the real deferred self-heal after prepare queued its
     // SpellEvent but before the event can reach pre-impact authorization.
     uint64 const f54qActionId = 0xF54F0003ULL;
@@ -14481,10 +14723,10 @@ if (f54mPassed)
              finalGroupCleanupPassed ? 1u : 0u);
     if (!finalGroupCleanupPassed)
         return false;
-    if (!f54oPassed || !f54qPassed || !f54rPassed || !f54sPassed || !f54tPassed || !f54uPassed)
+    if (!f54oPassed || !f55cPassed || !f54qPassed || !f54rPassed || !f54sPassed || !f54tPassed || !f54uPassed)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-                 "[PartyBotSimulator] Required F54o/F54q/F54r/F54s/F54t/F54u Core spell admission lifecycle fixtures failed; refusing aggregate runtime success.");
+                 "[PartyBotSimulator] Required F54o/F55c/F54q/F54r/F54s/F54t/F54u Core spell admission lifecycle fixtures failed; refusing aggregate runtime success.");
         return false;
     }
     return true;

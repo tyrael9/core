@@ -3814,7 +3814,14 @@ bool Spell::IsPartyBotDeferredImpactContextCurrent() const
             recipient, currentHostileGuids) ||
         !PartyBotEngine::IsExactDirectHealThreatRecipientSet(
             m_partyBotDeferredExpectedHostileGuids, currentHostileGuids))
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+            "[PartyBotSpellAdmission] impact threat-recipient set changed: spell=%u expectedCount=%u currentCount=%u.",
+            m_spellInfo ? m_spellInfo->Id : 0u,
+            static_cast<uint32>(m_partyBotDeferredExpectedHostileGuids.size()),
+            static_cast<uint32>(currentHostileGuids.size()));
         return false;
+    }
 
     Group* casterGroup = caster->GetGroup();
     Group* recipientGroup = recipient->GetGroup();
@@ -3942,7 +3949,7 @@ bool Spell::CommitPartyBotDeferredEffects()
     if (!IsPartyBotDeferredImpactContextCurrent())
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
-            "[PartyBotSpellAdmission] impact Group/map/instance/threat-recipient context rejected: spell=%u expectedCaster=%llu expectedRecipient=%llu expectedGroup=%u expectedMap=%u expectedInstance=%u.",
+            "[PartyBotSpellAdmission] impact Group/map/instance context rejected: spell=%u expectedCaster=%llu expectedRecipient=%llu expectedGroup=%u expectedMap=%u expectedInstance=%u.",
             m_spellInfo ? m_spellInfo->Id : 0u,
             static_cast<unsigned long long>(m_partyBotDeferredExpectedCasterGuid),
             static_cast<unsigned long long>(m_partyBotDeferredExpectedRecipientGuid),

@@ -1,6 +1,7 @@
 #ifndef MANGOS_PARTYBOT_DIRECT_HEAL_IMPACT_CONTRACT_H
 #define MANGOS_PARTYBOT_DIRECT_HEAL_IMPACT_CONTRACT_H
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 

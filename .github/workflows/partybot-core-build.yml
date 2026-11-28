@@ -199,9 +199,9 @@ jobs:
           echo "[PartyBotSimulator] Fixture URL secret: present"
           echo "[PartyBotSimulator] SHA256 secret: present"
 
-      # Runtime uses only disposable schemas and an extracted-data fixture shared
-      # through Google Drive. It is push-only and remains a no-op until both secrets exist.
-      - name: Run optional Core-backed simulator runtime test
+      # Only trusted push/dispatch reaches this step, after the required-secret preflight.
+      # The simulator uses disposable schemas and an immutable extracted-data fixture.
+      - name: Run Core-backed simulator runtime test
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           PARTYBOT_SIMULATOR_DATA_URL: ${{ secrets.PARTYBOT_SIMULATOR_DATA_URL }}
